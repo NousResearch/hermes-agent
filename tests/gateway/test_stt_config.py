@@ -185,3 +185,66 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     # Success path: the transcript passes through as a plain quoted line, with
     # no "voice message" meta-commentary that the LLM would echo back.
     assert "queued voice transcript" in result
+
+
+@pytest.mark.asyncio
+async def test_dequeue_pending_voice_echo_uses_current_feishu_event_anchor():
+    """Queued voice echoes must not reuse the source message from the prior turn."""
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+
+    old_source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-topic",
+        message_id="om-old-source",
+    )
+    current_source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-topic",
+        message_id="om-current-event",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=current_source,
+        message_id="om-current-event",
+        media_urls=["/tmp/queued-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+    adapter = SimpleNamespace(
+        get_pending_message=lambda _session_key: event,
+        send=AsyncMock(),
+    )
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner.adapters = {Platform.FEISHU: adapter}
+    runner._has_setup_skill = lambda: False
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "queued voice transcript",
+            "provider": "local_command",
+        },
+    ):
+        result = await runner._dequeue_pending_with_transcription(
+            adapter,
+            "agent:main:feishu:group:oc_chat:omt-topic",
+            old_source,
+        )
+
+    assert "queued voice transcript" in result
+    adapter.send.assert_awaited_once_with(
+        "oc_chat",
+        '🎙️ "queued voice transcript"',
+        metadata={
+            "thread_id": "omt-topic",
+            "reply_to_message_id": "om-current-event",
+        },
+    )

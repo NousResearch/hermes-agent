@@ -3,16 +3,18 @@
 import asyncio
 import importlib
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import gateway.platforms.base as base_platform
-from gateway.config import Platform, PlatformConfig, StreamingConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore
 
 
 class ProgressCaptureAdapter(BasePlatformAdapter):
@@ -245,6 +247,74 @@ class DelayedInterimAgent:
         }
 
 
+class InterruptibleVoiceAgent:
+    """Wait for the gateway monitor to deliver a pending voice interrupt."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self._interrupt_requested = False
+        self._interrupted = threading.Event()
+
+    @property
+    def is_interrupted(self):
+        return self._interrupt_requested
+
+    def interrupt(self, _message=None):
+        self._interrupt_requested = True
+        self._interrupted.set()
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self._interrupted.wait(timeout=3), "voice interrupt was not delivered"
+        return {
+            "final_response": "",
+            "messages": [],
+            "api_calls": 1,
+            "interrupted": True,
+            "interrupt_message": None,
+        }
+
+
+class ImmediateVoiceAgent:
+    """Complete immediately so a queued voice event enters the drain path."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self._interrupt_requested = False
+
+    @property
+    def is_interrupted(self):
+        return self._interrupt_requested
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ContextRecordingVoiceAgent(ImmediateVoiceAgent):
+    """Record the reply anchor visible to tools on each queued turn."""
+
+    observed_message_ids = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        from gateway.session_context import get_session_env
+
+        self.observed_message_ids.append(
+            get_session_env("HERMES_SESSION_MESSAGE_ID", "")
+        )
+        return super().run_conversation(message, conversation_history, task_id)
+
+
+class InterruptEchoCaptureAdapter(ProgressCaptureAdapter):
+    """Expose the event to the monitor, then consume it before post-run drain."""
+
+    def get_pending_message(self, session_key):
+        self._pending_messages.pop(session_key, None)
+        return None
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -260,7 +330,11 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
-    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    runner.session_store = SimpleNamespace(
+        _entries={},
+        _save=lambda: None,
+        update_session=lambda *args, **kwargs: None,
+    )
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,
@@ -268,6 +342,183 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+def _feishu_voice_event(message_id="om-current-event"):
+    event_source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-topic",
+        message_id=message_id,
+    )
+    return MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=event_source,
+        message_id=message_id,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+
+def _install_voice_agent(monkeypatch, tmp_path, agent_cls):
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = agent_cls
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "tools.transcription_tools.transcribe_audio",
+        lambda _path: {
+            "success": True,
+            "transcript": "current voice transcript",
+            "provider": "local_command",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_feishu_voice_interrupt_echo_uses_current_event_anchor(monkeypatch, tmp_path):
+    """The interrupt monitor must anchor its echo to the pending event, not the old turn."""
+    _install_voice_agent(monkeypatch, tmp_path, InterruptibleVoiceAgent)
+    adapter = InterruptEchoCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    runner.config.stt_enabled = True
+    runner._has_setup_skill = lambda: False
+
+    old_source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-topic",
+        message_id="om-old-source",
+    )
+    session_key = "agent:main:feishu:group:oc_chat:omt-topic"
+    adapter._pending_messages[session_key] = _feishu_voice_event()
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._active_sessions[session_key].set()
+
+    await runner._run_agent(
+        message="old turn",
+        context_prompt="",
+        history=[],
+        source=old_source,
+        session_id="sess-feishu-voice-interrupt",
+        session_key=session_key,
+        event_message_id="om-old-source",
+    )
+
+    echoes = [call for call in adapter.sent if call["content"].startswith("🎙️")]
+    assert len(echoes) == 1
+    assert echoes[0]["metadata"] == {
+        "thread_id": "omt-topic",
+        "reply_to_message_id": "om-current-event",
+    }
+
+
+@pytest.mark.asyncio
+async def test_feishu_voice_drain_echo_uses_current_event_anchor(monkeypatch, tmp_path):
+    """A queued voice echo after normal completion must use that queued event's anchor."""
+    _install_voice_agent(monkeypatch, tmp_path, ImmediateVoiceAgent)
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    runner.config.stt_enabled = True
+    runner._has_setup_skill = lambda: False
+    runner._prepare_inbound_message_text = AsyncMock(return_value="current voice transcript")
+
+    old_source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-topic",
+        message_id="om-old-source",
+    )
+    session_key = "agent:main:feishu:group:oc_chat:omt-topic"
+    adapter._pending_messages[session_key] = _feishu_voice_event()
+
+    await runner._run_agent(
+        message="old turn",
+        context_prompt="",
+        history=[],
+        source=old_source,
+        session_id="sess-feishu-voice-drain",
+        session_key=session_key,
+        event_message_id="om-old-source",
+    )
+
+    echoes = [call for call in adapter.sent if call["content"].startswith("🎙️")]
+    assert len(echoes) == 1
+    assert echoes[0]["metadata"] == {
+        "thread_id": "omt-topic",
+        "reply_to_message_id": "om-current-event",
+    }
+
+
+@pytest.mark.asyncio
+async def test_feishu_queued_turn_refreshes_persisted_and_tool_anchor(
+    monkeypatch, tmp_path
+):
+    """The queued turn must replace the prior turn's persisted/tool anchor."""
+    import hermes_state
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    ContextRecordingVoiceAgent.observed_message_ids = []
+    _install_voice_agent(monkeypatch, tmp_path, ContextRecordingVoiceAgent)
+    adapter = ProgressCaptureAdapter(platform=Platform.FEISHU)
+    runner = _make_runner(adapter)
+    runner.config.stt_enabled = True
+    runner._has_setup_skill = lambda: False
+    runner._prepare_inbound_message_text = AsyncMock(
+        return_value="current voice transcript"
+    )
+
+    old_source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_chat",
+        chat_type="group",
+        thread_id="omt-topic",
+        message_id="om-old-source",
+    )
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    entry = store.get_or_create_session(old_source)
+    runner.session_store = store
+    session_key = entry.session_key
+    adapter._pending_messages[session_key] = _feishu_voice_event()
+
+    tokens = set_session_vars(
+        platform="feishu",
+        chat_id="oc_chat",
+        thread_id="omt-topic",
+        session_key=session_key,
+        message_id="om-old-source",
+    )
+    try:
+        await runner._run_agent(
+            message="old turn",
+            context_prompt="",
+            history=[],
+            source=old_source,
+            session_id=entry.session_id,
+            session_key=session_key,
+            event_message_id="om-old-source",
+        )
+    finally:
+        clear_session_vars(tokens)
+
+    assert ContextRecordingVoiceAgent.observed_message_ids == [
+        "om-old-source",
+        "om-current-event",
+    ]
+    assert store._entries[session_key].origin.message_id == "om-current-event"
+    store._db.close()
 
 
 @pytest.mark.asyncio
@@ -486,7 +737,10 @@ async def test_run_agent_feishu_progress_replies_inside_existing_thread(monkeypa
     assert result["final_response"] == "done"
     assert adapter.sent
     assert adapter.sent[0]["reply_to"] == "om_triggering_user_message"
-    assert adapter.sent[0]["metadata"] == {"thread_id": "topic_17585"}
+    assert adapter.sent[0]["metadata"] == {
+        "thread_id": "topic_17585",
+        "reply_to_message_id": "om_triggering_user_message",
+    }
     assert adapter.edits
     assert adapter.edits[0]["message_id"] == "progress-1"
 

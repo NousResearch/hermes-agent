@@ -1804,6 +1804,10 @@ class SessionStore:
             if slot.error is not None:
                 raise slot.error
             assert slot.result is not None
+            # The routing result is shared, but each Feishu delivery carries
+            # its own asynchronous reply anchor.
+            if source.platform == Platform.FEISHU and source.message_id:
+                self.update_session(slot.result.session_key, source=source)
             return slot.result
 
         try:
@@ -1921,6 +1925,12 @@ class SessionStore:
                 elif entry.session_id != _stale_session_id:
                     # Another thread handled this entry during our lock-free
                     # window.  Treat as healthy -- bump updated_at and save.
+                    if (
+                        source.platform == Platform.FEISHU
+                        and source.message_id
+                        and entry.origin is not None
+                    ):
+                        entry.origin.message_id = source.message_id
                     entry.updated_at = now
                     _needs_save = True
                 else:
@@ -1934,6 +1944,12 @@ class SessionStore:
                         entry = None
                         _needs_recover = True
                     else:
+                        if (
+                            source.platform == Platform.FEISHU
+                            and source.message_id
+                            and entry.origin is not None
+                        ):
+                            entry.origin.message_id = source.message_id
                         entry.updated_at = now
                         _needs_save = True
             else:
@@ -2023,8 +2039,9 @@ class SessionStore:
         self,
         session_key: str,
         last_prompt_tokens: int = None,
+        source: Optional[SessionSource] = None,
     ) -> None:
-        """Update lightweight session metadata after an interaction."""
+        """Update interaction metadata and the latest Feishu reply anchor."""
         with self._lock:
             self._ensure_loaded_locked()
 
@@ -2033,6 +2050,13 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                if (
+                    source is not None
+                    and source.platform == Platform.FEISHU
+                    and source.message_id
+                    and entry.origin is not None
+                ):
+                    entry.origin.message_id = source.message_id
                 self._save()
                 self._record_gateway_session_peer(
                     entry.session_id,

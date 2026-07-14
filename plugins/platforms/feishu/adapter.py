@@ -356,6 +356,17 @@ class _FeishuBotIdentity:
 
 
 @dataclass(frozen=True)
+class _FeishuLocalErrorResponse:
+    """Represent a local routing failure using the Feishu SDK response contract."""
+
+    code: str
+    msg: str
+
+    def success(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
 class FeishuPostParseResult:
     text_content: str
     image_keys: List[str] = field(default_factory=list)
@@ -2229,6 +2240,13 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a local image file to Feishu."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        thread_error = self._thread_anchor_error_response(
+            chat_id=chat_id,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if thread_error:
+            return self._finalize_send_result(thread_error, "image send failed")
         if not os.path.exists(image_path):
             return SendResult(success=False, error=f"Image file not found: {image_path}")
 
@@ -3292,6 +3310,7 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+            message_id=message_id,
         )
         normalized = MessageEvent(
             text=text,
@@ -3366,6 +3385,8 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+            if existing.source is not None:
+                existing.source.message_id = event.message_id
         self._schedule_media_batch_flush(key)
 
     def _schedule_media_batch_flush(self, key: str) -> None:
@@ -3679,6 +3700,8 @@ class FeishuAdapter(BasePlatformAdapter):
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
+            if existing.source is not None:
+                existing.source.message_id = event.message_id
         self._pending_text_batch_counts[key] = next_count
         self._schedule_text_batch_flush(key)
 
@@ -4525,6 +4548,27 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    @staticmethod
+    def _thread_anchor_error_response(
+        *,
+        chat_id: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[_FeishuLocalErrorResponse]:
+        thread_id = (metadata or {}).get("thread_id")
+        reply_anchor = reply_to or (metadata or {}).get("reply_to_message_id")
+        if not thread_id or reply_anchor:
+            return None
+        logger.error(
+            "[Feishu] Cannot send message in thread %s for chat %s: missing reply_to_message_id",
+            thread_id,
+            chat_id,
+        )
+        return _FeishuLocalErrorResponse(
+            code="thread_anchor_required",
+            msg=f"Feishu thread {thread_id} requires reply_to_message_id",
+        )
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
@@ -4550,6 +4594,13 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        thread_error = self._thread_anchor_error_response(
+            chat_id=chat_id,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if thread_error:
+            return self._finalize_send_result(thread_error, "file send failed")
         if not os.path.exists(file_path):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
@@ -4610,6 +4661,14 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
+        thread_error = self._thread_anchor_error_response(
+            chat_id=chat_id,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if thread_error:
+            return thread_error
+
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
@@ -4624,34 +4683,22 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+        # Default path: create a new message in the chat.
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod

@@ -65,8 +65,13 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
         return None
+    platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    if platform == "feishu":
+        anchor = reply_to_message_id or getattr(source, "message_id", None)
+        if anchor is not None:
+            metadata["reply_to_message_id"] = str(anchor)
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:

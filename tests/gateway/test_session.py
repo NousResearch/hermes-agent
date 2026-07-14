@@ -1,5 +1,7 @@
 """Tests for gateway session management."""
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -1664,6 +1666,166 @@ class TestGatewaySessionDbRecovery:
         assert reset.session_id != entry.session_id
         assert reset.was_auto_reset is True
         assert reset.auto_reset_reason == "idle"
+
+
+class TestFeishuSessionAnchorRefresh:
+    @pytest.fixture(autouse=True)
+    def _isolated_db(self, tmp_path, monkeypatch):
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    @staticmethod
+    def _topic_source(
+        platform, message_id, *, chat_name="Original chat", user_name="Alice"
+    ):
+        return SessionSource(
+            platform=platform,
+            chat_id="chat-1",
+            chat_name=chat_name,
+            chat_type="group",
+            user_id="user-1",
+            user_name=user_name,
+            thread_id="topic-1",
+            message_id=message_id,
+        )
+
+    @pytest.mark.parametrize("initial_message_id", [None, "old-message"])
+    def test_existing_topic_refreshes_only_message_id_and_persists(
+        self, tmp_path, initial_message_id
+    ):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        original = self._topic_source(Platform.FEISHU, initial_message_id)
+        entry = store.get_or_create_session(original)
+        original_origin = entry.origin
+        original_data = original.to_dict()
+
+        inbound = self._topic_source(
+            Platform.FEISHU,
+            "new-message",
+            chat_name="Renamed chat",
+            user_name="Different user name",
+        )
+        refreshed = store.get_or_create_session(inbound)
+
+        assert refreshed.session_id == entry.session_id
+        assert refreshed.origin is original_origin
+        assert refreshed.origin.to_dict() == {
+            **original_data,
+            "message_id": "new-message",
+        }
+
+        store._db.close()
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        restarted._ensure_loaded()
+        persisted = restarted._entries[entry.session_key]
+        assert persisted.origin.to_dict() == refreshed.origin.to_dict()
+        restarted._db.close()
+
+    def test_empty_inbound_message_id_does_not_clear_feishu_anchor(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        original = self._topic_source(Platform.FEISHU, "old-message")
+        entry = store.get_or_create_session(original)
+
+        refreshed = store.get_or_create_session(
+            self._topic_source(Platform.FEISHU, None)
+        )
+
+        assert refreshed.origin is entry.origin
+        assert refreshed.origin.message_id == "old-message"
+        store._db.close()
+
+    def test_concurrent_session_replacement_receives_current_feishu_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        entry = store.get_or_create_session(
+            self._topic_source(Platform.FEISHU, "old-message")
+        )
+
+        def replace_session_during_stale_check(_session_id):
+            entry.session_id = "replacement-session"
+            return False
+
+        monkeypatch.setattr(
+            store, "_is_session_ended_in_db", replace_session_during_stale_check
+        )
+
+        refreshed = store.get_or_create_session(
+            self._topic_source(Platform.FEISHU, "new-message")
+        )
+
+        assert refreshed is entry
+        assert refreshed.session_id == "replacement-session"
+        assert refreshed.origin.message_id == "new-message"
+        store._db.close()
+
+    def test_single_flight_waiter_persists_its_feishu_anchor(
+        self, tmp_path, monkeypatch
+    ):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        owner_entered = threading.Event()
+        release_owner = threading.Event()
+        original_impl = store._get_or_create_session_impl
+
+        def blocked_impl(source, force_new=False):
+            if source.message_id == "first-message":
+                owner_entered.set()
+                assert release_owner.wait(timeout=5)
+            return original_impl(source, force_new=force_new)
+
+        monkeypatch.setattr(store, "_get_or_create_session_impl", blocked_impl)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(
+                store.get_or_create_session,
+                self._topic_source(Platform.FEISHU, "first-message"),
+            )
+            assert owner_entered.wait(timeout=5)
+            second = executor.submit(
+                store.get_or_create_session,
+                self._topic_source(Platform.FEISHU, "second-message"),
+            )
+            release_owner.set()
+            first_entry = first.result(timeout=5)
+            second_entry = second.result(timeout=5)
+
+        assert second_entry is first_entry
+        assert second_entry.origin.message_id == "second-message"
+
+        store._db.close()
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        restarted._ensure_loaded()
+        assert (
+            restarted._entries[first_entry.session_key].origin.message_id
+            == "second-message"
+        )
+        restarted._db.close()
+
+    def test_non_feishu_origin_remains_unchanged(self, tmp_path):
+        store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        original = self._topic_source(Platform.TELEGRAM, "old-message")
+        entry = store.get_or_create_session(original)
+        original_origin = entry.origin
+        original_data = original.to_dict()
+
+        refreshed = store.get_or_create_session(
+            self._topic_source(
+                Platform.TELEGRAM,
+                "new-message",
+                chat_name="Renamed chat",
+                user_name="Different user name",
+            )
+        )
+
+        assert refreshed.origin is original_origin
+        assert refreshed.origin.to_dict() == original_data
+
+        store._db.close()
+        restarted = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        restarted._ensure_loaded()
+        assert restarted._entries[entry.session_key].origin.to_dict() == original_data
+        restarted._db.close()
 
 
 class TestGatewayRoutingTable:

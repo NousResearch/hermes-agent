@@ -227,6 +227,58 @@ async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sessions", "expected_fragment"),
+    [
+        (
+            [SimpleNamespace(output_buffer="building...\n", exited=False, exit_code=None), None],
+            "is still running",
+        ),
+        (
+            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
+            "finished with exit code 0",
+        ),
+    ],
+)
+async def test_feishu_topic_watcher_delivery_uses_triggering_message_anchor(
+    monkeypatch, tmp_path, sessions, expected_fragment
+):
+    """Periodic and final watcher sends must reply inside the originating topic."""
+    import tools.process_registry as pr_module
+
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters.pop(Platform.TELEGRAM)
+    runner.adapters[Platform.FEISHU] = adapter
+    watcher = {
+        "session_id": "proc_feishu_topic",
+        "check_interval": 0,
+        "platform": "feishu",
+        "chat_id": "oc_chat",
+        "thread_id": "omt-topic",
+        "message_id": "om-trigger",
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    matching_calls = [
+        call
+        for call in adapter.send.await_args_list
+        if expected_fragment in call.args[1]
+    ]
+    assert len(matching_calls) == 1
+    assert matching_calls[0].kwargs["metadata"] == {
+        "thread_id": "omt-topic",
+        "reply_to_message_id": "om-trigger",
+    }
+
+
+@pytest.mark.asyncio
 async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     """When thread_id is empty, metadata should be None (general topic)."""
     import tools.process_registry as pr_module

@@ -14482,6 +14482,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        if platform == Platform.FEISHU and reply_to_message_id is not None:
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,
@@ -15428,7 +15430,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # interrupts feel identical to fresh voice messages.
             if successful_transcripts and self._should_echo_stt_transcripts():
                 echo_adapter = self._adapter_for_source(source)
-                echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                echo_meta = self._thread_metadata_for_target(
+                    source.platform,
+                    source.chat_id,
+                    source.thread_id,
+                    reply_to_message_id=self._reply_anchor_for_event(event),
+                )
                 if echo_adapter:
                     for tx in successful_transcripts:
                         try:
@@ -15883,13 +15890,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"Here's the final output:\n{new_output}]"
                     )
                     adapter = None
+                    target_platform = None
                     for p, a in self.adapters.items():
                         if p.value == platform_name:
                             adapter = a
+                            target_platform = p
                             break
                     if adapter and chat_id:
                         try:
-                            send_meta = {"thread_id": thread_id} if thread_id else None
+                            send_meta = self._thread_metadata_for_target(
+                                target_platform,
+                                chat_id,
+                                thread_id or None,
+                                reply_to_message_id=message_id,
+                            )
                             await adapter.send(
                                 chat_id,
                                 message_text,
@@ -15913,13 +15927,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"New output:\n{new_output}]"
                 )
                 adapter = None
+                target_platform = None
                 for p, a in self.adapters.items():
                     if p.value == platform_name:
                         adapter = a
+                        target_platform = p
                         break
                 if adapter and chat_id:
                     try:
-                        send_meta = {"thread_id": thread_id} if thread_id else None
+                        send_meta = self._thread_metadata_for_target(
+                            target_platform,
+                            chat_id,
+                            thread_id or None,
+                            reply_to_message_id=message_id,
+                        )
                         await adapter.send(
                             chat_id,
                             message_text,
@@ -19504,7 +19525,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         )
                                         pending_text = _enriched
                                         if _transcripts and self._should_echo_stt_transcripts():
-                                            _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                                            _echo_meta = self._thread_metadata_for_target(
+                                                source.platform,
+                                                source.chat_id,
+                                                source.thread_id,
+                                                reply_to_message_id=self._reply_anchor_for_event(_peek_event),
+                                            )
                                             for _tx in _transcripts:
                                                 try:
                                                     await _adapter.send(
@@ -19926,7 +19952,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             pending = _enriched or None
                             if _transcripts and self._should_echo_stt_transcripts():
-                                _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                                _echo_meta = self._thread_metadata_for_target(
+                                    source.platform,
+                                    source.chat_id,
+                                    source.thread_id,
+                                    reply_to_message_id=self._reply_anchor_for_event(pending_event),
+                                )
                                 for _tx in _transcripts:
                                     try:
                                         await adapter.send(
@@ -20121,6 +20152,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    if (
+                        next_source.platform == Platform.FEISHU
+                        and next_source.message_id
+                    ):
+                        # In-band queued turns stay in this handler task, so
+                        # refresh both durable and task-local reply anchors.
+                        await self.async_session_store.update_session(
+                            next_session_key,
+                            source=next_source,
+                        )
+                        self._set_session_env(
+                            SessionContext(
+                                source=next_source,
+                                connected_platforms=[],
+                                home_channels={},
+                                session_key=next_session_key,
+                                session_id=session_id,
+                            )
+                        )
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background

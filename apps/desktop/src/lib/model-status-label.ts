@@ -1,20 +1,40 @@
+import { normalize } from '@/lib/text'
+
 const REASONING_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',
   low: 'Low',
   medium: 'Med',
   high: 'High',
-  xhigh: 'Max'
+  xhigh: 'XHigh',
+  max: 'Max',
+  ultra: 'Ultra'
 }
 
 export function reasoningEffortLabel(effort: string): string {
-  const key = effort.trim().toLowerCase()
+  const key = normalize(effort)
 
   if (!key) {
     return ''
   }
 
   return REASONING_LABELS[key] ?? effort
+}
+
+/** Which model/provider a picker should mark "current". With a live session the
+ *  gateway's `model.options` is authoritative; pre-session there is no server
+ *  "current", so the sticky composer pick wins over the profile default the
+ *  global options query returns — else the checkmark snaps back to the default
+ *  and the pick looks ignored. */
+export function currentPickerSelection(
+  hasSession: boolean,
+  store: { model: string; provider: string },
+  options?: { model?: string; provider?: string }
+): { model: string; provider: string } {
+  return {
+    model: String((hasSession && options?.model) || store.model || options?.model || ''),
+    provider: String((hasSession && options?.provider) || store.provider || options?.provider || '')
+  }
 }
 
 /** Strip provider prefix and normalize for display. */
@@ -53,15 +73,10 @@ function prettifyBase(base: string): string {
   return titleCase(base.replace(/-/g, ' '))
 }
 
-interface ModelDisplayOptions {
-  preserveProviderPrefix?: boolean
-}
-
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string, options?: ModelDisplayOptions): { name: string; tag: string } {
-  const trimmed = model.trim()
-  let base = options?.preserveProviderPrefix ? trimmed : modelBaseId(model)
+export function modelDisplayParts(model: string): { name: string; tag: string } {
+  let base = modelBaseId(model)
   let tag = ''
 
   for (const [pattern, label] of VARIANT_TAGS) {
@@ -73,30 +88,15 @@ export function modelDisplayParts(model: string, options?: ModelDisplayOptions):
     }
   }
 
-  if (options?.preserveProviderPrefix) {
-    return { name: base || trimmed || 'No model', tag }
-  }
+  // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
+  base = base.replace(/-\d{8}$/, '')
 
-  return { name: prettifyBase(base) || trimmed || 'No model', tag }
-}
-
-/** Friendly labels intentionally hide provider prefixes. When that would make
- *  multiple choices indistinguishable, callers can preserve the raw prefix for
- *  just those ambiguous rows. */
-export function ambiguousModelDisplayNames(models: readonly string[]): Set<string> {
-  const counts = new Map<string, number>()
-
-  for (const model of models) {
-    const name = modelDisplayParts(model).name
-    counts.set(name, (counts.get(name) ?? 0) + 1)
-  }
-
-  return new Set([...counts].filter(([, count]) => count > 1).map(([name]) => name))
+  return { name: prettifyBase(base) || model.trim() || 'No model', tag }
 }
 
 /** Friendly one-line model name for menus and the status bar. */
-export function displayModelName(model: string, options?: ModelDisplayOptions): string {
-  return modelDisplayParts(model, options).name
+export function displayModelName(model: string): string {
+  return modelDisplayParts(model).name
 }
 
 /** Status bar trigger label — model name plus the live session state (effort/fast). */

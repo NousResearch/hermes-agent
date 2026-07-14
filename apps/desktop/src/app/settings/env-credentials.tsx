@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import type { EnvVarInfo } from '@/types/hermes'
@@ -41,6 +42,9 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // credential pages (Providers, Keys) share one source of truth and one set of
 // mutation handlers instead of duplicating the plumbing.
 export function useEnvCredentials(): UseEnvCredentials {
+  const { t } = useI18n()
+  const credentials = t.settings.credentials
+  const toolsets = t.settings.toolsets
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
@@ -67,11 +71,12 @@ export function useEnvCredentials(): UseEnvCredentials {
           setVars(next)
         }
       } catch (err) {
-        notifyError(err, 'API keys failed to load')
+        notifyError(err, t.settings.keys.failedLoad)
       }
     })()
 
     return () => void (cancelled = true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount; copy is stable
   }, [])
 
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
@@ -96,9 +101,9 @@ export function useEnvCredentials(): UseEnvCredentials {
       await setEnvVar(key, value)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${key} updated.` })
+      notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
     } catch (err) {
-      notifyError(err, `Failed to save ${key}`)
+      notifyError(err, toolsets.failedSave(key))
     } finally {
       setSaving(null)
     }
@@ -111,7 +116,7 @@ export function useEnvCredentials(): UseEnvCredentials {
     const trimmed = value.trim()
 
     if (!trimmed) {
-      return { message: 'Enter a value first.', ok: false }
+      return { message: credentials.enterValueFirst, ok: false }
     }
 
     setSaving(key)
@@ -120,20 +125,20 @@ export function useEnvCredentials(): UseEnvCredentials {
       await setEnvVar(key, trimmed)
       patchVar(key, { is_set: true, redacted_value: redactedValue(trimmed) })
       clearLocalState(key)
-      notify({ kind: 'success', message: `${key} updated.`, title: 'Credential saved' })
+      notify({ kind: 'success', message: toolsets.savedMessage(key), title: toolsets.savedTitle })
 
       return { ok: true }
     } catch (err) {
-      notifyError(err, `Failed to save ${key}`)
+      notifyError(err, toolsets.failedSave(key))
 
-      return { message: err instanceof Error ? err.message : 'Could not save credential.', ok: false }
+      return { message: err instanceof Error ? err.message : credentials.couldNotSave, ok: false }
     } finally {
       setSaving(null)
     }
   }
 
   async function handleClear(key: string) {
-    if (!window.confirm(`Remove ${key} from .env?`)) {
+    if (!window.confirm(toolsets.removeConfirm(key))) {
       return
     }
 
@@ -143,9 +148,9 @@ export function useEnvCredentials(): UseEnvCredentials {
       await deleteEnvVar(key)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${key} removed.` })
+      notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
     } catch (err) {
-      notifyError(err, `Failed to remove ${key}`)
+      notifyError(err, toolsets.failedRemove(key))
     } finally {
       setSaving(null)
     }
@@ -162,7 +167,7 @@ export function useEnvCredentials(): UseEnvCredentials {
       const result = await revealEnvVar(key)
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
-      notifyError(err, `Failed to reveal ${key}`)
+      notifyError(err, toolsets.failedReveal(key))
     }
   }
 

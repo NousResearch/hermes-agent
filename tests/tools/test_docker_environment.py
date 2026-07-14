@@ -11,7 +11,13 @@ def _mock_subprocess_run(monkeypatch):
     """Mock subprocess.run to intercept docker run -d and docker version calls.
 
     Returns a list of captured (cmd, kwargs) tuples for inspection.
+
+    Pre-seeds the cgroup-limit probe cache to ``True`` so the throwaway probe
+    container (a ``docker run ... sleep 0``) does not run and pollute the
+    captured call list — these tests inspect the real sandbox-start ``run``.
+    Tests that exercise the probe itself live in test_docker_cgroup_limits.py.
     """
+    docker_env._cgroup_limits_ok = True
     calls = []
 
     def _run(cmd, **kwargs):
@@ -109,6 +115,7 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
             "capture_output": True,
             "text": True,
             "timeout": 5,
+            "stdin": subprocess.DEVNULL,
         })
     ]
 

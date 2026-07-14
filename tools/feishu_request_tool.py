@@ -55,31 +55,45 @@ def _check_feishu():
 # ``:segment`` matches one concrete path segment (token / id).
 # Fail-closed: unlisted paths never leave the process. GET only — no
 # POST/PUT/DELETE (comment writes, Bitable mutations, create_folder, etc.).
-# Keep templates exactly as Feishu documents them
-# (https://open.feishu.cn/document/server-docs).
+# Templates match official Feishu HTTP URLs verbatim (open.feishu.cn).
 # ---------------------------------------------------------------------------
 _FEISHU_ENDPOINTS = [
-    # Drive — folder list is ?folder_token=, NOT /:token/children.
+    # Drive — list is ?folder_token=, NOT /:token/children
+    # https://open.feishu.cn/document/server-docs/docs/drive-v1/folder/list
     ("GET", "/open-apis/drive/v1/files"),
+    # https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/drive-v1/file-statistics/get
     ("GET", "/open-apis/drive/v1/files/:file_token/statistics"),
-    # Not in the typed lark SDK; verified against official docs.
+    # https://open.feishu.cn/document/server-docs/docs/drive-v1/folder/get-root-folder-meta
     ("GET", "/open-apis/drive/explorer/v2/root_folder/meta"),
+    # https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/drive-v1/file-comment/list
     ("GET", "/open-apis/drive/v1/files/:file_token/comments"),
+    # https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/drive-v1/file-comment-reply/list
     ("GET", "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"),
     # Docx
+    # https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/document/get
     ("GET", "/open-apis/docx/v1/documents/:document_id"),
+    # https://open.feishu.cn/document/server-docs/docs/docs/docx-v1/document/raw_content
     ("GET", "/open-apis/docx/v1/documents/:document_id/raw_content"),
+    # https://open.feishu.cn/document/ukTMukTMukTM/uUDN04SN0QjL1QDN/document-docx/docx-v1/document-block/list
     ("GET", "/open-apis/docx/v1/documents/:document_id/blocks"),
     # Bitable (reads only)
+    # https://open.feishu.cn/document/server-docs/docs/bitable-v1/app/get
     ("GET", "/open-apis/bitable/v1/apps/:app_token"),
+    # https://open.feishu.cn/document/server-docs/docs/bitable-v1/app-table/list
     ("GET", "/open-apis/bitable/v1/apps/:app_token/tables"),
+    # https://open.feishu.cn/document/server-docs/docs/bitable-v1/app-table-field/list
     ("GET", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"),
+    # https://open.feishu.cn/document/server-docs/docs/bitable-v1/app-table-record/list
     ("GET", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"),
     # Sheets
+    # https://open.feishu.cn/document/server-docs/docs/sheets-v3/spreadsheet/get
     ("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token"),
+    # https://open.feishu.cn/document/server-docs/docs/sheets-v3/spreadsheet-sheet/query
     ("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query"),
     # Wiki
+    # https://open.feishu.cn/document/server-docs/docs/wiki-v2/space/list
     ("GET", "/open-apis/wiki/v2/spaces"),
+    # https://open.feishu.cn/document/server-docs/docs/wiki-v2/space-node/list
     ("GET", "/open-apis/wiki/v2/spaces/:space_id/nodes"),
 ]
 
@@ -205,10 +219,6 @@ FEISHU_REQUEST_SCHEMA = {
                 "type": "object",
                 "description": "Optional query parameters as a flat object.",
             },
-            "body": {
-                "type": "object",
-                "description": "Unused for GET; reserved for schema stability.",
-            },
         },
         "required": ["method", "path"],
     },
@@ -219,7 +229,6 @@ def _handle_feishu_request(args: dict, **kwargs) -> str:
     method = str(args.get("method", "")).strip().upper()
     path = str(args.get("path", "")).strip()
     query = args.get("query") or {}
-    body = args.get("body")
 
     if not method or not path:
         return tool_error("method and path are required")
@@ -264,7 +273,6 @@ def _handle_feishu_request(args: dict, **kwargs) -> str:
         client, method, template,
         paths=result or None,
         queries=queries or None,
-        body=body,
     )
     if code != 0:
         logger.warning("[Feishu-Request] %s %s failed: code=%s msg=%s",
@@ -287,5 +295,5 @@ registry.register(
     requires_env=[],
     is_async=False,
     description="Call a validated Feishu Open API endpoint (GET / read-only)",
-    emoji="\U0001f5fa️",
+    emoji="\U0001f5fa",
 )

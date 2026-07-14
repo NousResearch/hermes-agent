@@ -2108,6 +2108,45 @@ class TestSendTyping:
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_stop_typing_clears_untracked_thread_from_metadata(self, adapter):
+        """Explicit thread metadata clears a status the map no longer tracks.
+
+        A gateway restart (or cache eviction) wipes _active_status_threads
+        while Slack's persistent assistant status stays visible. A caller
+        that names the exact thread must still be able to dismiss it (#32295).
+        """
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        assert adapter._active_status_threads == {}
+
+        await adapter.stop_typing("C123", metadata={"thread_id": "stuck_ts"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="stuck_ts",
+            status="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_untracked_fallback_respects_ambiguous_workspaces(
+        self, adapter
+    ):
+        """Team-less clear must NOT fire when multiple workspaces track the thread."""
+        team_one, team_two = AsyncMock(), AsyncMock()
+        adapter._team_clients.update({"T_ONE": team_one, "T_TWO": team_two})
+        for team_id in ("T_ONE", "T_TWO"):
+            await adapter.send_typing(
+                "D_SHARED",
+                metadata={"thread_id": "171.000", "slack_team_id": team_id},
+            )
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+
+        await adapter.stop_typing("D_SHARED", metadata={"thread_id": "171.000"})
+
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+        assert ("T_ONE", "D_SHARED", "171.000") in adapter._active_status_threads
+        assert ("T_TWO", "D_SHARED", "171.000") in adapter._active_status_threads
+
+    @pytest.mark.asyncio
     async def test_stop_typing_handles_api_error_gracefully(self, adapter):
         adapter._active_status_threads[("", "C123", "parent_ts")] = {
             "thread_ts": "parent_ts",

@@ -1609,6 +1609,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
         requested_team_id = self._metadata_team_id(metadata)
         active = None
+        ambiguous_tracked = False
         if requested_thread_ts:
             if requested_team_id:
                 active_key = self._workspace_thread_key(
@@ -1628,6 +1629,7 @@ class SlackAdapter(BasePlatformAdapter):
                 ]
                 if len(matching_keys) == 1:
                     active = self._active_status_threads.pop(matching_keys[0], None)
+                ambiguous_tracked = len(matching_keys) > 1
         else:
             # Metadata-free cleanup is safe only if exactly one status exists
             # for this channel; otherwise it may clear another Slack Connect
@@ -1648,6 +1650,18 @@ class SlackAdapter(BasePlatformAdapter):
             team_id = active.get("team_id", "")
         if metadata:
             team_id = self._metadata_team_id(metadata) or team_id
+        if not thread_ts and requested_thread_ts and not ambiguous_tracked:
+            # No tracked entry (gateway restart, eviction, or a status set
+            # before this process started) but the caller identified the exact
+            # thread to clear. Issue the clear anyway so a stuck "is
+            # thinking..." can always be dismissed — clearing an unset status
+            # is a harmless no-op on Slack's side. Skipped when MULTIPLE
+            # workspaces track this channel+thread (ambiguous_tracked): a
+            # team-less clear there could hit the wrong Slack Connect
+            # workspace. Client routing uses the caller's team when given,
+            # else the channel→team fallback.
+            thread_ts = requested_thread_ts
+            team_id = requested_team_id or team_id
         if not thread_ts:
             return
         try:

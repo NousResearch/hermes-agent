@@ -23,12 +23,20 @@ export interface ModelFamily {
 /** Collapse a provider's model list so a base model and its `…-fast` variant
  *  become a single family (one row, one toggle). Order is preserved by the
  *  base model's position. A `…-fast` model with no base stands on its own. */
-export function collapseModelFamilies(models: readonly string[]): ModelFamily[] {
-  const present = new Set(models)
+export function collapseModelFamilies(models: readonly unknown[]): ModelFamily[] {
+  // The backend generally returns string model IDs, but some providers have
+  // emitted non-string entries (objects / undefined / numbers) that crash
+  // `.toLowerCase()` / `.replace()` at the call sites. Keep only genuine
+  // strings at this single shared boundary so every consumer
+  // (`model-picker`, `model-visibility-dialog`, `model-menu-panel`, and this
+  // store) is safe.
+  const normalized = models.filter((m): m is string => typeof m === 'string')
+
+  const present = new Set(normalized)
   const families: ModelFamily[] = []
   const consumed = new Set<string>()
 
-  for (const model of models) {
+  for (const model of normalized) {
     if (consumed.has(model)) {
       continue
     }

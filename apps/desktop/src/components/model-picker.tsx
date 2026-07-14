@@ -206,10 +206,13 @@ function ModelResults({
   return (
     <>
       {configured.map(provider => {
-        // Preserve the backend's curated order — filter in place, no re-sort.
-        // Keep only string model IDs – guard against accidental objects
-        const rawModels = (provider.models ?? []).filter(m => matches(provider, m))
-        const models = rawModels.filter((m): m is string => typeof m === "string")
+        // Backend `models` are typed as string[] but some providers have
+        // delivered non-string entries at runtime. Drop non-strings BEFORE
+        // `matches()` (which calls `.toLowerCase()`), otherwise an object
+        // throws there before the type predicate can filter it out.
+        const models = (provider.models ?? [])
+          .filter((m): m is string => typeof m === 'string')
+          .filter(m => matches(provider, m))
 
         if (models.length === 0) {
           return null

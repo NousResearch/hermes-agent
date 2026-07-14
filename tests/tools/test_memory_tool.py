@@ -915,3 +915,13 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+class TestRequiredFields:
+    """Test that MEMORY_SCHEMA correctly declares required fields (issue #64291)."""
+
+    def test_action_is_required_in_schema(self):
+        """action must be in top-level required fields to catch malformed calls early."""
+        required = MEMORY_SCHEMA["parameters"]["required"]
+        assert "target" in required, "target is always required"
+        assert "action" in required, "action must be required to catch missing action at schema validation"

@@ -6080,6 +6080,41 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
                 session["_busy_interrupt_pending"] = False
 
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
+def _rebind_session_transport(
+    session: dict,
+    transport: Any,
+    *,
+    message_id: str | None = None,
+    migrate_dead_queued: bool = False,
+) -> None:
+    """Bind a live client and re-home only queue entries it now owns.
+
+    Callers hold ``history_lock``. An explicit source-ID retry transfers that
+    one queued item to the retrying client. Resume/activate instead migrates
+    dead queue transports only when the session itself was detached, preserving
+    still-live per-item FIFO routing for other clients.
+    """
+    previous_transport = session.get("transport")
+    session["transport"] = transport
+    migrate_dead = migrate_dead_queued and _transport_is_dead(previous_transport)
+
+    queued_items = [session.get("queued_prompt")]
+    pending = session.get("queued_prompts")
+    if isinstance(pending, list):
+        queued_items.extend(pending)
+    for item in queued_items:
+        if not isinstance(item, dict):
+            continue
+        matches_source = (
+            message_id is not None and item.get("message_id") == message_id
+        )
+        if matches_source or (migrate_dead and _transport_is_dead(item.get("transport"))):
+            item["transport"] = transport
+
+    # ``inflight_turn`` has no separate transport slot: rebinding the session
+    # above transfers any matching in-flight turn atomically with its ID check.
+    # Do not manufacture one here; completed-history/DB duplicates also pass
+    # through this helper solely to keep future session events on the live client.
 
 
 def _enqueue_prompt(
@@ -7275,7 +7310,11 @@ def _live_session_payload(
         if cols is not None:
             session["cols"] = cols
         if transport is not None:
-            session["transport"] = transport
+            _rebind_session_transport(
+                session,
+                transport,
+                migrate_dead_queued=True,
+            )
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(
@@ -10149,14 +10188,18 @@ def _(rid, params: dict) -> dict:
     assert session is not None
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    # Bind the request and any matching queued source atomically. A reconnect
+    # retry must not leave its queue entry pinned to the disconnected websocket.
+    t = current_transport()
     while True:
         busy_transport = None
         with session["history_lock"]:
+            if t is not None:
+                _rebind_session_transport(
+                    session,
+                    t,
+                    message_id=explicit_message_id,
+                )
             if explicit_message_id is not None and _has_prompt_message_id(
                 session, explicit_message_id
             ):
@@ -10183,8 +10226,13 @@ def _(rid, params: dict) -> dict:
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
         # queue whose drain already ran.
-
     with session["history_lock"]:
+        if t is not None:
+            _rebind_session_transport(
+                session,
+                t,
+                message_id=explicit_message_id,
+            )
         # A Desktop queue entry keeps the same explicit ID across
         # timeout/resume retries. Acknowledge an already-owned ID instead of
         # interrupting again or enqueuing a duplicate turn. JSON-RPC request

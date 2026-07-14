@@ -131,6 +131,10 @@ OpenAI clients that already populate the standard top-level `user` body field fo
 
 Headers require an authenticated request (i.e. `API_SERVER_KEY` configured and `Authorization: Bearer …` sent); on an unauthenticated local-only server they are silently ignored, matching the posture of `X-Hermes-Session-Key`.
 
+Identity also partitions the `Idempotency-Key` cache: the same key with the same body under two different identities is treated as two distinct requests, so one caller can never read (or evict) another identity's cached response. Identity-less requests keep plain key semantics.
+
+**Scope — stateless endpoints only.** Identity headers apply to `/v1/chat/completions`, `/v1/responses`, and `/v1/runs` — the stateless surface where each request carries its own full context and may legitimately come from a different end-user. The persisted-session routes (`POST /api/sessions/{id}/chat` and `/chat/stream`) are deliberately excluded: a persisted session's identity is fixed when the session is created and addressed via `X-Hermes-Session-Key`, so accepting a different per-request identity mid-session would fragment the session's memory attribution. If you need per-user identity, use the stateless endpoints; if you need a long-lived named session, its identity belongs to the session, not the request.
+
 Example: a chat-bot bridge proxying many users in a group:
 
 ```bash

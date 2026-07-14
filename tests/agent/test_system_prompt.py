@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.prompt_builder import KANBAN_GUIDANCE
 from agent.system_prompt import build_system_prompt_parts
 
 
@@ -99,3 +100,21 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestKanbanGuidance:
+    def test_no_live_edit_preflight_is_injected_for_workers(self):
+        agent = _make_agent(
+            valid_tool_names=["kanban_show"],
+            _kanban_worker_guidance=KANBAN_GUIDANCE,
+        )
+
+        stable = _stable_prompt(agent)
+
+        assert "Classify the target surface before editing outside the workspace" in stable
+        assert "governed hermes-core path" in stable
+        assert "founder-tap-controlled shared control-plane surface" in stable
+        assert "fleet-local restage-only surface" in stable
+        assert "ordinary task-owned surface" in stable
+        assert "restage-only / no-live-edit" in stable
+        assert "`branch_name: null` plus commands run directly against an absolute live path is a stop sign" in stable

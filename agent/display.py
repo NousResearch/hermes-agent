@@ -426,30 +426,27 @@ def _web_tool_label(capability: str) -> str:
     """
     operation = "search" if capability == "search" else "fetch"
     try:
-        from tools.web_tools import (
-            _ensure_web_plugins_loaded,
-            _get_extract_backend,
-            _get_search_backend,
-        )
-        from agent.web_search_registry import (
-            get_active_extract_provider,
-            get_active_search_provider,
-            get_provider,
-        )
+        from tools.web_tools import _ensure_web_plugins_loaded, _get_extract_backend, _get_search_backend
+        from agent.web_search_registry import get_active_extract_provider, get_active_search_provider, get_provider
 
         _ensure_web_plugins_loaded()
         backend = _get_search_backend() if capability == "search" else _get_extract_backend()
         provider = get_provider(backend)
         supports_capability = (
-            provider.supports_search() if capability == "search" and provider else
-            provider.supports_extract() if provider else False
+            provider is not None
+            and (
+                provider.supports_search()
+                if capability == "search"
+                else provider.supports_extract()
+            )
         )
-        if not supports_capability:
+        if provider is None:
             provider = (
                 get_active_search_provider() if capability == "search"
                 else get_active_extract_provider()
             )
-        if provider is not None:
+            supports_capability = provider is not None
+        if supports_capability and provider is not None:
             display_name = provider.display_name.strip()
             if display_name:
                 # Avoid redundant labels from providers such as "Brave Search".

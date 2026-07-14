@@ -395,6 +395,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    reply_in_thread: bool = True
 
 
 @dataclass
@@ -1575,6 +1576,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            reply_in_thread=_to_boolean(
+                extra.get("reply_in_thread", os.getenv("FEISHU_REPLY_IN_THREAD", "true"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1607,6 +1611,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._reply_in_thread = settings.reply_in_thread
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -2051,15 +2056,54 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send audio to Feishu as a file attachment plus optional caption."""
-        return await self._send_uploaded_file_message(
-            chat_id=chat_id,
-            file_path=audio_path,
-            reply_to=reply_to,
-            metadata=metadata,
-            caption=caption,
-            outbound_message_type="audio",
-        )
+        """Send audio to Feishu as a native voice bubble (Opus, 16kHz mono)."""
+        if not os.path.exists(audio_path):
+            return SendResult(success=False, error=f"File not found: {audio_path}")
+
+        converted_path: Optional[str] = None
+        try:
+            # Convert to Opus 16kHz mono for native Feishu voice bubble.
+            # Run off-loop so the blocking ffmpeg call doesn't stall the
+            # adapter event loop for up to 60 seconds.
+            import tempfile
+            import subprocess
+
+            converted_path = os.path.join(
+                tempfile.gettempdir(),
+                f"feishu_voice_{os.path.basename(audio_path)}.opus",
+            )
+            await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg", "-y", "-i", audio_path,
+                    "-acodec", "libopus", "-ar", "16000", "-ac", "1",
+                    "-application", "voip",
+                    converted_path,
+                ],
+                check=True, capture_output=True, timeout=60,
+            )
+
+            result = await self._send_uploaded_file_message(
+                chat_id=chat_id,
+                file_path=converted_path,
+                reply_to=reply_to,
+                metadata=metadata,
+                caption=caption,
+                outbound_message_type="audio",
+            )
+            return result
+        except subprocess.CalledProcessError as e:
+            logger.error("[Feishu] Opus conversion failed for %s: %s", audio_path, e.stderr.decode() if e.stderr else str(e))
+            return SendResult(success=False, error=f"Opus conversion failed: {e}")
+        except Exception as e:
+            logger.error("[Feishu] send_voice failed for %s: %s", audio_path, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+        finally:
+            if converted_path and os.path.exists(converted_path):
+                try:
+                    os.remove(converted_path)
+                except OSError:
+                    pass
 
     async def send_document(
         self,
@@ -3668,7 +3712,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if normalized.startswith("image/"):
             return MessageType.PHOTO
         if normalized.startswith("audio/"):
-            return MessageType.AUDIO
+            return MessageType.VOICE
         if normalized.startswith("video/"):
             return MessageType.VIDEO
         return default
@@ -4406,12 +4450,29 @@ class FeishuAdapter(BasePlatformAdapter):
             file_path=display_name,
             requested_message_type=outbound_message_type,
         )
+        # Extract duration for audio/video files.
+        # Run off-loop so ffprobe doesn't block the adapter event loop.
+        upload_duration: Optional[int] = None
+        try:
+            import subprocess
+            probe = await asyncio.to_thread(
+                subprocess.run,
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0 and probe.stdout.strip():
+                upload_duration = int(float(probe.stdout.strip()) * 1000)  # ms
+        except Exception:
+            pass
+
         try:
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=upload_duration,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
@@ -4437,10 +4498,15 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
+                # Reuse the duration already extracted above (single ffprobe
+                # call) instead of probing a second time for the payload.
+                payload_dict: Dict[str, Any] = {"file_key": file_key}
+                if resolved_message_type == "audio" and upload_duration is not None:
+                    payload_dict["duration"] = upload_duration
                 message_response = await self._feishu_send_with_retry(
                     chat_id=chat_id,
                     msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                    payload=json.dumps(payload_dict, ensure_ascii=False),
                     reply_to=reply_to,
                     metadata=metadata,
                 )
@@ -4461,7 +4527,7 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = self._reply_in_thread and bool((metadata or {}).get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -4831,16 +4897,21 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: Optional[int] = None) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration is not None:
+                builder = builder.duration(duration)
+            return builder.build()
+        body = SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+        if duration is not None:
+            body.duration = duration
+        return body
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:

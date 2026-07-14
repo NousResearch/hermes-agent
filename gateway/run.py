@@ -9499,16 +9499,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not should:
             return False
 
-        # Dedup: agent already called TTS tool
+        # Dedup: agent already called TTS tool in THIS turn only
+        # (scan only messages after the last user message, not full history)
+        last_user_idx = None
+        for i, msg in enumerate(reversed(agent_messages)):
+            if msg.get("role") == "user":
+                last_user_idx = len(agent_messages) - 1 - i
+                break
+
+        turn_messages = agent_messages[last_user_idx:] if last_user_idx is not None else agent_messages
+
         has_agent_tts = any(
             msg.get("role") == "assistant"
             and any(
                 tc.get("function", {}).get("name") == "text_to_speech"
                 for tc in (msg.get("tool_calls") or [])
             )
-            for msg in agent_messages
+            for msg in turn_messages
         )
         if has_agent_tts:
+            logger.debug("Skipping voice reply: agent already called TTS in this turn")
             return False
 
         # Dedup: base adapter auto-TTS already handles voice input

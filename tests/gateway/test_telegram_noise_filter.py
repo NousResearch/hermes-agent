@@ -5,6 +5,7 @@ import pytest
 from gateway.config import Platform
 from gateway.run import (
     _gateway_status_key,
+    _hygiene_compaction_notice,
     _prepare_gateway_status_message,
     _sanitize_gateway_final_response,
 )
@@ -61,6 +62,15 @@ def test_chat_gateways_keep_compaction_lifecycle_status():
 
     assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
     assert _gateway_status_key("lifecycle", message) == "compacting"
+
+
+def test_hygiene_compaction_notice_is_durable_and_actionable():
+    assert _hygiene_compaction_notice(321, 123456) == (
+        "🗜️ Compacting this conversation now (321 messages, ~123,456 tokens "
+        "reached the hygiene threshold). Earlier history is being summarized so I "
+        "can keep going. If you want a clean slate with full context, this is a good "
+        "moment to start a fresh session with /new."
+    )
 
 
 def test_programmatic_surfaces_keep_raw_status():

@@ -756,6 +756,18 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _hygiene_compaction_notice(message_count: int, approximate_tokens: int) -> str:
+    """Return the durable chat notice for session hygiene compaction."""
+    return (
+        f"🗜️ Compacting this conversation now "
+        f"({message_count} messages, ~{approximate_tokens:,} tokens "
+        f"reached the hygiene threshold). Earlier history is "
+        f"being summarized so I can keep going. If you want a "
+        f"clean slate with full context, this is a good moment "
+        f"to start a fresh session with /new."
+    )
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -11431,28 +11443,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
-                    # B1 (durable local patch): notify the user that a heavy,
-                    # pre-agent "session hygiene" compaction is happening NOW.
-                    # The agent's own 🗜️ indicator never fires on this path
-                    # because the throwaway _hyg_agent below is constructed
-                    # WITHOUT a status_callback, so this branch was previously
-                    # SILENT on Telegram/Discord. We send a standalone, persistent
-                    # message directly through the adapter (not the status_callback
-                    # rail) so it (a) survives as a real chat message instead of an
-                    # overwritable status bubble and (b) is independent of the
-                    # _TELEGRAM_NOISY_STATUS_RE filter / un-mute hook.
-                    # Re-applied on boot by the gateway:startup hook
-                    # 'notify-hygiene-compaction' so `hermes update` can't revert it.
+                    # Session hygiene uses a throwaway agent without a status
+                    # callback, so notify the active chat through a durable message.
                     try:
                         _hyg_notify_adapter = self.adapters.get(source.platform)
                         if _hyg_notify_adapter is not None:
-                            _hyg_notice_msg = (
-                                f"🗜️ Compacting this conversation now "
-                                f"({_msg_count} messages, ~{_approx_tokens:,} tokens "
-                                f"reached the hygiene threshold). Earlier history is "
-                                f"being summarized so I can keep going. If you want a "
-                                f"clean slate with full context, this is a good moment "
-                                f"to start a fresh session with /new."
+                            _hyg_notice_msg = _hygiene_compaction_notice(
+                                _msg_count, _approx_tokens
                             )
                             await _hyg_notify_adapter.send(
                                 source.chat_id, _hyg_notice_msg, metadata=_hyg_meta

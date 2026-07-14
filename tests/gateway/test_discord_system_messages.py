@@ -48,7 +48,7 @@ class TestDiscordSystemMessageFilter(unittest.TestCase):
             return False
 
         # System message filter (the fix being tested)
-        if message.type not in (discord.MessageType.default, discord.MessageType.reply):
+        if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
             return False
 
         return True  # message accepted

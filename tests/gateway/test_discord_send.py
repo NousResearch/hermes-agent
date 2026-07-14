@@ -45,6 +45,46 @@ _ensure_discord_mock()
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
+def test_format_message_converts_markdown_table_to_fenced_ascii_table():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    formatted = adapter.format_message(
+        "Here is a table:\n\n"
+        "| Name  | Score | Grade |\n"
+        "|-------|-------|-------|\n"
+        "| Alice | 95    | A     |\n"
+        "| Bob   | 82    | B     |\n\n"
+        "Done."
+    )
+
+    assert "|-------|" not in formatted
+    assert "```\n┌" in formatted
+    assert "│ Alice │ 95    │ A     │" in formatted
+    assert formatted.endswith("Done.")
+
+
+def test_truncate_message_preserves_generated_table_codeblock_boundaries():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    rows = "\n".join(
+        f"| row-{index:03d} | {'값' * 20} | {'x' * 30} |"
+        for index in range(80)
+    )
+    formatted = adapter.format_message(
+        "| Row | Korean | ASCII |\n"
+        "|-----|--------|-------|\n"
+        f"{rows}"
+    )
+
+    assert len(formatted) > adapter.MAX_MESSAGE_LENGTH
+    chunks = adapter.truncate_message(formatted, adapter.MAX_MESSAGE_LENGTH)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
+    assert all(chunk.count("```") % 2 == 0 for chunk in chunks)
+    assert chunks[0].startswith("```\n┌")
+    assert chunks[1].startswith("```\n")
+
+
 @pytest.mark.asyncio
 async def test_send_retries_without_reference_when_reply_target_is_system_message():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))

@@ -10,8 +10,9 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Callable, Dict
 
 from utils import atomic_json_write
 
@@ -278,10 +279,11 @@ def redact_phone(phone: str) -> str:
     return phone[:4] + "****" + phone[-4:]
 
 
-# ─── GFM Markdown Table → Bullet Conversion ─────────────────────────────────
-# Shared by Discord and Telegram adapters.  Discord calls
-# convert_table_to_bullets() directly; Telegram imports the primitives
-# but keeps its own MarkdownV2-aware renderer.
+# ─── GFM Markdown Table Conversion ───────────────────────────────────────────
+# Shared by Discord and Telegram adapters.  Neither platform renders GFM pipe
+# tables natively.  Telegram calls convert_table_to_bullets(); Discord calls
+# convert_table_to_codeblock(), because Discord renders fenced code blocks in
+# a monospace font where a box-drawing table stays aligned.
 
 
 # Matches a GFM table delimiter row: optional outer pipes, cells of dashes
@@ -357,10 +359,72 @@ def _render_table_block(table_block: list[str]) -> str:
     return "\n\n".join(rendered_groups)
 
 
-def convert_table_to_bullets(text: str) -> str:
-    """Rewrite GFM pipe tables into bold-heading + bullet groups.
+def _display_width(text: str) -> int:
+    """Return monospace display width, treating CJK full/wide chars as width 2."""
+    width = 0
+    for ch in text:
+        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return width
 
-    Tables inside fenced code blocks are left alone.
+
+def _pad_display_width(text: str, target_width: int) -> str:
+    """Pad *text* with spaces up to *target_width* display columns."""
+    padding = target_width - _display_width(text)
+    return text + (" " * padding if padding > 0 else "")
+
+
+def _render_table_codeblock(table_block: list[str]) -> str:
+    """Render a detected GFM table as a fenced box-drawing table."""
+    if len(table_block) < 2:
+        return "\n".join(table_block)
+
+    headers = split_markdown_table_row(table_block[0])
+    if len(headers) < 2:
+        return "\n".join(table_block)
+
+    num_cols = len(headers)
+    rows: list[list[str]] = []
+    for row_line in table_block[2:]:
+        row = split_markdown_table_row(row_line)
+        if len(row) < num_cols:
+            row.extend([""] * (num_cols - len(row)))
+        elif len(row) > num_cols:
+            row = row[:num_cols]
+        rows.append(row)
+
+    col_widths = [max(3, _display_width(header)) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            col_widths[index] = max(col_widths[index], _display_width(cell))
+
+    def border(left: str, middle: str, right: str) -> str:
+        return left + middle.join("─" * (width + 2) for width in col_widths) + right
+
+    def data_row(cells: list[str]) -> str:
+        padded = [
+            " " + _pad_display_width(cell, col_widths[index]) + " "
+            for index, cell in enumerate(cells)
+        ]
+        return "│" + "│".join(padded) + "│"
+
+    rendered = [
+        border("┌", "┬", "┐"),
+        data_row(headers),
+        border("├", "┼", "┤"),
+    ]
+    rendered.extend(data_row(row) for row in rows)
+    rendered.append(border("└", "┴", "┘"))
+
+    return "```\n" + "\n".join(rendered) + "\n```"
+
+
+def _convert_tables(text: str, render_block: Callable[[list[str]], str]) -> str:
+    """Rewrite each GFM pipe table in *text* with *render_block*.
+
+    A table is a header row containing '|' immediately followed by a
+    delimiter row matching :data:`TABLE_SEPARATOR_RE`, plus any contiguous
+    data rows.  Tables inside fenced code blocks are left alone so
+    preformatted examples stay stable.
     """
     if '|' not in text or '-' not in text:
         return text
@@ -393,7 +457,7 @@ def convert_table_to_bullets(text: str) -> str:
             while j < len(lines) and is_table_row(lines[j]):
                 table_block.append(lines[j])
                 j += 1
-            out.append(_render_table_block(table_block))
+            out.append(render_block(table_block))
             i = j
             continue
 
@@ -401,3 +465,19 @@ def convert_table_to_bullets(text: str) -> str:
         i += 1
 
     return '\n'.join(out)
+
+
+def convert_table_to_bullets(text: str) -> str:
+    """Rewrite GFM pipe tables into bold-heading + bullet groups.
+
+    Tables inside fenced code blocks are left alone.
+    """
+    return _convert_tables(text, _render_table_block)
+
+
+def convert_table_to_codeblock(text: str) -> str:
+    """Rewrite GFM pipe tables into fenced box-drawing tables.
+
+    Tables inside fenced code blocks are left alone.
+    """
+    return _convert_tables(text, _render_table_codeblock)

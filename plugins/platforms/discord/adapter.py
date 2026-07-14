@@ -106,7 +106,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_codeblock
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -3997,12 +3997,14 @@ class DiscordAdapter(BasePlatformAdapter):
     def format_message(self, content: str) -> str:
         """Format message for Discord.
 
-        Converts GFM markdown tables to bullet-list groups since Discord
-        does not render pipe tables natively.
+        Discord does not render GFM pipe tables, so convert them to fenced
+        box-drawing tables, which stay aligned in Discord's monospace code
+        blocks. truncate_message() preserves code-block boundaries when a
+        converted table exceeds MAX_MESSAGE_LENGTH.
         """
         if not content:
             return content
-        return convert_table_to_bullets(content)
+        return convert_table_to_codeblock(content)
 
     async def _run_simple_slash(
         self,

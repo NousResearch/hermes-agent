@@ -20,6 +20,7 @@ import {
   nativeTheme,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -65,7 +66,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -96,6 +96,11 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import {
+  createPowerLifecycleGuard,
+  registerPowerLifecycleListeners,
+  stopPowerLifecycleGuardSafely
+} from './power-lifecycle'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
   buildSessionWindowUrl,
@@ -131,6 +136,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, 
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -1007,6 +1013,8 @@ function rememberLog(chunk) {
 
   scheduleDesktopLogFlush()
 }
+
+const appSuspensionGuard = createPowerLifecycleGuard(powerSaveBlocker, rememberLog)
 
 function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
@@ -4491,10 +4499,10 @@ function registerPowerResumeListeners() {
   powerResumeRegistered = true
 
   try {
-    // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
-    // full suspend. Either can drop an idle socket.
-    powerMonitor.on('resume', sendPowerResume)
-    powerMonitor.on('unlock-screen', sendPowerResume)
+    // Keep in-flight work alive while the operating system's login screen is
+    // showing, then release the assertion as soon as the user returns. Resume
+    // and unlock also tell the renderer to reconnect any socket the OS dropped.
+    registerPowerLifecycleListeners(powerMonitor, appSuspensionGuard, sendPowerResume, rememberLog)
   } catch {
     // powerMonitor is unavailable before app 'ready' on some platforms; the
     // caller registers after 'ready', so this should not normally throw.
@@ -9071,6 +9079,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  stopPowerLifecycleGuardSafely(appSuspensionGuard, rememberLog)
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

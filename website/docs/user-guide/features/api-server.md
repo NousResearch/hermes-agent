@@ -389,6 +389,29 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
+## Per-user memory scoping (`X-Hermes-User-Id`)
+
+When a single Hermes API instance serves multiple end-users (for example multi-tenant Web UIs), pass an **opt-in** `X-Hermes-User-Id` so long-term memory providers (Honcho peers, etc.) can scope state **per person**, independent of the channel key and the rotating transcript id:
+
+```http
+POST /v1/chat/completions HTTP/1.1
+Authorization: Bearer ***
+X-Hermes-User-Id: person-42
+X-Hermes-Session-Key: agent:main:webui:dm:person-42
+X-Hermes-Session-Id: transcript-alpha
+```
+
+Rules (mirrors `X-Hermes-Session-Key`):
+
+- Max 256 characters; control characters (`\r`, `\n`, `\x00`) are rejected (`400`).
+- Only honored when API key auth is configured — accepting a caller-supplied memory scope without auth is a `403`.
+- Echoed on success for chat/completions, responses, runs (202), and session-chat endpoints (including SSE writers).
+- Advertised on `/v1/capabilities` as `"user_id_header": "X-Hermes-User-Id"` / `features.user_id_header`.
+- Browser CORS preflight allows the header when `API_SERVER_CORS_ORIGINS` permits the origin.
+- `Idempotency-Key` fingerprints include the validated `user_id` (plus session key/id) so identical body payloads from different users never share a cached completion.
+
+When the header is absent, `user_id` stays `None` and behavior matches the historical default peer.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

@@ -1275,8 +1275,15 @@ async def test_send_without_thread_id_unaffected():
 
 
 @pytest.mark.asyncio
-async def test_send_retries_network_errors_normally():
-    """Real transient network errors (not BadRequest) should still be retried."""
+async def test_send_retries_connect_phase_network_errors():
+    """Connect-phase network errors (connection refused / DNS / ConnectError)
+    happen before the request body is written, so the request never reached
+    Telegram and re-sending is safe — these are still retried.
+
+    A *post-write* NetworkError (bare connection reset / RemoteProtocolError)
+    is ambiguous and is NOT retried; see
+    ``test_telegram_send_network_idempotence.py`` (#64238).
+    """
     adapter = _make_adapter()
 
     attempt = [0]
@@ -1284,7 +1291,7 @@ async def test_send_retries_network_errors_normally():
     async def mock_send_message(**kwargs):
         attempt[0] += 1
         if attempt[0] < 3:
-            raise FakeNetworkError("Connection reset")
+            raise FakeNetworkError("Connect error: [Errno 111] Connection refused")
         return SimpleNamespace(message_id=200)
 
     adapter._bot = SimpleNamespace(send_message=mock_send_message)

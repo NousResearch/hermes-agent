@@ -5536,6 +5536,7 @@ def get_model_options(
                 refresh=bool(refresh),
                 probe_custom_providers=bool(refresh),
                 probe_current_custom_provider=not bool(refresh),
+                apply_picker_prefs=True,
             )
     except HTTPException:
         raise

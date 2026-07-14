@@ -121,6 +121,7 @@ def build_models_payload(
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
+    apply_picker_prefs: bool = False,
     max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -165,6 +166,15 @@ def build_models_payload(
       false, still live-probe the current custom endpoint. This keeps normal
       GUI/TUI picker opens fast while making the active custom provider's model
       list match the classic CLI picker.
+    - ``apply_picker_prefs``: apply the user's ``model.picker`` config
+      (``hide`` + ``order``) AND auto-hide the internal Claude failover lanes
+      (``claude-{apx,bpx}-N``), exactly as the interactive CLI/Discord picker
+      (:func:`list_picker_providers`) already does. Off by default so
+      non-picker consumers (recommended-default, MoA sub-picker) see the full
+      set; desktop/TUI picker opens set it True so every surface shows the
+      SAME curated dropdown. Purely cosmetic — typed ``/model <slug>/...`` and
+      every provider stay reachable regardless; the currently-active provider
+      is never hidden.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -239,6 +249,8 @@ def build_models_payload(
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
+    if apply_picker_prefs:
+        rows = _apply_desktop_picker_prefs(rows, current_provider=ctx.current_provider)
     if pricing:
         _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
     if capabilities:
@@ -249,6 +261,47 @@ def build_models_payload(
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def _apply_desktop_picker_prefs(
+    rows: list[dict], *, current_provider: str = ""
+) -> list[dict]:
+    """Apply the interactive-picker preferences to a payload's provider rows.
+
+    Brings the desktop/TUI ``build_models_payload`` picker in line with the
+    CLI/Discord ``list_picker_providers`` picker, which already:
+
+    1. Hides the internal Claude failover lanes (``claude-{apx,bpx}-N``) —
+       auto-failover targets, not hand-selectable providers, and 20+ of them
+       crowd the dropdown.
+    2. Applies the user's ``model.picker`` ``hide`` + ``order`` config.
+
+    Both are cosmetic: the currently-active provider is never hidden, and
+    typed ``/model <slug>/...`` reaches every provider regardless. Delegates
+    to the same helpers ``list_picker_providers`` uses so the two surfaces
+    can never drift. Best-effort: any failure returns ``rows`` unchanged.
+    """
+    try:
+        from hermes_cli.model_switch import (
+            _PICKER_HIDDEN_FAILOVER_LANE_RE,
+            _apply_picker_preferences,
+        )
+    except Exception:
+        return rows
+
+    _cur = str(current_provider or "").strip().lower()
+    kept = [
+        r
+        for r in rows
+        if not _PICKER_HIDDEN_FAILOVER_LANE_RE.match(
+            str(r.get("slug", "")).strip().lower()
+        )
+        or str(r.get("slug", "")).strip().lower() == _cur
+    ]
+    try:
+        return _apply_picker_preferences(kept, current_provider=_cur)
+    except Exception:
+        return kept
 
 
 def _apply_capabilities(rows: list[dict]) -> None:

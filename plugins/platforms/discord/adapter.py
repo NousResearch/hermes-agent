@@ -6804,7 +6804,7 @@ def _define_discord_view_classes() -> None:
                 home = get_hermes_home()
                 response_path = home / ".update_response"
                 tmp = response_path.with_suffix(".tmp")
-                tmp.write_text(answer)
+                tmp.write_text(answer, encoding="utf-8")
                 tmp.replace(response_path)
                 logger.info(
                     "Discord update prompt answered '%s' by %s",

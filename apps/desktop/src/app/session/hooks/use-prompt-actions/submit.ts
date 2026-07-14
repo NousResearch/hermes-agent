@@ -13,7 +13,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $localDeviceName, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -28,6 +28,12 @@ import {
   type SubmitTextOptions,
   withSessionBusyRetry
 } from './utils'
+
+function localSenderDevice(): string | undefined {
+  const deviceName = $localDeviceName.get().trim()
+
+  return deviceName || undefined
+}
 
 interface SubmitPromptDeps {
   activeSessionId: string | null
@@ -147,12 +153,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const optimisticSenderDevice = localSenderDevice()
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
+        attachmentRefs,
+        ...(optimisticSenderDevice ? { senderDevice: optimisticSenderDevice } : {})
       })
 
       const releaseBusy = () => {

@@ -934,24 +934,26 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         }
 
     # ── pre_skill_create hook (allow plugin redirect / block / handle) ──
-    from hermes_cli.plugins import invoke_hook as _invoke_skill_hook
+    from hermes_cli.plugins import has_hook, invoke_hook as _invoke_skill_hook
 
     _skill_dir_override: Optional[Path] = None
-    for _hr in _invoke_skill_hook("pre_skill_create", name=name, content=content, category=category):
-        if not isinstance(_hr, dict):
-            continue
-        _act = _hr.get("action")
-        if _act == "block":
-            return {"success": False, "error": _hr.get("reason", "Skill creation blocked by plugin")}
-        if _act == "redirect":
-            _skill_dir_override = Path(os.path.expandvars(os.path.expanduser(str(_hr["path"]))))
-            break
-        if _act == "handled":
-            result = {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
-            # Fire post hook too so observers see the event
-            _invoke_skill_hook("post_skill_create", name=name, category=category or "",
-                               path="", success=True)
-            return result
+    if has_hook("pre_skill_create"):
+        for _hr in _invoke_skill_hook("pre_skill_create", name=name, content=content, category=category):
+            if not isinstance(_hr, dict):
+                continue
+            _act = _hr.get("action")
+            if _act == "block":
+                return {"success": False, "error": _hr.get("reason", "Skill creation blocked by plugin")}
+            if _act == "redirect":
+                _skill_dir_override = Path(os.path.expandvars(os.path.expanduser(str(_hr["path"]))))
+                break
+            if _act == "handled":
+                result = {"success": True, "message": f"Skill '{name}' created by plugin.", "hook_handled": True}
+                # Fire post hook too so observers see the event
+                if has_hook("post_skill_create"):
+                    _invoke_skill_hook("post_skill_create", name=name, category=category or "",
+                                       path="", success=True)
+                return result
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category) if _skill_dir_override is None else _skill_dir_override
@@ -995,8 +997,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
     # ── post_skill_create hook (observer only) ──
     try:
-        _invoke_skill_hook("post_skill_create", name=name, category=category or "",
-                           path=str(skill_dir), success=True)
+        if has_hook("post_skill_create"):
+            _invoke_skill_hook("post_skill_create", name=name, category=category or "",
+                               path=str(skill_dir), success=True)
     except Exception:
         pass
 
@@ -1042,16 +1045,17 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return {"success": False, "error": err}
 
     # ── pre_skill_edit hook (allow plugin handle / block) ──
-    from hermes_cli.plugins import invoke_hook as _invoke_skill_hook
+    from hermes_cli.plugins import has_hook as _has_hook, invoke_hook as _invoke_skill_hook
 
-    for _hr in _invoke_skill_hook("pre_skill_edit", name=name, content=content):
-        if not isinstance(_hr, dict):
-            continue
-        _act = _hr.get("action")
-        if _act == "block":
-            return {"success": False, "error": _hr.get("reason", "Skill edit blocked by plugin")}
-        if _act == "handled":
-            return {"success": True, "message": f"Skill '{name}' edited by plugin.", "hook_handled": True}
+    if _has_hook("pre_skill_edit"):
+        for _hr in _invoke_skill_hook("pre_skill_edit", name=name, content=content):
+            if not isinstance(_hr, dict):
+                continue
+            _act = _hr.get("action")
+            if _act == "block":
+                return {"success": False, "error": _hr.get("reason", "Skill edit blocked by plugin")}
+            if _act == "handled":
+                return {"success": True, "message": f"Skill '{name}' edited by plugin.", "hook_handled": True}
 
     existing = _find_skill(name)
     if not existing:
@@ -1106,8 +1110,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
 
     # ── post_skill_edit hook (observer only) ──
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_post_hook
-        _invoke_post_hook("post_skill_edit", name=name, path=str(existing["path"]), success=True)
+        from hermes_cli.plugins import has_hook, invoke_hook as _invoke_post_hook
+        if has_hook("post_skill_edit"):
+            _invoke_post_hook("post_skill_edit", name=name, path=str(existing["path"]), success=True)
     except Exception:
         pass
 

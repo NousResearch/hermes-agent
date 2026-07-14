@@ -142,7 +142,7 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_order: Deque[tuple[float, str]] = deque()
 
         # Reference to gateway runner for cross-platform delivery (set externally)
-        self.gateway_runner = None
+        self.gateway_runner: Optional[Any] = None
 
         # Idempotency: TTL cache of recently processed delivery IDs.
         # Prevents duplicate agent runs when webhook providers retry.
@@ -301,6 +301,51 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.warning("[webhook] Unknown deliver type: %s", deliver_type)
         return SendResult(
             success=False, error=f"Unknown deliver type: {deliver_type}"
+        )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
+    ) -> SendResult:
+        """Forward an approval prompt to the webhook route's delivery adapter.
+
+        Webhook-triggered agents keep a webhook session key even when their
+        responses are delivered to Discord, Telegram, or another interactive
+        platform. Forwarding that key lets destination buttons resolve the
+        command that is actually blocked. A failed result preserves the
+        gateway's plain-text fallback for non-interactive destinations.
+        """
+        delivery = self._delivery_info.get(chat_id, {})
+        deliver_type = delivery.get("deliver", "log")
+        target, target_chat_id, target_metadata, error = self._resolve_cross_platform_target(
+            deliver_type, delivery
+        )
+        if error or target is None:
+            return SendResult(
+                success=False,
+                error=error or f"Platform {deliver_type} not connected",
+            )
+
+        if getattr(type(target), "send_exec_approval", None) is None:
+            return SendResult(
+                success=False,
+                error=f"Platform {deliver_type} does not support approval buttons",
+            )
+
+        return await target.send_exec_approval(
+            chat_id=target_chat_id,
+            command=command,
+            session_key=session_key,
+            description=description,
+            metadata=target_metadata,
+            allow_permanent=allow_permanent,
+            smart_denied=smart_denied,
         )
 
     def _prune_delivery_info(self, now: float) -> None:
@@ -1224,25 +1269,32 @@ class WebhookAdapter(BasePlatformAdapter):
         self, platform_name: str, content: str, delivery: dict
     ) -> SendResult:
         """Route response to another platform (telegram, discord, etc.)."""
-        if not self.gateway_runner:
+        adapter, chat_id, metadata, error = self._resolve_cross_platform_target(
+            platform_name, delivery
+        )
+        if error or adapter is None:
             return SendResult(
                 success=False,
-                error="No gateway runner for cross-platform delivery",
+                error=error or f"Platform {platform_name} not connected",
             )
+
+        return await adapter.send(chat_id, content, metadata=metadata)
+
+    def _resolve_cross_platform_target(
+        self, platform_name: str, delivery: dict
+    ) -> tuple[Optional[Any], str, Optional[Dict[str, Any]], Optional[str]]:
+        """Resolve a delivery platform into its adapter, chat, and thread."""
+        if not self.gateway_runner:
+            return None, "", None, "No gateway runner for cross-platform delivery"
 
         try:
             target_platform = Platform(platform_name)
         except ValueError:
-            return SendResult(
-                success=False, error=f"Unknown platform: {platform_name}"
-            )
+            return None, "", None, f"Unknown platform: {platform_name}"
 
         adapter = self.gateway_runner.adapters.get(target_platform)
         if not adapter:
-            return SendResult(
-                success=False,
-                error=f"Platform {platform_name} not connected",
-            )
+            return None, "", None, f"Platform {platform_name} not connected"
 
         # Use home channel if no specific chat_id in deliver_extra
         extra = delivery.get("deliver_extra", {})
@@ -1252,15 +1304,13 @@ class WebhookAdapter(BasePlatformAdapter):
             if home:
                 chat_id = home.chat_id
             else:
-                return SendResult(
-                    success=False,
-                    error=f"No chat_id or home channel for {platform_name}",
-                )
+                return None, "", None, f"No chat_id or home channel for {platform_name}"
 
-        # Pass thread_id from deliver_extra so Telegram forum topics work
+        # Pass thread_id from deliver_extra so interactive prompts and regular
+        # messages land in the same Discord/Telegram thread.
         metadata = None
         thread_id = extra.get("message_thread_id") or extra.get("thread_id")
         if thread_id:
             metadata = {"thread_id": thread_id}
 
-        return await adapter.send(chat_id, content, metadata=metadata)
+        return adapter, chat_id, metadata, None

@@ -216,7 +216,17 @@ def approval_callback(cli, command: str, description: str) -> str:
         }
         cli._approval_deadline = _time.monotonic() + timeout
 
-        if hasattr(cli, "_app") and cli._app:
+        pending_command = " ".join(command.split())
+        if len(pending_command) > 160:
+            pending_command = pending_command[:157] + "..."
+        cprint(
+            f"\nPENDING APPROVAL: {pending_command}\n"
+            "  Select once/session/always/deny with arrow/number keys and Enter."
+        )
+
+        if hasattr(cli, "_paint_now"):
+            cli._paint_now()
+        elif hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
 
         while True:

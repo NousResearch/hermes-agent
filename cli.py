@@ -11765,6 +11765,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             }
             self._approval_deadline = _time.monotonic() + timeout
 
+            # Keep a durable notice in normal terminal scrollback. The modal
+            # remains the interactive control, but prompt_toolkit repaints can
+            # be lost when output and a background-thread approval race.
+            _pending_command = " ".join(command.split())
+            if len(_pending_command) > 160:
+                _pending_command = _pending_command[:157] + "..."
+            _cprint(
+                f"\n{_ACCENT}PENDING APPROVAL:{_RST} {_pending_command}\n"
+                "  Select once/session/always/deny with arrow/number keys and Enter."
+            )
+
             # Modal prompt — paint immediately, bypassing the throttle/resize
             # guard. A throttled paint here can be silently dropped (250ms
             # window collision or in-flight resize), leaving the panel unseen so

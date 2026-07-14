@@ -108,6 +108,23 @@ class TestCommandScopeGate:
         with pytest.raises(PermissionError):
             auth_contexts.assert_command_allowed("gmail-readonly", "gmail", "send")
 
+    def test_gmail_reply_requires_send_and_read_scopes(self, auth_contexts):
+        auth_contexts.set_token_payload(
+            "send-only",
+            {"token": "tok", "scopes": [auth_contexts.GMAIL_SEND]},
+        )
+        with pytest.raises(PermissionError):
+            auth_contexts.assert_command_allowed("send-only", "gmail", "reply")
+
+        auth_contexts.set_token_payload(
+            "send-and-read",
+            {
+                "token": "tok",
+                "scopes": [auth_contexts.GMAIL_SEND, auth_contexts.GMAIL_READONLY],
+            },
+        )
+        auth_contexts.assert_command_allowed("send-and-read", "gmail", "reply")
+
     def test_blocks_named_context_when_scope_metadata_missing(self, auth_contexts):
         auth_contexts.set_token_payload("unknown", {"token": "tok"})
         with pytest.raises(PermissionError):

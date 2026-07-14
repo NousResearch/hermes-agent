@@ -69,12 +69,13 @@ SCOPE_IMPLICATIONS: dict[str, set[str]] = {
     DOCS: {DOCS_READONLY},
 }
 
+# Each set is an OR group; multiple groups for one command are conjunctive.
 COMMAND_SCOPE_REQUIREMENTS: dict[tuple[str, str], list[set[str]]] = {
     ("gmail", "search"): [{GMAIL_READONLY, GMAIL_MODIFY}],
     ("gmail", "get"): [{GMAIL_READONLY, GMAIL_MODIFY}],
     ("gmail", "labels"): [{GMAIL_READONLY, GMAIL_MODIFY}],
     ("gmail", "send"): [{GMAIL_SEND}],
-    ("gmail", "reply"): [{GMAIL_SEND}],
+    ("gmail", "reply"): [{GMAIL_SEND}, {GMAIL_READONLY, GMAIL_MODIFY}],
     ("gmail", "modify"): [{GMAIL_MODIFY}],
     ("calendar", "list"): [{CALENDAR_READONLY, CALENDAR}],
     ("calendar", "create"): [{CALENDAR}],
@@ -406,14 +407,17 @@ def missing_scopes(payload: dict[str, Any], required_scopes: list[str] | None = 
 
 
 def assert_command_allowed(context: str, service: str, action: str) -> None:
-    alternatives = COMMAND_SCOPE_REQUIREMENTS.get((service, action))
-    if not alternatives:
+    required_groups = COMMAND_SCOPE_REQUIREMENTS.get((service, action))
+    if not required_groups:
         return
     granted = expand_scopes(granted_scopes_for_context(context))
-    if any(granted.intersection(allowed) for allowed in alternatives):
+    if all(granted.intersection(group) for group in required_groups):
         return
-    needed = " OR ".join("/".join(sorted(allowed)) for allowed in alternatives)
+    needed = " AND ".join(
+        next(iter(group)) if len(group) == 1 else f"({' OR '.join(sorted(group))})"
+        for group in required_groups
+    )
     raise PermissionError(
         f"Auth context '{context}' lacks OAuth scope for {service} {action}. "
-        f"Need one of: {needed}. Granted: {', '.join(sorted(granted)) or '(none)'}"
+        f"Need: {needed}. Granted: {', '.join(sorted(granted)) or '(none)'}"
     )

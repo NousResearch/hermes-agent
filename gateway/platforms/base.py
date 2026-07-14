@@ -1175,6 +1175,7 @@ def _media_delivery_denied_paths() -> List[Path]:
         # every turn, which defeated the strict-mode recency window) plus the
         # pending-exchange session/verifier file.
         "google_token.json",
+        "google_workspace_auth_contexts.json",
         "google_oauth_pending.json",
         os.path.join("auth", "google_oauth.json"),
         # Webhook subscription HMAC secrets.

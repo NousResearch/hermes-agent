@@ -1104,6 +1104,23 @@ class TestMediaDeliveryDefaultMode:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
 
+    def test_denylist_blocks_google_auth_context_store_default_mode(self, tmp_path, monkeypatch):
+        """The named-context vault contains OAuth tokens and client secrets,
+        so it must never be deliverable as a native attachment.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        hermes_dir.mkdir(parents=True)
+        store = hermes_dir / "google_workspace_auth_contexts.json"
+        store.write_text('{"contexts": {"work": {"token": "***"}}}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(store)) is None
+
     def test_denylist_blocks_google_token_even_when_freshly_refreshed(self, tmp_path, monkeypatch):
         """The exploit was that the Google integration rewrites
         google_token.json every turn, bumping its mtime to ~now, so the

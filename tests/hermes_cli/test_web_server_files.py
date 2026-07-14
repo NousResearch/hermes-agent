@@ -593,6 +593,7 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "config.yaml",
         ".anthropic_oauth.json",
         "google_token.json",
+        "google_workspace_auth_contexts.json",
         "google_oauth_pending.json",
         "google_oauth.json",
         "webhook_subscriptions.json",

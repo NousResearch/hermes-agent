@@ -131,7 +131,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
 
   // Overlay pickers
-  { name: '/model', description: 'Switch the model for this session', surface: picker('model'), hidden: true },
+  { name: '/model', description: 'Switch the model for this session', surface: picker('model') },
   {
     name: '/resume',
     description: 'Resume a saved session',

@@ -8,6 +8,7 @@ formatting, capacity rejection, and crash handling.
 import json
 import os
 import queue
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -304,6 +305,66 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
     assert result["status"] == "rejected"
     with ad._DB_LOCK, ad._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
+
+
+def test_connect_routes_through_shared_wal_fallback_helper(tmp_path, monkeypatch):
+    """_connect() must delegate to hermes_state.apply_wal_with_fallback(), not a
+    bare PRAGMA — this module opens its own connections to the SAME state.db
+    that SessionDB owns, so a bare PRAGMA would skip the macOS
+    synchronous=FULL hardening (btreeInitPage corruption on a WAL
+    checkpoint/termination race) and the NFS/SMB WAL-fallback safety net that
+    every other consumer of state.db already gets.
+    """
+    import hermes_state
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = []
+    real_apply = hermes_state.apply_wal_with_fallback
+
+    def _spy(conn, *, db_label="state.db"):
+        calls.append((conn, db_label))
+        return real_apply(conn, db_label=db_label)
+
+    monkeypatch.setattr(hermes_state, "apply_wal_with_fallback", _spy)
+
+    with ad._DB_LOCK, ad._connect() as conn:
+        pass
+
+    assert len(calls) == 1, "_connect() must call apply_wal_with_fallback exactly once"
+    # Same db_label SessionDB itself uses for state.db, so the shared
+    # once-per-process fallback-warning dedup treats both consumers of the
+    # same physical file as one database, not two.
+    assert calls[0][1] == "state.db"
+
+
+def test_connect_falls_back_gracefully_on_wal_incompatible_filesystem(tmp_path, monkeypatch):
+    """On NFS/SMB (or any filesystem SQLite rejects WAL locking on), _connect()
+    must fall back to journal_mode=DELETE instead of raising — a bare
+    ``PRAGMA journal_mode=WAL`` propagates OperationalError uncaught, which
+    would crash every dispatch/persist call in this module on such a mount.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _WalIncompatibleConn(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if isinstance(sql, str) and sql.strip().upper() == "PRAGMA JOURNAL_MODE=WAL":
+                raise sqlite3.OperationalError("database is locked (locking protocol)")
+            return super().execute(sql, *args, **kwargs)
+
+    real_connect = ad.sqlite3.connect
+    monkeypatch.setattr(
+        ad.sqlite3,
+        "connect",
+        lambda path, timeout=10: real_connect(path, timeout=timeout, factory=_WalIncompatibleConn),
+    )
+
+    with ad._DB_LOCK, ad._connect() as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        # Proves the connection is still fully usable post-fallback.
+        row_count = conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0]
+
+    assert journal_mode == "delete"
+    assert row_count == 0
 
 
 def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):

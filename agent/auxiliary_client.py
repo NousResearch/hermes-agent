@@ -3287,6 +3287,16 @@ def _evict_cached_client_instance(target: Any) -> bool:
                 continue
             real = getattr(cached, "_real_client", None)
             if cached is target or real is target:
+                # Close the evicted client's transport to release sockets/fds.
+                # _evict_cached_clients() (by-provider) already does this;
+                # the instance variant must match.  See #10200.
+                _force_close_async_httpx(cached)
+                try:
+                    close_fn = getattr(cached, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
                 del _client_cache[key]
                 evicted = True
     return evicted
@@ -5902,9 +5912,24 @@ def _get_cached_client(
                 while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
                     evict_key, evict_entry = next(iter(_client_cache.items()))
                     _force_close_async_httpx(evict_entry[0])
+                    try:
+                        close_fn = getattr(evict_entry[0], "close", None)
+                        if callable(close_fn):
+                            close_fn()
+                    except Exception:
+                        pass
                     del _client_cache[evict_key]
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:
+                # Another thread won the race — close the redundant client
+                # to avoid leaking its httpx transport (sockets/fds).
+                _force_close_async_httpx(client)
+                try:
+                    close_fn = getattr(client, "close", None)
+                    if callable(close_fn):
+                        close_fn()
+                except Exception:
+                    pass
                 client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model
 

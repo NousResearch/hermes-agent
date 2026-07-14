@@ -24,6 +24,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from gateway.api_operator_auth import OperatorCredentialStore
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
@@ -887,8 +888,18 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
-            assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
-            assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert data["endpoints"]["skills"] == {
+                "method": "GET",
+                "path": "/v1/skills",
+                "required_scopes": ["skills:read"],
+                "profile_scoped": False,
+            }
+            assert data["endpoints"]["toolsets"] == {
+                "method": "GET",
+                "path": "/v1/toolsets",
+                "required_scopes": ["tools:read"],
+                "profile_scoped": False,
+            }
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -904,6 +915,137 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# Scoped operator-token authorization (_authorize) and caller-specific
+# capability serialization.
+# ---------------------------------------------------------------------------
+
+
+async def _auth_test_client(adapter):
+    async def protected_write(request):
+        _principal, error = adapter._authorize(request, "profiles:write")
+        return error or web.json_response({"ok": True})
+
+    app = web.Application()
+    app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/test/profiles-write", protected_write)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    return client
+
+
+class TestScopedAuthorization:
+    @pytest.mark.asyncio
+    async def test_scoped_token_cannot_use_ungranted_write_scope(self, tmp_path):
+        store = OperatorCredentialStore(tmp_path / "credentials.json")
+        token = store.issue("phone", ["profiles:read"]).token
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+        adapter._operator_credentials = store
+        client = await _auth_test_client(adapter)
+        try:
+            response = await client.post(
+                "/test/profiles-write",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status == 403
+            assert (await response.json())["error"]["code"] == "insufficient_scope"
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_legacy_api_key_remains_superuser(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+        client = await _auth_test_client(adapter)
+        try:
+            response = await client.get(
+                "/v1/capabilities",
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert response.status == 200
+            assert (await response.json())["auth"]["granted_scopes"] == ["*"]
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_insufficient_scope_error_never_echoes_granted_scopes(self, tmp_path):
+        store = OperatorCredentialStore(tmp_path / "credentials.json")
+        token = store.issue("phone", ["profiles:read", "chat:write"]).token
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+        adapter._operator_credentials = store
+        client = await _auth_test_client(adapter)
+        try:
+            response = await client.post(
+                "/test/profiles-write",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status == 403
+            body = await response.json()
+            assert body["error"]["required_scope"] == "profiles:write"
+            # The granted scopes must not leak back to an under-scoped caller.
+            serialized = json.dumps(body)
+            assert "profiles:read" not in serialized
+            assert "chat:write" not in serialized
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_scoped_token_capabilities_report_only_granted_scopes(self, tmp_path):
+        store = OperatorCredentialStore(tmp_path / "credentials.json")
+        token = store.issue("phone", ["profiles:read"]).token
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+        adapter._operator_credentials = store
+        client = await _auth_test_client(adapter)
+        try:
+            response = await client.get(
+                "/v1/capabilities",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status == 200
+            data = await response.json()
+            assert data["auth"]["granted_scopes"] == ["profiles:read"]
+            assert data["auth"]["credential_kind"] == "operator_token"
+            # Raw tokens and credential ids never appear in the capability doc.
+            serialized = json.dumps(data)
+            assert token not in serialized
+            assert "credential_id" not in serialized
+
+            # An unauthenticated caller is rejected when a key is configured.
+            rejected = await client.get("/v1/capabilities")
+            assert rejected.status == 401
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_capabilities_declare_schema_profile_context_and_scopes(self):
+        adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+        client = await _auth_test_client(adapter)
+        try:
+            response = await client.get(
+                "/v1/capabilities",
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert response.status == 200
+            data = await response.json()
+
+            assert data["schema_version"] == 1
+            assert data["profile_context"] == {
+                "type": "query",
+                "name": "profile",
+                "required": True,
+                "default_profile_id": "default",
+            }
+            assert data["auth"]["credential_kind"] == "legacy_api_key"
+
+            endpoints = data["endpoints"]
+            assert endpoints["sessions"]["required_scopes"] == ["sessions:read"]
+            assert endpoints["sessions"]["profile_scoped"] is False
+            assert endpoints["session_create"]["required_scopes"] == ["sessions:write"]
+            assert endpoints["chat_completions"]["required_scopes"] == ["chat:write"]
+            assert endpoints["health"]["required_scopes"] == []
+        finally:
+            await client.close()
 
 
 # ---------------------------------------------------------------------------

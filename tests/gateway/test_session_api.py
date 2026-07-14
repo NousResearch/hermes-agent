@@ -68,10 +68,17 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
-    assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["sessions"] == {
+        "method": "GET",
+        "path": "/api/sessions",
+        "required_scopes": ["sessions:read"],
+        "profile_scoped": False,
+    }
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+        "required_scopes": ["sessions:write"],
+        "profile_scoped": False,
     }
 
 

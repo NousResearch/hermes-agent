@@ -59,6 +59,7 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 from agent.redact import redact_sensitive_text
+from gateway.api_operator_auth import AuthPrincipal, OperatorCredentialStore
 
 logger = logging.getLogger(__name__)
 
@@ -777,6 +778,11 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        # Hashed, revocable scoped operator tokens. Left unset until the server
+        # starts (connect() wires it to <HERMES_HOME>/operator_credentials.json).
+        # When None *and* no API_SERVER_KEY is configured, the server is open
+        # (dev/test wiring), matching the historical _check_auth behavior.
+        self._operator_credentials: Optional[OperatorCredentialStore] = None
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -982,6 +988,85 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
+    def _authorize(
+        self,
+        request: "web.Request",
+        required_scope: Optional[str],
+    ) -> tuple[Optional[AuthPrincipal], Optional["web.Response"]]:
+        """Resolve the caller's principal and enforce ``required_scope``.
+
+        Returns ``(principal, None)`` when the request is authorized, or
+        ``(None, response)`` with a sanitized 401/403 when it is not. When
+        ``required_scope`` is ``None`` the caller only needs an authenticated
+        principal (used by ``/v1/capabilities``), not a specific scope.
+
+        Resolution order is exact:
+
+        1. Constant-time compare the bearer against ``API_SERVER_KEY`` — the
+           legacy superuser credential, mapped to scope ``*``.
+        2. Otherwise authenticate the bearer against the operator credential
+           store — a hashed, revocable scoped token.
+        3. Otherwise return the same ``invalid_api_key`` 401 as ``_check_auth``.
+        4. If authenticated but the principal lacks ``required_scope``, return
+           ``insufficient_scope`` 403 that names only the *required* scope —
+           never the granted ones — so an under-scoped token learns nothing
+           about the wider grant space.
+
+        Compatibility: when neither an API key nor an operator store is
+        configured (dev/test wiring) the server is open, mirroring
+        ``_check_auth``'s no-key branch, and an anonymous superuser principal
+        is returned.
+        """
+        if not self._api_key and self._operator_credentials is None:
+            return AuthPrincipal("anonymous", ("*",), True), None
+
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:].strip() if auth_header.startswith("Bearer ") else ""
+
+        principal: Optional[AuthPrincipal] = None
+        if token and self._api_key and hmac.compare_digest(token, self._api_key):
+            principal = AuthPrincipal("legacy-api-key", ("*",), True)
+        elif token and self._operator_credentials is not None:
+            principal = self._operator_credentials.authenticate(token)
+
+        if principal is None:
+            logger.warning(
+                "API server rejected invalid API key: %s",
+                self._request_audit_log_suffix(request),
+            )
+            return None, web.json_response(
+                {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+                status=401,
+            )
+
+        if required_scope is not None and not principal.allows(required_scope):
+            return None, web.json_response(
+                {
+                    "error": {
+                        "message": "The presented credential is missing the scope required for this operation.",
+                        "type": "invalid_request_error",
+                        "code": "insufficient_scope",
+                        "required_scope": required_scope,
+                    }
+                },
+                status=403,
+            )
+
+        return principal, None
+
+    @staticmethod
+    def _capability_auth_view(principal: Optional[AuthPrincipal]) -> tuple[list[str], str]:
+        """Return ``(granted_scopes, credential_kind)`` for the capability doc.
+
+        Never leaks the raw token or the credential id — only the scope grant
+        and a coarse credential kind. Superuser principals report ``["*"]``.
+        """
+        if principal is None or (principal.is_superuser and principal.credential_id == "anonymous"):
+            return ["*"], "none"
+        if principal.is_superuser:
+            return ["*"], "legacy_api_key"
+        return list(principal.scopes), "operator_token"
+
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -1167,7 +1252,7 @@ class APIServerAdapter(BasePlatformAdapter):
         dashboard can display full status without needing a shared PID file or
         /proc access.  Requires the same Bearer auth as other API routes.
         """
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "gateway:read")
         if auth_err:
             return auth_err
 
@@ -1207,7 +1292,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:read")
         if auth_err:
             return auth_err
 
@@ -1233,17 +1318,28 @@ class APIServerAdapter(BasePlatformAdapter):
         server's plugin-safe contract without scraping docs or assuming that
         every Hermes version exposes the same endpoints.
         """
-        auth_err = self._check_auth(request)
+        principal, auth_err = self._authorize(request, None)
         if auth_err:
             return auth_err
+
+        granted_scopes, credential_kind = self._capability_auth_view(principal)
 
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
+            "schema_version": 1,
+            "profile_context": {
+                "type": "query",
+                "name": "profile",
+                "required": True,
+                "default_profile_id": "default",
+            },
             "auth": {
                 "type": "bearer",
                 "required": bool(self._api_key),
+                "granted_scopes": granted_scopes,
+                "credential_kind": credential_kind,
             },
             "runtime": {
                 "mode": "server_agent",
@@ -1282,27 +1378,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
-                "health": {"method": "GET", "path": "/health"},
-                "health_detailed": {"method": "GET", "path": "/health/detailed"},
-                "models": {"method": "GET", "path": "/v1/models"},
-                "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
-                "responses": {"method": "POST", "path": "/v1/responses"},
-                "runs": {"method": "POST", "path": "/v1/runs"},
-                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
-                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
-                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
-                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
-                "skills": {"method": "GET", "path": "/v1/skills"},
-                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
-                "sessions": {"method": "GET", "path": "/api/sessions"},
-                "session_create": {"method": "POST", "path": "/api/sessions"},
-                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
-                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
-                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
-                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
-                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
-                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
-                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "health": {"method": "GET", "path": "/health", "required_scopes": [], "profile_scoped": False},
+                "health_detailed": {"method": "GET", "path": "/health/detailed", "required_scopes": ["gateway:read"], "profile_scoped": False},
+                "models": {"method": "GET", "path": "/v1/models", "required_scopes": ["chat:read"], "profile_scoped": False},
+                "chat_completions": {"method": "POST", "path": "/v1/chat/completions", "required_scopes": ["chat:write"], "profile_scoped": False},
+                "responses": {"method": "POST", "path": "/v1/responses", "required_scopes": ["chat:write"], "profile_scoped": False},
+                "runs": {"method": "POST", "path": "/v1/runs", "required_scopes": ["chat:write"], "profile_scoped": False},
+                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}", "required_scopes": ["chat:read"], "profile_scoped": False},
+                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events", "required_scopes": ["chat:read"], "profile_scoped": False},
+                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval", "required_scopes": ["chat:write"], "profile_scoped": False},
+                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop", "required_scopes": ["chat:write"], "profile_scoped": False},
+                "skills": {"method": "GET", "path": "/v1/skills", "required_scopes": ["skills:read"], "profile_scoped": False},
+                "toolsets": {"method": "GET", "path": "/v1/toolsets", "required_scopes": ["tools:read"], "profile_scoped": False},
+                "sessions": {"method": "GET", "path": "/api/sessions", "required_scopes": ["sessions:read"], "profile_scoped": False},
+                "session_create": {"method": "POST", "path": "/api/sessions", "required_scopes": ["sessions:write"], "profile_scoped": False},
+                "session": {"method": "GET", "path": "/api/sessions/{session_id}", "required_scopes": ["sessions:read"], "profile_scoped": False},
+                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}", "required_scopes": ["sessions:write"], "profile_scoped": False},
+                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}", "required_scopes": ["sessions:write"], "profile_scoped": False},
+                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages", "required_scopes": ["sessions:read"], "profile_scoped": False},
+                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork", "required_scopes": ["sessions:write"], "profile_scoped": False},
+                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat", "required_scopes": ["sessions:write"], "profile_scoped": False},
+                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream", "required_scopes": ["sessions:write"], "profile_scoped": False},
             },
         })
 
@@ -1318,7 +1414,7 @@ class APIServerAdapter(BasePlatformAdapter):
         skills hub uses internally. Disabled skills are excluded so the
         listing matches what the agent actually loads.
         """
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "skills:read")
         if auth_err:
             return auth_err
 
@@ -1346,7 +1442,7 @@ class APIServerAdapter(BasePlatformAdapter):
         equivalent of what a client would otherwise have to recover by
         asking the model what tools it can call.
         """
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tools:read")
         if auth_err:
             return auth_err
 
@@ -1464,7 +1560,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:read")
         if auth_err:
             return auth_err
 
@@ -1493,7 +1589,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions — create an empty Hermes session row."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:write")
         if auth_err:
             return auth_err
         body, err = await self._read_json_body(request)
@@ -1531,7 +1627,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_get_session(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions/{session_id}."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:read")
         if auth_err:
             return auth_err
         session, err = self._get_existing_session_or_404(request.match_info["session_id"])
@@ -1541,7 +1637,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
         """PATCH /api/sessions/{session_id} — update client-safe session metadata."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:write")
         if auth_err:
             return auth_err
         session_id = request.match_info["session_id"]
@@ -1569,7 +1665,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
         """DELETE /api/sessions/{session_id}."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:write")
         if auth_err:
             return auth_err
         session_id = request.match_info["session_id"]
@@ -1582,7 +1678,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions/{session_id}/messages."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:read")
         if auth_err:
             return auth_err
         session_id = request.match_info["session_id"]
@@ -1600,7 +1696,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:write")
         if auth_err:
             return auth_err
         source_id = request.match_info["session_id"]
@@ -1647,7 +1743,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:write")
         if auth_err:
             return auth_err
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -1691,7 +1787,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "sessions:write")
         if auth_err:
             return auth_err
         gateway_session_key, key_err = self._parse_session_key_header(request)
@@ -1832,7 +1928,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:write")
         if auth_err:
             return auth_err
 
@@ -2961,7 +3057,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:write")
         if auth_err:
             return auth_err
 
@@ -3250,7 +3346,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:read")
         if auth_err:
             return auth_err
 
@@ -3263,7 +3359,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/responses/{response_id} — delete a stored response."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:write")
         if auth_err:
             return auth_err
 
@@ -3313,7 +3409,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs — list all cron jobs."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:read")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3328,7 +3424,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:write")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3382,7 +3478,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:read")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3401,7 +3497,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:write")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3439,7 +3535,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:write")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3459,7 +3555,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:write")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3479,7 +3575,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:write")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3499,7 +3595,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "tasks:write")
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -3921,7 +4017,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:write")
         if auth_err:
             return auth_err
 
@@ -4228,7 +4324,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:read")
         if auth_err:
             return auth_err
 
@@ -4243,7 +4339,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:read")
         if auth_err:
             return auth_err
 
@@ -4293,7 +4389,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:write")
         if auth_err:
             return auth_err
 
@@ -4381,7 +4477,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
-        auth_err = self._check_auth(request)
+        _principal, auth_err = self._authorize(request, "chat:write")
         if auth_err:
             return auth_err
 
@@ -4511,6 +4607,24 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if not self._port_is_available():
             return False
+
+        # Wire the hashed, revocable scoped-operator-token store. Kept out of
+        # __init__ so directly-constructed test adapters stay open (no key, no
+        # store) unless a test injects one explicitly.
+        if self._operator_credentials is None:
+            try:
+                from hermes_cli.config import get_hermes_home
+
+                self._operator_credentials = OperatorCredentialStore(
+                    get_hermes_home() / "operator_credentials.json"
+                )
+            except Exception:
+                logger.warning(
+                    "[%s] Could not initialize operator credential store; "
+                    "only API_SERVER_KEY (superuser) auth will be available.",
+                    self.name,
+                    exc_info=True,
+                )
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]

@@ -56,14 +56,24 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div", "all"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute", "all"),
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide", "all"),
-
     # ── Role-play / identity hijack (context + strict; common attack
-    #    surface in scraped web content and poisoned context files) ──
-    (r'you\s+are\s+(?:\w+\s+)*now\s+(?:a|an|the)\s+', "role_hijack", "context"),
-    (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+', "role_pretend", "context"),
-    (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt', "leak_system_prompt", "context"),
-    (r'(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)', "remove_filters", "context"),
-    (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to', "fake_update", "context"),
+        #    surface in scraped web content and poisoned context files) ──
+        # The role_pretend and role_hijack patterns below are negation-blind
+        # by design (matching the trigger phrase regardless of leading
+        # negation), but scan_for_threats() post-filters them via the
+        # NEGATED_PATTERNS set: if a match overlaps a negation phrase, the
+        # match is suppressed. See _NEGATED_PATTERNS below for the
+        # corresponding negation regex.
+        #
+        # Why this design: standard regex negative-lookbehind has fixed-width
+        # requirements; "do not", "should never", "agent should never" have
+        # variable widths. A post-filter is the cleanest correct expression.
+        # Fix for #64268.
+        (r'\byou\s+are\s+(?:\w+\s+)*now\s+(?:a|an|the)\s+', "role_hijack", "context"),
+        (r'\bpretend\s+(?:\w+\s+)*\b(?:you\s+are|to\s+be)\s+', "role_pretend", "context"),
+        (r'\boutput\s+(?:\w+\s+)*\b(?:system|initial)\s+prompt', "leak_system_prompt", "context"),
+        (r'\b(?:respond|answer|reply)\s+without\s+(?:\w+\s+)*\b(?:restrictions|limitations|filters|safety)', "remove_filters", "context"),
+        (r'\byou\s+have\s+been\s+(?:\w+\s+)*\b(?:updated|upgraded|patched)\s+to', "fake_update", "context"),
     # "name yourself X" is a Brainworm-specific tell — identity override
     # via spec instead of jailbreak.  Anchored on the verb pair so it
     # doesn't match "name your variables" etc.
@@ -150,6 +160,32 @@ INVISIBLE_CHARS = frozenset({
 _COMPILED: dict[str, List[Tuple[re.Pattern, str]]] = {}
 
 
+# Negation-suppression list: when a pattern match's start position falls
+# within a negation span, the match is suppressed. Used for the
+# role_pretend and role_hijack patterns whose benign uses (e.g. "Don't
+# pretend to be a specialist you're not") are common in user-authored
+# SOUL.md files. Fix for #64268.
+#
+# Format: (compiled_regex_for_negation_phrase, pattern_id_to_suppress)
+_NEGATED_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    # Standard negation verbs immediately before the trigger phrase
+    (
+        re.compile(
+            r"\b(?:don't|do\s+not|never|didn't|won't|can't|cannot|must\s+not|should\s+never)\s+(?=[^\.\n]*?\b(?:pretend|you\s+are\s+now)\b)",
+            re.IGNORECASE,
+        ),
+        "role_pretend",
+    ),
+    (
+        re.compile(
+            r"\b(?:don't|do\s+not|never|didn't|won't|can't|cannot|must\s+not|should\s+never)\s+(?=[^\.\n]*?\byou\s+are\s+now\b)",
+            re.IGNORECASE,
+        ),
+        "role_hijack",
+    ),
+]
+
+
 def _compile() -> None:
     """Compile pattern sets for each scope (all / context / strict).
 
@@ -224,10 +260,51 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     if patterns is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")
     for compiled, pid in patterns:
-        if compiled.search(content):
+        match = compiled.search(content)
+        if match:
+            # Negation-suppression: if a negation phrase immediately precedes
+            # this match, suppress the match. Catches benign uses like
+            # "Don't pretend to be a specialist you're not". Fix for #64268.
+            if _is_negated(content, match, pid):
+                continue
             findings.append(pid)
 
     return findings
+
+
+def _is_negated(content: str, match: "re.Match", pattern_id: str) -> bool:
+    """Return True if a negation phrase from _NEGATED_PATTERNS ends just
+    before this match for the given pattern_id, indicating the match is
+    benign user-authored content (e.g. anti-role-play advice) rather
+    than an attack.
+
+    Approach: try a small set of explicit negation-phrase patterns
+    directly. The lookahead in _NEGATED_PATTERNS is for the original
+    scanner; here we just want to know if any negation phrase appears
+    within a short window before the match.
+    """
+    # Common negation phrases that should suppress benign uses of role_play
+    # / role_hijack patterns. Variable widths and slight ambiguity
+    # (e.g. "I don't" vs "Don't") are handled by the regexes below.
+    negation_regexes = [
+        re.compile(r"\b(?:don't|didn't|won't|can't|cannot|never)\b", re.IGNORECASE),
+        re.compile(r"\bdo\s+not\b", re.IGNORECASE),
+        re.compile(r"\bmust\s+not\b", re.IGNORECASE),
+        re.compile(r"\bshould\s+never\b", re.IGNORECASE),
+    ]
+    for neg_re in negation_regexes:
+        for neg_m in neg_re.finditer(content, 0, match.start()):
+            # Negation must end close to match.start() — within ~30 chars
+            # of gap, to allow for filler words like "to be a specialist"
+            # between "Don't" and "pretend".
+            gap = match.start() - neg_m.end()
+            if 0 <= gap <= 30:
+                # Also confirm there's no sentence boundary (period, newline)
+                # between the negation and the match.
+                intervening = content[neg_m.end():match.start()]
+                if not re.search(r"[\.\n]", intervening):
+                    return True
+    return False
 
 
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:

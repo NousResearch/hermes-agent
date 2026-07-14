@@ -734,6 +734,8 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     def messages_send(
         target: str,
         message: str,
+        alert_source: Optional[str] = None,
+        alert_type: Optional[str] = None,
     ) -> str:
         """Send a message to a platform conversation.
 
@@ -749,9 +751,22 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         Args:
             target: Platform target in "platform:identifier" format
             message: The message text to send
+            alert_source: Optional — if this message represents an infra alert,
+                the source host/service (e.g. "10.55.0.53:8090"). When set
+                together with alert_type, non-urgent alerts are batched into
+                the daily debrief instead of sent immediately.
+            alert_type: Optional — the alert's type/name (e.g. "ServiceDown").
         """
         if not target or not message:
             return json.dumps({"error": "Both target and message are required"})
+
+        if alert_source and alert_type:
+            from gateway.alert_severity import classify_severity
+            severity = classify_severity(source=alert_source, alert_type=alert_type)
+            if severity == "batched":
+                from gateway.debrief_queue import queue_for_debrief
+                queue_for_debrief(source=alert_source, alert_type=alert_type, message=message)
+                return json.dumps({"status": "batched", "severity": severity})
 
         try:
             from tools.send_message_tool import send_message_tool

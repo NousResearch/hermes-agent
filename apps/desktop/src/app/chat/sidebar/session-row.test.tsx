@@ -3,7 +3,12 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
+import { en } from '@/i18n/en'
+import { ja } from '@/i18n/ja'
+import { zh } from '@/i18n/zh'
+import { zhHant } from '@/i18n/zh-hant'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
@@ -46,6 +51,7 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
+vi.mock('@/app/open-session', () => ({ openSession: vi.fn() }))
 // PlatformAvatar is intentionally NOT mocked (do not reintroduce this — see
 // #67500, Gille's third pass): it's a forwardRef component that spreads its
 // props onto the rendered span, and mocking it with a stand-in that spreads
@@ -364,6 +370,42 @@ describe('SidebarSessionRow', () => {
     expect(onArchive).toHaveBeenCalledOnce()
     expect(onPin).not.toHaveBeenCalled()
     expect(onResume).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
+  })
+
+  it('keeps Cmd+Shift-click as the standalone-window gesture', () => {
+    const onArchive = vi.fn()
+
+    render(
+      <SidebarSessionRow
+        isPinned={false}
+        isSelected={false}
+        isWorking={false}
+        onArchive={onArchive}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        session={makeSession({ title: 'Open in a window' })}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open in a window' }), { metaKey: true, shiftKey: true })
+
+    expect(onArchive).not.toHaveBeenCalled()
+    expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'window')
+  })
+
+  it('keeps archived-session settings copy gesture-neutral in the updated locales', () => {
+    const archivedSessionCopy = [
+      en.settings.sessions.archivedIntro,
+      zh.settings.sessions.archivedIntro,
+      zhHant.settings.sessions.archivedIntro,
+      ja.settings.sessions.archivedIntro
+    ]
+
+    for (const copy of archivedSessionCopy) {
+      expect(copy).not.toMatch(/\b(?:ctrl|cmd|shift|click)\b|⌘|点击|點擊|クリック/iu)
+    }
   })
 
   it.each([{ altKey: true }, { metaKey: true }])(

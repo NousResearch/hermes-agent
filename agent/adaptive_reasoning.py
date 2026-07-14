@@ -23,6 +23,8 @@ _DEFAULT_BASELINE = "high"
 _DEFAULT_CAP = "xhigh"
 _MAX_CHANGES_PER_TURN = 4
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+_POLICY_KEYS = frozenset({"enabled", "max_effort"})
+_DIRECTIVE_KEYS = frozenset({"effort"})
 
 
 def _normalize_effort(value: Any, *, default: str = "") -> str:
@@ -59,6 +61,14 @@ def _policy_from_config(agent_config: Mapping[str, Any] | None) -> dict[str, Any
             # A present but malformed authority section must not inherit the
             # shipped default-on policy.
             return {"enabled": False, "max_effort": _DEFAULT_CAP}
+
+    # Policy is an authority boundary, not an extension bag.  Silently
+    # accepting an ``effort_router`` / classifier-shaped key would make a
+    # misconfigured external semantic controller look live even though the
+    # model is the only supported author.  Unknown keys therefore revoke the
+    # adaptive authority instead of being ignored.
+    if set(section) - _POLICY_KEYS:
+        return {"enabled": False, "max_effort": _DEFAULT_CAP}
 
     # Missing means the shipped default (on); any malformed/non-boolean value
     # fails closed instead of accidentally enabling live authority.
@@ -228,6 +238,13 @@ def apply_model_reasoning_directive(
     with lock:
         if "mode" in directive:
             return _receipt("rejected", reason="reasoning_mode_unverified")
+        # The static tool schema already declares exactly one field, but the
+        # runtime boundary must remain safe when a provider, replay, plugin, or
+        # direct caller bypasses JSON-schema enforcement.  No opaque metadata,
+        # classifier output, or routing instruction may travel beside the
+        # model-authored effort value.
+        if set(directive) != _DIRECTIVE_KEYS:
+            return _receipt("rejected", reason="reasoning_shape_invalid")
         policy = getattr(agent, "_adaptive_reasoning_policy", {}) or {}
         if not policy.get("enabled"):
             return _receipt("rejected", reason="adaptive_reasoning_disabled")

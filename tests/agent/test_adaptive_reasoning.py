@@ -121,6 +121,23 @@ def test_malformed_adaptive_policy_sections_and_caps_fail_closed():
         receipt = _apply(agent, {"effort": "xhigh"})
         assert receipt["reason"] == "adaptive_reasoning_disabled"
 
+    # Authority policy is exact-shape.  In particular, adding a purported
+    # external selector cannot coexist with model-authored adaptive effort.
+    for extra in ("effort_router", "classifier", "semantic_dispatch"):
+        agent = _agent()
+        configure_adaptive_reasoning(
+            agent,
+            {
+                "adaptive_reasoning": {
+                    "enabled": True,
+                    "max_effort": "xhigh",
+                    extra: "external",
+                }
+            },
+        )
+        receipt = _apply(agent, {"effort": "xhigh"})
+        assert receipt["reason"] == "adaptive_reasoning_disabled"
+
     for cap in ("ultra", 7, ["xhigh"]):
         agent = _agent()
         configure_adaptive_reasoning(
@@ -153,6 +170,28 @@ def test_policy_is_upward_only_bounded_and_idempotent():
     assert first["status"] == "applied"
     assert second["status"] == "unchanged"
     assert first["change_count"] == second["change_count"] == 1
+
+
+def test_directive_runtime_boundary_rejects_non_schema_fields_without_mutation():
+    """Provider-side schema enforcement is useful but not an authority rail."""
+    agent = _agent(reasoning_config={"enabled": True, "effort": "high"})
+
+    for directive in (
+        {},
+        {"effort": "xhigh", "router": "external"},
+        {"effort": "xhigh", "task_class": "complex"},
+        {"effort": "xhigh", "next_model": "other"},
+    ):
+        receipt = _apply(agent, directive)
+        assert receipt["status"] == "rejected"
+        assert receipt["reason"] == "reasoning_shape_invalid"
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
+    assert agent._turn_reasoning_changes == 0
+    assert agent._turn_reasoning_override is None
 
 
 def test_turn_override_is_monotonic_across_concurrent_completion_order():

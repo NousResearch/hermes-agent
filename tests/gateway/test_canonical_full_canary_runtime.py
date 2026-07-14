@@ -1448,6 +1448,7 @@ async def test_isolated_gateway_stays_offline_when_mandatory_plugin_fails(
         "inline_key",
         "fallback",
         "kanban",
+        "kanban_auxiliary",
         "kanban_dispatch",
         "cron_enabled",
         "memory_enabled",
@@ -1481,6 +1482,8 @@ def test_gateway_config_rejects_external_routing_or_semantic_authority(
         config["fallback_model"] = "some-other-model"
     elif mutation == "kanban":
         config["kanban"]["auto_decompose"] = True
+    elif mutation == "kanban_auxiliary":
+        config["kanban"]["auxiliary_planning_enabled"] = True
     elif mutation == "kanban_dispatch":
         config["kanban"]["dispatch_in_gateway"] = True
     elif mutation == "cron_enabled":

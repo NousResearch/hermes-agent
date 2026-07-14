@@ -5450,6 +5450,14 @@ def test_cloud_sql_password_exists_only_in_https_json_body_and_delete_is_proven(
         for _method, url, _body in calls
     )
     assert USERNAME not in users
+    deletion_receipt = admin.reconciliation_receipt()
+    assert deletion_receipt["response_known_delete_operation_names"] == [
+        "operation-2"
+    ]
+    assert [row[:2] for row in deletion_receipt["terminal_user_operations"]] == [
+        ["operation-1", "CREATE_USER"],
+        ["operation-2", "DELETE_USER"],
+    ]
 
 
 def test_cloud_sql_delete_without_absent_proof_is_cleanup_blocked():
@@ -5620,9 +5628,37 @@ def test_cloud_sql_recovery_creates_or_rotates_exact_admin(initially_present):
         GoogleRestClient(lambda: "owner-access-token", requester=request),
         sleeper=lambda _seconds: None,
     )
+    mutation_context_sha256 = "6" * 64
+    admin.begin_mutation_observation(
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        expected_mutation_context_sha256=mutation_context_sha256,
+    )
     admin.create_or_rotate_recovery(USERNAME, PASSWORD.decode())
+    authority = admin.temporary_admin_authority_receipt(USERNAME)
 
     assert present is True
+    assert authority["schema"] == launcher.TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA
+    assert authority["username_sha256"] == launcher._sha256(USERNAME.encode())
+    assert authority["owner_subject_sha256"] == OWNER_SUBJECT_SHA
+    assert authority["mutation_context_sha256"] == mutation_context_sha256
+    assert authority["baseline_user_operations"] == []
+    assert authority["authority_operation"][1] == (
+        "UPDATE_USER" if initially_present else "CREATE_USER"
+    )
+    assert authority["authority_operation"][2:] == [
+        "DONE",
+        OWNER_SUBJECT_SHA,
+        True,
+    ]
+    unsigned_authority = {
+        name: value
+        for name, value in authority.items()
+        if name != "receipt_sha256"
+    }
+    assert authority["receipt_sha256"] == launcher._sha256(
+        _canonical(unsigned_authority)
+    )
+    assert PASSWORD.decode() not in json.dumps(authority)
     if initially_present:
         assert calls.count("PUT") == 1
         assert calls.count("POST") == 0
@@ -5634,12 +5670,16 @@ def test_cloud_sql_recovery_creates_or_rotates_exact_admin(initially_present):
 
 def test_cloud_sql_delete_skips_delete_when_initial_list_proves_absence():
     calls = []
+    historical = _cloud_sql_operation_item(
+        "historical-create-operation",
+        "CREATE_USER",
+    )
 
     def request(method, url, headers, body, timeout):
         calls.append(method)
         assert method == "GET"
         payload = (
-            _cloud_sql_operations_payload()
+            _cloud_sql_operations_payload([historical])
             if "/operations?" in url
             else _cloud_sql_users_payload()
         )
@@ -5652,13 +5692,19 @@ def test_cloud_sql_delete_skips_delete_when_initial_list_proves_absence():
         sleeper=clock.sleep,
         operation_timeout_seconds=2.0,
     )
-
     admin.delete_and_confirm_absent(USERNAME)
     assert set(calls) == {"GET"}
     # A/U/B fencing plus the short test quiet window stays bounded; production
     # uses a five-second cadence to remain comfortably below LIST quota.
     assert calls.count("GET") <= 30
     assert admin.reconciliation_evidence()["reconciliation_proven"] is True
+    assert admin.reconciliation_receipt()["baseline_user_operations"] == [[
+        "historical-create-operation",
+        "CREATE_USER",
+        "DONE",
+        OWNER_SUBJECT_SHA,
+        True,
+    ]]
 
 
 def test_cloud_sql_delete_error_succeeds_only_after_fresh_absence_proof():
@@ -5685,7 +5731,17 @@ def test_cloud_sql_delete_error_succeeds_only_after_fresh_absence_proof():
         sleeper=clock.sleep,
         operation_timeout_seconds=2.0,
     )
+    mutation_context_sha256 = "7" * 64
+    admin.begin_mutation_observation(
+        expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        expected_mutation_context_sha256=mutation_context_sha256,
+    )
 
+    with pytest.raises(
+        OwnerLauncherError,
+        match="cloud_sql_reconciliation_evidence_unconfirmed",
+    ):
+        admin.reconciliation_receipt()
     admin.delete_and_confirm_absent(USERNAME)
     assert calls.count("DELETE") == 1
     assert admin.reconciliation_evidence() == {
@@ -5698,6 +5754,24 @@ def test_cloud_sql_delete_error_succeeds_only_after_fresh_absence_proof():
         "response_known_candidate_observed": False,
         "post_baseline_authority_operation_count": 0,
     }
+    receipt = admin.reconciliation_receipt()
+    assert receipt["schema"] == "muncho-cloud-sql-admin-absence-evidence.v1"
+    assert receipt["temporary_admin_absent"] is True
+    assert receipt["user_absent"] is True
+    assert receipt["username_sha256"] == launcher._sha256(USERNAME.encode())
+    assert receipt["owner_subject_sha256"] == OWNER_SUBJECT_SHA
+    assert receipt["mutation_context_sha256"] == mutation_context_sha256
+    assert receipt["baseline_user_operations"] == []
+    assert receipt["response_known_delete_operation_names"] == []
+    assert receipt["terminal_user_operations"] == []
+    assert receipt["post_baseline_authority_operations"] == []
+    unsigned = {
+        name: value for name, value in receipt.items() if name != "evidence_sha256"
+    }
+    assert receipt["evidence_sha256"] == launcher._sha256(_canonical(unsigned))
+    receipt["user_absent"] = False
+    assert admin.reconciliation_receipt()["user_absent"] is True
+    assert PASSWORD.decode() not in json.dumps(admin.reconciliation_receipt())
 
 
 def test_bootstrap_login_create_rotate_receipt_and_delete_are_exact_and_secret_free(
@@ -5713,9 +5787,11 @@ def test_bootstrap_login_create_rotate_receipt_and_delete_are_exact_and_secret_f
         return real_sha256(value)
 
     monkeypatch.setattr(launcher, "_sha256", recording_sha256)
+    mutation_context_sha256 = "8" * 64
     login = CloudSqlCanaryBootstrapLogin(
         GoogleRestClient(lambda: "owner-access-token", requester=api),
         expected_owner_subject_sha256=OWNER_SUBJECT_SHA,
+        expected_mutation_context_sha256=mutation_context_sha256,
         monotonic=clock.monotonic,
         sleeper=clock.sleep,
         operation_timeout_seconds=2.0,
@@ -5740,6 +5816,7 @@ def test_bootstrap_login_create_rotate_receipt_and_delete_are_exact_and_secret_f
         "operation_name": "bootstrap-operation-1",
         "operation_type": "CREATE_USER",
         "owner_subject_sha256": OWNER_SUBJECT_SHA,
+        "mutation_context_sha256": mutation_context_sha256,
         "receipt_sha256": created_receipt["receipt_sha256"],
     }
 

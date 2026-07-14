@@ -78,6 +78,9 @@ WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME = (
     "14-0d81ef63-2cac-4a64-84ad-c4f58c0cfd56.europe-west3.sql.goog"
 )
 SQL_INSTANCE = "muncho-canary-pg18-v2"
+TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA = (
+    "muncho-cloud-sql-temporary-admin-authority.v1"
+)
 CANARY_BOOTSTRAP_LOGIN = "canonical_brain_canary_bootstrap_login"
 CANARY_BOOTSTRAP_DATABASE_ROLE = "canonical_brain_canary_bootstrap"
 CANARY_BOOTSTRAP_AUTHORITY_RECEIPT_SCHEMA = (
@@ -181,8 +184,11 @@ _STOPPED_RELEASE_ACTIVATION_PATHS = (
     "/etc/hermes/config.yaml",
 )
 _STOPPED_RELEASE_UNITS = (
+    "muncho-canary-discord-edge.service",
     "muncho-discord-egress.service",
     "muncho-canonical-writer.service",
+    "muncho-canonical-writer-export.service",
+    "muncho-canonical-writer-export.timer",
     "hermes-cloud-gateway.service",
 )
 _STOPPED_RELEASE_SERVICE_PROPERTIES = (
@@ -6007,10 +6013,12 @@ class CloudSqlTemporaryAdmin:
         self._confirmed_authority_operation_name: str | None = None
         self._confirmed_authority_operation_type: str | None = None
         self._expected_owner_subject_sha256: str | None = None
+        self._expected_mutation_context_sha256: str | None = None
         self._mutation_ambiguous = False
         self._mutation_ambiguity_observed = False
         self._reconciliation_proven = False
         self._reconciliation_evidence_sha256: str | None = None
+        self._reconciliation_receipt: Mapping[str, Any] | None = None
         self._reconciliation_quiet_window_seconds: float | None = None
         self._reconciliation_response_known_candidate_observed: bool | None = None
         self._reconciliation_post_baseline_authority_operation_count: int | None = None
@@ -6161,6 +6169,7 @@ class CloudSqlTemporaryAdmin:
         self,
         *,
         expected_owner_subject_sha256: str | None = None,
+        expected_mutation_context_sha256: str | None = None,
     ) -> None:
         """Capture the complete operation namespace before a user mutation."""
 
@@ -6171,9 +6180,15 @@ class CloudSqlTemporaryAdmin:
                 expected_owner_subject_sha256,
                 "invalid_owner_subject_sha256",
             )
+        if expected_mutation_context_sha256 is not None:
+            _require_sha256(
+                expected_mutation_context_sha256,
+                "invalid_mutation_context_sha256",
+            )
         if any(value[1] != "DONE" for value in relevant.values()):
             raise OwnerLauncherError("cloud_sql_user_operations_not_quiescent")
         self._expected_owner_subject_sha256 = expected_owner_subject_sha256
+        self._expected_mutation_context_sha256 = expected_mutation_context_sha256
         self._mutation_operation_baseline = frozenset(operations)
         self._mutation_relevant_baseline = dict(relevant)
         self._mutation_known_operations.clear()
@@ -6184,6 +6199,7 @@ class CloudSqlTemporaryAdmin:
         self._mutation_ambiguity_observed = False
         self._reconciliation_proven = False
         self._reconciliation_evidence_sha256 = None
+        self._reconciliation_receipt = None
         self._reconciliation_quiet_window_seconds = None
         self._reconciliation_response_known_candidate_observed = None
         self._reconciliation_post_baseline_authority_operation_count = None
@@ -6204,6 +6220,25 @@ class CloudSqlTemporaryAdmin:
                 self._reconciliation_post_baseline_authority_operation_count
             ),
         }
+
+    def reconciliation_receipt(self) -> Mapping[str, Any]:
+        """Return the complete, secret-free DELETE/absence operation receipt."""
+
+        receipt = self._reconciliation_receipt
+        if not self._reconciliation_proven or receipt is None:
+            raise OwnerLauncherError("cloud_sql_reconciliation_evidence_unconfirmed")
+        value = copy.deepcopy(dict(receipt))
+        digest = value.get("evidence_sha256")
+        unsigned = {
+            name: item for name, item in value.items() if name != "evidence_sha256"
+        }
+        if (
+            not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or _sha256(_canonical_bytes(unsigned)) != digest
+        ):
+            raise OwnerLauncherError("cloud_sql_reconciliation_evidence_invalid")
+        return value
 
     def _ensure_mutation_observation(self) -> None:
         if self._mutation_operation_baseline is None:
@@ -6331,6 +6366,58 @@ class CloudSqlTemporaryAdmin:
             raise OwnerLauncherError(
                 "cloud_sql_mutation_evidence_unconfirmed"
             ) from None
+
+    def temporary_admin_authority_receipt(
+        self,
+        username: str,
+    ) -> Mapping[str, Any]:
+        """Seal current owner authority before opening SQL or issuing DELETE."""
+
+        self.require_current_authority(username)
+        baseline = self._mutation_operation_baseline
+        baseline_relevant = self._mutation_relevant_baseline
+        operation_name = self._confirmed_authority_operation_name
+        operation_type = self._confirmed_authority_operation_type
+        if (
+            baseline is None
+            or baseline_relevant is None
+            or operation_name is None
+            or operation_type not in {"CREATE_USER", "UPDATE_USER"}
+        ):
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+        operations = self._relevant_user_operations(
+            self._stable_instance_operations()
+        )
+        operation = operations.get(operation_name)
+        if (
+            operation is None
+            or operation[0] != operation_type
+            or operation[1] != "DONE"
+            or operation[3] is not True
+        ):
+            raise OwnerLauncherError("cloud_sql_mutation_evidence_unconfirmed")
+        receipt = {
+            "schema": TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA,
+            "project": PROJECT,
+            "instance": SQL_INSTANCE,
+            "username_sha256": _sha256(username.encode("utf-8")),
+            "host": "",
+            "type": "BUILT_IN",
+            "user_present": True,
+            "owner_subject_sha256": self._expected_owner_subject_sha256,
+            "mutation_context_sha256": self._expected_mutation_context_sha256,
+            "baseline_operation_names": sorted(baseline),
+            "baseline_user_operations": [
+                [name, *value]
+                for name, value in sorted(baseline_relevant.items())
+            ],
+            "authority_operation": [operation_name, *operation],
+        }
+        self.require_current_authority(username)
+        return {
+            **receipt,
+            "receipt_sha256": _sha256(_canonical_bytes(receipt)),
+        }
 
     def _wait_operation(
         self,
@@ -6757,6 +6844,7 @@ class CloudSqlTemporaryAdmin:
         username: str,
         observed_relevant: Mapping[str, tuple[str, str, str, bool]],
         baseline: frozenset[str],
+        baseline_relevant: Mapping[str, tuple[str, str, str, bool]],
         ambiguity_observed: bool,
     ) -> None:
         post_baseline_authority = {
@@ -6767,15 +6855,42 @@ class CloudSqlTemporaryAdmin:
         response_known_candidate_observed = bool(
             set(observed_relevant) & self._mutation_authority_known_operations
         )
+        response_known_delete_names = sorted(
+            name
+            for name in self._mutation_known_operations
+            if name in observed_relevant
+            and observed_relevant[name][0] == "DELETE_USER"
+        )
         evidence = {
             **self._absence_evidence_identity(),
             "project": PROJECT,
             "instance": SQL_INSTANCE,
             "username_sha256": _sha256(username.encode("utf-8")),
+            "owner_subject_sha256": self._expected_owner_subject_sha256,
+            "mutation_context_sha256": self._expected_mutation_context_sha256,
+            "user_absent": True,
             "baseline_operation_names": sorted(baseline),
+            "baseline_user_operations": [
+                [
+                    name,
+                    operation_type,
+                    status,
+                    actor_sha256,
+                    operation_succeeded,
+                ]
+                for name, (
+                    operation_type,
+                    status,
+                    actor_sha256,
+                    operation_succeeded,
+                ) in sorted(baseline_relevant.items())
+            ],
             "known_operation_names": sorted(self._mutation_known_operations),
             "response_known_authority_operation_names": sorted(
                 self._mutation_authority_known_operations
+            ),
+            "response_known_delete_operation_names": (
+                response_known_delete_names
             ),
             "post_baseline_authority_operations": [
                 [
@@ -6812,7 +6927,16 @@ class CloudSqlTemporaryAdmin:
             "mutation_ambiguity_observed": ambiguity_observed,
             "quiet_window_seconds": self._operation_timeout_seconds,
         }
-        self._reconciliation_evidence_sha256 = _sha256(_canonical_bytes(evidence))
+        evidence_sha256 = _sha256(_canonical_bytes(evidence))
+        self._reconciliation_receipt = json.loads(
+            _canonical_bytes(
+                {
+                    **evidence,
+                    "evidence_sha256": evidence_sha256,
+                }
+            ).decode("utf-8")
+        )
+        self._reconciliation_evidence_sha256 = evidence_sha256
         self._reconciliation_quiet_window_seconds = self._operation_timeout_seconds
         self._reconciliation_response_known_candidate_observed = (
             response_known_candidate_observed
@@ -6915,6 +7039,7 @@ class CloudSqlTemporaryAdmin:
                         username=username,
                         observed_relevant=known_operations,
                         baseline=baseline,
+                        baseline_relevant=baseline_relevant,
                         ambiguity_observed=ambiguity_observed,
                     )
                     self._mutation_ambiguous = False
@@ -6988,6 +7113,7 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
         client: GoogleRestClient,
         *,
         expected_owner_subject_sha256: str,
+        expected_mutation_context_sha256: str | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
         operation_timeout_seconds: float = _OPERATION_TIMEOUT_SECONDS,
@@ -6996,6 +7122,11 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
             expected_owner_subject_sha256,
             "invalid_owner_subject_sha256",
         )
+        if expected_mutation_context_sha256 is not None:
+            _require_sha256(
+                expected_mutation_context_sha256,
+                "invalid_mutation_context_sha256",
+            )
         super().__init__(
             client,
             monotonic=monotonic,
@@ -7003,6 +7134,7 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
             operation_timeout_seconds=operation_timeout_seconds,
         )
         self._fixed_owner_subject_sha256 = expected_owner_subject_sha256
+        self._fixed_mutation_context_sha256 = expected_mutation_context_sha256
         self._fixed_update_etag: str | None = None
         self._fixed_delete_authorized = False
         self._fixed_delete_resource: Mapping[str, Any] | None = None
@@ -7103,7 +7235,10 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
 
     def begin_mutation_observation(self) -> None:
         super().begin_mutation_observation(
-            expected_owner_subject_sha256=self._fixed_owner_subject_sha256
+            expected_owner_subject_sha256=self._fixed_owner_subject_sha256,
+            expected_mutation_context_sha256=(
+                self._fixed_mutation_context_sha256
+            ),
         )
 
     def _description_snapshot(self) -> Mapping[str, Any] | None:
@@ -7241,6 +7376,7 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
             "operation_name": operation_name,
             "operation_type": operation_type,
             "owner_subject_sha256": self._fixed_owner_subject_sha256,
+            "mutation_context_sha256": self._fixed_mutation_context_sha256,
         }
         return {
             **receipt,
@@ -7336,6 +7472,7 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
                         username=CANARY_BOOTSTRAP_LOGIN,
                         observed_relevant=known_operations,
                         baseline=baseline,
+                        baseline_relevant=baseline_relevant,
                         ambiguity_observed=ambiguity_observed,
                     )
                     self._mutation_ambiguous = False
@@ -12139,6 +12276,7 @@ __all__ = [
     "RECOVERY_WORKER_COMPLETION_SCHEMA",
     "RECOVERY_WORKER_LEASE_SCHEMA",
     "SQL_INSTANCE",
+    "TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA",
     "STOPPED_RELEASE_EVIDENCE_BASE",
     "STOPPED_RELEASE_HOST_RECEIPT_PATH",
     "STOPPED_RELEASE_PLAN_SCHEMA",

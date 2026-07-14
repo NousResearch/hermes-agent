@@ -282,46 +282,62 @@ class TestExtractCacheBustingConfig:
 
         assert out["tools.registry_generation"] == 12345
 
-
-    def test_skips_honcho_config_read_when_provider_is_not_honcho(self, monkeypatch):
-        """Non-Honcho gateways must not read/parse honcho.json on every message."""
+    def test_reads_cache_signature_from_configured_memory_provider(self, monkeypatch):
         from gateway.run import GatewayRunner
-
-        called = False
-
-        def _boom():
-            nonlocal called
-            called = True
-            raise AssertionError("should not read Honcho config")
-
-        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _boom)
-
-        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
-
-        assert called is False
-        assert out["honcho.peer_name"] is None
-        assert out["honcho.user_peer_aliases"] is None
-
-    def test_reads_honcho_config_only_when_provider_is_honcho(self, monkeypatch):
-        from gateway.run import GatewayRunner
+        import plugins.memory as memory_plugins
 
         calls = []
 
-        def _fake():
-            calls.append(True)
-            return {
-                "honcho.peer_name": "eri",
-                "honcho.ai_peer": "hermes",
-                "honcho.pin_peer_name": True,
-                "honcho.runtime_peer_prefix": "tg_",
-                "honcho.user_peer_aliases": [("123", "eri")],
-            }
+        class FakeProvider:
+            def cache_busting_signature(self):
+                calls.append("mem0")
+                return {"mem0.identity": "active"}
 
-        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _fake)
+        def _load_provider(name):
+            assert name == "mem0"
+            return FakeProvider()
+
+        monkeypatch.setattr(memory_plugins, "load_memory_provider", _load_provider)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert calls == ["mem0"]
+        assert out["mem0.identity"] == "active"
+        assert "honcho.peer_name" not in out
+
+    def test_missing_memory_provider_cache_signature_is_safe(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        import plugins.memory as memory_plugins
+
+        monkeypatch.setattr(memory_plugins, "load_memory_provider", lambda _name: None)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "missing"}})
+
+        assert out["memory.provider"] == "missing"
+        assert "honcho.peer_name" not in out
+
+    def test_reads_honcho_signature_from_provider_hook(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        import plugins.memory as memory_plugins
+
+        calls = []
+
+        class FakeHonchoProvider:
+            def cache_busting_signature(self):
+                calls.append("honcho")
+                return {
+                    "honcho.peer_name": "eri",
+                    "honcho.ai_peer": "hermes",
+                    "honcho.pin_peer_name": True,
+                    "honcho.runtime_peer_prefix": "tg_",
+                    "honcho.user_peer_aliases": [("123", "eri")],
+                }
+
+        monkeypatch.setattr(memory_plugins, "load_memory_provider", lambda _name: FakeHonchoProvider())
 
         out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
 
-        assert calls == [True]
+        assert calls == ["honcho"]
         assert out["honcho.peer_name"] == "eri"
         assert out["honcho.user_peer_aliases"] == [("123", "eri")]
 
@@ -330,14 +346,9 @@ class TestExtractCacheBustingConfig:
         signature, so the agent is rebuilt when a user swaps providers
         mid-gateway (independent of the honcho.json identity keys)."""
         from gateway.run import GatewayRunner
+        import plugins.memory as memory_plugins
 
-        # Neutralize honcho.json reads so the only varying input is the
-        # provider value itself.
-        monkeypatch.setattr(
-            GatewayRunner,
-            "_extract_honcho_cache_busting_config",
-            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
-        )
+        monkeypatch.setattr(memory_plugins, "load_memory_provider", lambda _name: None)
 
         sig_honcho = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
         sig_mem0 = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
@@ -348,8 +359,8 @@ class TestExtractCacheBustingConfig:
 
     def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
         """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
-        from types import SimpleNamespace
-        from gateway.run import GatewayRunner
+        from plugins.memory.honcho import HonchoMemoryProvider
+        import plugins.memory.honcho.client as honcho_client
 
         config_path = tmp_path / "honcho.json"
         config_path.write_text("{}")
@@ -367,22 +378,20 @@ class TestExtractCacheBustingConfig:
                 parse_calls.append(config_path)
                 return cls()
 
-        fake_client = SimpleNamespace(
-            HonchoClientConfig=FakeConfig,
-            resolve_config_path=lambda: config_path,
-        )
-        monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
-        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+        monkeypatch.setattr(honcho_client, "HonchoClientConfig", FakeConfig)
+        monkeypatch.setattr(honcho_client, "resolve_config_path", lambda: config_path)
+        monkeypatch.setattr(HonchoMemoryProvider, "_CACHE_BUSTING_MEMO", {})
 
-        first = GatewayRunner._extract_honcho_cache_busting_config()
-        second = GatewayRunner._extract_honcho_cache_busting_config()
+        provider = HonchoMemoryProvider()
+        first = provider.cache_busting_signature()
+        second = provider.cache_busting_signature()
 
         assert first == second
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
         config_path.write_text("{\n  \"changed\": true\n}")
-        third = GatewayRunner._extract_honcho_cache_busting_config()
+        third = provider.cache_busting_signature()
 
         assert third == first
         assert parse_calls == [config_path, config_path]

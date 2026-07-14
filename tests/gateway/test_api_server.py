@@ -650,7 +650,7 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
-            assert any(command["name"] == "help" for command in data["commands"])
+            assert all(command["source"] == "plugin" for command in data["commands"])
             assert all("handler" not in command for command in data["commands"])
 
     @pytest.mark.asyncio
@@ -677,6 +677,25 @@ class TestCapabilitiesEndpoint:
             assert resp.status == 200
             data = await resp.json()
             assert data["commands"] == expected_commands
+
+    @pytest.mark.asyncio
+    async def test_advertised_plugin_command_executes_through_authenticated_api(self, auth_adapter, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {"joke": {"handler": lambda raw: f"joke:{raw}"}},
+        )
+        app = _create_app(auth_adapter)
+        app.router.add_post("/v1/commands/{name}", auth_adapter._handle_plugin_command)
+        async with TestClient(TestServer(app)) as cli:
+            denied = await cli.post("/v1/commands/joke", json={"args": "cats"})
+            assert denied.status == 401
+            response = await cli.post(
+                "/v1/commands/joke",
+                json={"args": "cats"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert response.status == 200
+            assert await response.json() == {"command": "/joke", "result": "joke:cats"}
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

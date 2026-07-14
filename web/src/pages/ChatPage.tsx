@@ -49,6 +49,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import { resolvePtyKeyboardShortcut } from "@/lib/pty-keyboard-shortcuts";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -613,13 +614,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
-      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
-      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
-      // without a selection it passes through to the TUI so agents can still
-      // react to the keypress.
+      // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only
+      // when xterm has a selection; without one Ctrl+C still reaches the TUI
+      // as SIGINT.
       // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
       // Paste on BARE Ctrl+V too (not only Ctrl+Shift+V). Bare Ctrl+V otherwise
       // falls through to the TUI, whose server-side clipboard read can't see the
       // browser/OS clipboard → "No image found in clipboard". Routing Ctrl+V
@@ -627,22 +626,28 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // image-or-text correctly, like Ctrl+Shift+V.
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey;
 
-      if (copyModifier && ev.key.toLowerCase() === "c") {
-        const sel = term.getSelection();
-        if (sel) {
-          // Direct writeText inside the keydown handler preserves the user
-          // gesture — async round-trips through OSC 52 can lose activation
-          // and fail with "Document is not focused".
-          navigator.clipboard.writeText(sel).catch((err) => {
-            console.warn("[dashboard clipboard] direct copy failed:", err.message);
-          });
-          // Clear xterm.js's highlight after copy (matches gnome-terminal).
-          term.clearSelection();
-          ev.preventDefault();
-          return false;
-        }
-        // No selection → fall through so the TUI receives Ctrl+Shift+C
-        // (or the bare ev if the user used a different modifier).
+      const terminalSelection = term.getSelection();
+      const shortcut = resolvePtyKeyboardShortcut(
+        ev,
+        isMac,
+        Boolean(terminalSelection),
+      );
+
+      if (
+        (shortcut === "copy" ||
+          (copyModifier && ev.shiftKey && ev.key.toLowerCase() === "c")) &&
+        terminalSelection
+      ) {
+        // Direct writeText inside the keydown handler preserves the user
+        // gesture — async round-trips through OSC 52 can lose activation
+        // and fail with "Document is not focused".
+        navigator.clipboard.writeText(terminalSelection).catch((err) => {
+          console.warn("[dashboard clipboard] direct copy failed:", err.message);
+        });
+        // Clear xterm.js's highlight after copy (matches gnome-terminal).
+        term.clearSelection();
+        ev.preventDefault();
+        return false;
       }
 
       // Ctrl+Backspace → delete previous word. xterm.js sends bare DEL
@@ -651,13 +656,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // delete-word-backward. (Ctrl+W can't be used in a browser tab — it's a
       // reserved shortcut that closes the tab and preventDefault has no effect;
       // for Ctrl+W muscle memory use the Electron desktop app.)
-      if (
-        ev.ctrlKey &&
-        !ev.shiftKey &&
-        !ev.altKey &&
-        !ev.metaKey &&
-        ev.key === "Backspace"
-      ) {
+      if (shortcut === "delete-word-backward") {
         ev.preventDefault();
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) ws.send("\x17");
@@ -666,13 +665,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       // Ctrl+Delete → delete next word. Mirror of Ctrl+Backspace; sends Alt+d
       // (ESC d), the readline / prompt_toolkit kill-word-forward binding.
-      if (
-        ev.ctrlKey &&
-        !ev.shiftKey &&
-        !ev.altKey &&
-        !ev.metaKey &&
-        ev.key === "Delete"
-      ) {
+      if (shortcut === "delete-word-forward") {
         ev.preventDefault();
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) ws.send("\x1bd");

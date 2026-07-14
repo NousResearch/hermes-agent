@@ -601,6 +601,23 @@ export function TextInput({
         setCur(vRef.current.length)
         curRef.current = vRef.current.length
       },
+      copy: () => {
+        const range = selRange()
+
+        if (range) {
+          void writeClipboardText(vRef.current.slice(range.start, range.end))
+        }
+      },
+      cut: () => {
+        const range = selRange()
+
+        if (!range) {
+          return
+        }
+
+        void writeClipboardText(vRef.current.slice(range.start, range.end))
+        commit(vRef.current.slice(0, range.start) + vRef.current.slice(range.end), range.start)
+      },
       end: selected?.end ?? curRef.current,
       start: selected?.start ?? curRef.current,
       value: vRef.current

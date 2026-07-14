@@ -37,6 +37,7 @@ def _captured_context_cwd(agent):
 
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.load_relationship_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
@@ -60,11 +61,43 @@ class TestContextFileCwd:
 def _stable_prompt(agent):
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.load_relationship_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
+
+
+def test_relationship_summary_is_injected_into_stable_prompt():
+    agent = _make_agent()
+    with (
+        patch("run_agent.load_soul_md", return_value="SOUL"),
+        patch("run_agent.load_relationship_md", return_value="RELATIONSHIP"),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        stable = build_system_prompt_parts(agent)["stable"]
+
+    assert "SOUL" in stable
+    assert "RELATIONSHIP" in stable
+    assert stable.index("SOUL") < stable.index("RELATIONSHIP")
+
+
+def test_relationship_summary_is_skipped_with_ignore_rules():
+    agent = _make_agent(skip_context_files=True)
+    with (
+        patch("run_agent.load_soul_md", return_value="") as load_soul,
+        patch("run_agent.load_relationship_md", return_value="RELATIONSHIP") as load_relationship,
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+    ):
+        stable = build_system_prompt_parts(agent)["stable"]
+
+    load_soul.assert_not_called()
+    load_relationship.assert_not_called()
+    assert "RELATIONSHIP" not in stable
 
 
 def _init_code_repo(path):

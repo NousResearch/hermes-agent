@@ -37,6 +37,29 @@ def test_profile_agents_are_not_duplicated_when_cwd_is_profile(tmp_path, monkeyp
     assert rendered.count("ONLY_ONCE") == 1
 
 
+def test_profile_relationship_loader_uses_only_distilled_summary(tmp_path, monkeypatch):
+    from agent import prompt_builder
+
+    memories = tmp_path / "memories"
+    memories.mkdir()
+    (memories / "RELATIONSHIP.md").write_text(
+        "# Moss Relationship\n\nDISTILLED_RELATIONSHIP", encoding="utf-8"
+    )
+    (memories / "BOOKMARKS.md").write_text(
+        "UNCONSOLIDATED_BOOKMARK", encoding="utf-8"
+    )
+    awareness = tmp_path / "awareness" / "diaries"
+    awareness.mkdir(parents=True)
+    (awareness / "entry.md").write_text("PRIVATE_DIARY_EVIDENCE", encoding="utf-8")
+    monkeypatch.setattr(prompt_builder, "get_hermes_home", lambda: tmp_path)
+
+    rendered = prompt_builder.load_relationship_md()
+
+    assert "DISTILLED_RELATIONSHIP" in rendered
+    assert "UNCONSOLIDATED_BOOKMARK" not in rendered
+    assert "PRIVATE_DIARY_EVIDENCE" not in rendered
+
+
 def _runner():
     from gateway.run import GatewayRunner
 

@@ -137,6 +137,11 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+# Relationship context is deliberately much smaller than general context
+# files.  It is a distilled, low-frequency profile layer, not a transcript or
+# an inbox for every diary/bookmark entry.
+PROFILE_RELATIONSHIP_MAX_CHARS = 6_000
+
 HERMES_AGENT_HELP_GUIDANCE = (
     "You run on Hermes Agent (by Nous Research). When the user needs help with "
     "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
@@ -1844,6 +1849,42 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
+        return None
+
+
+def load_relationship_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load the compact profile relationship summary, if present.
+
+    ``BOOKMARKS.md`` and ``awareness/`` are intentionally excluded here. They
+    are evidence queues for low-frequency consolidation, not daily prompt
+    material. Keeping this loader explicit prevents those noisier layers from
+    being pulled in by broad directory scanning later.
+    """
+    relationship_path = get_hermes_home() / "memories" / "RELATIONSHIP.md"
+    if not relationship_path.is_file():
+        return None
+    try:
+        content = relationship_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "RELATIONSHIP.md")
+        max_chars = min(
+            PROFILE_RELATIONSHIP_MAX_CHARS,
+            _get_context_file_max_chars(context_length),
+        )
+        content = _truncate_content(
+            content,
+            "RELATIONSHIP.md",
+            max_chars=max_chars,
+            read_path=str(relationship_path),
+        )
+        return f"# Relationship Context\n\n{content}"
+    except Exception as e:
+        logger.debug(
+            "Could not read RELATIONSHIP.md from %s: %s",
+            relationship_path,
+            e,
+        )
         return None
 
 

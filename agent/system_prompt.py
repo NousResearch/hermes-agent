@@ -193,6 +193,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Profile-scoped relationship continuity. This is a compact distilled
+    # layer; bookmarks, diary entries, and awareness evidence are deliberately
+    # not injected into ordinary sessions.
+    if agent.load_soul_identity or not agent.skip_context_files:
+        _relationship_content = _r.load_relationship_md(_ctx_len)
+        if _relationship_content:
+            stable_parts.append(_relationship_content)
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 

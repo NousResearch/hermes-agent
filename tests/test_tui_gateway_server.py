@@ -638,6 +638,55 @@ def test_voice_record_start_handles_non_dict_voice_cfg(monkeypatch):
         assert captured["auto_restart"] is False
 
 
+def test_voice_record_start_forwards_max_recording_seconds(monkeypatch):
+    """voice.max_recording_seconds must reach start_continuous from the TUI.
+
+    The CLI wiring alone doesn't cover TUI recordings: the gateway forwards
+    recorder params explicitly, so a missing kwarg here silently leaves the
+    cap dead in the TUI while CLI tests stay green. Semantics mirror the
+    silence params: non-numeric / bool / missing falls back to the documented
+    120 default, an explicit numeric value <= 0 disables the cap.
+    """
+    captured: dict = {}
+
+    def fake_start_continuous(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.voice",
+        types.SimpleNamespace(
+            start_continuous=fake_start_continuous, stop_continuous=lambda: None
+        ),
+    )
+    monkeypatch.setenv("HERMES_VOICE", "1")
+
+    for cfg, expected in (
+        ({"max_recording_seconds": 45}, 45),        # explicit cap forwarded as-is
+        ({"max_recording_seconds": 0}, 0.0),        # explicit 0 = disabled
+        ({"max_recording_seconds": -5}, 0.0),       # negative = disabled
+        ({}, 120.0),                                # missing = documented default
+        ({"max_recording_seconds": True}, 120.0),   # bool must not become 1s cap
+        ({"max_recording_seconds": "long"}, 120.0), # garbage = documented default
+    ):
+        captured.clear()
+        monkeypatch.setattr(server, "_load_cfg", lambda c=cfg: {"voice": c})
+
+        resp = server.dispatch(
+            {
+                "id": "voice-record-cap",
+                "method": "voice.record",
+                "params": {"action": "start"},
+            }
+        )
+
+        assert "result" in resp, f"voice.record raised for cfg={cfg!r}: {resp.get('error')}"
+        assert resp["result"]["status"] == "recording"
+        assert (
+            captured["max_recording_seconds"] == expected
+        ), f"cfg={cfg!r} forwarded {captured.get('max_recording_seconds')!r}, expected {expected!r}"
+
+
 def test_voice_record_stop_forces_transcription(monkeypatch):
     captured: dict = {}
 

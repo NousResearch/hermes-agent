@@ -987,6 +987,59 @@ class TestVoiceBeepConfigReal:
         mock_beep.assert_not_called()
 
 
+class TestMaxRecordingSecondsConfigReal:
+    """voice.max_recording_seconds must reach the recorder from config.
+
+    Regression for the dead-config fix: the predicate alone can stay green
+    while the CLI wiring regresses, so pin the actual assignment made by
+    ``_voice_start_recording`` for the valid / disabled / corrupted cases.
+    """
+
+    def _start_with_voice_cfg(self, voice_cfg):
+        with patch("cli._cprint"), \
+             patch("cli.threading.Thread", return_value=MagicMock(start=MagicMock())), \
+             patch("tools.voice_mode.play_beep"), \
+             patch("tools.voice_mode.create_audio_recorder") as mock_create, \
+             patch(
+                 "tools.voice_mode.check_voice_requirements",
+                 return_value={
+                     "available": True,
+                     "audio_available": True,
+                     "stt_available": True,
+                     "details": "OK",
+                     "missing_packages": [],
+                 },
+             ), \
+             patch("hermes_cli.config.load_config", return_value={"voice": voice_cfg}):
+            recorder = MagicMock()
+            recorder.supports_silence_autostop = True
+            mock_create.return_value = recorder
+
+            cli = _make_voice_cli()
+            cli._voice_start_recording()
+
+        return recorder
+
+    def test_configured_cap_reaches_recorder(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 45})
+        assert recorder._max_recording_seconds == 45
+
+    def test_non_positive_value_disables_cap(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": 0})
+        assert recorder._max_recording_seconds == 0.0
+
+    def test_bool_falls_back_to_documented_default(self):
+        # bool is a subclass of int — ``max_recording_seconds: true`` must not
+        # become a 1-second cap; it falls back to the documented 120 default,
+        # mirroring the silence-param corruption handling.
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
+        assert recorder._max_recording_seconds == 120.0
+
+    def test_garbage_falls_back_to_documented_default(self):
+        recorder = self._start_with_voice_cfg({"max_recording_seconds": "long"})
+        assert recorder._max_recording_seconds == 120.0
+
+
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
 

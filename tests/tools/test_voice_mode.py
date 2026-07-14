@@ -1175,6 +1175,92 @@ class TestSilenceDetection:
 
 
 # ============================================================================
+# Max recording length cap (voice.max_recording_seconds)
+# ============================================================================
+
+class TestMaxRecordingCap:
+    """The hard cap must auto-stop through the real InputStream-callback
+    path — not just the predicate — and fire the one-shot callback exactly
+    once, independent of the silence-detection branches."""
+
+    def _get_stream_callback(self, mock_sd):
+        callback = mock_sd.InputStream.call_args.kwargs.get("callback")
+        if callback is None:
+            callback = mock_sd.InputStream.call_args[1]["callback"]
+        return callback
+
+    def test_cap_fires_one_shot_callback_during_continuous_speech(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_sd.InputStream.return_value = MagicMock()
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._max_recording_seconds = 0.1
+        # Park the other auto-stop branches far away so only the cap can fire:
+        # loud frames keep the silence branch off, and max_wait covers the
+        # no-speech branch.
+        recorder._silence_duration = 60.0
+        recorder._max_wait = 60.0
+
+        fires = []
+        fired = threading.Event()
+
+        def on_stop():
+            fires.append(1)
+            fired.set()
+
+        recorder.start(on_silence_stop=on_stop)
+        callback = self._get_stream_callback(mock_sd)
+
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        assert not fired.is_set(), "cap must not fire before the limit elapses"
+
+        # Cross the cap while the user is STILL speaking — the silence branch
+        # can never fire here, so a hit proves the cap path.
+        time.sleep(0.12)
+        callback(loud_frame, 1600, None, None)
+        assert fired.wait(timeout=1.0) is True
+
+        # One-shot: the handler cleared _on_silence_stop, further frames past
+        # the cap must not fire again.
+        assert recorder._on_silence_stop is None
+        callback(loud_frame, 1600, None, None)
+        time.sleep(0.05)
+        assert len(fires) == 1
+
+        recorder.cancel()
+
+    def test_disabled_cap_never_fires_on_duration(self, mock_sd):
+        np = pytest.importorskip("numpy")
+        import threading
+
+        mock_sd.InputStream.return_value = MagicMock()
+
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        recorder._max_recording_seconds = 0.0  # disabled (previous behaviour)
+        recorder._silence_duration = 60.0
+        recorder._max_wait = 60.0
+
+        fired = threading.Event()
+        recorder.start(on_silence_stop=lambda: fired.set())
+        callback = self._get_stream_callback(mock_sd)
+
+        loud_frame = np.full((1600, 1), 5000, dtype="int16")
+        callback(loud_frame, 1600, None, None)
+        time.sleep(0.12)
+        callback(loud_frame, 1600, None, None)
+
+        assert fired.wait(timeout=0.2) is False
+        recorder.cancel()
+
+
+# ============================================================================
 # Playback interrupt
 # ============================================================================
 

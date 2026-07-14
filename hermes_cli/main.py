@@ -5552,6 +5552,11 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     if sys.platform != "linux":
         return True
 
+    # When sandbox is explicitly disabled we don't need the SUID helper.
+    # Accepted values match sandboxFallbackFromEnv in update-relaunch.ts.
+    if os.environ.get("ELECTRON_DISABLE_SANDBOX", "").strip().lower() in ("1", "true"):
+        return True
+
     sandbox = packaged_executable.parent / "chrome-sandbox"
     if not sandbox.exists():
         print(f"✗ Hermes Desktop is missing Electron's Linux sandbox helper: {sandbox}")

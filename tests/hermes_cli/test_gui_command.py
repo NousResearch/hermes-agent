@@ -257,6 +257,51 @@ def test_gui_linux_exits_when_sandbox_fixup_fails_without_safe_fallback(tmp_path
     mock_run.assert_not_called()
 
 
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", " 1 ", " True "])
+def test_gui_linux_skips_sandbox_fixup_when_disabled(tmp_path, monkeypatch, value):
+    """ELECTRON_DISABLE_SANDBOX=1/true skips the SUID helper check."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    monkeypatch.setenv("ELECTRON_DISABLE_SANDBOX", value)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    # Only the launch call — no sudo chown/chmod
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == [str(packaged_exe)]
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "yes", "on"])
+def test_gui_linux_runs_sandbox_fixup_when_not_disabled(tmp_path, monkeypatch, value):
+    """Values outside (1, true) don't skip the SUID helper check."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch, platform="linux")
+    sandbox = packaged_exe.parent / "chrome-sandbox"
+    sandbox.write_text("", encoding="utf-8")
+    sandbox.chmod(0o755)
+    monkeypatch.setenv("ELECTRON_DISABLE_SANDBOX", value)
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(skip_build=True))
+
+    assert exc.value.code == 0
+    # sudo chown + chmod + launch = 3 calls
+    assert mock_run.call_count == 3
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/sudo", "chown", "root:root", str(sandbox)]
+    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/sudo", "chmod", "4755", str(sandbox)]
+
+
 def test_gui_source_mode_uses_renderer_build_and_electron(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"

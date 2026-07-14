@@ -5335,6 +5335,15 @@ class AIAgent:
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base
+            # Custom/third-party Anthropic-compatible proxies (LiteLLM,
+            # custom gateways) — they pass the model name through to the
+            # upstream provider unchanged, so dots must be preserved.
+            # Real Anthropic (api.anthropic.com) needs dot→hyphen conversion;
+            # everything else should keep the original model name.
+            or (
+                (getattr(self, "provider", "") or "").lower() == "custom"
+                and "api.anthropic.com" not in base
+            )
         )
 
     def _is_qwen_portal(self) -> bool:

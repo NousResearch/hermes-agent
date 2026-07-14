@@ -256,7 +256,57 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
 
-        assert agent.reasoning_config == {"enabled": False}
+        assert getattr(agent, "reasoning_config") == {"enabled": False}
+
+    def test_fallback_entry_reasoning_effort_false_disables_reasoning(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": False,
+            }
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "reasoning_config") == {"enabled": False}
+
+    def test_bare_fallback_after_override_restores_primary_reasoning_config(self):
+        fbs = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "reasoning_effort": "high",
+            },
+            {
+                "provider": "zai",
+                "model": "glm-4.7",
+            },
+        ]
+        agent = _make_agent(
+            fallback_model=fbs,
+            reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "resolved"),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "high"}
+
+            assert agent._try_activate_fallback() is True
+
+        assert getattr(agent, "model") == "glm-4.7"
+        assert getattr(agent, "reasoning_config") == {"enabled": True, "effort": "medium"}
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

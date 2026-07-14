@@ -6,15 +6,28 @@ import { Terminal } from '@xterm/xterm'
 import { useEffect, useRef } from 'react'
 
 import { useTheme } from '@/themes/context'
+import { $gateway } from '@/store/gateway'
 
 import { registerAgentTerminalWriter } from './agent-terminal-stream'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
 import { resolveSurfaceColor, terminalTheme } from './selection'
 
-// Read-only terminal for an agent background process: a write-only xterm (no PTY,
-// no input) fed live by the backend output stream, keyed by process id. Shares
-// the user terminal's look so the two read as one surface.
-export function useAgentTerminal({ active, id, procId }: { active: boolean; id: string; procId: string }) {
+// Terminal mirror for an agent background process. Most background tabs are
+// output-only, but PTY-backed Claude/Codex/Gemini lanes expose stdin so auth
+// prompts and interactive TUIs can be answered in place.
+export function useAgentTerminal({
+  active,
+  canWrite = false,
+  id,
+  ownerSessionId,
+  procId
+}: {
+  active: boolean
+  canWrite?: boolean
+  id: string
+  ownerSessionId?: string
+  procId: string
+}) {
   const { renderedMode, theme, themeName } = useTheme()
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -39,8 +52,8 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       allowProposedApi: true,
       allowTransparency: false,
       convertEol: true,
-      cursorBlink: false,
-      disableStdin: true,
+      cursorBlink: canWrite,
+      disableStdin: !canWrite,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
       fontWeight: 'normal',
@@ -89,17 +102,30 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
     // Stream live output straight into the terminal (replays backlog on attach).
     const unregister = registerAgentTerminalWriter(procId, chunk => term.write(chunk))
     const unregisterReader = registerTerminalReader(id, makeTerminalReader(term))
+    const disposableInput = term.onData(data => {
+      if (!canWrite || !ownerSessionId) {
+        return
+      }
+
+      const gateway = $gateway.get()
+
+      if (!gateway) {
+        return
+      }
+
+      void gateway.request('process.write', { data, process_id: procId, session_id: ownerSessionId })
+    })
 
     return () => {
       unregister()
       unregisterReader()
+      disposableInput.dispose()
       observer.disconnect()
       term.dispose()
       termRef.current = null
       webglRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [canWrite, id, ownerSessionId, procId])
 
   useEffect(() => {
     const term = termRef.current

@@ -14,6 +14,8 @@ export type StatusItemState = 'done' | 'failed' | 'running'
 export type StatusItemType = 'background' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
+  /** background: PTY stdin is available for interactive CLIs. */
+  canWrite?: boolean
   /** background: non-zero exit shown inline when failed. */
   exitCode?: number
   /** subagent: active tool label shown on the right. */
@@ -180,6 +182,7 @@ const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
 
 // `tui_gateway` process.list entry (tools/process_registry.list_sessions + output_tail).
 interface GatewayProcessEntry {
+  can_write?: boolean
   command?: string
   exit_code?: number
   output_tail?: string
@@ -193,6 +196,7 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 
   return {
     exitCode,
+    canWrite: Boolean(proc.can_write),
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
     state: exited ? (exitCode ? 'failed' : 'done') : 'running',
@@ -202,7 +206,11 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode &&
+  a.canWrite === b.canWrite
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows

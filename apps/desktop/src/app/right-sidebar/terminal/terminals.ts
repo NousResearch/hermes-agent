@@ -31,6 +31,10 @@ export interface TerminalEntry {
   /** `user` = interactive PTY shell. `agent` = read-only mirror of an agent
    *  background process (`terminal(background=true)`), keyed by `procId`. */
   kind: 'user' | 'agent'
+  /** Agent PTY mirrors can be writable (Claude/Codex/Gemini auth prompts, etc.). */
+  canWrite?: boolean
+  /** Runtime session id that owns this process, required to scope write RPCs. */
+  ownerSessionId?: string
   procId?: string
 }
 
@@ -172,12 +176,41 @@ const surfacedProcs = new Set<string>()
 
 const findByProc = (procId: string) => $terminals.get().find(term => term.procId === procId)
 
+interface AgentTerminalOptions {
+  canWrite?: boolean
+  ownerSessionId?: string
+}
+
+function agentTerminalEntry(procId: string, title: string, options: AgentTerminalOptions = {}): TerminalEntry {
+  return {
+    id: newId(),
+    title: title || 'agent',
+    auto: false,
+    cwd: '',
+    kind: 'agent',
+    procId,
+    ...(options.canWrite ? { canWrite: true } : {}),
+    ...(options.ownerSessionId ? { ownerSessionId: options.ownerSessionId } : {})
+  }
+}
+
 /** Auto-surface an agent background process as a read-only tab — once. Returns
  *  the tab id, or null if it was already surfaced and the user has since closed it. */
-export function ensureAgentTerminal(procId: string, title: string): string | null {
+export function ensureAgentTerminal(procId: string, title: string, options: AgentTerminalOptions = {}): string | null {
   const existing = findByProc(procId)
 
   if (existing) {
+    const nextCanWrite = Boolean(existing.canWrite || options.canWrite)
+    const nextOwner = options.ownerSessionId || existing.ownerSessionId
+
+    if (nextCanWrite !== Boolean(existing.canWrite) || nextOwner !== existing.ownerSessionId) {
+      $terminals.set(
+        $terminals.get().map(term =>
+          term.id === existing.id ? { ...term, canWrite: nextCanWrite, ownerSessionId: nextOwner } : term
+        )
+      )
+    }
+
     return existing.id
   }
 
@@ -186,22 +219,35 @@ export function ensureAgentTerminal(procId: string, title: string): string | nul
   }
 
   surfacedProcs.add(procId)
-  const id = newId()
-  $terminals.set([...$terminals.get(), { id, title: title || 'agent', auto: false, cwd: '', kind: 'agent', procId }])
+  const entry = agentTerminalEntry(procId, title, options)
+  $terminals.set([...$terminals.get(), entry])
 
-  return id
+  return entry.id
 }
 
 /** Open + focus an agent process's tab (the status-stack link), recreating it if
  *  the user had closed it. Opens the pane. */
-export function openAgentTerminal(procId: string, title: string): void {
+export function openAgentTerminal(procId: string, title: string, options: AgentTerminalOptions = {}): void {
   surfacedProcs.add(procId)
   seedAgentTerminalCommand(procId, title)
   let id = findByProc(procId)?.id
 
   if (!id) {
-    id = newId()
-    $terminals.set([...$terminals.get(), { id, title: title || 'agent', auto: false, cwd: '', kind: 'agent', procId }])
+    const entry = agentTerminalEntry(procId, title, options)
+    id = entry.id
+    $terminals.set([...$terminals.get(), entry])
+  } else if (options.canWrite || options.ownerSessionId) {
+    $terminals.set(
+      $terminals.get().map(term =>
+        term.id === id
+          ? {
+              ...term,
+              ...(options.canWrite ? { canWrite: true } : {}),
+              ...(options.ownerSessionId ? { ownerSessionId: options.ownerSessionId } : {})
+            }
+          : term
+      )
+    )
   }
 
   $activeTerminalId.set(id)

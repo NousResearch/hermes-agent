@@ -89,6 +89,79 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_agent_start_launches_pty_lane(monkeypatch, tmp_path):
+    import tools.terminal_tool as terminal_tool_mod
+
+    sid = "agent-start-sid"
+    session_key = "agent-start-key"
+    calls = {}
+    server._sessions[sid] = {"session_key": session_key, "cwd": str(tmp_path)}
+
+    def fake_terminal_tool(command, **kwargs):
+        calls["command"] = command
+        calls["kwargs"] = kwargs
+        return json.dumps({"error": None, "session_id": "proc-claude"})
+
+    monkeypatch.setattr(server, "_wire_agent_terminal_output", lambda: None)
+    monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda _key: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(terminal_tool_mod, "terminal_tool", fake_terminal_tool)
+
+    try:
+        result = server._methods["agent.start"](
+            "r1", {"session_id": sid, "lane": "claude", "prompt": "hola"}
+        )
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert result["result"] == {
+        "can_write": True,
+        "command": "claude --dangerously-skip-permissions hola",
+        "lane": "claude",
+        "process_id": "proc-claude",
+        "title": "Claude: hola",
+    }
+    assert calls["kwargs"] == {
+        "background": True,
+        "force": True,
+        "notify_on_complete": False,
+        "pty": True,
+        "session_id": session_key,
+        "task_id": session_key,
+        "workdir": str(tmp_path),
+    }
+
+
+def test_process_write_is_scoped_to_session_owner(monkeypatch):
+    from tools.process_registry import process_registry
+
+    sid = "write-sid"
+    server._sessions[sid] = {"session_key": "owner-key"}
+    writes = []
+
+    monkeypatch.setattr(
+        process_registry,
+        "get",
+        lambda proc_id: types.SimpleNamespace(session_key="owner-key") if proc_id == "proc-1" else None,
+    )
+    monkeypatch.setattr(
+        process_registry,
+        "write_stdin",
+        lambda proc_id, data: writes.append((proc_id, data)) or {"status": "ok", "bytes_written": len(data)},
+    )
+
+    try:
+        result = server._methods["process.write"](
+            "r1", {"session_id": sid, "process_id": "proc-1", "data": "y\r"}
+        )
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert result["result"] == {"status": "ok", "bytes_written": 2}
+    assert writes == [("proc-1", "y\r")]
+
+
 def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     class DbContext:
         def __init__(self, db):

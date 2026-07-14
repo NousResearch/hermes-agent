@@ -120,6 +120,7 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import { SidebarBlankState, SidebarPinnedEmptyState, SidebarSessionSkeletons } from './section-states'
+import { shouldShowMessagingSections } from './sidebar-visibility'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 
 // Non-session groups (messaging platforms) stay compact: show a few rows up
@@ -1331,8 +1332,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery &&
-              !worktreeGroupingActive &&
+            {shouldShowMessagingSections({ searchActive: Boolean(trimmedQuery), workspaceGroupingActive: worktreeGroupingActive }) &&
               messagingGroups.map(group => {
                 const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)

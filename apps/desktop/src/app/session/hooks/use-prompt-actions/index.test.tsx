@@ -17,6 +17,14 @@ vi.mock('@/hermes', () => ({
   transcribeAudio: vi.fn()
 }))
 
+const { openAgentTerminal } = vi.hoisted(() => ({
+  openAgentTerminal: vi.fn()
+}))
+
+vi.mock('@/app/right-sidebar/terminal/terminals', () => ({
+  openAgentTerminal
+}))
+
 // The active id the desktop holds is the *runtime* session id from
 // session.create — deliberately distinct from the stored DB id here, because
 // that mismatch is the bug: the REST renameSession endpoint resolves against
@@ -256,7 +264,51 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
   afterEach(() => {
     cleanup()
     $busy.set(false)
+    openAgentTerminal.mockClear()
     vi.restoreAllMocks()
+  })
+
+  it('routes leading agent mentions to agent.start instead of prompt.submit', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'agent.start') {
+        return { can_write: true, process_id: 'proc-gemini', title: 'Gemini: review repo' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('@gemini review repo')
+
+    expect(calls.map(c => c.method)).toEqual(['agent.start'])
+    expect(calls[0]?.params).toEqual({
+      lane: 'gemini',
+      prompt: 'review repo',
+      session_id: RUNTIME_SESSION_ID
+    })
+    expect(openAgentTerminal).toHaveBeenCalledWith('proc-gemini', 'Gemini: review repo', {
+      canWrite: true,
+      ownerSessionId: RUNTIME_SESSION_ID
+    })
+    expect(states.at(-1)?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: 'system', parts: [expect.objectContaining({ text: 'Started Gemini lane in the terminal.' })] })
+      ])
+    )
   })
 
   it('submits /goal send directives returned directly by slash.exec instead of rendering no output', async () => {

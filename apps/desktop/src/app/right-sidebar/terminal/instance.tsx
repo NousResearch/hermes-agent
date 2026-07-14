@@ -91,14 +91,15 @@ export function TerminalInstance({
 
 interface AgentTerminalInstanceProps {
   active: boolean
+  canWrite?: boolean
   id: string
+  ownerSessionId?: string
   procId: string
 }
 
-/** Read-only mirror of an agent background process — a write-only xterm streamed
- *  live from the backend output (no PTY, no input). */
-export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInstanceProps) {
-  const { hostRef } = useAgentTerminal({ active, id, procId })
+/** Mirror of an agent background process. PTY-backed lanes can receive input. */
+export function AgentTerminalInstance({ active, canWrite, id, ownerSessionId, procId }: AgentTerminalInstanceProps) {
+  const { hostRef } = useAgentTerminal({ active, canWrite, id, ownerSessionId, procId })
 
   return (
     <div

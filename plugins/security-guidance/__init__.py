@@ -1,32 +1,16 @@
-"""security-guidance plugin — fast pattern-matched security warnings on file writes.
+"""security-guidance plugin — pattern-matched security policy on file writes.
 
-Wires one behaviour:
+The ``pre_tool_call`` hook scans content passed to ``write_file``, ``patch``,
+and skill mutation tools. High-confidence dangerous patterns are blocked by
+default; lower-confidence matches remain warnings appended by
+``transform_tool_result``. This preserves useful guidance without allowing
+known unsafe deserialization and command-injection patterns to execute first.
 
-* ``transform_tool_result`` hook — scans the *content being written* by
-  ``write_file`` / ``patch`` / ``skill_manage`` (write/patch modes) for known
-  dangerous code patterns (eval(, pickle.load, yaml.load, os.system,
-  subprocess(shell=True), dangerouslySetInnerHTML, verify=False, ECB,
-  XXE-prone XML parsers, GitHub Actions ``${{ github.event.* }}`` injection,
-  torch.load without ``weights_only=True``, ...). When any pattern matches,
-  the plugin appends a ``⚠️ Security warning`` block to the JSON tool-result
-  string. The file is still written; the model sees the warning in the next
-  turn's tool message and can self-correct.
-
-Why not block? Patterns have a non-trivial false-positive rate (``eval(`` in
-a tokenizer, ``yaml.load`` already wrapped in ``yaml.SafeLoader``, ECB inside
-a test fixture). Blocking would force every false positive into an approval
-prompt or an interrupted workflow. Warning is the right severity for layer
-1 — the agent reads the warning and either fixes the code or briefly
-documents why the construct is safe.
-
-For block-mode (refuse the write entirely), set
-``SECURITY_GUIDANCE_BLOCK=1``. This trades convenience for strictness and
-is intended for shared dev environments where unsafe-by-default patterns
-are policy violations.
-
-Pattern data lives in ``patterns.py``, forked verbatim from Anthropic's
-``claude-plugins-official`` under Apache-2.0. See ``LICENSE`` and ``NOTICE``
-in this directory.
+An operator can explicitly select audited warn-only behavior with
+``security_guidance.warn_only: true`` or ``SECURITY_GUIDANCE_WARN_ONLY=1``.
+``SECURITY_GUIDANCE_BLOCK=1`` is the stricter compatibility mode that blocks
+all matches, including lower-confidence patterns. Pattern data comes from
+Anthropic's ``claude-plugins-official`` under Apache-2.0; see LICENSE/NOTICE.
 """
 
 from __future__ import annotations
@@ -61,10 +45,80 @@ _TARGET_TOOLS: Dict[str, Tuple[str, Tuple[str, ...]]] = {
 # Cap on how much content we scan. Above this we skip — pattern matching a
 # 10 MB blob has poor signal-to-noise and would slow down the agent loop.
 _MAX_SCAN_BYTES = 256 * 1024
+_WARN_ONLY_AUDITED = False
+
+_HIGH_CONFIDENCE_RULES = frozenset(
+    {
+        "child_process_exec",
+        "new_function_injection",
+        "eval_injection",
+        "pickle_deserialization",
+        "os_system_injection",
+        "python_subprocess_shell",
+        "unsafe_yaml_load",
+        "marshal_loads",
+        "shelve_open",
+        "pickle_variants_load",
+        "torch_unsafe_load",
+        "yaml_unsafe_load_variants",
+        "pickle_wrapper_load",
+    }
+)
 
 
 def _block_mode_enabled() -> bool:
     return os.environ.get("SECURITY_GUIDANCE_BLOCK", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _config_warn_only_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+    except Exception:
+        return False
+    if not isinstance(cfg, dict):
+        return False
+    sections = [
+        cfg.get("security_guidance"),
+        cfg.get("security-guidance"),
+        (cfg.get("plugins") or {}).get("security_guidance")
+        if isinstance(cfg.get("plugins"), dict)
+        else None,
+        (cfg.get("plugins") or {}).get("security-guidance")
+        if isinstance(cfg.get("plugins"), dict)
+        else None,
+    ]
+    return any(
+        isinstance(section, dict)
+        and str(section.get("warn_only", "")).lower() in {"1", "true", "yes", "on"}
+        for section in sections
+    )
+
+
+def _warn_only_enabled() -> bool:
+    env_value = os.environ.get("SECURITY_GUIDANCE_WARN_ONLY", "").lower()
+    if env_value in {"1", "true", "yes", "on"}:
+        return True
+    return _config_warn_only_enabled()
+
+
+def _audit_warn_only_override() -> None:
+    global _WARN_ONLY_AUDITED
+    if _WARN_ONLY_AUDITED:
+        return
+    _WARN_ONLY_AUDITED = True
+    source = (
+        "SECURITY_GUIDANCE_WARN_ONLY"
+        if os.environ.get("SECURITY_GUIDANCE_WARN_ONLY", "").lower()
+        in {"1", "true", "yes", "on"}
+        else "security_guidance.warn_only"
+    )
+    logger.warning(
+        "security-guidance warn-only override is active via %s; "
+        "high-confidence dangerous writes will warn instead of blocking.",
+        source,
+    )
 
 
 def _plugin_disabled() -> bool:
@@ -183,6 +237,10 @@ def _format_warning_block(findings: List[Tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _high_confidence_findings(findings: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    return [(name, reminder) for name, reminder in findings if name in _HIGH_CONFIDENCE_RULES]
+
+
 # ---------------------------------------------------------------------------
 # Hooks
 # ---------------------------------------------------------------------------
@@ -204,22 +262,26 @@ def _on_pre_tool_call(
     args: Any = None,
     **_: Any,
 ) -> Optional[Dict[str, str]]:
-    """In block mode, refuse the write if any pattern matches.
-
-    Default mode is non-blocking — we return None here and let
-    ``transform_tool_result`` append a warning to the result instead.
-    """
-    if not _block_mode_enabled():
+    """Block high-confidence findings unless warn-only is explicitly enabled."""
+    strict_block = _block_mode_enabled()
+    if not strict_block and _warn_only_enabled():
+        _audit_warn_only_override()
         return None
     findings = _scan_args(tool_name, args)
     if not findings:
+        return None
+    blocked_findings = findings if strict_block else _high_confidence_findings(findings)
+    if not blocked_findings:
         return None
     return {
         "action": "block",
         "message": (
             "security-guidance refused this write: "
-            + _format_warning_block(findings)
-            + "\n\nTo override, unset SECURITY_GUIDANCE_BLOCK and retry."
+            + _format_warning_block(blocked_findings)
+            + "\n\nTo override for an audited warn-only run, set "
+            "security_guidance.warn_only: true in config.yaml or "
+            "SECURITY_GUIDANCE_WARN_ONLY=1 in the environment and retry. "
+            "SECURITY_GUIDANCE_BLOCK=1 enables strict block-all mode."
         ),
     }
 
@@ -239,6 +301,8 @@ def _on_transform_tool_result(
     # to do in that case (the tool didn't run, so there's no result to wrap).
     if _block_mode_enabled():
         return None
+    if _warn_only_enabled():
+        _audit_warn_only_override()
     findings = _scan_args(tool_name, args)
     if not findings:
         return None

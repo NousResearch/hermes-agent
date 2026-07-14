@@ -30,6 +30,7 @@ def _isolate_env(tmp_path, monkeypatch):
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("SECURITY_GUIDANCE_BLOCK", raising=False)
+    monkeypatch.delenv("SECURITY_GUIDANCE_WARN_ONLY", raising=False)
     monkeypatch.delenv("SECURITY_GUIDANCE_DISABLE", raising=False)
     yield hermes_home
 
@@ -277,10 +278,60 @@ class TestTransformToolResultHook:
 
 
 class TestPreToolCallHook:
-    def test_no_block_in_warn_mode(self):
+    def test_high_confidence_finding_blocks_by_default(self):
         mod = _load_plugin_init()
         args = {"path": "/tmp/foo.py", "content": "pickle.load(f)\n"}
+        out = mod._on_pre_tool_call(tool_name="write_file", args=args)
+        assert isinstance(out, dict)
+        assert out["action"] == "block"
+        assert "pickle_deserialization" in out["message"]
+        assert "SECURITY_GUIDANCE_WARN_ONLY" in out["message"]
+
+    def test_low_confidence_finding_warns_but_does_not_block(self):
+        mod = _load_plugin_init()
+        args = {"path": ".github/workflows/test.yml", "content": "name: CI\n"}
+
         assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
+        result = mod._on_transform_tool_result(
+            tool_name="write_file", args=args, result='{"ok": true}'
+        )
+
+        assert isinstance(result, str)
+        assert "github_actions_workflow" in result
+
+    def test_warn_only_env_override_is_audited(self, monkeypatch, caplog):
+        mod = _load_plugin_init()
+        monkeypatch.setenv("SECURITY_GUIDANCE_WARN_ONLY", "1")
+        args = {"path": "/tmp/foo.py", "content": "pickle.load(f)\n"}
+
+        with caplog.at_level("WARNING"):
+            assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
+
+        assert "warn-only override is active" in caplog.text
+
+    def test_strict_block_env_overrides_warn_only(self, monkeypatch):
+        mod = _load_plugin_init()
+        monkeypatch.setenv("SECURITY_GUIDANCE_WARN_ONLY", "1")
+        monkeypatch.setenv("SECURITY_GUIDANCE_BLOCK", "1")
+        args = {"path": "/tmp/foo.py", "content": "pickle.load(f)\n"}
+
+        result = mod._on_pre_tool_call(tool_name="write_file", args=args)
+
+        assert result is not None
+        assert result["action"] == "block"
+
+    def test_warn_only_config_override_is_audited(self, monkeypatch, caplog):
+        mod = _load_plugin_init()
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"security_guidance": {"warn_only": True}},
+        )
+        args = {"path": "/tmp/foo.py", "content": "pickle.load(f)\n"}
+
+        with caplog.at_level("WARNING"):
+            assert mod._on_pre_tool_call(tool_name="write_file", args=args) is None
+
+        assert "security_guidance.warn_only" in caplog.text
 
     def test_blocks_in_block_mode_on_dangerous_pattern(self, monkeypatch):
         mod = _load_plugin_init()

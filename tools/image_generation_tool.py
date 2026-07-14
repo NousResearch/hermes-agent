@@ -398,6 +398,30 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "max_reference_images": 3,
     },
+    "fal-ai/flux-pro/v1.1": {
+        "display": "FLUX Pro v1.1",
+        "speed": "~8s",
+        "strengths": "Production-ready 1024×1024, all aspect ratios",
+        "price": "$0.04/MP",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "jpeg",
+            "safety_tolerance": "6",
+            "enhance_prompt": False,
+            "sync_mode": False,
+        },
+        "supports": {
+            "prompt", "image_size", "num_images", "output_format",
+            "safety_tolerance", "enhance_prompt", "seed", "sync_mode",
+        },
+        "upscale": False,
+    },
     # Krea 2 on FAL — same model family as ``plugins/image_gen/krea``, but billed
     # through FAL / the FAL managed gateway. Native ``krea-2-*`` ids route to the
     # dedicated Krea plugin instead.

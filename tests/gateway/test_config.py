@@ -412,6 +412,42 @@ class TestGatewayConfigRoundtrip:
         assert restored.reset_by_platform == {}
         assert restored.streaming.transport == "auto"
 
+    def test_from_dict_warns_on_unknown_platform_name(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        restored = GatewayConfig.from_dict(
+            {
+                "platforms": {
+                    "telegarm": {"enabled": True},
+                    "discord": {"enabled": True, "token": "tok"},
+                },
+            }
+        )
+
+        assert Platform.DISCORD in restored.platforms
+        assert all(p.value != "telegarm" for p in restored.platforms)
+        assert any(
+            "telegarm" in record.getMessage() and "Unknown platform" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_from_dict_warns_on_unknown_reset_by_platform_name(self, caplog):
+        caplog.set_level(logging.WARNING, logger="gateway.config")
+
+        restored = GatewayConfig.from_dict(
+            {
+                "reset_by_platform": {
+                    "telegarm": {"mode": "daily"},
+                },
+            }
+        )
+
+        assert restored.reset_by_platform == {}
+        assert any(
+            "telegarm" in record.getMessage() and "reset_by_platform" in record.getMessage()
+            for record in caplog.records
+        )
+
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
             platforms={Platform.SLACK: PlatformConfig(enabled=True, token="***")}

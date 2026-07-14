@@ -214,11 +214,12 @@ async def test_legacy_send_keeps_chunk_indicators_outside_fenced_code_lines(adap
 
 
 @pytest.mark.asyncio
-async def test_final_send_primes_typing_once_before_delivery(adapter):
-    """Final/direct replies should show a short pre-send typing action, but
-    must NOT re-arm Telegram's timer after the answer lands.  Cron/direct
-    deliveries may not have an active gateway refresh loop, while post-send
-    re-triggers would leave a lingering bubble (Telegram has no stop API)."""
+async def test_final_send_does_not_prime_typing_before_delivery(adapter):
+    """Final/direct replies must not re-arm Telegram's one-shot timer.
+
+    Telegram has no stop-typing endpoint, so a pre-send action can remain
+    visible after rich-message delivery and make a completed turn look active.
+    """
     adapter._bot = MagicMock()
     adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
     adapter._bot.send_chat_action = AsyncMock()
@@ -227,8 +228,7 @@ async def test_final_send_primes_typing_once_before_delivery(adapter):
     result = await adapter.send("12345", "All done.", metadata={"notify": True})
 
     assert result.success is True
-    adapter._bot.send_chat_action.assert_awaited_once()
-    assert adapter._bot.send_chat_action.await_args_list[0].kwargs["action"] == "typing"
+    adapter._bot.send_chat_action.assert_not_awaited()
 
 
 @pytest.mark.asyncio

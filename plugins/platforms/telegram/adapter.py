@@ -4007,12 +4007,16 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        """Attach JAIMES numeric actions to the final card itself.
+        """Do not infer approval buttons from final-response prose.
 
-        A separate delayed sendMessage raced the gateway's final delivery and
-        could place buttons above the final card. Reply markup in the same Bot
-        API call is guaranteed to render below ``Approval needed``.
+        Buttons must come from an explicit approval/clarify action. Parsing
+        free-form final text caused false numeric buttons for values such as
+        ``n/a</pre>`` and made harmless summaries look actionable.
         """
+        return None
+
+        # Legacy parser retained temporarily below for a small carried-commit
+        # diff; it is intentionally unreachable and can be dropped on rebase.
         if str(thread_id or "") != "17" or not (metadata or {}).get("notify"):
             return None
         match = re.search(
@@ -4163,21 +4167,12 @@ class TelegramAdapter(BasePlatformAdapter):
         
         try:
             thread_id = self._metadata_thread_id(metadata)
-            await self._jaimes_finalize_card_before_final(chat_id, content, thread_id, metadata)
 
-            # Final/direct sends may not have an active gateway refresh loop
-            # (cron deliveries, queued notifications, or platforms with
-            # streaming disabled).  Fire one pre-send action so Telegram still
-            # shows "typing…" while we are actually about to deliver, then do
-            # NOT re-arm it after the message lands (the message itself clears
-            # Telegram's one-shot typing state; there is no stop-typing API).
-            if (metadata or {}).get("notify"):
-                try:
-                    await self.send_typing(chat_id, metadata=metadata)
-                except Exception:
-                    pass  # Typing failures are non-fatal
-
-            jaimes_reply_markup = self._jaimes_topic17_reply_markup(content, thread_id, metadata)
+            # Final Telegram sends must not re-arm the one-shot typing action.
+            # The gateway owns typing lifecycle and stops it before delivery.
+            # Approval buttons are created only by explicit approval/clarify
+            # flows, never inferred from final-response prose.
+            jaimes_reply_markup = None
 
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls

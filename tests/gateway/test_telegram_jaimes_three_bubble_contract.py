@@ -2,6 +2,7 @@ import inspect
 import json
 from unittest.mock import patch
 
+from gateway.platforms.base import BasePlatformAdapter
 from plugins.platforms.telegram import adapter as telegram_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -21,7 +22,7 @@ def _adapter():
     return object.__new__(TelegramAdapter)
 
 
-def test_jaimes_final_normal_bubble_gets_corresponding_buttons():
+def test_jaimes_final_prose_never_infers_buttons():
     content = """🤖 gpt-5.6-sol (Codex subscription)
 
 **Objective Complete:** Yes
@@ -44,9 +45,7 @@ None
             "17",
             {"notify": True},
         )
-    assert markup is not None
-    assert [[button.text for button in row] for row in markup.inline_keyboard] == [["1", "2"]]
-    assert not content.lstrip().startswith("```")
+    assert markup is None
 
 
 def test_jaimes_final_no_action_has_no_buttons():
@@ -116,8 +115,16 @@ def test_jaimes_final_builds_completion_edit_for_current_active_card(tmp_path):
     assert command[command.index("--model") + 1] == "openai-codex/gpt-5.6-sol"
 
 
-def test_jaimes_completion_edit_is_awaited_before_final_send_path():
+def test_jaimes_final_send_does_not_rearm_typing_or_autofinalize_card():
     source = inspect.getsource(TelegramAdapter.send)
-    close_at = source.index("await self._jaimes_finalize_card_before_final")
-    format_at = source.index("formatted = self.format_message")
-    assert close_at < format_at
+    assert "await self._jaimes_finalize_card_before_final" not in source
+    assert "Final/direct sends may not have an active gateway refresh loop" not in source
+    assert "jaimes_reply_markup = None" in source
+
+
+def test_gateway_stops_typing_before_final_delivery():
+    source = inspect.getsource(BasePlatformAdapter._process_message_background)
+    response_branch = source.index("if response:")
+    stop_at = source.index("await _stop_typing_task()", response_branch)
+    send_at = source.index("result = await self._send_with_retry", response_branch)
+    assert stop_at < send_at

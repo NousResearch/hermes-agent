@@ -314,6 +314,25 @@ export function ChatBar({
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
+    // Trim surrounding whitespace so a copy that dragged along leading/trailing
+    // blank lines (common when selecting from terminals, code blocks, web pages)
+    // doesn't dump multiline padding into the composer. Internal newlines are
+    // preserved — only the edges are cleaned up.
+    const pastedText = event.clipboardData.getData('text').trim()
+
+    // When the clipboard carries both text and image flavors (common with
+    // rich-text editors like Microsoft Word), prefer inserting the text.
+    // The image is usually a rendered copy of the same content, not an
+    // intentional attachment.
+    if (imageBlobs.length > 0 && pastedText) {
+      event.preventDefault()
+      document.execCommand('insertText', false, pastedText)
+      const nextDraft = composerPlainText(event.currentTarget)
+      draftRef.current = nextDraft
+      aui.composer().setText(nextDraft)
+      return
+    }
+
     if (imageBlobs.length > 0) {
       event.preventDefault()
 
@@ -327,12 +346,6 @@ export function ChatBar({
 
       return
     }
-
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = event.clipboardData.getData('text').trim()
 
     if (!pastedText) {
       event.preventDefault()

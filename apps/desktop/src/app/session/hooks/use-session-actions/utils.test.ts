@@ -66,9 +66,15 @@ describe('applyRuntimeInfo credential warnings', () => {
 })
 
 describe('applyRuntimeInfo turn origin', () => {
-  it('restores the active origin from reconnect session info', () => {
-    expect(applyRuntimeInfo({ turn_origin: 'notification' })).toMatchObject({ turnOrigin: 'notification' })
-    expect(applyRuntimeInfo({ turn_origin: null })).toMatchObject({ turnOrigin: null })
+  it('restores the active origin and generation from reconnect session info', () => {
+    expect(applyRuntimeInfo({ turn_generation: 9, turn_origin: 'notification' })).toMatchObject({
+      turnGeneration: 9,
+      turnOrigin: 'notification'
+    })
+    expect(applyRuntimeInfo({ turn_generation: 9, turn_origin: null })).toMatchObject({
+      turnGeneration: 9,
+      turnOrigin: null
+    })
   })
 })
 

@@ -48,6 +48,31 @@ def _completion(process_id="proc-1"):
         "output": "done",
     }
 
+def _durable_completion(tmp_path, monkeypatch, delegation_id):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from tools import async_delegation
+
+    async_delegation._persist_dispatch(
+        {
+            "delegation_id": delegation_id,
+            "session_key": "session-key",
+            "origin_ui_session_id": "sid",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        }
+    )
+    event = {
+        "type": "async_delegation",
+        "delegation_id": delegation_id,
+        "session_key": "session-key",
+        "origin_ui_session_id": "sid",
+        "status": "completed",
+        "completed_at": 2.0,
+        "summary": "done",
+    }
+    async_delegation._persist_completion(event, {"status": "completed", "summary": "done"})
+    return async_delegation, event
+
 
 def test_turn_origin_token_prevents_stale_clear():
     session = _session()
@@ -273,8 +298,15 @@ def test_max_iteration_defers_completion_then_next_user_claims_clean_context(mon
     assert session["defer_notifications_until_user"] is False
 
 
-def _patch_prompt_turn_runtime(monkeypatch, emitted):
-    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+def _patch_prompt_turn_runtime(
+    monkeypatch,
+    emitted,
+    *,
+    immediate_thread=True,
+    disable_post_turn_drain=True,
+):
+    if immediate_thread:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emitted.append(a))
     monkeypatch.setattr(server, "_wire_callbacks", lambda *_a, **_kw: None)
     monkeypatch.setattr(server, "_sync_agent_model_with_config", lambda *_a, **_kw: None)
@@ -287,7 +319,8 @@ def _patch_prompt_turn_runtime(monkeypatch, emitted):
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *_a, **_kw: None)
     monkeypatch.setattr(server, "_voice_tts_enabled", lambda: False)
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
-    monkeypatch.setattr(server, "_drain_post_turn_notifications", lambda *_a, **_kw: None)
+    if disable_post_turn_drain:
+        monkeypatch.setattr(server, "_drain_post_turn_notifications", lambda *_a, **_kw: None)
     from hermes_cli.goals import GoalManager
 
     monkeypatch.setattr(GoalManager, "is_active", lambda _self: False)
@@ -528,3 +561,500 @@ def test_notification_poller_retries_after_synchronous_dispatch_failure(monkeypa
 
     assert len(attempts) == 2
     assert isolated_queue.empty()
+
+
+def test_deferred_durable_ack_failure_retries_without_duplicate(tmp_path, monkeypatch):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-deferred-ack"
+    )
+    session = _session(
+        defer_notifications_until_user=True,
+        deferred_notification_texts=[],
+    )
+    emitted = []
+    acknowledged = threading.Event()
+    attempts = []
+    original_complete = async_delegation.complete_event_delivery
+
+    def flaky_complete(evt, claim_id):
+        attempts.append(claim_id)
+        if len(attempts) == 1:
+            raise OSError("temporary sqlite failure")
+        completed = original_complete(evt, claim_id)
+        if completed:
+            acknowledged.set()
+        return completed
+
+    monkeypatch.setattr(async_delegation, "complete_event_delivery", flaky_complete)
+    monkeypatch.setattr(server, "_NOTIFICATION_ACK_RETRY_DELAYS", (0.0,))
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    outcome = server._dispatch_notification_turn(
+        "rid",
+        "sid",
+        session,
+        "durable result",
+        event=event,
+        consumer="test-deferred",
+    )
+
+    assert outcome == "deferred"
+    assert acknowledged.wait(3)
+    assert session["deferred_notification_texts"] == ["durable result"]
+    assert session["deferred_notification_event_ids"] == {
+        "async_delegation:deleg-deferred-ack"
+    }
+    durable = async_delegation.get_durable_delegation("deleg-deferred-ack")
+    assert durable["delivery_attempts"] == 1
+    assert durable["delivery_state"] == "delivered"
+    assert durable["result"] == {"status": "completed", "summary": "done"}
+    assert durable["state"] == "completed"
+
+    assert server._dispatch_notification_turn(
+        "rid-duplicate",
+        "sid",
+        session,
+        "durable result",
+        event=event,
+        consumer="test-deferred-duplicate",
+    ) == "claimed"
+    assert session["deferred_notification_texts"] == ["durable result"]
+    assert len([item for item in emitted if item[0] == "status.update"]) == 1
+
+
+def test_durable_claim_releases_when_turn_fails_before_acceptance(tmp_path, monkeypatch):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-before-accept"
+    )
+    session = _session()
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("start failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="start failed"):
+        server._dispatch_notification_turn(
+            "rid",
+            "sid",
+            session,
+            "durable result",
+            event=event,
+            consumer="test-before-accept",
+        )
+
+    assert session["running"] is False
+    durable = async_delegation.get_durable_delegation("deleg-before-accept")
+    assert durable["delivery_state"] == "pending"
+    retry_claim = async_delegation.claim_event_delivery(event, "test-retry")
+    assert retry_claim
+    assert async_delegation.release_event_delivery(event, retry_claim)
+
+
+def test_dispatched_durable_ack_failure_keeps_live_turn_reserved(tmp_path, monkeypatch):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-live-ack"
+    )
+    emitted = []
+    started = threading.Event()
+    finish = threading.Event()
+    acknowledged = threading.Event()
+    calls = []
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = "session-key"
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            calls.append(prompt)
+            started.set()
+            if not finish.wait(3):
+                raise TimeoutError("test did not release live turn")
+            return _successful_turn(prompt, conversation_history)
+
+    session = _session(agent=_Agent())
+    _patch_prompt_turn_runtime(
+        monkeypatch,
+        emitted,
+        immediate_thread=False,
+        disable_post_turn_drain=True,
+    )
+    attempts = []
+    original_complete = async_delegation.complete_event_delivery
+
+    def flaky_complete(evt, claim_id):
+        attempts.append(claim_id)
+        if len(attempts) == 1:
+            raise OSError("temporary sqlite failure")
+        completed = original_complete(evt, claim_id)
+        if completed:
+            acknowledged.set()
+        return completed
+
+    monkeypatch.setattr(async_delegation, "complete_event_delivery", flaky_complete)
+    monkeypatch.setattr(server, "_NOTIFICATION_ACK_RETRY_DELAYS", (0.0,))
+
+    assert server._dispatch_notification_turn(
+        "rid",
+        "sid",
+        session,
+        "durable result",
+        event=event,
+        consumer="test-live",
+    ) == "dispatched"
+    run_thread = session["_run_thread"]
+
+    assert started.wait(3)
+    assert acknowledged.wait(3)
+    assert session["running"] is True
+    assert server._dispatch_notification_turn(
+        "rid-duplicate",
+        "sid",
+        session,
+        "durable result",
+        event=event,
+        consumer="test-live-duplicate",
+    ) == "busy"
+
+    finish.set()
+    run_thread.join(3)
+    assert not run_thread.is_alive()
+    assert calls == ["durable result"]
+    assert session["running"] is False
+    assert async_delegation.get_durable_delegation("deleg-live-ack")[
+        "delivery_state"
+    ] == "delivered"
+
+
+def test_notification_reservation_wins_foreground_submit_barrier(tmp_path, monkeypatch):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-reservation-race"
+    )
+    claim_entered = threading.Event()
+    release_claim = threading.Event()
+    notification_calls = []
+    errors = []
+
+    class _ObservedLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self.waiter = threading.Event()
+
+        def __enter__(self):
+            if self._lock.locked():
+                self.waiter.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):
+            self._lock.release()
+
+    class _Agent:
+        def __init__(self):
+            self.interrupts = 0
+
+        def interrupt(self):
+            self.interrupts += 1
+
+    observed_lock = _ObservedLock()
+    agent = _Agent()
+    session = _session(agent=agent, history_lock=observed_lock)
+    original_claim = async_delegation.claim_event_delivery
+
+    def blocked_claim(evt, consumer):
+        claim_id = original_claim(evt, consumer)
+        claim_entered.set()
+        if not release_claim.wait(3):
+            raise TimeoutError("test did not release durable claim")
+        return claim_id
+
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", blocked_claim)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda *args, **kwargs: notification_calls.append((args, kwargs)),
+    )
+    server._sessions["sid-race"] = session
+    notification_result = {}
+    foreground_result = {}
+
+    def dispatch_notification():
+        try:
+            notification_result["value"] = server._dispatch_notification_turn(
+                "rid-notification",
+                "sid-race",
+                session,
+                "background result",
+                event=event,
+                consumer="test-reservation",
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def submit_foreground():
+        try:
+            foreground_result["value"] = server._methods["prompt.submit"](
+                "rid-user", {"session_id": "sid-race", "text": "user request"}
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    notification_thread = threading.Thread(target=dispatch_notification)
+    foreground_thread = threading.Thread(target=submit_foreground)
+    try:
+        notification_thread.start()
+        assert claim_entered.wait(3)
+        foreground_thread.start()
+        assert observed_lock.waiter.wait(3)
+        release_claim.set()
+        notification_thread.join(3)
+        foreground_thread.join(3)
+
+        assert not errors
+        assert notification_result["value"] == "dispatched"
+        assert foreground_result["value"]["result"]["status"] == "queued"
+        assert session["queued_prompt"]["text"] == "user request"
+        assert agent.interrupts == 1
+        assert len(notification_calls) == 1
+        assert notification_calls[0][1]["origin"] == "notification"
+        assert async_delegation.get_durable_delegation("deleg-reservation-race")[
+            "delivery_state"
+        ] == "delivered"
+    finally:
+        release_claim.set()
+        notification_thread.join(3)
+        foreground_thread.join(3)
+        server._sessions.pop("sid-race", None)
+
+
+def test_delayed_final_session_info_keeps_older_generation(monkeypatch):
+    emitted = []
+    old_info_waiting = threading.Event()
+    release_old_info = threading.Event()
+    second_started = threading.Event()
+    release_second = threading.Event()
+    calls = []
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = "session-key"
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            calls.append(prompt)
+            if len(calls) == 2:
+                second_started.set()
+                if not release_second.wait(3):
+                    raise TimeoutError("test did not release second turn")
+            return _successful_turn(prompt, conversation_history)
+
+    session = _session(agent=_Agent(), running=True)
+    _patch_prompt_turn_runtime(
+        monkeypatch,
+        emitted,
+        immediate_thread=False,
+        disable_post_turn_drain=True,
+    )
+
+    def barrier_emit(event_type, sid, payload=None):
+        if (
+            event_type == "session.info"
+            and payload.get("turn_generation") == 1
+            and payload.get("running") is False
+        ):
+            old_info_waiting.set()
+            if not release_old_info.wait(3):
+                raise TimeoutError("test did not release stale session.info")
+        emitted.append((event_type, sid, payload or {}))
+
+    monkeypatch.setattr(server, "_emit", barrier_emit)
+
+    server._run_prompt_submit("rid-1", "sid", session, "first", origin="user")
+    first_thread = session["_run_thread"]
+    assert old_info_waiting.wait(3)
+
+    with session["history_lock"]:
+        assert session["running"] is False
+        session["running"] = True
+    server._run_prompt_submit("rid-2", "sid", session, "second", origin="notification")
+    second_thread = session["_run_thread"]
+    assert second_started.wait(3)
+
+    start_two = next(
+        event
+        for event in emitted
+        if event[0] == "message.start" and event[2].get("turn_generation") == 2
+    )
+    assert start_two[2]["turn_origin"] == "notification"
+    assert not [
+        event
+        for event in emitted
+        if event[0] == "session.info" and event[2].get("turn_generation") == 1
+    ]
+
+    release_old_info.set()
+    release_second.set()
+    first_thread.join(3)
+    second_thread.join(3)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    stale_info_index = next(
+        index
+        for index, event in enumerate(emitted)
+        if event[0] == "session.info" and event[2].get("turn_generation") == 1
+    )
+    start_two_index = emitted.index(start_two)
+    assert start_two_index < stale_info_index
+    stale_info = emitted[stale_info_index][2]
+    assert stale_info["running"] is False
+    assert stale_info["turn_origin"] is None
+
+
+def test_live_session_reconnect_preserves_and_settles_turn_generation(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="test-model",
+        provider="test-provider",
+        session_id="session-key",
+    )
+    session = _session(agent=agent)
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    with session["history_lock"]:
+        session["running"] = True
+        turn_token = server._set_turn_origin_locked(session, "notification")
+
+    active = server._live_session_payload("sid", session)
+    assert active["running"] is True
+    assert active["info"]["running"] is True
+    assert active["info"]["turn_generation"] == turn_token
+    assert active["info"]["turn_origin"] == "notification"
+
+    with session["history_lock"]:
+        session["running"] = False
+        assert server._clear_turn_origin_locked(session, turn_token)
+
+    settled = server._live_session_payload("sid", session)
+    assert settled["running"] is False
+    assert settled["info"]["running"] is False
+    assert settled["info"]["turn_generation"] == turn_token
+    assert settled["info"]["turn_origin"] is None
+
+
+def test_notification_preemption_drains_user_before_later_completion(monkeypatch):
+    isolated_queue = queue.Queue()
+    emitted = []
+    first_started = threading.Event()
+    release_first = threading.Event()
+    third_settled = threading.Event()
+    calls = []
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = "session-key"
+
+        def __init__(self):
+            self.interrupts = 0
+
+        def clear_interrupt(self):
+            return None
+
+        def interrupt(self):
+            self.interrupts += 1
+
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            calls.append(prompt)
+            if len(calls) == 1:
+                first_started.set()
+                if not release_first.wait(3):
+                    raise TimeoutError("test did not release notification turn")
+                result = _successful_turn(prompt, conversation_history)
+                result["interrupted"] = True
+                return result
+            return _successful_turn(prompt, conversation_history)
+
+    agent = _Agent()
+    session = _session(agent=agent)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    _patch_prompt_turn_runtime(
+        monkeypatch,
+        emitted,
+        immediate_thread=False,
+        disable_post_turn_drain=False,
+    )
+
+    def recording_emit(event_type, sid, payload=None):
+        emitted.append((event_type, sid, payload or {}))
+        if (
+            event_type == "session.info"
+            and payload.get("turn_generation") == 3
+            and payload.get("running") is False
+        ):
+            third_settled.set()
+
+    monkeypatch.setattr(server, "_emit", recording_emit)
+    process_registry._completion_consumed.discard("proc-after-user")
+    server._sessions["sid"] = session
+    try:
+        assert server._dispatch_notification_turn(
+            "rid-notification",
+            "sid",
+            session,
+            "first background result",
+        ) == "dispatched"
+        assert first_started.wait(3)
+
+        response = server._methods["prompt.submit"](
+            "rid-user", {"session_id": "sid", "text": "foreground request"}
+        )
+        assert response["result"]["status"] == "queued"
+        assert agent.interrupts == 1
+
+        isolated_queue.put(_completion("proc-after-user"))
+        release_first.set()
+        assert third_settled.wait(5)
+        latest_thread = session["_run_thread"]
+        latest_thread.join(3)
+
+        assert calls[0] == "first background result"
+        assert calls[1] == "foreground request"
+        assert "proc-after-user" in calls[2]
+        assert len(calls) == 3
+        starts = [event[2] for event in emitted if event[0] == "message.start"]
+        assert [event["turn_origin"] for event in starts] == [
+            "notification",
+            "user",
+            "notification",
+        ]
+        assert [event["turn_generation"] for event in starts] == [1, 2, 3]
+        assert isolated_queue.empty()
+        assert session["running"] is False
+    finally:
+        release_first.set()
+        run_thread = session.get("_run_thread")
+        if run_thread is not None:
+            run_thread.join(3)
+        server._sessions.pop("sid", None)
+        process_registry._completion_consumed.discard("proc-after-user")

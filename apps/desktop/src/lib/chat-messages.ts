@@ -106,6 +106,7 @@ export type GatewayEventPayload = {
   billing?: BillingBlock
   failure_reason?: string
   turn_origin?: TurnOrigin | null
+  turn_generation?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

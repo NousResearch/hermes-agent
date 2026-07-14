@@ -58,7 +58,14 @@ import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
-import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
+import {
+  hasSessionInfoStatePatch,
+  isStaleTurnPayload,
+  sessionInfoStatePatch,
+  SUBAGENT_EVENT_TYPES,
+  toTodoPayload,
+  turnGenerationFromPayload
+} from './utils'
 
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
@@ -344,12 +351,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         if (sessionId && hasStatePatch) {
           updateSessionState(
             sessionId,
-            state => ({
-              ...state,
-              ...statePatch,
-              branch: statePatch.branch ?? state.branch,
-              cwd: statePatch.cwd ?? state.cwd
-            }),
+            state => {
+              const patch = isStaleTurnPayload(state, payload)
+                ? {
+                    ...statePatch,
+                    turnGeneration: state.turnGeneration,
+                    turnOrigin: state.turnOrigin
+                  }
+                : statePatch
+
+              return {
+                ...state,
+                ...patch,
+                branch: patch.branch ?? state.branch,
+                cwd: patch.cwd ?? state.cwd
+              }
+            },
             payload?.stored_session_id || undefined
           )
         }
@@ -366,6 +383,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           updateSessionState(
             sessionId,
             state => {
+              if (isStaleTurnPayload(state, payload)) {
+                return state
+              }
+
               const busy = Boolean(payload!.running)
 
               if (state.busy === busy && (busy || !state.awaitingResponse)) {
@@ -432,6 +453,38 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
+        const startedAt = Date.now()
+        const generation = turnGenerationFromPayload(payload)
+        let accepted = false
+
+        updateSessionState(sessionId, state => {
+          if (isStaleTurnPayload(state, payload)) {
+            return state
+          }
+
+          accepted = true
+
+          return {
+            ...state,
+            busy: true,
+            awaitingResponse: true,
+            sawAssistantPayload: false,
+            interrupted: false,
+            turnGeneration: generation ?? state.turnGeneration,
+            turnOrigin:
+              payload?.turn_origin === 'notification' ||
+              payload?.turn_origin === 'goal' ||
+              payload?.turn_origin === 'user'
+                ? payload.turn_origin
+                : 'user',
+            turnStartedAt: startedAt
+          }
+        })
+
+        if (!accepted) {
+          return
+        }
+
         flushQueuedDeltas(sessionId)
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
@@ -475,7 +528,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         })
 
         if (isActiveEvent) {
-          setTurnStartedAt(Date.now())
+          setTurnStartedAt(startedAt)
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
@@ -597,6 +650,31 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
+        const completedOrigin =
+          payload?.turn_origin === 'notification' || payload?.turn_origin === 'goal' || payload?.turn_origin === 'user'
+            ? payload.turn_origin
+            : null
+        const generation = turnGenerationFromPayload(payload)
+        let accepted = false
+
+        updateSessionState(sessionId, state => {
+          if (isStaleTurnPayload(state, payload)) {
+            return state
+          }
+
+          accepted = true
+
+          return {
+            ...state,
+            turnGeneration: generation ?? state.turnGeneration,
+            ...(completedOrigin ? { turnOrigin: completedOrigin } : {})
+          }
+        })
+
+        if (!accepted) {
+          return
+        }
+
         // Turn ended — drop any blocking prompt still open for THIS session
         // (e.g. interrupted, or the approval already resolved). Scoped to the
         // session so a background turn finishing can't wipe the active chat's
@@ -610,15 +688,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionCompacting(sessionId, false)
 
         flushQueuedDeltas(sessionId)
-
-        const completedOrigin =
-          payload?.turn_origin === 'notification' || payload?.turn_origin === 'goal' || payload?.turn_origin === 'user'
-            ? payload.turn_origin
-            : null
-
-        if (completedOrigin) {
-          updateSessionState(sessionId, state => ({ ...state, turnOrigin: completedOrigin }))
-        }
 
         const suppressFeedback = sessionInterrupted(sessionId) && completedOrigin === 'notification'
 

@@ -4045,7 +4045,12 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         return None
 
 
-def _session_info(agent, session: dict | None = None) -> dict:
+def _session_info(
+    agent,
+    session: dict | None = None,
+    *,
+    turn_snapshot: Optional[dict] = None,
+) -> dict:
     if session is None:
         for candidate in _sessions.values():
             if candidate.get("agent") is agent:
@@ -4088,6 +4093,16 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
+    if turn_snapshot is None:
+        turn_session = session or {}
+        history_lock = turn_session.get("history_lock")
+        if history_lock is None:
+            turn_state = _turn_state_snapshot_locked(turn_session)
+        else:
+            with history_lock:
+                turn_state = _turn_state_snapshot_locked(turn_session)
+    else:
+        turn_state = turn_snapshot
     info: dict = {
         "model": mirror.get("model", getattr(agent, "model", "")),
         "provider": mirror.get("provider", getattr(agent, "provider", "")),
@@ -4102,7 +4117,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "project": _project_info_for_cwd(cwd),
         "personality": str(personality or ""),
-        "running": bool((session or {}).get("running")),
+        "running": bool(turn_state["running"]),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "stored_session_id": session_key or "",
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
@@ -4113,7 +4128,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "usage": _session_usage_snapshot(session),
         "profile_name": _current_profile_name(),
     }
-    info["turn_origin"] = (session or {}).get("turn_origin")
+    info["turn_origin"] = turn_state["turn_origin"]
+    info["turn_generation"] = int(turn_state["turn_generation"])
     try:
         from hermes_cli import __version__, __release_date__
 
@@ -5984,6 +6000,15 @@ def _clear_turn_origin_locked(session: dict, token: int) -> bool:
     return True
 
 
+def _turn_state_snapshot_locked(session: dict) -> dict:
+    """Capture generation, origin, and running while ``history_lock`` is held."""
+    return {
+        "running": bool(session.get("running")),
+        "turn_generation": int(session.get("turn_generation", 0)),
+        "turn_origin": session.get("turn_origin"),
+    }
+
+
 def _compose_deferred_notification_prompt(text: Any, notifications: list[str]) -> str:
     sections = []
     for index, notification in enumerate(notifications, start=1):
@@ -7111,18 +7136,22 @@ def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
     return None
 
 
-def _fallback_session_info(session: dict) -> dict:
+def _fallback_session_info(session: dict, *, turn_snapshot: Optional[dict] = None) -> dict:
     agent = session.get("agent")
     if agent is not None:
-        return _session_info(agent)
+        return _session_info(agent, session, turn_snapshot=turn_snapshot)
     cwd = _default_session_cwd()
+    turn_state = turn_snapshot or _turn_state_snapshot_locked(session)
     return {
         "cwd": cwd,
         "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
+        "running": bool(turn_state["running"]),
         "skills": {},
         "tools": {},
+        "turn_generation": int(turn_state["turn_generation"]),
+        "turn_origin": turn_state["turn_origin"],
     }
 
 
@@ -7218,12 +7247,13 @@ def _live_session_payload(
         inflight = _inflight_snapshot(session)
         queued = _queued_prompt_snapshot(session)
         running = bool(session.get("running"))
+        turn_snapshot = _turn_state_snapshot_locked(session)
     # Prefer the persisted display lineage (candidate-inclusive) so this payload
     # matches the eager session.resume + REST transcript; the DB has its own
     # lock, so read it outside the session history lock.
     history = _live_visible_history(session, _get_db(), in_memory_history)
     payload = {
-        "info": _fallback_session_info(session),
+        "info": _fallback_session_info(session, turn_snapshot=turn_snapshot),
         "message_count": len(history),
         "messages": _history_to_messages(history),
         "running": running,
@@ -10337,6 +10367,82 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+_NOTIFICATION_ACK_RETRY_DELAYS = (0.05, 0.25, 1.0, 5.0, 15.0, 30.0)
+
+
+def _durable_notification_event_id(event: Optional[dict]) -> Optional[str]:
+    if not event or event.get("type") != "async_delegation":
+        return None
+    delegation_id = str(event.get("delegation_id") or "")
+    return f"async_delegation:{delegation_id}" if delegation_id else None
+
+
+def _retry_accepted_notification_ack(
+    event: dict,
+    claim_id: str,
+    consumer: str,
+) -> None:
+    from tools.async_delegation import complete_event_delivery
+
+    event_id = _durable_notification_event_id(event) or "legacy"
+    attempt = 0
+    while True:
+        delay = _NOTIFICATION_ACK_RETRY_DELAYS[
+            min(attempt, len(_NOTIFICATION_ACK_RETRY_DELAYS) - 1)
+        ]
+        if delay:
+            time.sleep(delay)
+        try:
+            if complete_event_delivery(event, claim_id):
+                logger.info(
+                    "durable notification ack retry succeeded: consumer=%s event=%s",
+                    consumer,
+                    event_id,
+                )
+                return
+        except Exception:
+            pass
+        attempt += 1
+
+
+def _ack_accepted_notification(event: Optional[dict], claim_id: str, consumer: str) -> None:
+    if not event or not claim_id:
+        return
+
+    try:
+        from tools.async_delegation import complete_event_delivery
+
+        if complete_event_delivery(event, claim_id):
+            return
+        error: BaseException = RuntimeError("durable delivery claim no longer acknowledges")
+    except Exception as exc:
+        error = exc
+    logger.warning(
+        "durable notification accepted; retrying ack without reinjection: "
+        "consumer=%s event=%s error=%s",
+        consumer,
+        _durable_notification_event_id(event) or "legacy",
+        error,
+    )
+    try:
+        retry_thread = threading.Thread(
+            target=_retry_accepted_notification_ack,
+            args=(event, claim_id, consumer),
+            daemon=True,
+            name=f"tui-notification-ack-{str(event.get('delegation_id') or 'legacy')[:24]}",
+        )
+        retry_thread.start()
+    except Exception:
+        # The notification turn/deferred context is already consumer-visible.
+        # Never release or reinject it merely because the ack worker could not
+        # start; the durable row remains pending for recovery diagnostics.
+        logger.exception(
+            "durable notification ack retry thread failed to start: consumer=%s event=%s",
+            consumer,
+            _durable_notification_event_id(event) or "legacy",
+        )
+
+
 def _dispatch_notification_turn(
     rid,
     sid: str,
@@ -10349,40 +10455,55 @@ def _dispatch_notification_turn(
 ) -> str:
     claim_id: Optional[str] = ""
     if event is not None:
-        from tools.async_delegation import (
-            claim_event_delivery,
-            complete_event_delivery,
-            release_event_delivery,
-        )
+        from tools.async_delegation import claim_event_delivery, release_event_delivery
 
-    with session["history_lock"]:
-        if session.get("running"):
-            outcome = "busy"
-        else:
-            if event is not None:
-                claim_id = claim_event_delivery(event, consumer)
-            if claim_id is None:
-                outcome = "claimed"
-            elif session.get("defer_notifications_until_user"):
-                deferred = session.setdefault("deferred_notification_texts", [])
-                deferred.append(text)
-                outcome = "deferred"
+    try:
+        with session["history_lock"]:
+            if session.get("running"):
+                outcome = "busy"
             else:
-                session["running"] = True
-                outcome = "dispatched"
+                if event is not None:
+                    claim_id = claim_event_delivery(event, consumer)
+                if claim_id is None:
+                    outcome = "claimed"
+                elif session.get("defer_notifications_until_user"):
+                    event_id = _durable_notification_event_id(event)
+                    deferred_ids = session.get("deferred_notification_event_ids")
+                    if not isinstance(deferred_ids, set):
+                        deferred_ids = set(deferred_ids or ())
+                        session["deferred_notification_event_ids"] = deferred_ids
+                    if event_id is None or event_id not in deferred_ids:
+                        session.setdefault("deferred_notification_texts", []).append(text)
+                        if event_id is not None:
+                            deferred_ids.add(event_id)
+                    outcome = "deferred"
+                else:
+                    session["running"] = True
+                    outcome = "dispatched"
+    except Exception:
+        if event is not None and claim_id:
+            release_event_delivery(event, claim_id)
+        raise
 
     if outcome == "claimed":
         return outcome
 
-    if emit_status or outcome == "deferred":
-        status_text = text
-        if outcome == "deferred":
-            status_text = (
-                f"{text}\n\nBackground result is pending for your next explicit user turn."
-            )
-        _emit("status.update", sid, {"kind": "process", "text": status_text})
+    status_text = text
+    if outcome == "deferred":
+        status_text = f"{text}\n\nBackground result is pending for your next explicit user turn."
 
     if outcome == "busy":
+        if emit_status:
+            _emit("status.update", sid, {"kind": "process", "text": status_text})
+        return outcome
+
+    if outcome == "deferred":
+        if emit_status or outcome == "deferred":
+            try:
+                _emit("status.update", sid, {"kind": "process", "text": status_text})
+            except Exception:
+                logger.exception("deferred notification status emission failed after acceptance")
+        _ack_accepted_notification(event, claim_id or "", consumer)
         return outcome
 
     try:
@@ -10395,12 +10516,13 @@ def _dispatch_notification_turn(
         if event is not None:
             complete_event_delivery(event, claim_id or "")
     except Exception:
-        if event is not None:
-            release_event_delivery(event, claim_id or "")
-        if outcome == "dispatched":
-            with session["history_lock"]:
-                session["running"] = False
+        if event is not None and claim_id:
+            release_event_delivery(event, claim_id)
+        with session["history_lock"]:
+            session["running"] = False
         raise
+
+    _ack_accepted_notification(event, claim_id or "", consumer)
     return outcome
 
 
@@ -10727,6 +10849,7 @@ def _run_prompt_submit(
     origin: TurnOrigin = "user",
 ) -> None:
     claimed_notifications: list[str] = []
+    claimed_notification_ids: set[str] = set()
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -10735,7 +10858,9 @@ def _run_prompt_submit(
         persist_user_message = None
         if origin == "user":
             claimed_notifications = list(session.get("deferred_notification_texts") or [])
+            claimed_notification_ids = set(session.get("deferred_notification_event_ids") or ())
             session["deferred_notification_texts"] = []
+            session["deferred_notification_event_ids"] = set()
             session["defer_notifications_until_user"] = False
             if claimed_notifications:
                 persist_user_message = text if isinstance(text, str) else str(text)
@@ -10744,7 +10869,11 @@ def _run_prompt_submit(
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, persist_user_message if persist_user_message is not None else text)
     agent = session["agent"]
-    _emit("message.start", sid, {"turn_origin": origin})
+    _emit(
+        "message.start",
+        sid,
+        {"turn_generation": turn_token, "turn_origin": origin},
+    )
     if hasattr(agent, "clear_interrupt"):
         try:
             agent.clear_interrupt()
@@ -11079,6 +11208,7 @@ def _run_prompt_submit(
                 "usage": _get_usage(agent),
                 "status": status,
                 "turn_origin": origin,
+                "turn_generation": turn_token,
             }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
@@ -11290,13 +11420,22 @@ def _run_prompt_submit(
                         *claimed_notifications,
                         *concurrent_notifications,
                     ]
+                    concurrent_notification_ids = set(
+                        session.get("deferred_notification_event_ids") or ()
+                    )
+                    session["deferred_notification_event_ids"] = {
+                        *claimed_notification_ids,
+                        *concurrent_notification_ids,
+                    }
                     session["defer_notifications_until_user"] = True
                 if session.get("turn_token") == turn_token:
                     session["running"] = False
                     session["last_active"] = time.time()
                     _clear_inflight_turn(session)
                     _clear_turn_origin_locked(session, turn_token)
-            _emit("session.info", sid, _session_info(agent, session))
+                turn_snapshot = _turn_state_snapshot_locked(session)
+            info = _session_info(agent, session, turn_snapshot=turn_snapshot)
+            _emit("session.info", sid, info)
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;

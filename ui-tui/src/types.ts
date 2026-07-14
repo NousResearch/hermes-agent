@@ -171,6 +171,7 @@ export interface SessionInfo {
   model: string
   profile_name?: string
   project?: null | ProjectInfo
+  running?: boolean
   reasoning_effort?: string
   release_date?: string
   service_tier?: string
@@ -182,6 +183,7 @@ export interface SessionInfo {
   usage?: Usage
   version?: string
   turn_origin?: TurnOrigin | null
+  turn_generation?: number
 }
 
 export interface Usage {

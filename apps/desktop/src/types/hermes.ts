@@ -498,6 +498,7 @@ export interface SessionRuntimeInfo {
   version?: string
   yolo?: boolean
   turn_origin?: TurnOrigin | null
+  turn_generation?: number
 }
 
 export interface UsageStats {

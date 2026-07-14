@@ -203,4 +203,5 @@ export interface ClientSessionState {
    *  tile's context count. Null until the first turn reports. */
   usage: null | UsageStats
   turnOrigin?: TurnOrigin | null
+  turnGeneration: number
 }

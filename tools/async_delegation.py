@@ -410,7 +410,7 @@ def drop_completion_delivery(delegation_id: str, claim_id: str) -> bool:
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
-    """Acknowledge acceptance for the consumer holding this claim."""
+    """Idempotently acknowledge acceptance for the consumer holding this claim."""
     now = time.time()
     with _DB_LOCK, _connect() as conn:
         cur = conn.execute(
@@ -421,17 +421,28 @@ def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                  AND delivery_claim=?""",
             (now, now, delegation_id, claim_id),
         )
-        return cur.rowcount == 1
+        if cur.rowcount == 1:
+            return True
+        row = conn.execute(
+            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        ).fetchone()
+        # Missing rows are legacy queue events created before durable dispatch.
+        # A retry after a committed ack is also success, not a reason to release
+        # and reinject the already-visible completion.
+        return row is None or row[0] == "delivered"
 
 
-def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return True
+    return complete_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
 
 
-def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
-    if claim_id and evt.get("type") == "async_delegation":
-        release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
+    if not claim_id or evt.get("type") != "async_delegation":
+        return True
+    return release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:

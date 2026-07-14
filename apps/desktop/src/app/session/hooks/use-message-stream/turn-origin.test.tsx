@@ -104,6 +104,78 @@ describe('turn-origin event reconciliation', () => {
     expect(sessionStates.get(SID)?.turnOrigin).toBeNull()
   })
 
+  it('ignores an older session snapshot and completion after a newer turn starts', async () => {
+    const playSound = vi.spyOn(completionSound, 'playCompletionSound').mockImplementation(() => undefined)
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: { turn_generation: 8, turn_origin: 'notification' },
+        session_id: SID,
+        type: 'message.start'
+      })
+    )
+
+    act(() =>
+      handleEvent!({
+        payload: { running: false, turn_generation: 7, turn_origin: null },
+        session_id: SID,
+        type: 'session.info'
+      })
+    )
+
+    act(() =>
+      handleEvent!({
+        payload: { text: 'stale answer', turn_generation: 7, turn_origin: 'user' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect(sessionStates.get(SID)).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnGeneration: 8,
+      turnOrigin: 'notification'
+    })
+    expect(playSound).not.toHaveBeenCalled()
+  })
+
+  it('restores a notification turn during reconnect and settles the same generation', async () => {
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: { running: true, turn_generation: 12, turn_origin: 'notification' },
+        session_id: SID,
+        type: 'session.info'
+      })
+    )
+
+    expect(sessionStates.get(SID)).toMatchObject({
+      busy: true,
+      turnGeneration: 12,
+      turnOrigin: 'notification'
+    })
+
+    act(() =>
+      handleEvent!({
+        payload: { text: 'background answer', turn_generation: 12, turn_origin: 'notification' },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+    act(() =>
+      handleEvent!({
+        payload: { running: false, turn_generation: 12, turn_origin: null },
+        session_id: SID,
+        type: 'session.info'
+      })
+    )
+
+    expect(sessionStates.get(SID)).toMatchObject({ busy: false, turnGeneration: 12, turnOrigin: null })
+  })
+
   it('suppresses every completion feedback surface for an interrupted notification turn', async () => {
     const playSound = vi.spyOn(completionSound, 'playCompletionSound').mockImplementation(() => undefined)
     const celebrate = vi.spyOn(petStore, 'flashPetActivity').mockImplementation(() => undefined)

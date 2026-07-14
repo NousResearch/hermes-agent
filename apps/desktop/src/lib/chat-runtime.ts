@@ -58,7 +58,8 @@ export function createClientSessionState(
     needsInput: false,
     turnStartedAt: null,
     usage: null,
-    turnOrigin: null
+    turnOrigin: null,
+    turnGeneration: 0
   }
 }
 

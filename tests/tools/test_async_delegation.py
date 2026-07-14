@@ -490,6 +490,7 @@ def test_durable_delivery_claim_is_exclusive_and_retryable(tmp_path, monkeypatch
     assert ad.release_completion_delivery("deleg_claim", "consumer-a")
     assert ad.claim_completion_delivery("deleg_claim", "consumer-b")
     assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
+    assert ad.complete_completion_delivery("deleg_claim", "consumer-b")
     assert not ad.claim_completion_delivery("deleg_claim", "consumer-c")
     assert ad.get_durable_delegation("deleg_claim")["delivery_state"] == "delivered"
 

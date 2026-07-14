@@ -562,7 +562,11 @@ export type GatewayEvent =
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
-  | { payload?: { turn_origin?: TurnOrigin }; session_id?: string; type: 'message.start' }
+  | {
+      payload?: { turn_generation?: number; turn_origin?: TurnOrigin }
+      session_id?: string
+      type: 'message.start'
+    }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
   | {
       payload?: {
@@ -680,6 +684,7 @@ export type GatewayEvent =
         rendered?: string
         response_previewed?: boolean
         text?: string
+        turn_generation?: number
         turn_origin?: TurnOrigin
         usage?: Usage
       }

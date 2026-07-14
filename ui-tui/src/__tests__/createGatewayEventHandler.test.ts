@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import type { GatewayEvent } from '../gatewayTypes.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
-import type { Msg } from '../types.js'
+import type { Msg, SessionInfo } from '../types.js'
 
 // Mock the external-URL opener so the billing.step_up.verification test can
 // assert it's invoked without spawning a real browser process.
@@ -57,6 +58,13 @@ const buildCtx = (appended: Msg[]) =>
     }
   }) as any
 
+const sessionInfo = (overrides: Partial<SessionInfo>): SessionInfo => ({
+  model: 'test-model',
+  skills: {},
+  tools: {},
+  ...overrides
+})
+
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
@@ -64,6 +72,56 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('reconciles reconnect origin and rejects older turn events', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const reconnect = {
+      payload: sessionInfo({ running: true, turn_generation: 4, turn_origin: 'notification' }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+    onEvent(reconnect)
+
+    expect(getTurnState()).toMatchObject({ turnGeneration: 4, turnOrigin: 'notification' })
+    expect(getUiState().busy).toBe(true)
+
+    const nextStart = {
+      payload: { turn_generation: 5, turn_origin: 'user' },
+      type: 'message.start'
+    } satisfies GatewayEvent
+    onEvent(nextStart)
+
+    const staleSnapshot = {
+      payload: sessionInfo({ running: false, turn_generation: 4, turn_origin: null }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+    onEvent(staleSnapshot)
+    const staleComplete = {
+      payload: { text: 'stale answer', turn_generation: 4, turn_origin: 'notification' },
+      type: 'message.complete'
+    } satisfies GatewayEvent
+    onEvent(staleComplete)
+
+    expect(getTurnState()).toMatchObject({ turnGeneration: 5, turnOrigin: 'user' })
+    expect(getUiState().busy).toBe(true)
+    expect(appended).not.toContainEqual(expect.objectContaining({ text: 'stale answer' }))
+
+    const currentComplete = {
+      payload: { text: 'current answer', turn_generation: 5, turn_origin: 'user' },
+      type: 'message.complete'
+    } satisfies GatewayEvent
+    onEvent(currentComplete)
+    const settledReconnect = {
+      payload: sessionInfo({ running: false, turn_generation: 5, turn_origin: null }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+    onEvent(settledReconnect)
+
+    expect(appended).toContainEqual(expect.objectContaining({ text: 'current answer' }))
+    expect(getTurnState()).toMatchObject({ turnGeneration: 5, turnOrigin: null })
+    expect(getUiState().busy).toBe(false)
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

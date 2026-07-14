@@ -16,8 +16,21 @@ type SessionRuntimeStatePatch = Partial<
     | 'serviceTier'
     | 'yolo'
     | 'turnOrigin'
+    | 'turnGeneration'
   >
 >
+
+export function turnGenerationFromPayload(payload: GatewayEventPayload | undefined): number | null {
+  const generation = payload?.turn_generation
+
+  return typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0 ? generation : null
+}
+
+export function isStaleTurnPayload(state: ClientSessionState, payload: GatewayEventPayload | undefined): boolean {
+  const generation = turnGenerationFromPayload(payload)
+
+  return generation !== null && generation < state.turnGeneration
+}
 
 export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
   const patch: SessionRuntimeStatePatch = {}
@@ -63,6 +76,12 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
       payload.turn_origin === 'user' || payload.turn_origin === 'notification' || payload.turn_origin === 'goal'
         ? payload.turn_origin
         : null
+  }
+
+  const generation = turnGenerationFromPayload(payload)
+
+  if (generation !== null) {
+    patch.turnGeneration = generation
   }
 
   return patch

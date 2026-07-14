@@ -17,7 +17,7 @@ import {
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem, TurnOrigin } from '../types.js'
 
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
@@ -975,6 +975,33 @@ class TurnController {
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
     patchTurnState({ streaming: boundedLiveRenderText(visible) })
+  }
+
+  reconcileTurn(
+    origin: TurnOrigin | null | undefined,
+    generation: number | undefined,
+    running?: boolean
+  ): boolean {
+    const current = getTurnState()
+    const hasGeneration = Number.isSafeInteger(generation) && Number(generation) >= 0
+    const nextGeneration = hasGeneration ? Number(generation) : current.turnGeneration
+
+    if (hasGeneration && nextGeneration < current.turnGeneration) {
+      return false
+    }
+
+    const nextOrigin =
+      origin === 'user' || origin === 'notification' || origin === 'goal' || origin === null
+        ? origin
+        : current.turnOrigin
+
+    patchTurnState({ turnGeneration: nextGeneration, turnOrigin: nextOrigin })
+
+    if (running !== undefined) {
+      patchUiState({ busy: running })
+    }
+
+    return true
   }
 
   startMessage() {

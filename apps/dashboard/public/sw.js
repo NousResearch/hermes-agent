@@ -5,13 +5,13 @@
 //                 (news, weather, worldstate…) still renders with no signal
 // POST /api/*   → network only (agent, sync writes never come from cache)
 
-const VERSION = "hub-v2";
+const VERSION = "hub-v3";
 const SHELL = [
   "/",
   "/css/dashboard.css",
   "/js/main.js", "/js/store.js", "/js/api.js", "/js/utils.js",
   "/js/viewer.js", "/js/actions.js", "/js/summarize.js", "/js/auth.js", "/js/sync.js",
-  "/js/notifications.js",
+  "/js/notifications.js", "/js/sources.js",
   "/js/widgets/clock.js", "/js/widgets/worldstate.js", "/js/widgets/agent.js",
   "/js/widgets/weather.js", "/js/widgets/launcher.js", "/js/widgets/news.js",
   "/js/widgets/tasks.js", "/js/widgets/notes.js", "/js/widgets/calendar.js",

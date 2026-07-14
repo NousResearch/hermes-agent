@@ -1,4 +1,4 @@
-import { h, clear, sparkline, fmtPrice } from "../utils.js";
+import { h, clear, sparkline, fmtPrice, toast } from "../utils.js";
 
 export default {
   type: "markets",
@@ -7,17 +7,44 @@ export default {
   defaultSize: "m",
 
   render(body, ctx) {
+    const { store } = ctx;
+    const watchlist = () => store.state.markets?.ids
+      || ["bitcoin", "ethereum", "solana", "dogecoin"];
+
+    const removeAsset = (asset) => {
+      store.update((state) => {
+        const targets = [asset.name.toLowerCase(), asset.symbol.toLowerCase()];
+        state.markets.ids = watchlist().filter((id) => !targets.includes(id.toLowerCase()));
+      }, "markets");
+      draw();
+    };
+
+    const addAsset = () => {
+      const id = prompt(
+        "CoinGecko asset id to watch (e.g. bitcoin, cardano, chainlink):");
+      const clean = (id || "").trim().toLowerCase().replace(/[^a-z0-9-]/g, "");
+      if (!clean) return;
+      if (watchlist().length >= 15) { toast("Watchlist is full (15)", "error"); return; }
+      if (watchlist().includes(clean)) { toast("Already on the watchlist"); return; }
+      store.update((state) => {
+        if (!state.markets) state.markets = { ids: [] };
+        state.markets.ids = [...watchlist(), clean];
+      }, "markets");
+      draw();
+    };
+
     const draw = async () => {
       clear(body).append(h("div.widget-loading", {}, "Loading prices…"));
       let data;
       try {
-        data = await ctx.api.markets();
+        data = await ctx.api.markets(watchlist());
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Markets unavailable: ${err.message}`));
         return;
       }
       ctx.setBadge(data.source === "sample" ? "sample" : null);
       ctx._track?.(data.assets);
+      const editing = store.state.editMode;
 
       const rows = h("div.market-rows", { role: "table", "aria-label": "Market watchlist" });
       for (const asset of data.assets) {
@@ -38,11 +65,19 @@ export default {
               h("div.market-value", {}, `$${fmtPrice(asset.price)}`),
               change,
             ),
+            editing ? h("button.icon-btn", {
+              type: "button", title: "Remove from watchlist",
+              "aria-label": `Remove ${asset.name} from watchlist`,
+              onclick: () => removeAsset(asset),
+            }, "✕") : null,
           ),
         );
       }
       clear(body).append(rows,
-        h("div.muted.small.market-note", {}, "24h change · 7-day trend"));
+        h("div.market-note-row", {},
+          h("span.muted.small", {}, "24h change · 7-day trend"),
+          h("button.link-btn", { type: "button", onclick: addAsset }, "+ watch asset"),
+        ));
     };
 
     let lastAssets = [];
@@ -55,6 +90,7 @@ export default {
     }));
     ctx._track = (assets) => { lastAssets = assets; };
 
+    ctx.onStore((topic) => { if (topic === "editMode") draw(); });
     ctx.onRefresh(draw);
     draw();
     ctx.every(3 * 60_000, draw);

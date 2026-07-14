@@ -66,6 +66,7 @@ function defaultState() {
     agent: { history: [] },
     weather: { location: null }, // null → server default until the user picks a city
     news: { topic: "top" },
+    markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"] },
     search: { engine: "google" },
   };
 }

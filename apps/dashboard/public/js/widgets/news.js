@@ -2,15 +2,17 @@ import { h, clear, timeAgo, hostOf } from "../utils.js";
 import { viewerLink } from "../viewer.js";
 import { summarizeButton } from "../summarize.js";
 
-const TOPICS = [
-  ["top", "Top"],
-  ["world", "World"],
-  ["tech", "Tech"],
-  ["business", "Business"],
-  ["science", "Science"],
-  ["sports", "Sports"],
-  ["entertainment", "Culture"],
-];
+const LABELS = {
+  top: "Top", world: "World", tech: "Tech", business: "Business",
+  science: "Science", sports: "Sports", entertainment: "Culture",
+};
+
+let topicsCache = Object.keys(LABELS);
+
+function labelFor(topic) {
+  return LABELS[topic]
+    || topic.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 export default {
   type: "news",
@@ -25,7 +27,7 @@ export default {
       const active = store.state.news.topic;
 
       const tabs = h("div.tabs", { role: "tablist", "aria-label": "News topics" },
-        TOPICS.map(([key, label]) =>
+        topicsCache.map((key) =>
           h("button.tab", {
             type: "button",
             role: "tab",
@@ -34,7 +36,7 @@ export default {
               store.update((state) => { state.news.topic = key; }, "news");
               draw();
             },
-          }, label),
+          }, labelFor(key)),
         ),
       );
 
@@ -92,8 +94,21 @@ export default {
     const trackItems = (items) => { lastItems = items; };
     ctx._trackItems = trackItems;
 
+    const loadTopics = async () => {
+      try {
+        const config = await ctx.api.feeds();
+        topicsCache = config.topics;
+        if (!topicsCache.includes(store.state.news.topic)) {
+          store.update((state) => { state.news.topic = "top"; }, "news");
+        }
+        draw();
+      } catch { /* keep last known tabs */ }
+    };
+
     ctx.onStore((topic) => { if (topic === "news-external") draw(); });
+    window.addEventListener("hub:feeds-changed", loadTopics);
     ctx.onRefresh(draw);
+    loadTopics();
     draw();
     ctx.every(5 * 60_000, draw);
   },

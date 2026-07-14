@@ -102,14 +102,21 @@ Rules live in `data/automations.json`; triggers are `daily`, `market` and
   tech/cyber, climate, health, markets) computed by transparent keyword
   analysis of current headlines, with expandable explanations and the exact
   headline "signals" behind each score. Informational, not authoritative.
-- **News** — curated RSS/Atom sources across 7 topics, deduped and merged;
-  read stories in-app via the reader.
+- **News** — curated RSS/Atom sources across 7 default topics, deduped and
+  merged; read stories in-app via the reader. Fully customizable: ⚙ →
+  *News sources…* to add any feed (sites, YouTube channels via
+  `/feeds/videos.xml?channel_id=…`, subreddits via `.rss`, podcasts) or
+  create whole new topics that appear as tabs. Config lives server-side
+  (`data/feeds.json`) so every device sees the same tabs.
 - **Apps launcher** — tiles for your most-used sites, opening in the in-app
   viewer; add/edit/remove in edit mode.
 - **Weather** — Open-Meteo (no key needed), 24 h temperature chart with hover
   tooltip, 7-day outlook, city search.
-- **Markets** — watchlist with price, 24 h change and 7-day sparkline
-  (CoinGecko, no key needed).
+- **Markets** — editable watchlist (up to 15 assets; "+ watch asset" with any
+  CoinGecko id, remove in edit mode) with price, 24 h change and 7-day
+  sparkline (CoinGecko, no key needed). The watchlist syncs across devices.
+- **Voice** — 🎙 push-to-talk on the agent (browsers with SpeechRecognition,
+  e.g. Chrome) and a 🔊 toggle to have replies read aloud.
 - **Lists, Notes, Calendar** — multiple task lists with progress, autosaving
   notes, month calendar with events. All stored in `localStorage`.
 - **Universal search** — engine picker + bang prefixes (`g` `ddg` `yt` `w`
@@ -129,9 +136,9 @@ public/            zero-build frontend (ES modules, design-system CSS)
   js/viewer.js     in-app reader/embed overlay
   js/actions.js    executes agent tool calls against local state
 tests/
-  test_server.py   64 unit tests (feeds, worldstate, reader, assistant, sync,
-                   auth, automations, memory, HTTP)
-  e2e.mjs          66-check Playwright suite (needs playwright-core + Chromium)
+  test_server.py   73 unit tests (feeds+sources, worldstate, reader, assistant,
+                   sync, auth, automations, memory, watchlist, HTTP)
+  e2e.mjs          74-check Playwright suite (needs playwright-core + Chromium)
                    — also runs in CI (.github/workflows/dashboard.yml)
 ```
 

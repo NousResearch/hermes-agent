@@ -86,10 +86,12 @@ const HANDLERS = {
   },
 
   switch_news_topic({ topic }) {
+    const clean = (topic || "").toLowerCase().trim();
+    if (!clean) throw new Error("empty topic");
     store.update((state) => {
-      state.news.topic = topic;
+      state.news.topic = clean;
     }, "news-external");
-    return `news topic → ${topic}`;
+    return `news topic → ${clean}`;
   },
 };
 

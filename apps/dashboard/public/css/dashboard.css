@@ -726,6 +726,13 @@ a { color: inherit; }
 .delta-up { color: var(--delta-up); }
 .delta-down { color: var(--delta-down); }
 .market-note { margin-top: 8px; text-align: right; letter-spacing: 0.06em; }
+.market-note-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  letter-spacing: 0.06em;
+}
 
 /* ---------- state of the world ---------- */
 
@@ -1108,6 +1115,35 @@ a { color: inherit; }
 }
 .sum-body { padding: 14px 18px; overflow-y: auto; font-size: 14px; line-height: 1.6; }
 .sum-line { margin: 0 0 6px; }
+
+/* ---------- sources panel & voice ---------- */
+
+.sources-pop { width: min(680px, 94vw); max-height: 82vh; }
+.sources-body { padding: 12px 16px 16px; }
+.sources-topic { margin-bottom: 16px; border-bottom: 1px solid var(--hairline); padding-bottom: 12px; }
+.sources-topic-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.sources-topic-name {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.sources-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.sources-name { flex: 0 0 auto; min-width: 110px; font-size: 13px; }
+.sources-url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sources-empty { padding: 4px 0; }
+.sources-add { display: flex; gap: 8px; margin-top: 8px; }
+.sources-add .input:first-child { max-width: 160px; }
+.sources-newtopic { margin-top: 4px; }
+.sources-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }
+
+.agent-mic { padding: 6px 10px; }
+.agent-mic-live {
+  color: var(--status-critical);
+  border-color: color-mix(in srgb, var(--status-critical) 55%, transparent);
+  animation: blink 1.2s steps(2) infinite;
+}
 
 /* ---------- toasts & footer ---------- */
 

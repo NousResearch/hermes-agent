@@ -132,7 +132,9 @@ export default {
           if (res.stop_reason !== "tool_use") break;
           apiMessages.push({ role: "user", content: toolResults });
         }
-        pushEntry({ role: "assistant", text: texts.join("\n\n") || "Done.", actions, mode });
+        const replyText = texts.join("\n\n") || "Done.";
+        pushEntry({ role: "assistant", text: replyText, actions, mode });
+        speak(replyText);
       } catch (err) {
         pushEntry({ role: "assistant", text: `Something went wrong: ${err.message}`, actions });
       } finally {
@@ -153,16 +155,57 @@ export default {
       }
     }
 
+    const submitText = (text) => {
+      if (!text || busy) return;
+      input.value = "";
+      if (/^brief(\s+me)?\.?$/i.test(text)) runBriefing();
+      else runTurn(text);
+    };
+
     const form = h("form.agent-form", {
       onsubmit: (ev) => {
         ev.preventDefault();
-        const text = input.value.trim();
-        if (!text || busy) return;
-        input.value = "";
-        if (/^brief(\s+me)?\.?$/i.test(text)) runBriefing();
-        else runTurn(text);
+        submitText(input.value.trim());
       },
     }, input, sendBtn);
+
+    // -- voice: push-to-talk (Chrome and friends) + spoken replies ---------
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (Recognition) {
+      let rec = null;
+      const micBtn = h("button.btn.agent-mic", {
+        type: "button", title: "Push to talk", "aria-label": "Voice input",
+        onclick: () => {
+          if (rec) { rec.stop(); return; }
+          rec = new Recognition();
+          rec.lang = navigator.language || "en-US";
+          rec.interimResults = true;
+          micBtn.classList.add("agent-mic-live");
+          const oldPlaceholder = input.placeholder;
+          input.placeholder = "Listening…";
+          rec.onresult = (ev) => {
+            input.value = [...ev.results].map((r) => r[0].transcript).join("");
+          };
+          const finish = () => {
+            micBtn.classList.remove("agent-mic-live");
+            input.placeholder = oldPlaceholder;
+            rec = null;
+            submitText(input.value.trim());
+          };
+          rec.onend = finish;
+          rec.onerror = () => { input.value = ""; finish(); };
+          rec.start();
+        },
+      }, "🎙");
+      form.insertBefore(micBtn, sendBtn);
+    }
+
+    const speakOn = () => !!store.state.agent.speak;
+    const speak = (text) => {
+      if (!speakOn() || !("speechSynthesis" in window) || !text) return;
+      speechSynthesis.cancel();
+      speechSynthesis.speak(new SpeechSynthesisUtterance(text.slice(0, 500)));
+    };
 
     const quick = h("div.agent-quick", {},
       h("button.link-btn", { type: "button", onclick: () => !busy && runBriefing() }, "▸ Morning briefing"),
@@ -175,6 +218,15 @@ export default {
         title: "Show standing automations",
         onclick: () => !busy && runTurn("list automations"),
       }, "▸ Automations"),
+      ("speechSynthesis" in window) ? h("button.link-btn", {
+        type: "button",
+        title: "Read replies aloud",
+        onclick: () => {
+          store.update((state) => { state.agent.speak = !state.agent.speak; }, "agent");
+          if (!store.state.agent.speak) speechSynthesis.cancel();
+          toast(store.state.agent.speak ? "Voice replies on" : "Voice replies off");
+        },
+      }, "🔊 Voice") : null,
       h("button.link-btn", {
         type: "button",
         title: "Allow system notifications for automation alerts",

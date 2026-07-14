@@ -329,6 +329,80 @@ class AutomationsTests(unittest.TestCase):
         self.assertEqual([n["title"] for n in newer["notifications"]], ["B"])
 
 
+class FeedConfigTests(unittest.TestCase):
+    def setUp(self):
+        server.CACHE.clear()
+        self.api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+
+    def test_defaults_present(self):
+        snap = self.api.feeds_config({})
+        self.assertIn("top", snap["topics"])
+        self.assertIn("tech", snap["sources"])
+        self.assertTrue(snap["sources"]["tech"])
+
+    def test_add_topic_and_source_roundtrip(self):
+        self.api.feeds_op({"op": "add_topic", "name": "Gaming News!"})
+        snap = self.api.feeds_op({
+            "op": "add_source", "topic": "gaming-news",
+            "name": "RPS", "url": "https://example.org/feed.xml"})
+        self.assertEqual(snap["sources"]["gaming-news"][0]["name"], "RPS")
+        # persisted for a fresh instance
+        reloaded = server.FeedConfig(self.api.feeds.path)
+        self.assertIn("gaming-news", reloaded.topics())
+        # custom topic serves sample data offline instead of erroring
+        news = self.api.news({"topic": ["gaming-news"], "limit": ["4"]})
+        self.assertEqual(news["source"], "sample")
+
+    def test_validation_errors(self):
+        with self.assertRaises(server.ApiError):
+            self.api.feeds_op({"op": "add_topic", "name": "!!!"})
+        with self.assertRaises(server.ApiError):
+            self.api.feeds_op({"op": "add_source", "topic": "tech",
+                               "name": "x", "url": "ftp://nope"})
+        with self.assertRaises(server.ApiError):
+            self.api.feeds_op({"op": "remove_topic", "name": "not-there"})
+        with self.assertRaises(server.ApiError):
+            self.api.feeds_op({"op": "explode"})
+
+    def test_duplicate_source_rejected(self):
+        self.api.feeds_op({"op": "add_source", "topic": "tech",
+                           "name": "X", "url": "https://example.org/f"})
+        with self.assertRaises(server.ApiError):
+            self.api.feeds_op({"op": "add_source", "topic": "tech",
+                               "name": "Y", "url": "https://example.org/f"})
+
+    def test_remove_topic_and_worldstate_resilience(self):
+        self.api.feeds_op({"op": "remove_topic", "name": "world"})
+        with self.assertRaises(server.ApiError):
+            self.api.news({"topic": ["world"]})
+        world = self.api.worldstate({})  # must not 500 with a topic missing
+        self.assertIn("overall", world)
+
+    def test_reset_restores_defaults(self):
+        self.api.feeds_op({"op": "remove_topic", "name": "world"})
+        self.api.feeds_op({"op": "reset"})
+        self.assertIn("world", self.api.feeds.topics())
+
+
+class MarketsWatchlistTests(unittest.TestCase):
+    def setUp(self):
+        server.CACHE.clear()
+        self.api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+
+    def test_ids_filter_sample(self):
+        data = self.api.markets({"ids": ["bitcoin,solana"]})
+        self.assertEqual({a["symbol"] for a in data["assets"]}, {"BTC", "SOL"})
+
+    def test_unknown_ids_fall_back_to_full_sample(self):
+        data = self.api.markets({"ids": ["floopcoin"]})
+        self.assertGreaterEqual(len(data["assets"]), 4)
+
+    def test_ids_sanitized_and_capped(self):
+        raw = ",".join([f"coin{i}" for i in range(30)]) + ",<script>"
+        data = self.api.markets({"ids": [raw]})  # must not blow up
+        self.assertIn("assets", data)
+
+
 class MemoryAndToolsTests(unittest.TestCase):
     def setUp(self):
         server.CACHE.clear()

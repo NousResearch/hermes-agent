@@ -83,6 +83,111 @@ NEWS_SOURCES: dict[str, list[dict[str, str]]] = {
 # "top" aggregates the first feed of every topic.
 NEWS_SOURCES["top"] = [sources[0] for sources in NEWS_SOURCES.values()]
 
+
+class FeedConfig:
+    """User-editable news sources/topics, persisted in data/feeds.json.
+
+    "top" is virtual: it aggregates the first source of every other topic.
+    """
+
+    MAX_TOPICS = 16
+    MAX_SOURCES_PER_TOPIC = 12
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._topics: dict[str, list[dict[str, str]]] = {
+            k: [dict(s) for s in v] for k, v in NEWS_SOURCES.items() if k != "top"
+        }
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict) and loaded:
+                    self._topics = {
+                        str(k): [{"name": str(s["name"]), "url": str(s["url"])} for s in v]
+                        for k, v in loaded.items() if k != "top" and isinstance(v, list)
+                    }
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                pass  # fall back to defaults; next save rewrites the file
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(self._topics, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def topics(self) -> list[str]:
+        with self._lock:
+            return ["top", *self._topics.keys()]
+
+    def sources_for(self, topic: str) -> list[dict[str, str]] | None:
+        with self._lock:
+            if topic == "top":
+                return [v[0] for v in self._topics.values() if v]
+            sources = self._topics.get(topic)
+            return [dict(s) for s in sources] if sources is not None else None
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"topics": ["top", *self._topics.keys()],
+                    "sources": {k: [dict(s) for s in v] for k, v in self._topics.items()}}
+
+    def add_topic(self, name: str) -> None:
+        key = re.sub(r"[^a-z0-9-]", "", name.strip().lower().replace(" ", "-"))[:24]
+        if not key or key == "top":
+            raise ApiError(400, "topic name must contain letters/numbers")
+        with self._lock:
+            if key in self._topics:
+                raise ApiError(400, f"topic {key!r} already exists")
+            if len(self._topics) >= self.MAX_TOPICS:
+                raise ApiError(400, f"topic limit ({self.MAX_TOPICS}) reached")
+            self._topics[key] = []
+            self._save()
+
+    def remove_topic(self, name: str) -> None:
+        with self._lock:
+            if name not in self._topics:
+                raise ApiError(404, f"no topic {name!r}")
+            if len(self._topics) <= 1:
+                raise ApiError(400, "cannot remove the last topic")
+            del self._topics[name]
+            self._save()
+
+    def add_source(self, topic: str, name: str, url: str) -> None:
+        name = name.strip()[:60]
+        url = url.strip()
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ApiError(400, "source url must be http(s)")
+        if not name:
+            raise ApiError(400, "source needs a name")
+        with self._lock:
+            if topic not in self._topics:
+                raise ApiError(404, f"no topic {topic!r}")
+            sources = self._topics[topic]
+            if len(sources) >= self.MAX_SOURCES_PER_TOPIC:
+                raise ApiError(400, f"source limit ({self.MAX_SOURCES_PER_TOPIC}) reached")
+            if any(s["url"] == url for s in sources):
+                raise ApiError(400, "that feed is already in this topic")
+            sources.append({"name": name, "url": url})
+            self._save()
+
+    def remove_source(self, topic: str, url: str) -> None:
+        with self._lock:
+            if topic not in self._topics:
+                raise ApiError(404, f"no topic {topic!r}")
+            before = len(self._topics[topic])
+            self._topics[topic] = [s for s in self._topics[topic] if s["url"] != url]
+            if len(self._topics[topic]) == before:
+                raise ApiError(404, "no such source in this topic")
+            self._save()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._topics = {
+                k: [dict(s) for s in v] for k, v in NEWS_SOURCES.items() if k != "top"
+            }
+            self._save()
+
 NEWS_TTL = 5 * 60
 WEATHER_TTL = 10 * 60
 MARKETS_TTL = 3 * 60
@@ -421,9 +526,15 @@ def sample_weather(name: str | None = None) -> dict:
     return data
 
 
-def sample_markets() -> dict:
+def sample_markets(ids: list[str] | None = None) -> dict:
     data = json.loads(json.dumps(SAMPLES["markets"]))
     data["source"] = "sample"
+    if ids:
+        wanted = {i.lower() for i in ids}
+        subset = [a for a in data["assets"]
+                  if a["name"].lower() in wanted or a["symbol"].lower() in wanted]
+        if subset:
+            data["assets"] = subset
     return data
 
 
@@ -605,8 +716,7 @@ def live_reader(url: str) -> dict:
 # ---------------------------------------------------------------------------
 # Live upstream calls (normalized to the same shapes as the samples)
 # ---------------------------------------------------------------------------
-def live_news(topic: str, limit: int) -> dict:
-    sources = NEWS_SOURCES[topic]
+def live_news(topic: str, limit: int, sources: list[dict]) -> dict:
     collected: list[dict] = []
 
     def fetch_one(source: dict) -> list[dict]:
@@ -701,11 +811,11 @@ def live_geocode(query: str) -> dict:
     return {"source": "live", "results": results}
 
 
-def live_markets() -> dict:
-    ids = ",".join(DEFAULT_CRYPTO_IDS)
+def live_markets(ids: list[str] | None = None) -> dict:
+    joined = ",".join(ids or DEFAULT_CRYPTO_IDS)
     url = (
         "https://api.coingecko.com/api/v3/coins/markets"
-        f"?vs_currency=usd&ids={ids}&sparkline=true&price_change_percentage=24h"
+        f"?vs_currency=usd&ids={joined}&sparkline=true&price_change_percentage=24h"
     )
     raw = json.loads(fetch_url(url))
     assets = []
@@ -743,6 +853,7 @@ class Api:
         self.assistant.services = self
         self.state_store = state_store
         self.automations = Automations(self.data_dir / "automations.json", self)
+        self.feeds = FeedConfig(self.data_dir / "feeds.json")
         self._memory_lock = threading.Lock()
 
     # -- agent memory (a plain markdown file the agent reads/writes) --------
@@ -798,15 +909,37 @@ class Api:
 
     def news(self, params: dict) -> dict:
         topic = params.get("topic", ["top"])[0].lower()
-        if topic not in NEWS_SOURCES:
-            raise ApiError(400, f"unknown topic {topic!r}; valid: {sorted(NEWS_SOURCES)}")
+        sources = self.feeds.sources_for(topic)
+        if sources is None:
+            raise ApiError(400, f"unknown topic {topic!r}; valid: {self.feeds.topics()}")
         limit = max(1, min(int(params.get("limit", ["30"])[0]), 60))
         return self._cached(
             f"news:{topic}:{limit}",
             NEWS_TTL,
-            lambda: live_news(topic, limit),
+            lambda: live_news(topic, limit, sources),
             lambda: sample_news(topic, limit),
         )
+
+    def feeds_config(self, params: dict) -> dict:
+        return self.feeds.snapshot()
+
+    def feeds_op(self, body: dict) -> dict:
+        op = body.get("op")
+        if op == "add_topic":
+            self.feeds.add_topic(str(body.get("name", "")))
+        elif op == "remove_topic":
+            self.feeds.remove_topic(str(body.get("name", "")))
+        elif op == "add_source":
+            self.feeds.add_source(str(body.get("topic", "")), str(body.get("name", "")),
+                                  str(body.get("url", "")))
+        elif op == "remove_source":
+            self.feeds.remove_source(str(body.get("topic", "")), str(body.get("url", "")))
+        elif op == "reset":
+            self.feeds.reset()
+        else:
+            raise ApiError(400, "op must be add_topic, remove_topic, add_source, remove_source or reset")
+        CACHE.clear()  # cached merged topics may now be stale
+        return self.feeds.snapshot()
 
     def weather(self, params: dict) -> dict:
         try:
@@ -834,14 +967,27 @@ class Api:
         )
 
     def markets(self, params: dict) -> dict:
-        return self._cached("markets", MARKETS_TTL, live_markets, sample_markets)
+        raw = params.get("ids", [""])[0]
+        ids = [i for i in (re.sub(r"[^a-z0-9-]", "", part.lower())
+                           for part in raw.split(",")) if i][:15] or None
+        key = "markets:" + ",".join(ids or DEFAULT_CRYPTO_IDS)
+        return self._cached(
+            key, MARKETS_TTL,
+            lambda: live_markets(ids),
+            lambda: sample_markets(ids),
+        )
 
     def worldstate(self, params: dict) -> dict:
         cached = CACHE.get("worldstate")
         if cached is not None:
             return cached
         needed = sorted({t for spec in WORLD_DOMAINS.values() for t in spec["topics"]})
-        news_by_topic = {t: self.news({"topic": [t], "limit": ["40"]}) for t in needed}
+        news_by_topic = {}
+        for topic in needed:
+            try:  # a user may have deleted a default topic from their feeds
+                news_by_topic[topic] = self.news({"topic": [topic], "limit": ["40"]})
+            except ApiError:
+                continue
         result = compute_worldstate(news_by_topic)
         CACHE.set("worldstate", result, WORLDSTATE_TTL)
         return result
@@ -996,6 +1142,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/assistant/status": "assistant_status",
         "/api/automations": "automations_list",
         "/api/notifications": "notifications",
+        "/api/feeds": "feeds_config",
     }
 
     POST_ROUTES = {
@@ -1005,6 +1152,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/assistant/briefing": "assistant_briefing",
         "/api/assistant/tool": "assistant_tool",
         "/api/automations": "automations_op",
+        "/api/feeds": "feeds_op",
     }
 
     # /api/health stays open so the lock screen can probe reachability.

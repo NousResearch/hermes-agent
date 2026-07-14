@@ -268,6 +268,63 @@ check("worldstate widget summary opens", true);
 await page.keyboard.press("Escape");
 await page.waitForSelector(".sum-pop", { state: "detached" });
 
+// ---- custom news sources -------------------------------------------------------
+await page.locator(".topbar-actions .menu-wrap .btn").click();
+await page.locator(".menu-item", { hasText: "News sources" }).click();
+await page.waitForSelector(".sources-pop", { timeout: 10000 });
+check("sources panel opens", true);
+await page.locator(".sources-newtopic .input").fill("E2E Custom");
+await page.locator(".sources-newtopic .btn-primary").click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".sources-topic-name")].some((el) => el.textContent === "e2e-custom"),
+  null, { timeout: 10000 });
+check("custom topic created", true);
+const customSection = page.locator(".sources-topic", { has: page.locator(".sources-topic-name", { hasText: "e2e-custom" }) });
+await customSection.locator("input[type=text]").fill("Demo Feed");
+await customSection.locator("input[type=url]").fill("https://example.org/e2e-feed.xml");
+await customSection.locator(".btn-primary").click();
+await page.waitForSelector(".sources-row .sources-name:has-text('Demo Feed')", { timeout: 10000 });
+check("feed added to custom topic", true);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".sources-pop", { state: "detached" });
+// the news widget should now show the new tab; clicking it renders (sample fallback offline)
+await page.waitForSelector(".tab:has-text('E2e Custom')", { timeout: 10000 });
+await page.locator(".tab", { hasText: "E2e Custom" }).click();
+await page.waitForSelector(".news-item", { timeout: 10000 });
+check("custom topic tab renders stories", true);
+// clean up so reruns stay deterministic
+await page.evaluate(async () => {
+  await fetch("/api/feeds", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "remove_topic", name: "e2e-custom" }) });
+});
+await page.locator(".tab", { hasText: "Top" }).click();
+
+// ---- markets watchlist editor ---------------------------------------------------
+await page.waitForSelector(".market-row");
+const marketCountBefore = await page.locator(".market-row").count();
+page.once("dialog", (dialog) => dialog.accept("solana"));
+// remove SOL first (edit mode), then re-add it via the prompt
+await page.locator("#edit-toggle").click();
+await page.waitForSelector(".market-row .icon-btn[title='Remove from watchlist']");
+await page.locator(".market-row", { hasText: "SOL" }).locator(".icon-btn[title='Remove from watchlist']").click();
+await page.waitForFunction((n) => document.querySelectorAll(".market-row").length === n - 1,
+  marketCountBefore, { timeout: 10000 });
+check("watchlist remove works", true);
+await page.locator(".market-note-row .link-btn").click(); // prompt answered above
+await page.waitForFunction((n) => document.querySelectorAll(".market-row").length === n,
+  marketCountBefore, { timeout: 10000 });
+check("watchlist add works", true);
+await page.locator("#edit-toggle").click();
+
+// ---- voice controls (presence + graceful degradation) ----------------------------
+check("voice replies toggle present when supported", await page.evaluate(() =>
+  !("speechSynthesis" in window)
+  || [...document.querySelectorAll(".agent-quick .link-btn")].some((el) => el.textContent.includes("Voice"))));
+check("mic hidden when SpeechRecognition unsupported", await page.evaluate(() =>
+  (("SpeechRecognition" in window) || ("webkitSpeechRecognition" in window))
+    ? document.querySelector(".agent-mic") !== null
+    : document.querySelector(".agent-mic") === null));
+
 // ---- search bar --------------------------------------------------------------
 // Stub window.open — the sandbox has no outbound network, so a real popup
 // would never commit its navigation. We assert on the URL the app requested.

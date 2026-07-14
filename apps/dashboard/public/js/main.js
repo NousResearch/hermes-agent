@@ -4,6 +4,7 @@ import { api } from "./api.js";
 import { showLockScreen } from "./auth.js";
 import { initSync } from "./sync.js";
 import { initNotifications } from "./notifications.js";
+import { openSources } from "./sources.js";
 
 import { openViewer } from "./viewer.js";
 import { summarizeButton } from "./summarize.js";
@@ -328,6 +329,10 @@ function renderSettingsMenu() {
   const menu = h("div.menu", { hidden: true },
     h("button.menu-item", {
       type: "button",
+      onclick: () => openSources(),
+    }, "News sources…"),
+    h("button.menu-item", {
+      type: "button",
       onclick: () => {
         const blob = new Blob([store.exportJSON()], { type: "application/json" });
         const a = h("a", {
@@ -386,7 +391,12 @@ function paletteCommands() {
     { label: "Toggle edit layout", hint: "layout", run: () => document.getElementById("edit-toggle").click() },
     { label: "Switch theme", hint: "appearance", run: cycleTheme },
     { label: "Refresh all widgets", hint: "data", run: () => renderGrid() },
-    { label: "Export backup", hint: "data", run: () => document.querySelector(".menu-item").click() },
+    {
+      label: "Export backup", hint: "data",
+      run: () => [...document.querySelectorAll(".menu-item")]
+        .find((el) => el.textContent.startsWith("Export"))?.click(),
+    },
+    { label: "Manage news sources", hint: "feeds", run: () => openSources() },
   ];
   for (const link of store.state.launcher.links) {
     commands.push({

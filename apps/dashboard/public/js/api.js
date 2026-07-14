@@ -53,7 +53,9 @@ export const api = {
   weather: (lat, lon, name) =>
     getJSON("/api/weather", name ? { lat, lon, name } : { lat, lon }),
   geocode: (q) => getJSON("/api/geocode", { q }),
-  markets: () => getJSON("/api/markets"),
+  markets: (ids) => getJSON("/api/markets", ids?.length ? { ids: ids.join(",") } : {}),
+  feeds: () => getJSON("/api/feeds"),
+  feedsOp: (body) => postJSON("/api/feeds", body),
   worldstate: () => getJSON("/api/worldstate"),
   reader: (url) => getJSON("/api/reader", { url }),
   health: () => getJSON("/api/health"),

@@ -144,16 +144,15 @@ DASHBOARD_TOOLS = [
     },
     {
         "name": "switch_news_topic",
-        "description": "Switch the news widget to a topic: top, world, tech, business, science, sports or entertainment.",
+        "description": (
+            "Switch the news widget to a topic tab. Defaults: top, world, tech, "
+            "business, science, sports, entertainment — the user may have added "
+            "custom topics (get_news errors list the valid ones)."
+        ),
         "strict": True,
         "input_schema": {
             "type": "object",
-            "properties": {
-                "topic": {
-                    "type": "string",
-                    "enum": ["top", "world", "tech", "business", "science", "sports", "entertainment"],
-                },
-            },
+            "properties": {"topic": {"type": "string"}},
             "required": ["topic"],
             "additionalProperties": False,
         },
@@ -161,16 +160,15 @@ DASHBOARD_TOOLS = [
     # ---- research tools (read server data; proxied via /api/assistant/tool)
     {
         "name": "get_news",
-        "description": "Fetch current headlines for a topic. Use before answering questions about the news.",
+        "description": (
+            "Fetch current headlines for a topic. Use before answering questions "
+            "about the news. Defaults: top, world, tech, business, science, "
+            "sports, entertainment — plus any custom topics the user configured."
+        ),
         "strict": True,
         "input_schema": {
             "type": "object",
-            "properties": {
-                "topic": {
-                    "type": "string",
-                    "enum": ["top", "world", "tech", "business", "science", "sports", "entertainment"],
-                },
-            },
+            "properties": {"topic": {"type": "string"}},
             "required": ["topic"],
             "additionalProperties": False,
         },

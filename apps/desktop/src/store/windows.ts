@@ -72,6 +72,33 @@ export function isWatchWindow(): boolean {
   return result
 }
 
+let windowProfileCache: null | string | undefined
+
+// Owning profile encoded into a secondary session window's URL (`?profile=`).
+// Secondary windows boot against the primary/window backend unless this is set,
+// so a chat from a named profile (app_factory, …) would otherwise resume against
+// the wrong backend and land on an empty/new chat. Primary windows return null.
+export function windowProfile(): string | null {
+  if (windowProfileCache !== undefined) {
+    return windowProfileCache
+  }
+
+  let result: string | null = null
+
+  try {
+    const value = new URLSearchParams(window.location.search).get('profile')
+    const trimmed = value?.trim() || ''
+
+    result = trimmed || null
+  } catch {
+    result = null
+  }
+
+  windowProfileCache = result
+
+  return result
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {
@@ -97,12 +124,29 @@ async function openWindow(call: () => Promise<WindowOpenResult>, failMessage: st
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+// `profile` is the session's owning profile so non-default-profile chats open
+// against the right backend in the secondary window.
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { watch?: boolean; profile?: string }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
 
-  await openWindow(() => window.hermesDesktop.openSessionWindow(sessionId, opts), 'Could not open chat in a new window')
+  const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
+
+  const bridgeOpts = {
+    ...(opts?.watch ? { watch: true } : {}),
+    ...(profile ? { profile } : {})
+  }
+
+  const bridgeArgs = Object.keys(bridgeOpts).length > 0 ? bridgeOpts : undefined
+
+  await openWindow(
+    () => window.hermesDesktop.openSessionWindow(sessionId, bridgeArgs),
+    'Could not open chat in a new window'
+  )
 }
 
 // Open a fresh compact window on the new-session draft.

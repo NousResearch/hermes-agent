@@ -39,6 +39,7 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
+import { isSecondaryWindow, windowProfile } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -222,19 +223,20 @@ export function useGatewayBoot({
       }
     }
 
-    // Adopt the profile the primary (window) backend booted as, so same-profile
+    // Adopt the profile this window's gateway booted as, so same-profile
     // resumes are no-op swaps and reconnects target the right backend.
-    // Best-effort: a missing preference means "default". Shared by boot + soft
-    // switch.
-    async function adoptPrimaryProfile() {
+    // Secondary windows prefer their URL profile; otherwise use the desktop
+    // preference. Best-effort: a missing preference means "default". Shared by
+    // boot + soft switch.
+    async function adoptPrimaryProfile(bootProfile?: string) {
       try {
-        const pref = await desktop.profile?.get?.()
+        const pref = bootProfile ? { profile: bootProfile } : await desktop.profile?.get?.()
         const profileKey = (pref?.profile ?? '').trim() || 'default'
         $activeGatewayProfile.set(profileKey)
         setPrimaryGateway(gateway, profileKey)
         void ensureGatewayForProfile(profileKey)
       } catch {
-        $activeGatewayProfile.set('default')
+        $activeGatewayProfile.set(bootProfile || 'default')
       }
     }
 
@@ -431,7 +433,13 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        // Secondary session windows may carry `?profile=` for a non-default
+        // chat. Boot against that profile's backend so resume hits the right
+        // state.db — without this, New Window from app_factory/ovnova lands
+        // on the primary/default backend and opens empty (#61286).
+        const secondaryProfile = isSecondaryWindow() ? windowProfile() : null
+        const bootProfile = secondaryProfile ? normalizeProfileKey(secondaryProfile) : undefined
+        const conn = await desktop.getConnection(bootProfile)
 
         if (cancelled) {
           return
@@ -455,7 +463,7 @@ export function useGatewayBoot({
           return
         }
 
-        await adoptPrimaryProfile()
+        await adoptPrimaryProfile(bootProfile)
 
         setDesktopBootStep({
           phase: 'renderer.config',

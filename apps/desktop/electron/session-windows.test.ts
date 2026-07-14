@@ -83,6 +83,58 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
+test('buildSessionWindowUrl encodes profile before the hash for non-default profile chats', () => {
+  const url = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    profile: 'app_factory'
+  })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&profile=app_factory#/abc')
+  assert.ok(url.indexOf('profile=app_factory') < url.indexOf('#'))
+})
+
+test('buildSessionWindowUrl URL-encodes the profile name', () => {
+  const url = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    profile: 'a b/c'
+  })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&profile=a%20b%2Fc#/abc')
+})
+
+test('buildSessionWindowUrl omits empty or undefined profile', () => {
+  assert.equal(
+    buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', profile: '' }),
+    'http://localhost:5173/?win=secondary#/abc'
+  )
+  assert.equal(
+    buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', profile: '   ' }),
+    'http://localhost:5173/?win=secondary#/abc'
+  )
+  assert.equal(
+    buildSessionWindowUrl('abc', { devServer: 'http://localhost:5173', profile: undefined }),
+    'http://localhost:5173/?win=secondary#/abc'
+  )
+})
+
+test('buildSessionWindowUrl keeps profile with watch and new flags, still before the hash', () => {
+  const watched = buildSessionWindowUrl('abc', {
+    devServer: 'http://localhost:5173',
+    watch: true,
+    profile: 'ovnova'
+  })
+
+  const draft = buildSessionWindowUrl(null, {
+    devServer: 'http://localhost:5173',
+    newSession: true,
+    profile: 'ovnova'
+  })
+
+  assert.equal(watched, 'http://localhost:5173/?win=secondary&watch=1&profile=ovnova#/abc')
+  assert.equal(draft, 'http://localhost:5173/?win=secondary&new=1&profile=ovnova#/')
+  assert.ok(watched.indexOf('profile=ovnova') < watched.indexOf('#'))
+})
+
 test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () => {
   const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
 

@@ -33,6 +33,33 @@ afterEach(() => {
   }
 })
 
+describe('windowProfile', () => {
+  const originalSearch = window.location.search
+
+  afterEach(() => {
+    // Reset the module-level cache by restoring search; windowProfile caches
+    // once, so re-import is needed for a true reset. Prefer spying via history.
+    window.history.replaceState({}, '', `${window.location.pathname}${originalSearch || ''}${window.location.hash}`)
+  })
+
+  it('reads profile from the secondary window query string', async () => {
+    // Force a fresh module so the cache is cold for this search string.
+    vi.resetModules()
+    window.history.replaceState({}, '', '/?win=secondary&profile=app_factory#/s1')
+    const { windowProfile: readProfile } = await import('./windows')
+
+    expect(readProfile()).toBe('app_factory')
+  })
+
+  it('returns null when profile is absent', async () => {
+    vi.resetModules()
+    window.history.replaceState({}, '', '/?win=secondary#/s1')
+    const { windowProfile: readProfile } = await import('./windows')
+
+    expect(readProfile()).toBeNull()
+  })
+})
+
 describe('canOpenSessionWindow', () => {
   it('is false when the desktop bridge is absent', () => {
     delete desktopWindow.hermesDesktop
@@ -87,6 +114,34 @@ describe('openSessionInNewWindow', () => {
 
     expect(open).toHaveBeenCalledWith('s1', { watch: true })
     expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('forwards the session owning profile for multi-profile New Window', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { profile: 'app_factory' })
+
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'app_factory' })
+    expect(notifyError).not.toHaveBeenCalled()
+  })
+
+  it('forwards profile together with watch', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { watch: true, profile: 'ovnova' })
+
+    expect(open).toHaveBeenCalledWith('s1', { watch: true, profile: 'ovnova' })
+  })
+
+  it('omits empty profile from bridge opts', async () => {
+    const open = vi.fn().mockResolvedValue({ ok: true })
+    installBridge(open)
+
+    await openSessionInNewWindow('s1', { profile: '  ' })
+
+    expect(open).toHaveBeenCalledWith('s1', undefined)
   })
 
   it('notifies on an ok:false result', async () => {

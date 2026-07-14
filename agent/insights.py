@@ -113,6 +113,13 @@ class InsightsEngine:
         """
         cutoff = time.time() - (days * 86400)
 
+        # Token/cost totals may still sit on the SessionDB's async
+        # accounting queue; drain so the report reflects exact counters.
+        # (self.db may be a raw sqlite3 connection in tests — guard.)
+        flush = getattr(self.db, "flush_token_counts", None)
+        if callable(flush):
+            flush()
+
         # Gather raw data
         sessions = self._get_sessions(cutoff, source)
         tool_usage = self._get_tool_usage(cutoff, source)

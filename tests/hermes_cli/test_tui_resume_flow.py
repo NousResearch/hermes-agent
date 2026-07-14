@@ -379,6 +379,7 @@ def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod)
         "model": "gpt-test",
         "provider": "openai",
         "toolsets": None,
+        "usage_file": None,
     }
 
 
@@ -407,7 +408,7 @@ def test_termux_ultrafast_version_runs_before_heavy_startup(
 
     out = capsys.readouterr().out
     assert "Hermes Agent v" in out
-    assert "Project:" in out
+    assert "Install directory:" in out
     assert "Python:" in out
     assert "OpenAI SDK:" in out
 
@@ -617,6 +618,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "usage_file": None,
     }
 
 

@@ -20,6 +20,7 @@ from cron.jobs import (
     mark_job_run,
     advance_next_run,
     claim_dispatch,
+    heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
 )
@@ -305,6 +306,26 @@ class TestJobCRUD:
         job = create_job(prompt="One-shot", schedule="1h")
         assert job["repeat"]["times"] == 1
 
+    def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        stale = (now - timedelta(minutes=5)).isoformat()
+
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            create_job(prompt="Too late", schedule=stale)
+
+        assert load_jobs() == []
+
+    def test_recent_past_one_shot_within_grace_still_creates(self, tmp_cron_dir, monkeypatch):
+        now = datetime(2026, 3, 18, 4, 30, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        recent = (now - timedelta(seconds=30)).isoformat()
+
+        job = create_job(prompt="Still valid", schedule=recent)
+
+        assert job["next_run_at"] == recent
+        assert load_jobs()[0]["id"] == job["id"]
+
     def test_interval_no_auto_repeat(self, tmp_cron_dir):
         job = create_job(prompt="Recurring", schedule="every 1h")
         assert job["repeat"]["times"] is None
@@ -354,6 +375,33 @@ class TestUpdateJob:
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
 
+    def test_update_to_past_oneshot_rejected(self, tmp_cron_dir, monkeypatch):
+        """Updating a job's schedule to a one-shot >ONESHOT_GRACE_SECONDS in the
+        past must raise ValueError — otherwise the ghost-job bug (#59395) re-enters
+        through the update door (next_run_at=None stored with state='scheduled').
+        The original job must be left unchanged on disk."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        past = parse_schedule((now - timedelta(minutes=10)).isoformat())
+        with pytest.raises(ValueError, match="past and cannot be scheduled"):
+            update_job(job["id"], {"schedule": past})
+        # Original job unchanged — still the recurring interval, still scheduled.
+        fetched = get_job(job["id"])
+        assert fetched["schedule"]["kind"] == "interval"
+        assert fetched["next_run_at"] is not None
+
+    def test_update_to_future_oneshot_accepted(self, tmp_cron_dir, monkeypatch):
+        """Updating to a FUTURE one-shot still works — only past ones are rejected."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="Recurring", schedule="every 1h", deliver="local")
+        future = parse_schedule((now + timedelta(hours=2)).isoformat())
+        updated = update_job(job["id"], {"schedule": future})
+        assert updated is not None
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["next_run_at"] is not None
+
     def test_update_enable_disable(self, tmp_cron_dir):
         job = create_job(prompt="Toggle me", schedule="every 1h")
         assert job["enabled"] is True
@@ -396,6 +444,35 @@ class TestPauseResumeJob:
         assert resumed["state"] == "scheduled"
         assert resumed["paused_at"] is None
         assert resumed["paused_reason"] is None
+
+    def test_resume_rejects_past_oneshot(self, tmp_cron_dir, monkeypatch):
+        """Resuming a paused one-shot whose time is now in the past must raise
+        ValueError — the revived job would silently never fire."""
+        now = datetime(2026, 7, 6, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        # Create directly — bypass create_job's past-oneshot guard so we can
+        # test the resume path independently.
+        job = {
+            "id": "test-resume-past",
+            "name": "test-resume-past",
+            "prompt": "Past one-shot",
+            "schedule": {"kind": "once", "run_at": (now - timedelta(minutes=5)).isoformat(), "display": "once"},
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": False,
+            "state": "paused",
+            "paused_at": now.isoformat(),
+            "paused_reason": "test",
+            "next_run_at": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": (now - timedelta(hours=1)).isoformat(),
+            "deliver": "local",
+        }
+        save_jobs([job])
+        with pytest.raises(ValueError, match="in the past"):
+            resume_job("test-resume-past")
 
 
 class TestResolveJobRef:
@@ -759,6 +836,40 @@ class TestGetDueJobs:
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
 
+    def test_idless_job_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """A job missing its 'id' key must not crash the tick or freeze siblings.
+
+        Regression: jobs authored by a direct jobs.json edit (bypassing
+        create_job) sometimes used the key 'job_id' instead of 'id'. The logging
+        helpers evaluated ``job.get("name", job["id"])`` -- Python evaluates the
+        default argument ``job["id"]`` eagerly, so an id-less job raised
+        ``KeyError: 'id'`` mid-tick. That exception aborted
+        ``_get_due_jobs_locked()`` BEFORE ``save_jobs()`` ran, so every healthy
+        job's fast-forwarded next_run_at was computed in memory then discarded --
+        the whole profile's scheduler froze in a per-minute loop.
+        """
+        healthy = create_job(prompt="Healthy", schedule="every 1h")
+
+        jobs = load_jobs()
+        # Push the healthy job beyond its grace window so the fast-forward path
+        # (one of the id-less-crash sites) runs.
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        # A malformed record: no 'id' key, mirroring the real corruption.
+        jobs.append({
+            "name": "idless-job",
+            "schedule": {"kind": "cron", "expr": "0 4 * * *"},
+            "enabled": True,
+            "no_agent": True,
+            "next_run_at": None,
+        })
+        save_jobs(jobs)
+
+        # Must not raise KeyError.
+        due = get_due_jobs()
+
+        # The healthy sibling is still discovered despite the malformed neighbor.
+        assert any(d.get("id") == healthy["id"] for d in due)
+
 
     def test_long_execution_does_not_perpetually_defer(self, tmp_cron_dir, monkeypatch):
         """#33315: a recurring job whose runtime exceeds interval+grace must still
@@ -851,7 +962,13 @@ class TestGetDueJobs:
         due = get_due_jobs()
 
         assert [job["id"] for job in due] == ["oneshot-recover"]
-        assert get_job("oneshot-recover")["next_run_at"] == run_at
+        # Recovery restores next_run_at to the original run time; the
+        # cross-process double-exec guard (#59229) is a separate run_claim
+        # stamped under the lock, not a next_run_at mutation.
+        recovered = get_job("oneshot-recover")
+        assert recovered["next_run_at"] == run_at
+        assert recovered.get("run_claim") is not None
+        assert recovered["run_claim"]["at"] == now.isoformat()
 
     def test_broken_stale_one_shot_without_next_run_is_not_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
@@ -881,6 +998,239 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+    def test_one_shot_not_redispatched_while_running(self, tmp_cron_dir, monkeypatch):
+        """#59229: two concurrent schedulers must not double-execute a one-shot.
+
+        Reproduces the reported failure with a job whose run OUTLIVES the tick
+        interval (a ~2.5-min research prompt). Process A's tick returns it as
+        due and stamps a run_claim; while A is still running, every later tick
+        (process B, or A's own next tick) must see the fresh claim and skip —
+        not just for one tick window but for the whole run.
+        """
+        from cron.jobs import _hermes_now
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "long-oneshot", "name": "R", "prompt": "2.5min research",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+        }])
+
+        # Process A tick: picks it up + claims it.
+        dueA = get_due_jobs()
+        assert [j["id"] for j in dueA] == ["long-oneshot"]
+        assert get_job("long-oneshot").get("run_claim") is not None
+
+        # Process B (and A's own subsequent ticks) while A is still running:
+        # 28s later (the exact gap in the report) AND 61s later (past any
+        # fixed +60s window) — both must skip.
+        for gap in (28, 61, 130):
+            monkeypatch.setattr("cron.jobs._hermes_now",
+                                lambda t0=t0, g=gap: t0 + timedelta(seconds=g))
+            assert get_due_jobs() == [], f"double-dispatched at +{gap}s"
+
+    def test_one_shot_run_claim_expires_after_ttl(self, tmp_cron_dir, monkeypatch):
+        """A claiming tick that DIED mid-run must not wedge the one-shot forever:
+        once the run_claim is older than the TTL it is re-dispatched (recovered)."""
+        # Pin the inactivity timeout unset so the derived TTL is deterministic.
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "wedged", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+        }])
+        assert [j["id"] for j in get_due_jobs()] == ["wedged"]  # A claims, then dies
+
+        # Just inside the TTL: still claimed → skipped.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl - 10))
+        assert get_due_jobs() == []
+
+        # Just past the TTL: stale claim → re-dispatched (recovered), re-claimed.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl + 10))
+        recovered = get_due_jobs()
+        assert [j["id"] for j in recovered] == ["wedged"]
+
+    def test_run_claim_ttl_derived_from_cron_timeout(self, tmp_cron_dir, monkeypatch):
+        """The stale-recovery TTL tracks HERMES_CRON_TIMEOUT (3x headroom), with
+        the fixed constant as a floor, and falls back to the constant when runs
+        are unbounded (timeout=0)."""
+        from cron.jobs import (
+            _oneshot_run_claim_ttl_seconds as ttl,
+            ONESHOT_RUN_CLAIM_TTL_SECONDS as FLOOR,
+        )
+        # Unset → default 600s inactivity → 1800s (== the historical constant).
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        assert ttl() == 1800.0
+
+        # A large custom timeout scales the TTL up (3x headroom).
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "1200")
+        assert ttl() == 3600.0
+
+        # A tiny timeout is floored so a claim can never expire mid-run.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "30")
+        assert ttl() == float(FLOOR)
+
+        # Unlimited runs (0) → no finite bound → fall back to the floor.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0")
+        assert ttl() == float(FLOOR)
+
+        # Invalid value → treated as the default 600s → 1800s.
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "not-a-number")
+        assert ttl() == 1800.0
+
+
+    def test_mark_job_run_clears_one_shot_run_claim(self, tmp_cron_dir, monkeypatch):
+        """mark_job_run() clears the run_claim on completion so a re-dispatched
+        one-shot (e.g. a stale-recovered retry) is claimable again."""
+        from cron.jobs import _hermes_now
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        # Give it repeat headroom so mark_job_run keeps the job around.
+        save_jobs([{
+            "id": "claimclear", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 2, "completed": 0},
+        }])
+        assert [j["id"] for j in get_due_jobs()] == ["claimclear"]
+        assert get_job("claimclear").get("run_claim") is not None
+        mark_job_run("claimclear", True)
+        assert get_job("claimclear")["run_claim"] is None
+
+    def test_stale_maxed_oneshot_kept_while_running_in_this_process(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """#62002: a live run must never have its job record deleted underneath it.
+
+        A one-shot whose run outlives the run_claim TTL (stream stall, laptop
+        asleep mid-run) satisfies the same completed >= times + expired-claim
+        condition as a dead tick. When the scheduler in this process still has
+        the job in its running set, the stale-entry recovery must keep the
+        record so the in-flight run's mark_job_run() can land its outcome —
+        and remove it only once the run is actually gone.
+        """
+        import cron.scheduler as scheduler_mod
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=ttl + 300)).isoformat()
+        # Mid-run store shape: claim_dispatch committed completed=1 and the
+        # run_claim was stamped at fire time; next_run_at is only resolved by
+        # mark_job_run, so it still points at the (past) fire time.
+        save_jobs([{
+            "id": "inflight", "name": "flight check", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 1},
+            "run_claim": {"at": run_at, "by": "this-machine"},
+        }])
+
+        # Run still alive in this process → keep the record, dispatch nothing.
+        monkeypatch.setattr(
+            scheduler_mod, "get_running_job_ids", lambda: frozenset({"inflight"})
+        )
+        assert get_due_jobs() == []
+        assert get_job("inflight") is not None  # still visible to list/run
+
+        # The claiming tick really died (running set empty) → recovered as before.
+        monkeypatch.setattr(
+            scheduler_mod, "get_running_job_ids", lambda: frozenset()
+        )
+        assert get_due_jobs() == []
+        assert get_job("inflight") is None  # stale entry cleaned up
+
+    def test_run_claim_heartbeat_keeps_long_run_claimed_past_ttl(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """#62002 cross-process leg: a heartbeat-refreshed claim never expires
+        while the run is alive, so no other tick re-dispatches or stale-removes
+        the job even when the run outlives the original TTL horizon."""
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=5)).isoformat()
+        save_jobs([{
+            "id": "slowrun", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 0},
+        }])
+
+        # Tick claims + dispatches the job.
+        assert [j["id"] for j in get_due_jobs()] == ["slowrun"]
+        assert claim_dispatch("slowrun") is True
+
+        # Mid-run heartbeat before the TTL horizon refreshes the claim.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl - 60))
+        owner = get_job("slowrun")["run_claim"]["by"]
+        assert heartbeat_run_claim("slowrun", expected_owner=owner) is True
+
+        # Past the ORIGINAL claim's TTL horizon: without the heartbeat this
+        # tick would stale-remove the maxed one-shot; with it the claim is
+        # fresh, so the job is skipped and the record survives.
+        monkeypatch.setattr("cron.jobs._hermes_now",
+                            lambda: t0 + timedelta(seconds=ttl + 10))
+        assert get_due_jobs() == []
+        assert get_job("slowrun") is not None
+
+        # Run completes → outcome lands on a record that still exists
+        # (times=1 reached, so mark_job_run retires the job normally).
+        mark_job_run("slowrun", True)
+        assert get_job("slowrun") is None
+
+    def test_heartbeat_run_claim_noop_without_claim(self, tmp_cron_dir):
+        """heartbeat_run_claim is a safe no-op when there is nothing to refresh
+        (manual run that never stamped a claim, or the job is gone)."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        save_jobs([{
+            "id": "noclaim", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": future},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+        }])
+        assert heartbeat_run_claim("noclaim", expected_owner="owner") is False
+        assert heartbeat_run_claim("missing-job", expected_owner="owner") is False
+        assert get_job("noclaim").get("run_claim") is None
+
+    def test_heartbeat_run_claim_rejects_replaced_owner(self, tmp_cron_dir):
+        """A resumed stale runner must not keep a newer owner's claim alive."""
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "reclaimed", "name": "R", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": future},
+            "next_run_at": future, "enabled": True, "state": "scheduled",
+            "run_claim": {"at": original_at, "by": "new-owner"},
+        }])
+
+        assert heartbeat_run_claim("reclaimed", expected_owner="old-owner") is False
+        assert get_job("reclaimed")["run_claim"] == {
+            "at": original_at,
+            "by": "new-owner",
+        }
+
+    def test_heartbeat_run_claim_rejects_non_oneshot(self, tmp_cron_dir):
+        """Heartbeat ownership applies only to one-shot dispatch claims."""
+        original_at = datetime.now(timezone.utc).isoformat()
+        save_jobs([{
+            "id": "recurring", "name": "R", "prompt": "x",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "enabled": True,
+            "run_claim": {"at": original_at, "by": "owner"},
+        }])
+
+        assert heartbeat_run_claim("recurring", expected_owner="owner") is False
+        assert get_job("recurring")["run_claim"]["at"] == original_at
+
 
     def test_broken_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 10, 0, 0, tzinfo=timezone.utc)
@@ -1224,6 +1574,117 @@ class TestMarkJobRunConcurrency:
             )
 
 
+class TestBadNextRunAtRecovery:
+    """Regression: malformed next_run_at must not crash the due scan or starve siblings.
+
+    Mirrors the id-less and non-dict-schedule patterns: a single bad persisted
+    record in jobs.json must not abort _get_due_jobs_locked before save.
+    """
+
+    def test_bad_next_run_at_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """One job with unparseable next_run_at + one healthy due sibling.
+
+        get_due_jobs must succeed and return the healthy job; the bad record
+        must be repaired (next_run_at cleared so recovery can set a sane value).
+        """
+        from datetime import timezone, timedelta as td
+        now = datetime.now(timezone.utc)
+        past = (now - td(seconds=30)).isoformat()
+        future = (now + td(days=1)).isoformat()
+
+        # Bad record: next_run_at is not a valid ISO string (e.g. from hand-edit or corruption)
+        # Healthy sibling is past due with good schedule.
+        bad_job = {
+            "id": "bad-next",
+            "schedule": {"kind": "interval", "minutes": 60},
+            "next_run_at": "not-a-valid-iso-timestamp!!!",
+            "enabled": True,
+            "created_at": past,
+        }
+        good_job = {
+            "id": "good-sibling",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        save_jobs([bad_job, good_job])
+
+        # Must not raise
+        due = get_due_jobs()
+
+        # The healthy job must still be returned
+        ids = [j["id"] for j in due]
+        assert "good-sibling" in ids, f"healthy sibling missing from due jobs: {ids}"
+        assert "bad-next" not in ids  # bad one may be repaired and/or not yet due after repair
+
+        # Bad job should have been auto-repaired (next_run_at stripped or fixed)
+        repaired = get_job("bad-next")
+        assert repaired is not None
+        nr = repaired.get("next_run_at")
+        if nr is not None:
+            # If still present it must now be parseable
+            datetime.fromisoformat(nr)
+
+        # Calling again must remain stable (no crash on re-scan)
+        due2 = get_due_jobs()
+        assert any(j["id"] == "good-sibling" for j in due2)
+
+
+class TestPerJobScanContainment:
+    """Structural guard: ANY per-job exception in the due scan must degrade to
+    skipping that one job for the tick — never abort the scan and starve
+    healthy siblings (the freeze class behind bad id / schedule / next_run_at).
+    """
+
+    def test_unforeseen_per_job_exception_does_not_starve_siblings(self, tmp_cron_dir):
+        """Simulate a FUTURE malformed-field variant none of the shape
+        normalizers repair, by making grace computation raise for one job
+        only. The per-job guard must skip it and still return the sibling."""
+        from datetime import timezone, timedelta as td
+        from unittest.mock import patch as mock_patch
+
+        now = datetime.now(timezone.utc)
+        past = (now - td(seconds=30)).isoformat()
+
+        poison = {
+            "id": "poison",
+            # minutes=7 tags this schedule so the patched helper can target it
+            "schedule": {"kind": "interval", "minutes": 7},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        good = {
+            "id": "good-sibling",
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+            "enabled": True,
+            "created_at": past,
+        }
+        save_jobs([poison, good])
+
+        import cron.jobs as jobs_mod
+        real_grace = jobs_mod._compute_grace_seconds
+
+        def selective_grace(schedule):
+            if schedule.get("minutes") == 7:
+                raise RuntimeError("simulated unforeseen malformed field")
+            return real_grace(schedule)
+
+        with mock_patch.object(jobs_mod, "_compute_grace_seconds", selective_grace):
+            due = get_due_jobs()  # must not raise
+
+        ids = [j["id"] for j in due]
+        assert "good-sibling" in ids, f"healthy sibling starved: {ids}"
+        assert "poison" not in ids
+
+        # Scheduler stays alive on subsequent ticks too.
+        with mock_patch.object(jobs_mod, "_compute_grace_seconds", selective_grace):
+            due2 = get_due_jobs()
+        assert any(j["id"] == "good-sibling" for j in due2)
+
+
 class TestSaveJobOutput:
     def test_creates_output_file(self, tmp_cron_dir):
         output_file = save_job_output("test123", "# Results\nEverything ok.")
@@ -1414,3 +1875,40 @@ class TestClaimDispatch:
         due = get_due_jobs()
         assert due == []
         assert load_jobs() == []  # cleaned up
+
+    def test_bad_schedule_does_not_crash_or_block_sibling_jobs(self, tmp_cron_dir):
+        """Regression for a job with non-dict 'schedule' (null / string / etc.
+
+        from direct jobs.json edit or old writer).
+
+        Such a record must not raise in _get_due_jobs_locked and must not
+        prevent healthy sibling jobs from being returned or having their
+        next_run_at advanced+persisted. Mirrors the id-less job P1 pattern.
+        """
+        past = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+
+        bad = {
+            "id": "bad-sched",
+            "name": "bad",
+            "enabled": True,
+            "schedule": None,  # poison: not a dict
+            "next_run_at": future,  # not due
+        }
+        good = {
+            "id": "good",
+            "name": "good",
+            "enabled": True,
+            "schedule": {"kind": "interval", "minutes": 5},
+            "next_run_at": past,
+        }
+        save_jobs([bad, good])
+
+        due = get_due_jobs()
+        due_ids = [j["id"] for j in due]
+        assert "good" in due_ids
+        assert "bad-sched" not in due_ids  # bad one ignored, no crash
+
+        # At minimum, the good job's record is still intact (no corruption from the bad neighbor)
+        loaded = {j["id"]: j for j in load_jobs()}
+        assert "good" in loaded

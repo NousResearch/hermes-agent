@@ -1191,8 +1191,92 @@ class TestSessionEntryFromDictTraversalValidation:
         from gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_id"):
             SessionEntry.from_dict(self._entry(session_id="good\\..\\bad"))
+
+    def test_session_id_interior_slash_raises(self):
+        """A non-leading forward slash is still a traversal vector for session_id
+        (it never touches the filesystem, so it must remain strict)."""
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_id"):
+            SessionEntry.from_dict(self._entry(session_id="good/../bad"))
+
+
+class TestSessionEntryFromDictGoogleChatKeyAccepted:
+    """Regression: from_dict must accept Google Chat session_keys with interior '/'.
+
+    Google Chat resource names are ``spaces/<id>`` and ``spaces/<id>/threads/<id>``,
+    so the routing key ``agent:main:google_chat:<chat_type>:spaces/<id>[:<thread>]``
+    legitimately contains ``/``. ``session_key`` is a *logical* routing key, never
+    a filesystem path, so the strict CWE-22 guard from ``_is_path_unsafe`` is
+    over-broad here. Only ``session_id`` (the value used as a filename) needs the
+    strict check.
+
+    See issue #59322.
+    """
+
+    BASE = {
+        "session_id": "abc123",
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+    }
+
+    def _entry(self, **overrides):
+        return {**self.BASE, **overrides}
+
+    def test_google_chat_group_key_accepted(self):
+        from gateway.session import SessionEntry
+        entry = SessionEntry.from_dict(self._entry(
+            session_key="agent:main:google_chat:group:spaces/AAAAEVvy5RY",
+        ))
+        assert entry.session_key == "agent:main:google_chat:group:spaces/AAAAEVvy5RY"
+
+    def test_google_chat_thread_key_accepted(self):
+        from gateway.session import SessionEntry
+        entry = SessionEntry.from_dict(self._entry(
+            session_key="agent:main:google_chat:group:spaces/AAAAEVvy5RY:spaces/AAAAEVvy5RY/threads/hrI_46qEx6c",
+        ))
+        assert "spaces/AAAAEVvy5RY/threads/hrI_46qEx6c" in entry.session_key
+
+    def test_google_chat_dm_key_accepted(self):
+        from gateway.session import SessionEntry
+        entry = SessionEntry.from_dict(self._entry(
+            session_key="agent:main:google_chat:dm:spaces/9Il3iSAAAAE",
+        ))
+        assert entry.session_key == "agent:main:google_chat:dm:spaces/9Il3iSAAAAE"
+
+
+class TestSessionEntryFromDictSessionKeyTraversalStillRejected:
+    """The relaxed guard on ``session_key`` must still reject genuine traversal:
+    parent-dir ``..``, absolute path prefixes (``/``, ``\\``), and Windows
+    drive-letter prefixes. Only interior ``/`` is allowed."""
+
+    BASE = {
+        "session_id": "abc123",
+        "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00",
+    }
+
+    def _entry(self, **overrides):
+        return {**self.BASE, **overrides}
+
+    def test_session_key_dotdot_raises(self):
+        from gateway.session import SessionEntry
         with pytest.raises(ValueError, match="session_key"):
-            SessionEntry.from_dict(self._entry(session_key="agent:main:good/sub"))
+            SessionEntry.from_dict(self._entry(session_key="agent:main:../../secret"))
+
+    def test_session_key_leading_slash_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="/absolute/path/key"))
+
+    def test_session_key_leading_backslash_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="\\absolute\\path\\key"))
+
+    def test_session_key_drive_letter_raises(self):
+        from gateway.session import SessionEntry
+        with pytest.raises(ValueError, match="session_key"):
+            SessionEntry.from_dict(self._entry(session_key="C:drive/key"))
 
 
 class TestEnsureLoadedSkipsInvalidEntries:

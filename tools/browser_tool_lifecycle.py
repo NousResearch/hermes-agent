@@ -687,6 +687,7 @@ def cleanup_all_browsers() -> None:
     except Exception:
         pass
 
+    _install._discover_fnm_node_dirs.cache_clear()
     _install._discover_homebrew_node_dirs.cache_clear()
     # Each resolved flag flips BEFORE its cache is nulled so a concurrent reader never
     # sees ``resolved=True`` with ``cache=None``.

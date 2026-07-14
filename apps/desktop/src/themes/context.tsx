@@ -157,6 +157,12 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
 // the boot-time paint.
+// styles.css --theme-neutral-chrome — keep in sync.
+const NEUTRAL_CHROME = { light: '#f3f3f3', dark: '#0d0d0e' } as const
+
+const chromeBackground = (background: string, isDark: boolean) =>
+  mix(background, NEUTRAL_CHROME[isDark ? 'dark' : 'light'], isDark ? 0.26 : 0.08)
+
 const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-chrome': isDark ? '74%' : '92%',
   '--theme-mix-sidebar': '100%',
@@ -222,10 +228,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
+  const chromeBg = chromeBackground(c.background, isDark)
+
   window.hermesDesktop?.setTitleBarTheme?.({
-    background: c.background,
+    background: chromeBg,
     foreground: c.foreground
   })
+
+  // Raw (non-JSON) keys read by the inline pre-paint script in index.html —
+  // they let a brand-new window paint the themed background on its very first
+  // frame, before this module has even loaded.
+  try {
+    window.localStorage.setItem('hermes-boot-background', chromeBg)
+    window.localStorage.setItem('hermes-boot-color-scheme', rendered)
+  } catch {
+    // Storage may be unavailable (private mode / quota); the inline script
+    // falls back to prefers-color-scheme.
+  }
 
   if (typo.fontUrl && !INJECTED_FONT_URLS.has(typo.fontUrl)) {
     const link = document.createElement('link')
@@ -237,13 +256,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   }
 }
 
+// Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
+// (macOS vibrancy material, titlebar, pre-paint background) matches the app
+// theme instead of the OS appearance. An explicit light/dark pick is forced;
+// 'system' stays 'system' so prefers-color-scheme keeps tracking the OS.
+const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
+  window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
+
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
   const profile = readBootProfileKey()
-  const resolved = resolveMode(modePref.resolve(profile))
-  applyTheme(deriveTheme(skinPref.resolve(profile), resolved), resolved)
+  const pref = modePref.resolve(profile)
+  const resolved = resolveMode(pref)
+  const theme = deriveTheme(skinPref.resolve(profile), resolved)
+  applyTheme(theme, resolved)
+  syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -320,12 +349,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
 
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
-  const renderedMode = useMemo(
-    () => renderedModeFor(activeTheme.colors, resolvedMode),
-    [activeTheme, resolvedMode]
-  )
+  const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
+
+  // Keep the native window appearance pinned to the app theme (vibrancy
+  // material, titlebar, new-window pre-paint background).
+  useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
   // stay stable across profile switches).

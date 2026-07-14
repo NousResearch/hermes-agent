@@ -15,7 +15,7 @@ class RestartTestAdapter(BasePlatformAdapter):
         self.sent: list[str] = []
         self.sent_calls: list[tuple[str, str, object]] = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):
@@ -70,6 +70,7 @@ def make_restart_runner(
     runner._restart_task_started = False
     runner._restart_detached = False
     runner._restart_via_service = False
+    runner._detached_restart_helper_started = False
     runner._restart_command_source = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     runner._stop_task = None
@@ -112,6 +113,18 @@ def make_restart_runner(
         runner, GatewayRunner
     )
     runner._running_agent_count = GatewayRunner._running_agent_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._active_cron_job_count = GatewayRunner._active_cron_job_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._active_api_run_count = GatewayRunner._active_api_run_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._active_work_count = GatewayRunner._active_work_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._persist_active_agents = GatewayRunner._persist_active_agents.__get__(
         runner, GatewayRunner
     )
     runner._snapshot_running_agents = GatewayRunner._snapshot_running_agents.__get__(

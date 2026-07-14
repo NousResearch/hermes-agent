@@ -35,17 +35,17 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_create.add_argument(
         "--clone",
         action="store_true",
-        help="Copy config.yaml, .env, SOUL.md from active profile",
+        help="Copy config.yaml, .env, SOUL.md, and skills from active profile",
     )
     profile_create.add_argument(
         "--clone-all",
         action="store_true",
-        help="Full copy of active profile (all state)",
+        help="Full copy of active profile (all state, excluding per-profile history)",
     )
     profile_create.add_argument(
         "--clone-from",
         metavar="SOURCE",
-        help="Source profile to clone from (default: active)",
+        help="Source profile to clone from; implies --clone unless --clone-all is set",
     )
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation"

@@ -62,9 +62,9 @@ describe('usePreviewRouting', () => {
     $currentCwd.set('/work')
     $messages.set([])
     $previewTarget.set(null)
-    window.localStorage.clear()
     clearSessionPreviewRegistry()
     handleEvent = () => undefined
+    window.localStorage.clear()
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -78,9 +78,9 @@ describe('usePreviewRouting', () => {
     cleanup()
     $messages.set([])
     $previewTarget.set(null)
-    window.localStorage.clear()
-    clearSessionPreviewRegistry()
     vi.restoreAllMocks()
+    clearSessionPreviewRegistry()
+    window.localStorage.clear()
   })
 
   it('opens the active session preview from the registry', async () => {
@@ -120,31 +120,7 @@ describe('usePreviewRouting', () => {
     expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
   })
 
-  it('registers structured tool-result preview targets', async () => {
-    render(
-      <PreviewRoutingHarness
-        onEvent={handler => {
-          handleEvent = handler
-        }}
-      />
-    )
-
-    act(() =>
-      handleEvent({
-        payload: { path: './dist/index.html' },
-        session_id: 'session-1',
-        type: 'tool.complete'
-      })
-    )
-
-    await waitFor(() => {
-      expect($previewTarget.get()?.source).toBe('./dist/index.html')
-    })
-
-    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toContain('./dist/index.html')
-  })
-
-  it('registers html previews from edit inline diffs', async () => {
+  it('does not auto-open a preview from tool results', async () => {
     render(
       <PreviewRoutingHarness
         onEvent={handler => {
@@ -160,9 +136,9 @@ describe('usePreviewRouting', () => {
         type: 'tool.complete'
       })
     )
+    act(() => handleEvent({ payload: { path: './dist/index.html' }, session_id: 'session-1', type: 'tool.complete' }))
 
-    await waitFor(() => {
-      expect($previewTarget.get()?.source).toBe('preview-demo.html')
-    })
+    expect($previewTarget.get()).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.sessionPreviews.v1')).toBeNull()
   })
 })

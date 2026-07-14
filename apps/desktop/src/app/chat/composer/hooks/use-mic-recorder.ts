@@ -59,7 +59,11 @@ function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   return new Error(copy.microphoneStartFailed)
 }
 
-export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorderHandle; level: number; recording: boolean } {
+export function useMicRecorder(copy: MicRecorderErrorCopy): {
+  handle: MicRecorderHandle
+  level: number
+  recording: boolean
+} {
   const [level, setLevel] = useState(0)
   const [recording, setRecording] = useState(false)
 

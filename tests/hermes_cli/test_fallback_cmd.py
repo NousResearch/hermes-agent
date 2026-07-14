@@ -103,6 +103,34 @@ class TestReadChain:
         result[0]["provider"] = "mutated"
         assert cfg["fallback_providers"][0]["provider"] == "nous"
 
+    def test_parses_json_string_list(self):
+        # `hermes config set fallback_providers '[{...}]'` round-trips through
+        # yaml as a JSON-encoded string. The chain reader must coerce it back
+        # to the underlying list — otherwise the entire chain silently drops.
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "fallback_providers": '[{"provider": "anthropic", "model": "claude-sonnet-4-6"}, '
+                                   '{"provider": "gemini", "model": "gemini-2.5-pro"}]'
+        }
+        assert _read_chain(cfg) == [
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"},
+            {"provider": "gemini", "model": "gemini-2.5-pro"},
+        ]
+
+    def test_parses_json_string_single_dict(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {
+            "fallback_providers": '{"provider": "anthropic", "model": "claude-sonnet-4-6"}'
+        }
+        assert _read_chain(cfg) == [
+            {"provider": "anthropic", "model": "claude-sonnet-4-6"}
+        ]
+
+    def test_invalid_json_string_falls_back_to_empty(self):
+        from hermes_cli.fallback_cmd import _read_chain
+        cfg = {"fallback_providers": "[not-valid-json"}
+        assert _read_chain(cfg) == []
+
 
 # ---------------------------------------------------------------------------
 # _extract_fallback_from_model_cfg

@@ -48,10 +48,11 @@ export function applyZoomLevel(webContents, level) {
   return clamped
 }
 
-// Chromium on Windows can drop webContents zoom when a BrowserWindow is minimized
-// and restored or crosses onto a monitor with different display scaling. Re-apply
-// the persisted level after each completed lifecycle transition.
-export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore', 'moved']
+// Chromium can drop webContents zoom when a BrowserWindow is minimized,
+// restored, resized, or crosses onto a monitor with different display scaling.
+// WSLg runs Electron as Linux, where the cross-platform `resize` event is
+// available but the one-shot `resized` event is not.
+export const ZOOM_REASSERT_WINDOW_EVENTS = ['show', 'restore', 'moved', 'resize']
 
 export function installZoomReassertOnWindowEvents(win, reassert) {
   if (!win?.on) {

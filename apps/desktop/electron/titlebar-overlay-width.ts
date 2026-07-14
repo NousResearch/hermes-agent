@@ -1,5 +1,14 @@
 export const OVERLAY_FALLBACK_WIDTH = 144
 
+interface TitleBarOverlayOptionsInput {
+  platform?: 'linux' | 'mac' | 'windows' | 'wslg'
+  darwinMajor?: number
+  titlebarHeight?: number
+  color?: string
+  foreground?: string | null
+  dark?: boolean
+}
+
 /**
  * Static pre-layout reservation (px) for the right-side native window-controls
  * overlay (min/max/close). Only a FALLBACK — once laid out the renderer reads
@@ -20,6 +29,31 @@ export function nativeOverlayWidth({ isWindows = false, isWsl = false, isMac = f
   }
 
   return OVERLAY_FALLBACK_WIDTH
+}
+
+/**
+ * Build Electron's Window Controls Overlay options for every desktop host.
+ * With `titleBarStyle: hidden`, Windows and Linux show no window controls
+ * unless an overlay object is provided. WSLg runs the Linux Electron build,
+ * so it follows the non-macOS path even though Windows hosts the RDP surface.
+ */
+export function titleBarOverlayOptions({
+  platform = 'linux',
+  darwinMajor = 0,
+  titlebarHeight = 0,
+  color,
+  foreground,
+  dark = false
+}: TitleBarOverlayOptionsInput = {}) {
+  if (platform === 'mac') {
+    return { height: macTitleBarOverlayHeight({ darwinMajor, titlebarHeight }) }
+  }
+
+  return {
+    color,
+    height: titlebarHeight,
+    symbolColor: foreground || (dark ? '#f7f7f7' : '#242424')
+  }
 }
 
 // macOS Tahoe ships as Darwin 25 (Sequoia is 24); the Darwin number is truthful,

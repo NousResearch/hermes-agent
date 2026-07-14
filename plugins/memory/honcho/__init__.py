@@ -247,6 +247,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
+        self._host_tools_only = False
 
     @property
     def name(self) -> str:
@@ -301,7 +302,9 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in {"cron", "flush"} or platform == "cron":
+            self._host_tools_only = kwargs.get("memory_provider_mode") == "tools"
+            is_cron_context = agent_context in {"cron", "flush"} or platform == "cron"
+            if is_cron_context and not self._host_tools_only:
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
@@ -318,7 +321,9 @@ class HonchoMemoryProvider(MemoryProvider):
             self._config = cfg
 
             # ----- B1: recall_mode from config -----
-            self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
+            self._recall_mode = (
+                "tools" if self._host_tools_only else cfg.recall_mode
+            )  # "context", "tools", or "hybrid"
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
             # ----- B5: cost-awareness config -----
@@ -353,7 +358,7 @@ class HonchoMemoryProvider(MemoryProvider):
             # the first tool call, while init_on_session_start=True remains an
             # eager, ready-on-return initialization path.
             if self._recall_mode == "tools":
-                if cfg.init_on_session_start:
+                if cfg.init_on_session_start and not self._host_tools_only:
                     self._ensure_session()
                     return
                 logger.debug("Honcho tools-only mode — deferring session init until first tool call")
@@ -457,19 +462,22 @@ class HonchoMemoryProvider(MemoryProvider):
         # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
         # each one would flood the backend with short-lived duplicates instead
         # of performing a one-time migration.
-        try:
-            if not session.messages and cfg.session_strategy != "per-session":
-                from hermes_constants import get_hermes_home
-                mem_dir = str(get_hermes_home() / "memories")
-                self._manager.migrate_memory_files(self._session_key, mem_dir)
-                logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
-            elif cfg.session_strategy == "per-session":
-                logger.debug(
-                    "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
-                    self._session_key,
-                )
-        except Exception as e:
-            logger.debug("Honcho memory file migration skipped: %s", e)
+        if self._host_tools_only:
+            logger.debug("Honcho memory migration skipped: host tools-only mode")
+        else:
+            try:
+                if not session.messages and cfg.session_strategy != "per-session":
+                    from hermes_constants import get_hermes_home
+                    mem_dir = str(get_hermes_home() / "memories")
+                    self._manager.migrate_memory_files(self._session_key, mem_dir)
+                    logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
+                elif cfg.session_strategy == "per-session":
+                    logger.debug(
+                        "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
+                        self._session_key,
+                    )
+            except Exception as e:
+                logger.debug("Honcho memory file migration skipped: %s", e)
 
         # ----- B7: Pre-warming at init -----
         # Context prewarm warms peer.context() (base layer), consumed via

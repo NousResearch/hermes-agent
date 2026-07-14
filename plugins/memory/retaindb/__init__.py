@@ -508,20 +508,23 @@ class RetainDBMemoryProvider(MemoryProvider):
 
         from hermes_constants import get_hermes_home
         hermes_home_path = get_hermes_home()
-        db_path = hermes_home_path / "retaindb_queue.db"
-        self._queue = _WriteQueue(self._client, db_path)
+        if kwargs.get("memory_provider_mode") != "tools":
+            db_path = hermes_home_path / "retaindb_queue.db"
+            self._queue = _WriteQueue(self._client, db_path)
 
-        # Seed agent identity from SOUL.md in background
-        soul_path = hermes_home_path / "SOUL.md"
-        if soul_path.exists():
-            soul_content = soul_path.read_text(encoding="utf-8", errors="replace").strip()
-            if soul_content:
-                threading.Thread(
-                    target=self._seed_soul,
-                    args=(soul_content,),
-                    name="retaindb-soul-seed",
-                    daemon=True,
-                ).start()
+        # Host tools-only mode permits only explicit provider calls. Seeding
+        # SOUL.md is an automatic remote write, so leave it to full sessions.
+        if kwargs.get("memory_provider_mode") != "tools":
+            soul_path = hermes_home_path / "SOUL.md"
+            if soul_path.exists():
+                soul_content = soul_path.read_text(encoding="utf-8", errors="replace").strip()
+                if soul_content:
+                    threading.Thread(
+                        target=self._seed_soul,
+                        args=(soul_content,),
+                        name="retaindb-soul-seed",
+                        daemon=True,
+                    ).start()
 
     def _seed_soul(self, content: str) -> None:
         try:

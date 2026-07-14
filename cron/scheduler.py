@@ -2548,6 +2548,38 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+def _cron_memory_provider_mode(
+    job: dict, disabled_toolsets: Optional[list[str]] = None
+) -> str:
+    """Resolve explicit per-job provider access without inheriting globals."""
+    raw_toolsets = job.get("enabled_toolsets")
+    if not isinstance(raw_toolsets, (list, tuple, set)) or not raw_toolsets:
+        return "off"
+    from agent.memory_manager import memory_provider_tools_enabled
+
+    if disabled_toolsets and memory_provider_tools_enabled(disabled_toolsets):
+        return "off"
+    return "tools" if memory_provider_tools_enabled(list(raw_toolsets)) else "off"
+
+
+def _configure_cron_memory_surface(agent) -> None:
+    """Expose provider-backed memory tools to cron without the built-in memory tool."""
+    tools = getattr(agent, "tools", None) or []
+    filtered_tools = []
+    for tool in tools:
+        name = None
+        if isinstance(tool, dict):
+            name = tool.get("function", {}).get("name")
+        if name == "memory":
+            continue
+        filtered_tools.append(tool)
+    agent.tools = filtered_tools
+    if getattr(agent, "valid_tool_names", None) is not None:
+        agent.valid_tool_names.discard("memory")
+    if hasattr(agent, "_memory_nudge_interval"):
+        agent._memory_nudge_interval = 0
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None
 ) -> tuple[bool, str, str, Optional[str]]:
@@ -3168,6 +3200,18 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        _cron_cfg = _cfg if isinstance(_cfg, dict) else {}
+        _enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cron_cfg)
+        _disabled_toolsets = _resolve_cron_disabled_toolsets(_cron_cfg)
+        _memory_provider_mode = _cron_memory_provider_mode(
+            job, _disabled_toolsets
+        )
+        if "memory" not in _disabled_toolsets:
+            # Cron must never receive the built-in persistent memory tool,
+            # including after registry/MCP snapshot refreshes. In tools mode,
+            # provider tools are re-injected separately from the enabled
+            # memory surface.
+            _disabled_toolsets.append("memory")
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3186,8 +3230,8 @@ def run_job(
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            enabled_toolsets=_enabled_toolsets,
+            disabled_toolsets=_disabled_toolsets,
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project
@@ -3196,10 +3240,14 @@ def run_job(
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            # External provider access is opt-in through this job's own raw
+            # memory toolset. Global cron toolsets cannot silently activate it.
+            memory_provider_mode=_memory_provider_mode,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
         )
+        _configure_cron_memory_surface(agent)
         
         # Run the agent with an *inactivity*-based timeout: the job can run
         # for hours if it's actively calling tools / receiving stream tokens,
@@ -3502,11 +3550,22 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
     client) and reaps stale async clients whose loop has since closed. Idempotent
     and independently guarded, matching the original inline behavior.
     """
-    try:
-        if agent is not None:
+    if agent is not None:
+        # Tools-only providers still own clients/executors that need cleanup.
+        # Avoid AIAgent.shutdown_memory_provider() here because it also fires
+        # the unrelated context-engine session-end lifecycle.
+        memory_manager = getattr(agent, "_memory_manager", None)
+        if memory_manager is not None:
+            try:
+                memory_manager.shutdown_all()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug(
+                    "Job '%s': failed to shut down memory provider: %s", job_id, e
+                )
+        try:
             agent.close()
-    except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
     # Each cron run spins up a short-lived worker thread whose event loop
     # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
     # httpx clients cached under that loop are now unusable — reap them

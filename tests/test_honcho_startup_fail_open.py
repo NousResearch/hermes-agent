@@ -39,6 +39,93 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
     return cfg
 
 
+def test_honcho_cron_remains_disabled_without_host_tools_mode(monkeypatch):
+    provider = HonchoMemoryProvider()
+    config_loader_called = False
+
+    def load_config():
+        nonlocal config_loader_called
+        config_loader_called = True
+        return _configured_hybrid_config()
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        load_config,
+    )
+
+    provider.initialize("cron-session", platform="cron")
+
+    assert provider._cron_skipped is True
+    assert config_loader_called is False
+
+
+def test_honcho_host_tools_mode_allows_lazy_cron_tools_without_prewarm(monkeypatch):
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    cfg.init_on_session_start = True
+    session_init_called = False
+
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: cfg,
+    )
+
+    def session_init(*args, **kwargs):
+        nonlocal session_init_called
+        session_init_called = True
+
+    monkeypatch.setattr(provider, "_ensure_session", session_init)
+
+    provider.initialize(
+        "cron-session",
+        platform="cron",
+        memory_provider_mode="tools",
+    )
+
+    assert provider._cron_skipped is False
+    assert provider._host_tools_only is True
+    assert provider._recall_mode == "tools"
+    assert provider._manager is None
+    assert session_init_called is False
+
+
+def test_honcho_host_tools_mode_skips_memory_file_migration(monkeypatch):
+    provider = HonchoMemoryProvider()
+    provider._host_tools_only = True
+    provider._recall_mode = "tools"
+    cfg = _configured_hybrid_config()
+
+    class RecordingManager:
+        def __init__(self):
+            self.migration_called = False
+
+        def get_or_create(self, session_key):
+            return SimpleNamespace(messages=[])
+
+        def migrate_memory_files(self, session_key, memory_dir):
+            self.migration_called = True
+
+    manager = RecordingManager()
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.get_honcho_client",
+        lambda cfg: object(),
+    )
+    monkeypatch.setattr(
+        "plugins.memory.honcho.session.HonchoSessionManager",
+        lambda **kwargs: manager,
+    )
+
+    provider._do_session_init(
+        cfg,
+        "cron-session",
+        platform="cron",
+        memory_provider_mode="tools",
+    )
+
+    assert provider._session_initialized is True
+    assert manager.migration_called is False
+
+
 def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monkeypatch):
     """Slow Honcho session creation must not block agent startup."""
     provider = HonchoMemoryProvider()

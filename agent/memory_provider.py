@@ -69,6 +69,10 @@ class MemoryProvider(ABC):
           - hermes_home (str): The active HERMES_HOME directory path. Use this
             for profile-scoped storage instead of hardcoding ``~/.hermes``.
           - platform (str): "cli", "telegram", "discord", "cron", etc.
+          - memory_provider_mode (str): "full" or "tools". In ``tools`` mode,
+            initialize only resources required for explicit provider tool calls;
+            do not seed, migrate, prefetch, extract, or persist memory
+            automatically.
 
         kwargs may also include:
           - agent_context (str): "primary", "subagent", "cron", or "flush".

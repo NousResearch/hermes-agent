@@ -624,6 +624,7 @@ def _revert_apple_cgbi_png(data: bytes) -> Optional[bytes]:
             if xcrun:
                 probe = subprocess.run(
                     [xcrun, "-find", "pngcrush"],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -640,6 +641,7 @@ def _revert_apple_cgbi_png(data: bytes) -> Optional[bytes]:
                 src.write_bytes(data)
                 proc = subprocess.run(
                     [pngcrush, "-q", "-revert-iphone-optimizations", str(src), str(dst)],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     timeout=10,
                     check=False,

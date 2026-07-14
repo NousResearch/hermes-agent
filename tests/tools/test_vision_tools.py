@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
 from typing import Awaitable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,7 @@ from tools.vision_tools import (
     _determine_mime_type,
     _image_to_base64_data_url,
     _resize_image_for_vision,
+    _revert_apple_cgbi_png,
     _image_exceeds_dimension,
     _EMBED_MAX_DIMENSION,
     _is_image_size_error,
@@ -218,6 +220,28 @@ class TestImageToBase64DataUrl:
         assert replayed is not None
         replayed_bytes = base64.b64decode(replayed.split(",", 1)[1])
         assert b"CgBI" not in replayed_bytes
+
+    def test_cgbi_png_utilities_do_not_inherit_interactive_stdin(self):
+        """Image helpers must not read prompt_toolkit's interactive input."""
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[1:3] == ["-find", "pngcrush"]:
+                return MagicMock(returncode=0, stdout="/usr/bin/pngcrush\n")
+            return MagicMock(returncode=1)
+
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda name: "/usr/bin/xcrun" if name == "xcrun" else None,
+            ),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            assert _revert_apple_cgbi_png(b"not-a-real-png") is None
+
+        assert len(calls) == 2
+        assert all(kwargs.get("stdin") is subprocess.DEVNULL for _, kwargs in calls)
 
 
 # ---------------------------------------------------------------------------

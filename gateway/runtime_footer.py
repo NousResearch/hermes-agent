@@ -19,6 +19,7 @@ Available fields:
     reasoning       — model reasoning-effort level, ``r:<level>`` (``r:xhigh``)
     messages        — raw transcript count vs hygiene hard-limit (``326/600msgs``);
                       count only when no limit is known (``326msgs``)
+    latency         — wall-clock duration of the turn (``22s``, ``1m05s``)
     cwd             — home-relative working dir (``~``)
 
 Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
@@ -138,6 +139,17 @@ def resolve_footer_config(
     return resolved
 
 
+def _format_latency(seconds: float) -> str:
+    """Humanize a turn duration: ``22s``, ``1m05s``, ``<1s``."""
+    if seconds < 1:
+        return "<1s"
+    total = int(round(seconds))
+    if total < 60:
+        return f"{total}s"
+    m, sec = divmod(total, 60)
+    return f"{m}m{sec:02d}s"
+
+
 def format_runtime_footer(
     *,
     model: Optional[str],
@@ -148,6 +160,7 @@ def format_runtime_footer(
     reasoning: Optional[str] = None,
     message_count: Optional[int] = None,
     message_limit: Optional[int] = None,
+    turn_seconds: Optional[float] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -185,6 +198,11 @@ def format_runtime_footer(
             r = (reasoning or "").strip()
             if r:
                 parts.append(f"r:{r}")
+        elif field == "latency":
+            # Wall-clock turn duration. Skipped when the caller has no timing
+            # (older call sites) or the value is nonsensical.
+            if turn_seconds is not None and turn_seconds >= 0:
+                parts.append(_format_latency(turn_seconds))
         elif field == "messages":
             # Raw transcript message count vs the hygiene hard-limit. The count
             # is the running ``sessions.message_count`` (the same raw tally the
@@ -230,6 +248,7 @@ def build_footer_line(
     reasoning: Optional[str] = None,
     message_count: Optional[int] = None,
     message_limit: Optional[int] = None,
+    turn_seconds: Optional[float] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -253,5 +272,6 @@ def build_footer_line(
         reasoning=reasoning,
         message_count=message_count,
         message_limit=message_limit,
+        turn_seconds=turn_seconds,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

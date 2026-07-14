@@ -50,6 +50,22 @@ class TestTurnRuntimeFooter:
         with patch.object(server, "_load_cfg", return_value=_cfg(True)):
             assert "r:none" in server._turn_runtime_footer(agent, None)
 
+    def test_latency_field_renders_when_configured(self):
+        # latency is OPT-IN via display.runtime_footer.fields (default footer
+        # stays byte-stable for existing users).
+        cfg = _cfg(True)
+        cfg["display"]["runtime_footer"]["fields"] = [
+            "provider_model", "context_full", "reasoning", "latency", "cwd",
+        ]
+        with patch.object(server, "_load_cfg", return_value=cfg):
+            line = server._turn_runtime_footer(_agent(), None, turn_seconds=22.4)
+        assert "22s" in line
+
+    def test_latency_omitted_when_unknown(self):
+        with patch.object(server, "_load_cfg", return_value=_cfg(True)):
+            line = server._turn_runtime_footer(_agent(), None)
+        assert "s ·" not in line.replace("msgs", "")  # no bare seconds token
+
     def test_failure_is_swallowed(self):
         with patch.object(server, "_load_cfg", side_effect=RuntimeError("boom")):
             assert server._turn_runtime_footer(_agent(), None) == ""

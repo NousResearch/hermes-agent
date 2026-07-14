@@ -3904,7 +3904,7 @@ def _sync_session_key_after_compress(
             pass
 
 
-def _turn_runtime_footer(agent, session: dict | None) -> str:
+def _turn_runtime_footer(agent, session: dict | None, turn_seconds: float | None = None) -> str:
     """Build the runtime footer line for a completed desktop turn.
 
     Mirrors gateway/run.py's final-message footer: off unless
@@ -3935,6 +3935,7 @@ def _turn_runtime_footer(agent, session: dict | None) -> str:
             context_length=context_length,
             cwd=_display_session_cwd(session) if session else "",
             reasoning=reasoning,
+            turn_seconds=turn_seconds,
         )
     except Exception:
         return ""
@@ -10144,7 +10145,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            _turn_started_monotonic = time.monotonic()
             result = agent.run_conversation(run_message, **run_kwargs)
+            _turn_seconds = time.monotonic() - _turn_started_monotonic
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.
@@ -10256,7 +10259,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the display text only (history already holds the raw response),
             # and only on a clean completion.
             if raw and status == "complete":
-                footer = _turn_runtime_footer(agent, session)
+                footer = _turn_runtime_footer(agent, session, turn_seconds=_turn_seconds)
                 if footer:
                     raw = f"{raw}\n\n{footer}"
             payload = {"text": raw, "usage": _get_usage(agent), "status": status}

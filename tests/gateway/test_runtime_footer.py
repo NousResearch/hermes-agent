@@ -666,3 +666,50 @@ def test_resolve_footer_stats_end_to_end_render():
         message_limit=limit,
     )
     assert out == "326/600msgs"
+
+
+class TestLatencyField:
+    """2026-07-14: `latency` field — wall-clock turn duration (`22s`, `1m05s`)."""
+
+    def test_format_latency_shapes(self):
+        from gateway.runtime_footer import _format_latency
+
+        assert _format_latency(0.4) == "<1s"
+        assert _format_latency(22.4) == "22s"
+        assert _format_latency(65) == "1m05s"
+        assert _format_latency(3600) == "60m00s"
+
+    def test_latency_in_footer_line(self):
+        from gateway.runtime_footer import format_runtime_footer
+
+        line = format_runtime_footer(
+            model="claude-fable-5",
+            provider="claude-apr",
+            context_tokens=65_900,
+            context_length=1_000_000,
+            reasoning="medium",
+            turn_seconds=22,
+            cwd="~",
+            fields=("provider_model", "context_full", "reasoning", "latency", "cwd"),
+        )
+        assert "· 22s ·" in line
+        assert line.index("22s") > line.index("r:medium")  # ordered after reasoning
+
+    def test_latency_skipped_when_none(self):
+        from gateway.runtime_footer import format_runtime_footer
+
+        line = format_runtime_footer(
+            model="m", provider="p", context_tokens=10, context_length=100,
+            turn_seconds=None, fields=("provider_model", "latency"),
+        )
+        assert line.count("·") == 0  # only provider_model rendered
+
+    def test_build_footer_line_threads_turn_seconds(self):
+        from gateway.runtime_footer import build_footer_line
+
+        cfg = {"display": {"runtime_footer": {"enabled": True, "fields": ["latency"]}}}
+        line = build_footer_line(
+            user_config=cfg, platform_key=None, model="m",
+            context_tokens=0, context_length=None, turn_seconds=5,
+        )
+        assert "5s" in line

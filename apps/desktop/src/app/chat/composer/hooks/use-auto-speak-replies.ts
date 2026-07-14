@@ -14,6 +14,7 @@ interface AutoSpeakReply {
 }
 
 interface UseAutoSpeakReplies {
+  busy: boolean
   conversationActive: boolean
   failureLabel: string
   /** Mark the current last reply spoken — shared dedupe with the conversation consumer. */
@@ -32,6 +33,7 @@ interface UseAutoSpeakReplies {
  * the latest reply, so a backlog collapses to the newest.
  */
 export function useAutoSpeakReplies({
+  busy,
   conversationActive,
   failureLabel,
   markSpoken,
@@ -39,8 +41,15 @@ export function useAutoSpeakReplies({
   sessionId
 }: UseAutoSpeakReplies) {
   const enabled = useStore($autoSpeakReplies)
+  const busyRef = useRef(busy)
+  const freshReplyStarted = useRef(false)
   const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
+  busyRef.current = busy
   latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
+
+  if (busy) {
+    freshReplyStarted.current = true
+  }
 
   useEffect(() => {
     if (!enabled) {
@@ -50,15 +59,35 @@ export function useAutoSpeakReplies({
     // Don't read whatever reply already sits at the bottom when the toggle flips
     // on (or a chat opens) — consume it so only later replies are spoken.
     latest.current.markSpoken()
+    freshReplyStarted.current = busyRef.current
+    let waitingForFreshReply = true
 
     const speakLatest = () => {
       const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
+      const reply = pendingReply()
+
+      if (waitingForFreshReply && freshReplyStarted.current) {
+        waitingForFreshReply = false
+      }
+
+      // Session history hydrates asynchronously after `sessionId` changes. The
+      // effect's eager mark above can therefore still see the previous session.
+      // Ignore completed replies until this session starts a new turn (or a
+      // pending assistant reply appears), consuming late-arriving history
+      // instead of replaying it.
+      if (waitingForFreshReply && reply) {
+        if (reply.pending) {
+          waitingForFreshReply = false
+        } else {
+          markSpoken()
+
+          return
+        }
+      }
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return
       }
-
-      const reply = pendingReply()
 
       if (!reply || reply.pending) {
         return

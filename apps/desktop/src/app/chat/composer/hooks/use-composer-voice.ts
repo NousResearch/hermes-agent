@@ -140,6 +140,7 @@ export function useComposerVoice({
   }, [t])
 
   useAutoSpeakReplies({
+    busy,
     conversationActive: voiceConversationActive,
     failureLabel: t.assistant.thread.readAloudFailed,
     markSpoken: consumePendingResponse,

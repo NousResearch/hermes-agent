@@ -167,3 +167,42 @@ def test_write_through_failure_does_not_break_profile_save(profile_and_root, mon
 
     profile = _read_store(profile_path)
     assert profile["providers"]["xai-oauth"]["tokens"]["refresh_token"] == "r"
+
+
+def test_successful_save_clears_stale_last_auth_error(profile_and_root):
+    """A successful token save resolves any prior failure — the stale
+    ``last_auth_error`` record must be cleared so it can't mislead future
+    triage (a revoked-token error left behind after a successful re-login
+    looks like a live outage but isn't).
+    """
+    profile_path, _root_path = profile_and_root
+    # Profile carries a leftover error record from an earlier failed refresh.
+    _write_store(
+        profile_path,
+        {
+            "version": 1,
+            "providers": {
+                "xai-oauth": {
+                    "tokens": {
+                        "access_token": "dead-access",
+                        "refresh_token": "dead-refresh",
+                    },
+                    "last_auth_error": {
+                        "provider": "xai-oauth",
+                        "code": "xai_refresh_failed",
+                        "message": "Refresh token has been revoked",
+                        "relogin_required": True,
+                        "at": "2026-07-13T10:33:29Z",
+                    },
+                }
+            },
+        },
+    )
+
+    # A fresh, successful login/refresh persists good tokens.
+    auth._save_xai_oauth_tokens({"access_token": "new-access", "refresh_token": "new-refresh"})
+
+    state = _read_store(profile_path)["providers"]["xai-oauth"]
+    assert state["tokens"]["refresh_token"] == "new-refresh"
+    # The stale error record is gone.
+    assert "last_auth_error" not in state

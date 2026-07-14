@@ -4025,6 +4025,11 @@ def _save_xai_oauth_tokens(
             state["discovery"] = discovery
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
+        # Persisting good tokens means any prior refresh/login failure is
+        # resolved. Clear the stale error record so it can't mislead future
+        # triage (a revoked-token error left behind after a successful
+        # re-login/refresh looks like a live outage but isn't).
+        state.pop("last_auth_error", None)
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
         if write_through_to_root:

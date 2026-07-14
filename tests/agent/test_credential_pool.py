@@ -831,6 +831,70 @@ def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatc
     assert persisted["secret_fingerprint"].startswith("sha256:")
 
 
+def test_load_pool_collapses_duplicate_env_rows_to_active_key(tmp_path, monkeypatch):
+    """One env source is one credential, even if auth.json contains stale duplicates."""
+    key = "sk-or-active-main-key"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", key)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "current-row",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENROUTER_API_KEY",
+                    },
+                    {
+                        "id": "stale-duplicate",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "env:OPENROUTER_API_KEY",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+
+    assert [(entry.id, entry.runtime_api_key) for entry in pool.entries()] == [
+        ("current-row", key)
+    ]
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert [entry["id"] for entry in persisted["credential_pool"]["openrouter"]] == [
+        "current-row"
+    ]
+
+
+def test_credential_pool_never_selects_empty_borrowed_entry():
+    from agent.credential_pool import CredentialPool, PooledCredential
+
+    pool = CredentialPool(
+        "openrouter",
+        [
+            PooledCredential(
+                provider="openrouter",
+                id="metadata-only",
+                label="OPENROUTER_API_KEY",
+                auth_type="api_key",
+                priority=0,
+                source="env:OPENROUTER_API_KEY",
+                access_token="",
+            )
+        ],
+    )
+
+    assert pool.select() is None
+    assert pool.acquire_lease() is None
+
 
 def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, monkeypatch):
     """Bitwarden-injected env vars retain source metadata but not raw values."""

@@ -55,6 +55,7 @@ export function readLinkTitleWindowTitle(window) {
     if (!window || window.isDestroyed()) {
       return ''
     }
+
     const contents = window.webContents
 
     if (!contents || contents.isDestroyed()) {

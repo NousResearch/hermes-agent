@@ -1152,6 +1152,13 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
     seam so all approval transports redact consistently."""
     payload = dict(data or {})
+    if "choices" not in payload:
+        if payload.get("smart_denied"):
+            payload["choices"] = ["once", "deny"]
+        elif payload.get("allow_permanent") is False:
+            payload["choices"] = ["once", "session", "deny"]
+        elif "allow_permanent" in payload:
+            payload["choices"] = ["once", "session", "always", "deny"]
     if "command" in payload:
         from gateway.run import _redact_approval_command
 
@@ -1859,7 +1866,10 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
-    resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    cwd = translate_cwd_for_wsl_backend(str(cwd))
+    resolved = os.path.abspath(os.path.expanduser(cwd))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved
@@ -2483,6 +2493,19 @@ def _write_config_key(key_path: str, value):
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+_APPROVAL_MODES = frozenset({"manual", "smart", "off"})
+
+
+def _load_approval_mode() -> str:
+    from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
+    from tools.approval import _normalize_approval_mode
+
+    raw_cfg = _load_cfg()
+    cfg = _deep_merge(DEFAULT_CONFIG, raw_cfg if isinstance(raw_cfg, dict) else {})
+    approvals = cfg.get("approvals")
+    raw = approvals.get("mode") if isinstance(approvals, dict) else None
+    mode = _normalize_approval_mode(raw)
+    return mode if mode in _APPROVAL_MODES else "manual"
 
 
 def _coerce_statusbar(raw) -> str:
@@ -3318,7 +3341,8 @@ def _current_profile_name() -> str:
 # checkout), surfacing a one-click "update to align" prompt instead of failing
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
-DESKTOP_BACKEND_CONTRACT = 2
+# v3: adds approvals.mode config RPCs and session.info reconciliation.
+DESKTOP_BACKEND_CONTRACT = 3
 
 
 def _session_info(agent, session: dict | None = None) -> dict:
@@ -3352,17 +3376,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # the desktop status bar (it would show YOLO "off" while approvals.mode=off
     # silently auto-approves every dangerous command).
     yolo = False
+    approval_mode = "manual"
     try:
-        from tools.approval import (
-            _YOLO_MODE_FROZEN,
-            _get_approval_mode,
-            is_session_yolo_enabled,
-        )
+        from tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
 
         session_yolo = (
             bool(is_session_yolo_enabled(session_key)) if session_key else False
         )
-        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+        approval_mode = _load_approval_mode()
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
     info: dict = {
@@ -3372,6 +3394,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
+        "approval_mode": approval_mode,
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -8770,10 +8793,18 @@ def _notification_poller_loop(
             continue
 
         rid = f"__notif__{int(time.time() * 1000)}"
+        from tools.async_delegation import (
+            claim_event_delivery, complete_event_delivery, release_event_delivery,
+        )
+        _claim = claim_event_delivery(evt, "tui-poller")
+        if _claim is None:
+            continue
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            complete_event_delivery(evt, _claim)
         except Exception as exc:
+            release_event_delivery(evt, _claim)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -8822,10 +8853,18 @@ def _notification_poller_loop(
             session["running"] = True
 
         rid = f"__notif__{int(time.time() * 1000)}"
+        from tools.async_delegation import (
+            claim_event_delivery, complete_event_delivery, release_event_delivery,
+        )
+        _claim = claim_event_delivery(evt, "tui-poller")
+        if _claim is None:
+            continue
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            complete_event_delivery(evt, _claim)
         except Exception as exc:
+            release_event_delivery(evt, _claim)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -9375,10 +9414,18 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         process_registry.completion_queue.put(_evt)
                         break
                     session["running"] = True
+                from tools.async_delegation import (
+                    claim_event_delivery, complete_event_delivery, release_event_delivery,
+                )
+                _claim = claim_event_delivery(_evt, "tui-post-turn")
+                if _claim is None:
+                    continue
                 try:
                     _emit("message.start", sid)
                     _run_prompt_submit(rid, sid, session, synth)
+                    complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
+                    release_event_delivery(_evt, _claim)
                     print(
                         f"[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",
@@ -10396,6 +10443,22 @@ def _(rid, params: dict) -> dict:
                 agent.verbose_logging = nv == "verbose"
         return _ok(rid, {"key": key, "value": nv})
 
+    if key in {"approval_mode", "approvals.mode"}:
+        raw = str(value or "").strip().lower()
+        if raw not in _APPROVAL_MODES:
+            return _err(
+                rid,
+                4002,
+                f"unknown approval mode: {value}; pick one of manual|smart|off",
+            )
+
+        _write_config_key("approvals.mode", raw)
+        for sid, sess in list(_sessions.items()):
+            agent = sess.get("agent")
+            if agent is not None:
+                _emit("session.info", sid, _session_info(agent, sess))
+        return _ok(rid, {"key": "approvals.mode", "value": raw})
+
     if key == "yolo":
         # Approval bypass. Two scopes:
         #   scope="session" (default) — same as the TUI's Shift+Tab. Toggles
@@ -11309,6 +11372,11 @@ def _(rid, params: dict) -> dict:
         )
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
+    if key in {"approval_mode", "approvals.mode"}:
+        try:
+            return _ok(rid, {"value": _load_approval_mode()})
+        except Exception as e:
+            return _err(rid, 5001, str(e))
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (

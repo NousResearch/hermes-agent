@@ -1621,6 +1621,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
             # Groups always reply in-thread.
             if thread_name and space_name:
                 self._last_inbound_thread[space_name] = thread_name
+            elif space_name:
+                self._last_inbound_thread.pop(space_name, None)
 
         source = self.build_source(
             chat_id=space_name,

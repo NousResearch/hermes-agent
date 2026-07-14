@@ -855,6 +855,24 @@ class TestBuildMessageEvent:
         assert event.source.thread_id == "spaces/G/threads/T1"
 
     @pytest.mark.asyncio
+    async def test_group_top_level_message_clears_stale_thread_cache(self, adapter):
+        """A top-level group message (no thread_name) must clear any stale
+        _last_inbound_thread entry so the thinking indicator doesn't land
+        in a wrong thread from a previous side-thread interaction."""
+        # Pre-populate a stale thread cache for the SAME space as the message.
+        adapter._last_inbound_thread["spaces/S"] = "spaces/S/threads/STALE"
+        # Build a group-space message with NO thread name.
+        env = _make_chat_envelope(text="hello")
+        env["chat"]["messagePayload"]["space"]["spaceType"] = "SPACE"
+        env["chat"]["messagePayload"]["message"]["space"]["spaceType"] = "SPACE"
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["thread"] = {"name": None}  # Explicitly no thread.
+        event = await adapter._build_message_event(msg, env)
+        assert event.source.chat_type == "group"
+        # Stale thread cache must be cleared for this space.
+        assert "spaces/S" not in adapter._last_inbound_thread
+
+    @pytest.mark.asyncio
     async def test_slash_command_yields_command_type(self, adapter):
         env = _make_chat_envelope(
             text="foo bar",

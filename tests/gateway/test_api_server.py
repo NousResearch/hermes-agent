@@ -625,6 +625,10 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/runtime/identity", adapter._handle_runtime_identity)
+    app.router.add_get("/runtime/skills/list", adapter._handle_runtime_skills_list)
+    app.router.add_get(r"/runtime/skills/{name:.+}", adapter._handle_runtime_skill)
+    app.router.add_get("/runtime/session/{session_id}", adapter._handle_runtime_session)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -948,6 +952,9 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["features"]["runtime_state_bridge"] is True
+            assert data["endpoints"]["runtime_identity"] == {"method": "GET", "path": "/runtime/identity"}
+            assert data["endpoints"]["runtime_skill"] == {"method": "GET", "path": "/runtime/skills/{name}"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
 
@@ -993,6 +1000,133 @@ class TestSkillsEndpoint:
                 assert names == ["ascii-art", "github"]
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
+
+    @pytest.mark.asyncio
+    async def test_runtime_skills_list_aliases_skills_endpoint(self, adapter):
+        fake_skills = [{"name": "hermes-agent", "description": "Hermes help", "category": "agents"}]
+        with patch("tools.skills_tool._find_all_skills", return_value=list(fake_skills)):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/runtime/skills/list")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "list"
+                assert data["data"][0]["name"] == "hermes-agent"
+
+    @pytest.mark.asyncio
+    async def test_runtime_skill_reads_skill_content(self, adapter):
+        skill_payload = {
+            "success": True,
+            "name": "hermes-agent",
+            "content": "# Hermes Agent\nUse skills_list when needed.",
+        }
+        with patch("tools.skills_tool.skill_view", return_value=json.dumps(skill_payload)) as mock_view:
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/runtime/skills/hermes-agent")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "hermes.runtime.skill"
+                assert data["success"] is True
+                assert "Hermes Agent" in data["content"]
+                mock_view.assert_called_once_with(name="hermes-agent", file_path=None)
+
+    @pytest.mark.asyncio
+    async def test_runtime_skill_not_found_returns_404(self, adapter):
+        with patch(
+            "tools.skills_tool.skill_view",
+            return_value=json.dumps({"success": False, "error": "Skill 'missing' not found."}),
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/runtime/skills/missing")
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_runtime_skill_rejects_traversal_paths(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            bad_file = await cli.get("/runtime/skills/hermes-agent?file_path=../secret.txt")
+            assert bad_file.status == 400
+            bad_backslash = await cli.get("/runtime/skills/hermes-agent?file_path=..%5Csecret.txt")
+            assert bad_backslash.status == 400
+
+    @pytest.mark.asyncio
+    async def test_runtime_identity_returns_sanitized_bridge_metadata(self, adapter):
+        fake_config = {
+            "model": {
+                "provider": "openai-codex",
+                "default": "gpt-5.5",
+                "base_url": "https://token@example.test/v1/path",
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=fake_config), patch(
+            "hermes_cli.profiles.get_active_profile_name", return_value="default"
+        ), patch("hermes_constants.get_hermes_home", return_value="/tmp/hermes-home"), patch(
+            "hermes_cli.tools_config._get_platform_tools", return_value={"skills"}
+        ), patch("toolsets.resolve_toolset", return_value=["skills_list", "skill_view"]), patch(
+            "tools.skills_tool._find_all_skills", return_value=[{"name": "s"}]
+        ):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/runtime/identity")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "hermes.runtime.identity"
+                assert data["provider"] == "openai-codex"
+                assert data["model"] == "gpt-5.5"
+                assert data["base_url_host"] == "https://example.test"
+                assert data["skill_tools_available"] is True
+                assert data["bridge"]["mode"] == "read_only"
+                assert "api_key" not in json.dumps(data).lower()
+
+    @pytest.mark.asyncio
+    async def test_runtime_session_returns_session_and_limited_messages(self, adapter):
+        fake_db = MagicMock()
+        fake_db.get_session.return_value = {"id": "s1", "source": "slack", "title": "Test"}
+        fake_db.resolve_resume_session_id.return_value = "s1"
+        fake_db.get_messages.return_value = [
+            {"id": 1, "session_id": "s1", "role": "user", "content": "one"},
+            {"id": 2, "session_id": "s1", "role": "assistant", "content": "two"},
+        ]
+        with patch.object(adapter, "_ensure_session_db", return_value=fake_db):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/runtime/session/s1?limit=1")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "hermes.runtime.session"
+                assert data["session"]["id"] == "s1"
+                assert [m["content"] for m in data["messages"]] == ["two"]
+
+    @pytest.mark.asyncio
+    async def test_runtime_bridge_requires_auth_when_key_configured(self, auth_adapter):
+        fake_db = MagicMock()
+        fake_db.get_session.return_value = {"id": "s1", "source": "slack", "title": "Test"}
+        fake_db.resolve_resume_session_id.return_value = "s1"
+        fake_db.get_messages.return_value = []
+        with patch.object(auth_adapter, "_ensure_session_db", return_value=fake_db), patch(
+            "tools.skills_tool._find_all_skills", return_value=[]
+        ), patch(
+            "tools.skills_tool.skill_view", return_value=json.dumps({"success": True, "content": "ok"})
+        ):
+            app = _create_app(auth_adapter)
+            async with TestClient(TestServer(app)) as cli:
+                for path in (
+                    "/runtime/identity",
+                    "/runtime/skills/list",
+                    "/runtime/skills/hermes-agent",
+                    "/runtime/session/s1",
+                ):
+                    resp = await cli.get(path)
+                    assert resp.status == 401
+                    authed = await cli.get(
+                        path,
+                        headers={"Authorization": "Bearer sk-secret"},
+                    )
+                    assert authed.status == 200
 
     @pytest.mark.asyncio
     async def test_skills_handles_enumeration_failure(self, adapter):

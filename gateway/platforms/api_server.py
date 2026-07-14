@@ -8,6 +8,10 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- GET  /runtime/identity           — read-only runtime/profile/tool-state bundle for local bridges
+- GET  /runtime/skills/list        — read-only skill list alias for local bridges
+- GET  /runtime/skills/{name}      — read-only skill content for local bridges
+- GET  /runtime/session/{session_id} — read-only session bundle for local bridges
 - GET  /api/sessions               — list client-visible Hermes sessions
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
@@ -46,6 +50,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
@@ -1670,6 +1675,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
+                "runtime_state_bridge": True,
                 "audio_api": False,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
@@ -1680,6 +1686,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "runtime_identity": {"method": "GET", "path": "/runtime/identity"},
+                "runtime_skills": {"method": "GET", "path": "/runtime/skills/list"},
+                "runtime_skill": {"method": "GET", "path": "/runtime/skills/{name}"},
+                "runtime_session": {"method": "GET", "path": "/runtime/session/{session_id}"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -1786,6 +1796,204 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "platform": "api_server",
             "data": data,
+        })
+
+    @staticmethod
+    def _safe_base_url_host(base_url: Any) -> str:
+        """Return only the scheme/host/port portion of a configured base URL."""
+        if not base_url:
+            return ""
+        try:
+            text = str(base_url).strip()
+            parsed = urlparse(text if "://" in text else f"http://{text}")
+            if parsed.scheme and parsed.hostname:
+                netloc = parsed.hostname
+                if parsed.port:
+                    netloc = f"{netloc}:{parsed.port}"
+                return f"{parsed.scheme}://{netloc}"
+        except Exception:
+            pass
+        return ""
+
+    def _runtime_identity_payload(self) -> Dict[str, Any]:
+        """Build a sanitized read-only runtime-state bundle for local bridges.
+
+        The payload exposes paths and non-secret routing metadata, but never
+        returns API keys, .env contents, raw config, or system prompts. Local
+        provider wrappers can use it to confirm they are attached to the same
+        Hermes profile/session and then call explicit skill/session bridge
+        endpoints only when they need details.
+        """
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+
+        model_cfg = config.get("model") if isinstance(config, dict) else {}
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+        provider = str(model_cfg.get("provider") or "")
+        model = str(model_cfg.get("default") or model_cfg.get("model") or "")
+        base_url_host = self._safe_base_url_host(model_cfg.get("base_url"))
+
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile = get_active_profile_name()
+        except Exception:
+            profile = "default"
+
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = str(get_hermes_home())
+        except Exception:
+            hermes_home = os.path.expanduser("~/.hermes")
+
+        enabled_toolsets: List[str] = []
+        resolved_tools: List[str] = []
+        try:
+            from hermes_cli.tools_config import _get_platform_tools
+            from toolsets import resolve_toolset
+            enabled_toolsets = sorted(_get_platform_tools(config, "api_server"))
+            tools: set[str] = set()
+            for toolset in enabled_toolsets:
+                try:
+                    tools.update(resolve_toolset(toolset))
+                except Exception:
+                    continue
+            resolved_tools = sorted(tools)
+        except Exception:
+            enabled_toolsets = []
+            resolved_tools = []
+
+        skill_count = 0
+        try:
+            from tools.skills_tool import _find_all_skills
+            skill_count = len(_find_all_skills(skip_disabled=False))
+        except Exception:
+            skill_count = 0
+
+        return {
+            "object": "hermes.runtime.identity",
+            "profile": profile or "default",
+            "hermes_home_available": bool(hermes_home),
+            "cwd_available": bool(os.environ.get("TERMINAL_CWD") or os.getcwd()),
+            "provider": provider,
+            "model": model,
+            "base_url_host": base_url_host,
+            "api_server_model": self._model_name,
+            "toolsets": enabled_toolsets,
+            "tool_count": len(resolved_tools),
+            "skill_count": skill_count,
+            "skill_tools_available": bool({"skills_list", "skill_view"} & set(resolved_tools)),
+            "bridge": {
+                "mode": "read_only",
+                "auth": "bearer",
+                "endpoints": {
+                    "identity": "/runtime/identity",
+                    "skills_list": "/runtime/skills/list",
+                    "skill_view": "/runtime/skills/{name}",
+                    "session": "/runtime/session/{session_id}",
+                },
+                "instructions": (
+                    "For skill-related context, prefer calling skills_list/skill_view "
+                    "through Hermes tools or these bridge endpoints instead of assuming "
+                    "a static prompt skill inventory is complete."
+                ),
+            },
+        }
+
+    async def _handle_runtime_identity(self, request: "web.Request") -> "web.Response":
+        """GET /runtime/identity — sanitized runtime/profile/tool-state bundle."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            return web.json_response(self._runtime_identity_payload())
+        except Exception:
+            logger.exception("GET /runtime/identity failed")
+            return web.json_response(
+                _openai_error("Failed to build runtime identity", err_type="server_error"),
+                status=500,
+            )
+
+    async def _handle_runtime_skills_list(self, request: "web.Request") -> "web.Response":
+        """GET /runtime/skills/list — local-bridge alias for GET /v1/skills."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return await self._handle_skills(request)
+
+    async def _handle_runtime_skill(self, request: "web.Request") -> "web.Response":
+        """GET /runtime/skills/{name} — read a skill through Hermes' resolver."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        name = request.match_info.get("name", "").strip()
+        name_parts = name.replace("\\", "/").split("/")
+        if not name or name.startswith("/") or ".." in name_parts or re.search(r'[\r\n\x00]', name):
+            return web.json_response(_openai_error("Invalid skill name", code="invalid_skill_name"), status=400)
+        file_path = request.query.get("file_path") or None
+        if file_path:
+            file_path_text = str(file_path).strip()
+            file_parts = file_path_text.replace("\\", "/").split("/")
+            if (
+                Path(file_path_text).is_absolute()
+                or ".." in file_parts
+                or "\\" in file_path_text
+                or re.search(r'[\r\n\x00]', file_path_text)
+            ):
+                return web.json_response(
+                    _openai_error("Invalid skill file path", code="invalid_skill_file_path"),
+                    status=400,
+                )
+            file_path = file_path_text
+
+        try:
+            from tools.skills_tool import skill_view
+            raw = skill_view(name=name, file_path=file_path)
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            logger.exception("GET /runtime/skills/%s failed", name)
+            return web.json_response(
+                _openai_error("Failed to read skill", err_type="server_error"),
+                status=500,
+            )
+
+        if not isinstance(payload, dict):
+            payload = {"success": False, "error": "Unexpected skill_view response"}
+        status = 200 if payload.get("success", False) else 404
+        return web.json_response({"object": "hermes.runtime.skill", **payload}, status=status)
+
+    async def _handle_runtime_session(self, request: "web.Request") -> "web.Response":
+        """GET /runtime/session/{session_id} — read-only session + message bundle."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info.get("session_id", "").strip()
+        session_parts = session_id.replace("\\", "/").split("/")
+        if not session_id or session_id.startswith("/") or ".." in session_parts or re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(_openai_error("Invalid session ID", code="invalid_session_id"), status=400)
+
+        session, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+
+        resolved_id = db.resolve_resume_session_id(session_id)
+        limit = self._parse_nonnegative_int(request.query.get("limit"), default=200, maximum=2000)
+        messages = db.get_messages(resolved_id)
+        messages = [] if limit == 0 else messages[-limit:]
+        return web.json_response({
+            "object": "hermes.runtime.session",
+            "session": self._session_response(session),
+            "resolved_session_id": resolved_id,
+            "messages": [self._message_response(m) for m in messages],
+            "limit": limit,
         })
 
     # ------------------------------------------------------------------
@@ -4978,6 +5186,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/runtime/identity", self._handle_runtime_identity)
+            self._app.router.add_get("/runtime/skills/list", self._handle_runtime_skills_list)
+            self._app.router.add_get(r"/runtime/skills/{name:.+}", self._handle_runtime_skill)
+            self._app.router.add_get("/runtime/session/{session_id}", self._handle_runtime_session)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)

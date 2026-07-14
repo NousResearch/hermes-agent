@@ -66,12 +66,19 @@ _EXCLUDED_DIRS = {
     ".pytest_cache",
     ".mypy_cache",
     ".ruff_cache",
+    "state-snapshots",
+    "audio_cache",
+    "lsp",
+    ".npm",
+    ".u2net",
 }
 
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
     ".pyo",
+    ".bak",
+    ".backup",
     # SQLite sidecar files — the backup takes a consistent snapshot of ``*.db``
     # via ``sqlite3.backup()``, so shipping the live WAL / shared-memory /
     # rollback-journal alongside would pair a fresh snapshot with stale sidecar
@@ -381,7 +388,7 @@ def run_backup(args) -> None:
     errors = []
     t0 = time.monotonic()
 
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
         for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
@@ -1178,7 +1185,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         return None
 
     try:
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
             for abs_path, rel_path in files_to_add:
                 try:
                     if abs_path.suffix == ".db":

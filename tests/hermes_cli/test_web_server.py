@@ -1728,12 +1728,15 @@ class TestWebServerEndpoints:
 
         captured = {}
 
-        def fake_transcribe_audio(path):
+        def fake_transcribe_audio(path, model=None, language=None, prompt=None):
             captured["path"] = path
+            captured["language"] = language
+            captured["prompt"] = prompt
             return {
                 "success": True,
                 "transcript": "hello from voice mode",
                 "provider": "test",
+                "language": language,
             }
 
         monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
@@ -1743,6 +1746,8 @@ class TestWebServerEndpoints:
             json={
                 "data_url": "data:audio/webm;base64,aGVsbG8=",
                 "mime_type": "audio/webm",
+                "language": "zh",
+                "prompt": "阿尔法学院, AgentKey",
             },
         )
 
@@ -1751,7 +1756,10 @@ class TestWebServerEndpoints:
             "ok": True,
             "transcript": "hello from voice mode",
             "provider": "test",
+            "language": "zh",
         }
+        assert captured["language"] == "zh"
+        assert captured["prompt"] == "阿尔法学院, AgentKey"
         assert captured["path"].endswith(".webm")
         assert not Path(captured["path"]).exists()
 

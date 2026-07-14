@@ -217,6 +217,14 @@ async def _lifespan(app: "FastAPI"):
     finally:
         pty_reaper_task.cancel()
         await PTY_REGISTRY.close_all()
+        # The local whisper.cpp HTTP worker keeps its model resident between
+        # realtime chunks. Stop it as part of FastAPI's graceful shutdown so
+        # restarting Hermes cannot leave an orphan transcription process.
+        try:
+            from tools.transcription_tools import shutdown_transcription_runtime
+            shutdown_transcription_runtime()
+        except Exception as exc:
+            logger.warning("Failed to stop transcription runtime: %s", exc)
         if cron_stop is not None:
             cron_stop.set()
 
@@ -920,6 +928,8 @@ class WhatsAppOnboardingApply(BaseModel):
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None
+    language: Optional[str] = None
+    prompt: Optional[str] = None
 
 
 class ManagedFileUpload(BaseModel):
@@ -3736,6 +3746,13 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     if len(audio_bytes) > _MAX_TRANSCRIPTION_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="Audio recording is too large")
 
+    language = str(payload.language or "").strip().lower()
+    if language and language not in {"zh", "en", "ja", "auto"}:
+        raise HTTPException(status_code=400, detail="Unsupported transcription language")
+    prompt = str(payload.prompt or "").strip()
+    if len(prompt) > 4000:
+        raise HTTPException(status_code=400, detail="Transcription prompt is too long")
+
     temp_path = ""
     try:
         suffix = _audio_extension_for_mime(mime_type)
@@ -3750,7 +3767,9 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
         from tools.transcription_tools import transcribe_audio
 
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, transcribe_audio, temp_path)
+        result = await loop.run_in_executor(
+            None, transcribe_audio, temp_path, None, language or None, prompt or None,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -3773,6 +3792,7 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
         "ok": True,
         "transcript": str(result.get("transcript") or "").strip(),
         "provider": result.get("provider"),
+        "language": result.get("language") or language or None,
     }
 
 

@@ -79,6 +79,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 
@@ -668,6 +670,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                     [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
                     capture_output=True, text=True, timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
+                    **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
                 )
                 if r.returncode == 0:
                     if target is not None:
@@ -684,6 +687,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 pip_cmd + ["--version"],
                 capture_output=True, text=True, timeout=15,
                 stdin=subprocess.DEVNULL,
+                **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
             )
             if probe.returncode != 0:
                 raise FileNotFoundError("pip not in venv")
@@ -693,6 +697,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                     [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                     capture_output=True, text=True, timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
+                    **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 return _InstallResult(False, "",
@@ -703,6 +708,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 pip_cmd + ["install", *target_args, *constraint_args, *specs],
                 capture_output=True, text=True, timeout=timeout,
                 stdin=subprocess.DEVNULL,
+                **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
             )
             if r.returncode == 0 and target is not None:
                 _activate_target_on_syspath(target)

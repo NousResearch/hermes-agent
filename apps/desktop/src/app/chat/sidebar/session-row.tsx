@@ -171,7 +171,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
+              void openSessionInNewWindow(session.id, { profile: session.profile })
 
               return
             }

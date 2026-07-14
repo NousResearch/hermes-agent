@@ -755,7 +755,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (useWebgl) {
       try {
         const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
+        // On WebGL context loss (GPU-process crash, tab throttled after long
+        // background, mobile browser suspend/resume, driver reset, aggressive
+        // hardware-acceleration blocklists on some mobile Chrome builds) the
+        // WebglAddon is left in a defunct state. Merely disposing it removes
+        // the WebGL renderer but xterm's DOM fallback only re-paints on the
+        // next dirty region — so the terminal freezes on the last GL frame
+        // until the user types or resizes. Reported in the wild as "chat pane
+        // shows only the Hermes banner and nothing else on mobile Chrome
+        // while Firefox on the same device is fine". Force a full repaint so
+        // the DOM renderer picks up immediately.
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          try {
+            term.refresh(0, term.rows - 1);
+          } catch {
+            /* term already disposed — nothing to repaint */
+          }
+        });
         term.loadAddon(webgl);
       } catch (err) {
         console.warn(

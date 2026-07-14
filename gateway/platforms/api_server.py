@@ -880,6 +880,185 @@ def _notify_cron_provider_jobs_changed() -> None:
     except Exception:
         pass
 
+
+# Cap each SSE `data:` line below CPython's effective ~128 KB MAXLINE
+# (http.client._MAXLINE is 64 KB; the SSE/chunked path effectively doubles it).
+# Leave headroom for the `event:` line, `data: ` prefix, and framing.
+_SSE_DATA_SAFE_BYTES = 100_000
+_SSE_LINE_HARD_BYTES = 120_000
+_RESPONSE_COMPLETED_SAFE_BYTES = _SSE_DATA_SAFE_BYTES
+
+
+def _sse_soft_trim_string(s: str, soft: bool = True) -> str:
+    """Replace oversized strings with a length annotation for SSE payloads."""
+    limit = 500 if soft else 100
+    if not isinstance(s, str) or len(s) <= limit:
+        return s
+    return f"[{len(s)} chars — truncated for SSE size cap]"
+
+
+def _trim_response_completed_string(s: str, soft: bool) -> str:
+    """Back-compat alias used by tests."""
+    return _sse_soft_trim_string(s, soft)
+
+
+def _trim_response_items_for_sse(items: list, *, soft: bool, include_messages: bool) -> None:
+    """Trim function_call / function_call_output (and optionally message) text."""
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        itype = item.get("type")
+        if itype == "function_call":
+            try:
+                raw = item.get("arguments", "{}")
+                args = json.loads(raw) if isinstance(raw, str) else raw
+                if isinstance(args, dict):
+                    for k, v in list(args.items()):
+                        if isinstance(v, str):
+                            args[k] = _sse_soft_trim_string(v, soft)
+                    item["arguments"] = json.dumps(args)
+                elif isinstance(raw, str) and len(raw) > (500 if soft else 100):
+                    item["arguments"] = _sse_soft_trim_string(raw, soft)
+            except Exception:
+                raw = item.get("arguments")
+                if isinstance(raw, str) and len(raw) > (500 if soft else 100):
+                    item["arguments"] = _sse_soft_trim_string(raw, soft)
+        elif itype == "function_call_output":
+            output = item.get("output")
+            if isinstance(output, list):
+                trimmed = []
+                for entry in output:
+                    if isinstance(entry, dict) and isinstance(entry.get("text"), str):
+                        entry = {**entry, "text": _sse_soft_trim_string(entry["text"], soft)}
+                    elif isinstance(entry, str):
+                        entry = _sse_soft_trim_string(entry, soft)
+                    trimmed.append(entry)
+                item["output"] = trimmed if soft else trimmed[:1]
+            elif isinstance(output, str):
+                item["output"] = _sse_soft_trim_string(output, soft)
+        elif include_messages and itype == "message":
+            content = item.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        part = {**part, "text": _sse_soft_trim_string(part["text"], soft)}
+                    elif isinstance(part, str):
+                        part = _sse_soft_trim_string(part, soft)
+                    new_content.append(part)
+                item["content"] = new_content if soft else new_content[:1]
+            elif isinstance(content, str):
+                item["content"] = _sse_soft_trim_string(content, soft)
+
+
+def _trim_response_completed_items(items: list, soft: bool = True) -> None:
+    """Soft/hard trim of tool items only."""
+    _trim_response_items_for_sse(items, soft=soft, include_messages=False)
+
+
+def _sse_payload_byte_len(event_type: str, data: dict) -> int:
+    frame = f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    return len(frame.encode("utf-8"))
+
+
+def _deep_trim_strings(obj, *, soft: bool):
+    if isinstance(obj, str):
+        return _sse_soft_trim_string(obj, soft)
+    if isinstance(obj, list):
+        out = [_deep_trim_strings(x, soft=soft) for x in obj]
+        return out if soft else out[:8]
+    if isinstance(obj, dict):
+        return {k: _deep_trim_strings(v, soft=soft) for k, v in obj.items()}
+    return obj
+
+
+def _enforce_sse_event_budget(event_type: str, data: dict) -> dict:
+    """Return a copy of data whose SSE frame fits under the safe byte budget."""
+    try:
+        if _sse_payload_byte_len(event_type, data) <= _SSE_DATA_SAFE_BYTES:
+            return data
+    except Exception:
+        pass
+
+    try:
+        payload = json.loads(json.dumps(data, ensure_ascii=False))
+    except Exception:
+        payload = dict(data)
+
+    response = payload.get("response")
+    if isinstance(response, dict) and isinstance(response.get("output"), list):
+        _trim_response_items_for_sse(response["output"], soft=True, include_messages=False)
+        try:
+            if _sse_payload_byte_len(event_type, payload) > _SSE_DATA_SAFE_BYTES:
+                _trim_response_items_for_sse(response["output"], soft=False, include_messages=False)
+            if _sse_payload_byte_len(event_type, payload) > _SSE_DATA_SAFE_BYTES:
+                _trim_response_items_for_sse(response["output"], soft=False, include_messages=True)
+        except Exception:
+            pass
+    else:
+        item = payload.get("item")
+        if isinstance(item, dict):
+            _trim_response_items_for_sse([item], soft=True, include_messages=True)
+        try:
+            if _sse_payload_byte_len(event_type, payload) > _SSE_DATA_SAFE_BYTES:
+                payload = _deep_trim_strings(payload, soft=True)
+            if _sse_payload_byte_len(event_type, payload) > _SSE_DATA_SAFE_BYTES:
+                payload = _deep_trim_strings(payload, soft=False)
+        except Exception:
+            pass
+
+    try:
+        if _sse_payload_byte_len(event_type, payload) > _SSE_LINE_HARD_BYTES:
+            payload = {
+                "type": event_type,
+                "sequence_number": data.get("sequence_number"),
+                "error": {
+                    "message": (
+                        f"SSE event truncated: original payload exceeded "
+                        f"{_SSE_LINE_HARD_BYTES} UTF-8 bytes"
+                    ),
+                    "type": "sse_size_cap",
+                },
+            }
+            if isinstance(data.get("response"), dict) and "id" in data["response"]:
+                payload["response"] = {
+                    "id": data["response"]["id"],
+                    "object": data["response"].get("object", "response"),
+                    "status": data["response"].get("status", "completed"),
+                    "output": [],
+                }
+            if "item" in data and isinstance(data["item"], dict):
+                payload["item"] = {
+                    "id": data["item"].get("id"),
+                    "type": data["item"].get("type"),
+                    "status": "completed",
+                    "name": data["item"].get("name", ""),
+                    "call_id": data["item"].get("call_id"),
+                    "arguments": "{}",
+                }
+                payload["output_index"] = data.get("output_index")
+    except Exception:
+        pass
+    return payload
+
+
+def _trim_response_completed_payload(items: list) -> list:
+    """Soft then hard trim of output items (messages only if still over budget)."""
+    if not isinstance(items, list):
+        return items
+    _trim_response_items_for_sse(items, soft=True, include_messages=False)
+    try:
+        if len(json.dumps(items, ensure_ascii=False).encode("utf-8")) > _SSE_DATA_SAFE_BYTES:
+            _trim_response_items_for_sse(items, soft=False, include_messages=False)
+        if len(json.dumps(items, ensure_ascii=False).encode("utf-8")) > _SSE_DATA_SAFE_BYTES:
+            _trim_response_items_for_sse(items, soft=False, include_messages=True)
+    except Exception:
+        pass
+    return items
+
+
 # Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
 # user-supplied prompt for exfiltration/injection payloads at create/update
 # time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
@@ -2849,8 +3028,14 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            await response.write(payload.encode())
+            # Bound every live and terminal SSE data line under CPython's
+            # effective ~128 KB MAXLINE. Works on a copy so full-fidelity
+            # objects kept for storage / emitted_items stay intact.
+            bounded = _enforce_sse_event_budget(event_type, data)
+            if "sequence_number" not in bounded:
+                bounded["sequence_number"] = data.get("sequence_number", sequence_number - 1)
+            payload = f"event: {event_type}\ndata: {json.dumps(bounded, ensure_ascii=False)}\n\n"
+            await response.write(payload.encode("utf-8"))
 
         def _envelope(status: str) -> Dict[str, Any]:
             env: Dict[str, Any] = {
@@ -3213,30 +3398,10 @@ class APIServerAdapter(BasePlatformAdapter):
             # shape produced by _extract_output_items in the batch path.
             final_items: List[Dict[str, Any]] = list(emitted_items)
 
-            # Trim large content from tool call arguments to keep the
-            # response.completed event under ~100KB.  Clients already
-            # received full details via incremental events.
-            for _item in final_items:
-                if _item.get("type") == "function_call":
-                    try:
-                        _args = json.loads(_item.get("arguments", "{}")) if isinstance(_item.get("arguments"), str) else _item.get("arguments", {})
-                        if isinstance(_args, dict):
-                            for _k in ("content", "query", "pattern", "old_string", "new_string"):
-                                if isinstance(_args.get(_k), str) and len(_args[_k]) > 500:
-                                    _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
-                            _item["arguments"] = json.dumps(_args)
-                    except Exception:
-                        pass
-                elif _item.get("type") == "function_call_output":
-                    _output = _item.get("output", [])
-                    if isinstance(_output, list) and _output:
-                        _first = _output[0]
-                        if isinstance(_first, dict) and _first.get("type") == "input_text":
-                            _text = _first.get("text", "")
-                            if len(_text) > 1000:
-                                _first["text"] = _text[:500] + "...[" + str(len(_text) - 500) + " more chars]"
-                                _item["output"] = [_first]
-
+            # Append the assistant message FIRST, then enforce the SSE byte
+            # budget on the complete terminal envelope (including that
+            # message). Trimming before the append left long finals able to
+            # push response.completed over CPython's ~128 KB MAXLINE.
             final_items.append({
                 "type": "message",
                 "role": "assistant",
@@ -3244,6 +3409,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     {"type": "output_text", "text": final_response_text or (_redact_api_error_text(agent_error) if agent_error else "")}
                 ],
             })
+            # Soft/hard tool-item trim; writer-level _enforce_sse_event_budget
+            # still re-checks the full frame (and message text if needed).
+            _trim_response_completed_payload(final_items)
 
             if agent_error:
                 failed_env = _envelope("failed")

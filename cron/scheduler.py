@@ -289,6 +289,21 @@ def _is_cron_silence_response(text: str) -> bool:
         return True
     return False
 
+
+def _is_wake_gate_silent_run(output: str, final_response: str) -> bool:
+    """Return True when a silent cron result came from a wakeAgent=false gate.
+
+    ``run_job`` intentionally returns the public ``SILENT_MARKER`` for both an
+    agent-authored silent response and a pre-agent script gate.  The saved output
+    document carries the provenance so the delivery/logging path can preserve
+    the distinction without changing the return tuple contract.
+    """
+    if not isinstance(output, str) or not isinstance(final_response, str):
+        return False
+    if final_response.strip().upper() != SILENT_MARKER:
+        return False
+    return "wakeagent=false" in output.lower()
+
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
 # The tick function submits jobs here and returns immediately so the ticker
@@ -3563,7 +3578,17 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # #46917).  Keeps the intentional bracketed-prefix / trailing-line
             # tolerance the cron contract relies on.
             if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                if _is_wake_gate_silent_run(output, final_response):
+                    logger.info(
+                        "Job '%s': wakeAgent=false gate — skipping delivery",
+                        job["id"],
+                    )
+                else:
+                    logger.info(
+                        "Job '%s': agent returned %s — skipping delivery",
+                        job["id"],
+                        SILENT_MARKER,
+                    )
                 should_deliver = False
 
             if should_deliver:

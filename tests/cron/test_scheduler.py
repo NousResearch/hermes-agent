@@ -2526,7 +2526,21 @@ class TestSilentDelivery:
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
         deliver_mock.assert_not_called()
-        assert any(SILENT_MARKER in r.message for r in caplog.records)
+        assert any("agent returned" in r.message and SILENT_MARKER in r.message for r in caplog.records)
+
+    def test_wake_gate_silent_response_logs_gate_provenance(self, caplog):
+        gate_output = "# Cron Job: monitor\n\nScript gate returned `wakeAgent=false` — agent skipped.\n"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, gate_output, SILENT_MARKER, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            with caplog.at_level(logging.INFO, logger="cron.scheduler"):
+                tick(verbose=False)
+        deliver_mock.assert_not_called()
+        assert any("wakeAgent=false gate" in r.message for r in caplog.records)
+        assert not any("agent returned" in r.message for r in caplog.records)
 
     def test_silent_with_note_suppresses_delivery(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \

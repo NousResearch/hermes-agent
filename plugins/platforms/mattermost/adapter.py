@@ -236,6 +236,25 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
+    async def _api_delete(self, path: str) -> bool:
+        """DELETE /api/v4/{path}."""
+        import aiohttp
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(
+                url,
+                headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return False
+                return True
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return False
+
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
@@ -406,6 +425,18 @@ class MattermostAdapter(BasePlatformAdapter):
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
         return SendResult(success=True, message_id=data["id"])
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Mattermost post.
+
+        Mattermost post IDs are globally unique, so the channel ID is not
+        needed by the REST endpoint.  The gateway only tracks IDs returned from
+        sends it performed itself; Mattermost enforces token permissions server
+        side if a caller ever passes an invalid/unauthorized post ID.
+        """
+        if not message_id:
+            return False
+        return await self._api_delete(f"posts/{message_id}")
 
     async def send_image(
         self,

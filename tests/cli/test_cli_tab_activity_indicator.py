@@ -1,5 +1,7 @@
+import ctypes
 import io
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import cli as cli_module
 from cli import HermesCLI
@@ -88,6 +90,24 @@ def test_tab_title_writer_bypasses_patch_stdout_proxy(monkeypatch):
 
     assert patched_stdout.getvalue() == ""
     assert raw_stdout.getvalue() == "\033]0;Project\a"
+
+
+def test_tab_title_uses_windows_console_title_api(monkeypatch):
+    stream = _NonTtyStringIO()
+    cli = _make_cli(stream=stream)
+    cli._tab_title_done = "done \033bad\nnext"
+    set_console_title = Mock(return_value=1)
+    windll = SimpleNamespace(
+        kernel32=SimpleNamespace(SetConsoleTitleW=set_console_title),
+    )
+    monkeypatch.setattr(cli_module.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "windll", windll, raising=False)
+
+    cli._set_tab_title_state("done", force=True)
+
+    set_console_title.assert_called_once_with("done bad next")
+    assert stream.getvalue() == ""
+    assert cli._tab_title_last == "done bad next"
 
 
 def test_tab_title_sanitizes_control_characters():

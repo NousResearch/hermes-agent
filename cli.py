@@ -4515,17 +4515,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         title = self._sanitize_tab_title(title)
         if title == getattr(self, "_tab_title_last", None):
             return
-        stream = getattr(self, "_tab_title_stream", None)
-        if stream is None:
-            # prompt_toolkit.patch_stdout() replaces sys.stdout with a proxy whose
-            # normal write path escapes VT/OSC control bytes. Use the original
-            # terminal stream so tab-title OSC sequences stay raw.
-            stream = getattr(sys, "__stdout__", None) or sys.stdout
         try:
-            if not (hasattr(stream, "isatty") and stream.isatty()):
-                return
-            stream.write(f"\033]0;{title}\a")
-            stream.flush()
+            if sys.platform == "win32":
+                import ctypes
+
+                if not ctypes.windll.kernel32.SetConsoleTitleW(title):
+                    return
+            else:
+                stream = getattr(self, "_tab_title_stream", None)
+                if stream is None:
+                    # prompt_toolkit.patch_stdout() replaces sys.stdout with a proxy whose
+                    # normal write path escapes VT/OSC control bytes. Use the original
+                    # terminal stream so tab-title OSC sequences stay raw.
+                    stream = getattr(sys, "__stdout__", None) or sys.stdout
+                if not (hasattr(stream, "isatty") and stream.isatty()):
+                    return
+                stream.write(f"\033]0;{title}\a")
+                stream.flush()
             self._tab_title_last = title
         except Exception:
             pass

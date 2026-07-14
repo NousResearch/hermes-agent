@@ -34,6 +34,30 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
+
+def _is_hermes_install_tree(path: str) -> bool:
+    """Check if *path* is inside the Hermes agent install/source tree.
+
+    Uses this module's __file__ location to determine the install root.
+    If *path* is an ancestor directory of this file, then context-file
+    discovery from *path* would load the Hermes project's own AGENTS.md
+    (the contributor guide) rather than user project context.
+
+    Only triggers in installed-package mode (site-packages), not when
+    running from a source clone, so developers working on Hermes from
+    the cloned tree still get their project's AGENTS.md loaded.
+    """
+    try:
+        module_path = Path(__file__).resolve()
+        # Only guard in installed mode (site-packages), not source clones.
+        if "site-packages" not in module_path.parts:
+            return False
+        check_path = Path(path).resolve()
+        return check_path in module_path.parents
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Context file scanning — detect prompt injection / promptware in AGENTS.md,
 # .cursorrules, SOUL.md before they get injected into the system prompt.
@@ -1969,6 +1993,19 @@ def build_context_files_prompt(
     """
     if cwd is None:
         cwd = os.getcwd()
+        # Safeguard: when there is no explicit cwd configuration and the
+        # fallback is inside the Hermes install tree (installed package),
+        # the user did not ask for context from this directory.  Silently
+        # skip rather than loading the project's own AGENTS.md into the
+        # system prompt.  See https://github.com/NousResearch/hermes-agent/issues/64590.
+        if _is_hermes_install_tree(cwd):
+            logger.warning(
+                "Falling back to Hermes install tree for context-file "
+                "discovery (cwd=%s). No project context loaded. "
+                "Set terminal.cwd or TERMINAL_CWD to your project directory.",
+                cwd,
+            )
+            return ""
 
     cwd_path = Path(cwd).resolve()
     sections = []

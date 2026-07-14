@@ -1099,17 +1099,14 @@ def _build_child_agent(
 
     delegation_cfg = _load_config()
 
-    # When no explicit toolsets given, inherit from parent's enabled toolsets
-    # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
+    # ── Toolset resolution ──────────────────────────────────────────────
+    # Resolve what toolsets the parent actually has available.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
         # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools
-
         parent_toolsets = {
             ts
             for name in parent_agent.valid_tool_names
@@ -1118,23 +1115,27 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks.
-        # Expand composite toolsets (e.g. hermes-cli) so that individual
-        # toolset names (e.g. web, terminal) are recognised during intersection.
-        expanded_parent = _expand_parent_toolsets(parent_toolsets)
-        child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
-            child_toolsets = _preserve_parent_mcp_toolsets(
-                child_toolsets, parent_toolsets
-            )
-        child_toolsets = _strip_blocked_tools(child_toolsets)
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+    # Determine the child's toolsets, defaulting to a minimal set (DEFAULT_TOOLSETS)
+    # instead of inheriting everything from the parent. This reduces the
+    # subagent's tool surface and context overhead.
+    expanded_parent = _expand_parent_toolsets(parent_toolsets)
+    if toolsets is not None:
+        # Explicit request (could be an empty list or a list of names)
+        if toolsets:
+            child_toolsets = [t for t in toolsets if t in expanded_parent]
+            if _get_inherit_mcp_toolsets():
+                child_toolsets = _preserve_parent_mcp_toolsets(
+                    child_toolsets, parent_toolsets
+                )
+        else:
+            # toolsets=[] -> empty list request must remain empty
+            child_toolsets = []
     else:
-        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+        # Default case (toolsets is None) -> use DEFAULT_TOOLSETS narrowed
+        # by what the parent itself is allowed to use.
+        child_toolsets = [t for t in DEFAULT_TOOLSETS if t in expanded_parent]
+
+    child_toolsets = _strip_blocked_tools(child_toolsets)
 
     # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
     # removed.  The re-add is unconditional on parent-toolset membership because

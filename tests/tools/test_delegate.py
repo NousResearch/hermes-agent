@@ -1917,6 +1917,49 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             ["web", "browser", "mcp-MiniMax"],
         )
 
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_defaults_to_minimal_toolsets(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web", "skills", "mcp-MiniMax"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Test default toolsets",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(
+            MockAgent.call_args[1]["enabled_toolsets"],
+            ["terminal", "file", "web"],
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_explicit_empty_toolsets_stays_empty(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["terminal", "file", "web", "mcp-MiniMax"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Test empty toolsets",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args[1]["enabled_toolsets"], [])
+
     @patch(
         "tools.delegate_tool._load_config",
         return_value={"inherit_mcp_toolsets": False},

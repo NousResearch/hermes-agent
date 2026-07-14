@@ -6,6 +6,7 @@ dedicated persistent Firefox profile on the server side.
 """
 
 import json
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -131,6 +132,73 @@ class TestManagedPersistenceMode:
             # Same profile = same userId, different session keys
             assert s1["user_id"] == s2["user_id"]
             assert s1["session_key"] != s2["session_key"]
+
+    def test_isolate_tasks_uses_distinct_managed_users(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        config = {
+            "browser": {
+                "camofox": {
+                    "managed_persistence": True,
+                    "isolate_tasks": True,
+                }
+            }
+        }
+
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            s1 = _get_session("task-a")
+            s2 = _get_session("task-b")
+            assert s1["user_id"] != s2["user_id"]
+            assert s1["session_key"] != s2["session_key"]
+
+    def test_visible_isolated_mode_uses_distinct_stable_managed_users(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        config = {"browser": {"camofox": {"mode": "visible_isolated"}}}
+
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            first = _get_session("task-a")
+            second = _get_session("task-b")
+            _drop_session("task-a")
+            restored = _get_session("task-a")
+
+        assert first["managed"] is True
+        assert first["user_id"] != second["user_id"]
+        assert first["session_key"] != second["session_key"]
+        assert restored["user_id"] == first["user_id"]
+        assert restored["session_key"] == first["session_key"]
+        assert first["adopt_existing_tab"] is False
+
+    def test_visible_isolated_mode_soft_cleanup_preserves_server_context(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = {"browser": {"camofox": {"mode": "visible_isolated"}}}
+
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            first = _get_session("thread-a")
+            assert camofox_soft_cleanup("thread-a") is True
+            restored = _get_session("thread-a")
+
+        assert restored["user_id"] == first["user_id"]
+
+    def test_per_thread_instances_route_sessions_to_distinct_servers(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config = {"browser": {"camofox": {"mode": "per_thread_instances"}}}
+        pool = MagicMock()
+        pool.scope_lifecycle.side_effect = lambda scope: nullcontext()
+        pool.get_or_start.side_effect = [
+            MagicMock(api_url="http://127.0.0.1:19401", viewer_url="http://127.0.0.1:19403/vnc.html"),
+            MagicMock(api_url="http://127.0.0.1:19404", viewer_url="http://127.0.0.1:19406/vnc.html"),
+        ]
+
+        with patch("tools.browser_camofox.load_config", return_value=config), patch(
+            "tools.browser_camofox._get_instance_pool", return_value=pool
+        ):
+            first = _get_session("thread-a")
+            second = _get_session("thread-b")
+
+        assert first["api_url"] != second["api_url"]
+        assert first["viewer_url"] != second["viewer_url"]
+        assert pool.get_or_start.call_count == 2
 
     def test_different_profiles_get_different_user_ids(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")

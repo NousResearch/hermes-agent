@@ -1293,10 +1293,23 @@ DEFAULT_CONFIG = {
         "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
         "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
         "camofox": {
+            # standard preserves the legacy flags. visible_isolated separates
+            # contexts; per_thread_instances separates entire headed servers.
+            "mode": "standard",
+            "server_dir": "~/src/camofox-browser",
+            "instance_port_start": 19400,
+            "instance_port_end": 19999,
+            "instance_startup_timeout": 60,
+            "instance_popup_viewer": True,
+            "viewer_executable": "~/.cache/camoufox/camoufox",
+            "viewer_profile_root": "~/.camoufox-hermes-thread-viewers",
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
             # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
+            # Give each browser task its own stable userId/context. This keeps
+            # concurrent conversations in separate visible browser windows.
+            "isolate_tasks": False,
             # Optional externally managed Camofox identity. Useful when another
             # app owns the visible browser and Hermes should operate in it.
             "user_id": "",

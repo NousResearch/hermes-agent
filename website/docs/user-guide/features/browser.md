@@ -208,6 +208,16 @@ Or configure via `hermes tools` → Browser Automation → Camofox.
 
 When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.
 
+For authenticated Facebook browsing, use Hermes' `browser_navigate` and the
+other `browser_*` tools. Do not launch a separate Playwright/Selenium browser
+or call a shared Camofox REST server directly: those paths bypass Hermes'
+conversation scope and can mix login state between threads.
+
+When `browser.camofox.mode: per_thread_instances` is configured, Hermes starts
+and owns one Camofox server per conversation. In that mode `CAMOFOX_URL` is
+intentionally ignored as a shared fallback; browser calls without a stable
+conversation scope fail closed.
+
 #### Persistent browser sessions
 
 By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions, add the following to `~/.hermes/config.yaml`:

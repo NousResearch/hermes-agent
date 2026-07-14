@@ -7026,6 +7026,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         old_session_id = self.session_id
+        old_browser_scope = getattr(self.agent, "browser_scope", old_session_id) if self.agent else old_session_id
         _boundary_snapshot = None
         if self.agent and self.conversation_history:
             # Deliver the context-engine boundary synchronously and get back
@@ -7072,7 +7073,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _sync_process_session_id(self.session_id)
 
         if self.agent:
+            try:
+                cleanup_browser(old_browser_scope)
+            except Exception:
+                pass
             self.agent.session_id = self.session_id
+            self.agent.browser_scope = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):

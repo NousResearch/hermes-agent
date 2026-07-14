@@ -1959,11 +1959,8 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     except Exception as e:
         if agent.verbose_logging:
             logger.warning(f"Failed to cleanup VM for task {task_id}: {e}")
-    try:
-        _ra().cleanup_browser(task_id)
-    except Exception as e:
-        if agent.verbose_logging:
-            logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+    # Browsers are conversation-scoped and intentionally survive turns.  They
+    # are closed by the owning frontend at a true session/process boundary.
 
 
 

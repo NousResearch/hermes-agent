@@ -25,12 +25,15 @@ container as ``http://host.docker.internal:3000``.
 
 from __future__ import annotations
 
+import atexit
 import base64
+import contextvars
 import json
 import logging
 import os
 import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
@@ -38,6 +41,7 @@ import requests
 
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from tools.browser_camofox_state import get_camofox_identity
+from tools.camofox_instance_pool import CamofoxInstancePool
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -54,6 +58,11 @@ _vnc_url_checked = False  # only probe once per process
 # Cached command timeout from config (resolved lazily, like browser_tool)
 _cached_cmd_timeout: Optional[int] = None
 _cmd_timeout_resolved = False
+_request_base_url: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "camofox_request_base_url", default=None
+)
+_instance_pool: Optional[CamofoxInstancePool] = None
+_instance_pool_lock = threading.Lock()
 
 
 def _get_command_timeout() -> int:
@@ -90,7 +99,46 @@ def _auth_headers() -> Dict[str, str]:
 
 def get_camofox_url() -> str:
     """Return the configured Camofox server URL, or empty string."""
+    scoped = _request_base_url.get()
+    # Context variables outlive a single call on worker threads. Only honor a
+    # scoped URL while its owning session is still registered; cleanup/tests
+    # that clear the session map must immediately fall back to configuration.
+    if scoped and any(session.get("api_url") == scoped for session in _sessions.values()):
+        return scoped
+    # A shared URL is a legacy global-server escape hatch.  Never fall back to
+    # it in per-thread mode: the owning browser call must first bind the URL of
+    # its scoped instance through _get_session().
+    if _per_thread_instances_mode(_get_camofox_config()):
+        return ""
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
+
+
+def _per_thread_instances_mode(camofox_cfg: Dict[str, Any]) -> bool:
+    """Return whether each Hermes task owns a separate Camofox server."""
+    return str(camofox_cfg.get("mode") or "standard").strip().lower() == "per_thread_instances"
+
+
+def _get_instance_pool(camofox_cfg: Dict[str, Any]) -> CamofoxInstancePool:
+    """Build the process-local task-scoped Camofox pool lazily."""
+    global _instance_pool
+    with _instance_pool_lock:
+        if _instance_pool is None:
+            server_dir = str(camofox_cfg.get("server_dir") or "~/src/camofox-browser")
+            _instance_pool = CamofoxInstancePool(
+                Path(server_dir),
+                port_start=int(camofox_cfg.get("instance_port_start") or 19400),
+                port_end=int(camofox_cfg.get("instance_port_end") or 19999),
+                startup_timeout=float(camofox_cfg.get("instance_startup_timeout") or 60),
+                launch_viewer=bool(camofox_cfg.get("instance_popup_viewer", True)),
+                viewer_executable=Path(
+                    str(camofox_cfg.get("viewer_executable") or "~/.cache/camoufox/camoufox")
+                ),
+                viewer_profile_root=Path(
+                    str(camofox_cfg.get("viewer_profile_root") or "~/.camoufox-hermes-thread-viewers")
+                ),
+            )
+            atexit.register(_instance_pool.stop_all)
+        return _instance_pool
 
 
 def _config_cdp_url() -> str:
@@ -127,12 +175,19 @@ def is_camofox_mode() -> bool:
         return False
     if _config_cdp_url():
         return False
+    if _per_thread_instances_mode(_get_camofox_config()):
+        return True
     return bool(get_camofox_url())
 
 
 def check_camofox_available() -> bool:
     """Verify the Camofox server is reachable."""
     global _vnc_url, _vnc_url_checked
+    camofox_cfg = _get_camofox_config()
+    if _per_thread_instances_mode(camofox_cfg):
+        import shutil
+        server_dir = Path(str(camofox_cfg.get("server_dir") or "~/src/camofox-browser")).expanduser()
+        return shutil.which("node") is not None and (server_dir / "server.js").is_file()
     url = get_camofox_url()
     if not url:
         return False
@@ -172,6 +227,11 @@ def _get_camofox_config() -> Dict[str, Any]:
     return camofox_cfg if isinstance(camofox_cfg, dict) else {}
 
 
+def _visible_isolated_mode(camofox_cfg: Dict[str, Any]) -> bool:
+    """Return whether Camofox should create one persistent context per task."""
+    return str(camofox_cfg.get("mode") or "standard").strip().lower() == "visible_isolated"
+
+
 def _managed_persistence_enabled() -> bool:
     """Return whether Hermes-managed persistence is enabled for Camofox.
 
@@ -181,7 +241,8 @@ def _managed_persistence_enabled() -> bool:
 
     Controlled by ``browser.camofox.managed_persistence`` in config.yaml.
     """
-    return bool(_get_camofox_config().get("managed_persistence"))
+    camofox_cfg = _get_camofox_config()
+    return _visible_isolated_mode(camofox_cfg) or bool(camofox_cfg.get("managed_persistence"))
 
 
 def _camofox_identity_override(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Optional[Dict[str, str]]:
@@ -353,6 +414,18 @@ def _adopt_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
+    """Acquire the per-scope lifecycle before touching shared session state."""
+    camofox_cfg = _get_camofox_config()
+    if _per_thread_instances_mode(camofox_cfg):
+        if not str(task_id or "").strip():
+            raise ValueError("browser scope is required in Camofox per_thread_instances mode")
+        pool = _get_instance_pool(camofox_cfg)
+        with pool.scope_lifecycle(task_id):
+            return _get_session_impl(task_id, camofox_cfg)
+    return _get_session_impl(task_id, camofox_cfg)
+
+
+def _get_session_impl(task_id: Optional[str], camofox_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Get or create a camofox session for the given task.
 
     When managed persistence is enabled, uses a deterministic userId
@@ -362,9 +435,23 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     task_id = task_id or "default"
     with _sessions_lock:
         if task_id in _sessions:
-            return _adopt_existing_tab(_sessions[task_id])
+            if _per_thread_instances_mode(camofox_cfg):
+                pool = _get_instance_pool(camofox_cfg)
+                instance = pool.get_or_start(task_id)
+                if _sessions[task_id].get("instance") is not instance:
+                    _sessions[task_id]["instance"] = instance
+                    _sessions[task_id]["api_url"] = instance.api_url
+                    _sessions[task_id]["viewer_url"] = instance.viewer_url
+                    _sessions[task_id]["tab_id"] = None
+                    pool.ensure_viewer(instance, force=True)
+            session = _adopt_existing_tab(_sessions[task_id])
+            _request_base_url.set(session.get("api_url"))
+            return session
 
-        camofox_cfg = _get_camofox_config()
+        instance = None
+        if _per_thread_instances_mode(camofox_cfg):
+            instance = _get_instance_pool(camofox_cfg).get_or_start(task_id)
+            _request_base_url.set(instance.api_url)
         identity_override = _camofox_identity_override(task_id, camofox_cfg)
         if identity_override:
             session = {
@@ -374,8 +461,11 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "managed": True,
                 "adopt_existing_tab": _adopt_existing_tab_enabled(camofox_cfg),
             }
-        elif bool(camofox_cfg.get("managed_persistence")):
-            identity = get_camofox_identity(task_id)
+        elif _visible_isolated_mode(camofox_cfg) or bool(camofox_cfg.get("managed_persistence")):
+            identity = get_camofox_identity(
+                task_id,
+                isolate_task=_visible_isolated_mode(camofox_cfg) or bool(camofox_cfg.get("isolate_tasks")),
+            )
             session = {
                 "user_id": identity["user_id"],
                 "tab_id": None,
@@ -391,8 +481,47 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
                 "managed": False,
                 "adopt_existing_tab": False,
             }
+        session["api_url"] = (
+            instance.api_url
+            if instance
+            else os.getenv("CAMOFOX_URL", "").rstrip("/")
+        )
+        session["viewer_url"] = instance.viewer_url if instance else None
+        session["instance"] = instance
         _sessions[task_id] = session
+        _request_base_url.set(session["api_url"])
         return _adopt_existing_tab(session)
+
+
+def camofox_identity_for_scope(task_id: str) -> Dict[str, str]:
+    """Derive a scope's identity without starting or selecting a server."""
+    scope = str(task_id or "").strip()
+    if not scope:
+        raise ValueError("browser scope is required")
+    cfg = _get_camofox_config()
+    override = _camofox_identity_override(scope, cfg)
+    if override:
+        return override
+    return get_camofox_identity(
+        scope,
+        isolate_task=_visible_isolated_mode(cfg) or bool(cfg.get("isolate_tasks")),
+    )
+
+
+def stop_camofox_scope(task_id: str) -> None:
+    """Stop only one scoped instance and invalidate its process-local tab."""
+    scope = str(task_id or "").strip()
+    if not scope:
+        raise ValueError("browser scope is required")
+    cfg = _get_camofox_config()
+    with _sessions_lock:
+        session = _sessions.get(scope)
+        if session is not None:
+            session["tab_id"] = None
+    if _per_thread_instances_mode(cfg):
+        _get_instance_pool(cfg).stop(scope)
+    _drop_session(scope)
+    _request_base_url.set(None)
 
 
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
@@ -414,6 +543,12 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     resp.raise_for_status()
     data = resp.json()
     session["tab_id"] = data.get("tabId")
+    camofox_cfg = _get_camofox_config()
+    if _per_thread_instances_mode(camofox_cfg):
+        pool = _get_instance_pool(camofox_cfg)
+        instance = pool._instances.get(task_id or "default")
+        if instance:
+            pool.ensure_viewer(instance)
     return session
 
 
@@ -434,11 +569,27 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     :func:`camofox_close`.
     """
     camofox_cfg = _get_camofox_config()
-    if bool(camofox_cfg.get("managed_persistence")) or _camofox_identity_override(task_id, camofox_cfg):
+    # A per-thread server is itself the scoped resource; persistence may keep
+    # its profile on disk, but must not keep the process alive past the owning
+    # conversation boundary.
+    if _per_thread_instances_mode(camofox_cfg):
+        return False
+    if _managed_persistence_enabled() or _camofox_identity_override(task_id, camofox_cfg):
         _drop_session(task_id)
         logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
         return True
     return False
+
+
+def cleanup_all_camofox_sessions() -> None:
+    """Close every process-local Camofox session at process shutdown."""
+    with _sessions_lock:
+        scopes = list(_sessions)
+    for scope in scopes:
+        camofox_close(scope)
+    pool = _instance_pool
+    if pool is not None:
+        pool.stop_all()
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +650,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             session = _ensure_tab(task_id, browser_url)
             data = {"ok": True, "url": browser_url}
         else:
-            # Navigate existing tab — recover from stale tab 404
+            # Navigate existing tab — recover once from an invalidated tab.
             try:
                 data = _post(
                     f"/tabs/{session['tab_id']}/navigate",
@@ -507,14 +658,34 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                     timeout=60,
                 )
             except requests.HTTPError as e:
-                if e.response is not None and e.response.status_code == 404:
+                response = e.response
+                status = response.status_code if response is not None else None
+                body = ""
+                if response is not None:
+                    try:
+                        body = str(response.json().get("error") or "").lower()
+                    except (TypeError, ValueError, AttributeError):
+                        body = str(response.text or "").lower()
+                stale = status in {404, 410} or (
+                    status == 503
+                    and any(marker in body for marker in (
+                        "target page", "context", "browser has been closed", "tab not found",
+                    ))
+                )
+                if stale:
                     logger.warning(
-                        "Camofox tab %s returned 404 — tab was garbage collected. "
-                        "Creating a fresh tab.",
-                        session["tab_id"],
+                        "Camofox tab became stale (HTTP %s); creating one fresh tab "
+                        "in the same browser scope.", status,
                     )
                     session["tab_id"] = None
                     session = _ensure_tab(task_id, browser_url)
+                    recovery_cfg = _get_camofox_config()
+                    if _per_thread_instances_mode(recovery_cfg):
+                        instance = session.get("instance")
+                        if instance is not None:
+                            _get_instance_pool(recovery_cfg).ensure_viewer(
+                                instance, force=True
+                            )
                     data = {"ok": True, "url": browser_url}
                 else:
                     raise
@@ -773,6 +944,11 @@ def camofox_close(task_id: Optional[str] = None) -> str:
         if not session:
             return json.dumps({"success": True, "closed": True})
 
+        camofox_cfg = _get_camofox_config()
+        if _per_thread_instances_mode(camofox_cfg):
+            _get_instance_pool(camofox_cfg).stop(task_id)
+            return json.dumps({"success": True, "closed": True})
+
         _delete(
             f"/sessions/{session['user_id']}",
         )
@@ -944,6 +1120,3 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "note": "Console log capture is not available with the Camofox backend. "
                 "Use browser_snapshot or browser_vision to inspect page state.",
     })
-
-
-

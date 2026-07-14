@@ -2388,6 +2388,12 @@ export const ja = defineLocale({
     yoloSystem: active => `このセッションの YOLO ${active ? 'オン' : 'オフ'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: 'YOLO を切り替えられませんでした',
+    reasoning: {
+      status: (level, display) => `推論エフォート: ${level} · 表示: ${display}。/reasoning <none|minimal|low|medium|high|xhigh|show|hide> で変更できます。`,
+      effortSet: level => `このセッションの推論エフォートを ${level} に設定しました`,
+      displaySet: value => `推論の表示: ${value}`,
+      failed: '推論設定を更新できませんでした'
+    },
     profileStatus: current =>
       `プロファイル: ${current}。/profile <name> または「新しいセッション」ピッカーを使って別のプロファイルでチャットを始めてください。`,
     unknownProfile: '不明なプロファイル',

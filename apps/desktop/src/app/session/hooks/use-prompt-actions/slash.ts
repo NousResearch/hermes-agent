@@ -23,6 +23,7 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  setCurrentReasoningEffort,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
@@ -32,6 +33,9 @@ import {
 import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
 
 import { type GatewayRequest, isSessionIdCandidate, renderCommandsCatalog, slashStatusText } from './utils'
+
+/** Effort levels /reasoning accepts (mirrors VALID_REASONING_EFFORTS). */
+const REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -323,6 +327,50 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)
+          }
+        },
+        // /reasoning shows or sets the session's reasoning effort / thinking
+        // display via the gateway's session-scoped `config.get/set reasoning`
+        // (the same RPC the model-edit submenu uses). Levels update the
+        // composer's effort store so the pill reflects the change immediately.
+        reasoning: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render, sessionId } = resolved
+          const arg = ctx.arg.trim().toLowerCase()
+
+          try {
+            if (!arg) {
+              const current = await requestGateway<{ display?: string; value?: string }>('config.get', {
+                key: 'reasoning',
+                session_id: sessionId
+              })
+
+              render(copy.reasoning.status(current.value || 'medium', current.display || 'show'))
+
+              return
+            }
+
+            const applied = await requestGateway<{ value?: string }>('config.set', {
+              key: 'reasoning',
+              session_id: sessionId,
+              value: arg
+            })
+
+            const value = applied.value || arg
+
+            if (REASONING_LEVELS.has(value)) {
+              setCurrentReasoningEffort(value === 'none' ? 'none' : value)
+              render(copy.reasoning.effortSet(value))
+            } else {
+              render(copy.reasoning.displaySet(value))
+            }
+          } catch (err) {
+            render(`${copy.reasoning.failed}: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         skin: async ({ arg, command, recordInput, sessionHint }) => {

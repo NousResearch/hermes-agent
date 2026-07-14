@@ -2296,6 +2296,12 @@ export const zhHant = defineLocale({
     yoloSystem: active => `此工作階段 YOLO ${active ? '已開啟' : '已關閉'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: '無法切換 YOLO',
+    reasoning: {
+      status: (level, display) => `推理強度: ${level} · 顯示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|show|hide> 變更。`,
+      effortSet: level => `本工作階段的推理強度已設為 ${level}`,
+      displaySet: value => `推理顯示: ${value}`,
+      failed: '無法更新推理設定'
+    },
     profileStatus: current => `設定檔：${current}。使用 /profile <name> 或「新工作階段」選擇器在其他設定檔中開始聊天。`,
     unknownProfile: '未知設定檔',
     noProfileNamed: (target, available) => `沒有名為「${target}」的設定檔。可用的：${available}`,

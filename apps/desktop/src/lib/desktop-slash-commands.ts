@@ -38,6 +38,7 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
+  | 'reasoning'
   | 'skin'
   | 'title'
   | 'yolo'
@@ -99,7 +100,7 @@ const unavailable = (reason: DesktopUnavailableReason): DesktopCommandSurface =>
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
-  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset', '/clear'], surface: action('new') },
   {
     name: '/branch',
     description: 'Branch the latest message into a new chat',
@@ -118,6 +119,13 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/title', description: 'Rename the current session', surface: action('title') },
   { name: '/help', description: 'Show desktop slash commands', aliases: ['/commands'], surface: action('help') },
   {
+    name: '/reasoning',
+    description: 'Show or set reasoning effort (none|minimal|low|medium|high|xhigh|show|hide)',
+    aliases: ['/effort'],
+    surface: action('reasoning'),
+    args: true
+  },
+  {
     name: '/browser',
     description: 'Manage browser CDP connection [connect|disconnect|status] (local gateway only)',
     surface: action('browser'),
@@ -131,7 +139,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
 
   // Overlay pickers
-  { name: '/model', description: 'Switch the model for this session', surface: picker('model') },
+  { name: '/model', description: 'Switch the model for this session', aliases: ['/models'], surface: picker('model') },
   {
     name: '/resume',
     description: 'Resume a saved session',
@@ -186,7 +194,6 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
 const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
   terminal: [
     '/busy',
-    '/clear',
     '/compact',
     '/config',
     '/copy',
@@ -219,7 +226,7 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   ],
   messaging: ['/approve', '/deny'],
   settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+  advanced: ['/curator', '/fast', '/insights', '/kanban', '/voice']
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [

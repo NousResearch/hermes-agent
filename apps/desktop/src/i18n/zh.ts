@@ -2578,6 +2578,12 @@ export const zh: Translations = {
     yoloSystem: active => `此会话 YOLO ${active ? '已开启' : '已关闭'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: '无法切换 YOLO',
+    reasoning: {
+      status: (level, display) => `推理强度: ${level} · 显示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|show|hide> 更改。`,
+      effortSet: level => `本会话的推理强度已设为 ${level}`,
+      displaySet: value => `推理显示: ${value}`,
+      failed: '无法更新推理设置'
+    },
     profileStatus: current => `配置档案：${current}。使用 /profile <name> 或“新建会话”选择器在其他配置档案中开始对话。`,
     unknownProfile: '未知配置档案',
     noProfileNamed: (target, available) => `没有名为“${target}”的配置档案。可用：${available}`,

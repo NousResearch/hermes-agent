@@ -180,7 +180,23 @@ describe('desktop slash command curation', () => {
   it('explains known commands that desktop owns elsewhere', () => {
     expect(desktopSlashUnavailableMessage('/model sonnet')).toContain('model picker')
     expect(desktopSlashUnavailableMessage('/skills')).toContain('desktop sidebar')
-    expect(desktopSlashUnavailableMessage('/clear')).toContain('terminal interface')
+    expect(desktopSlashUnavailableMessage('/verbose')).toContain('terminal interface')
+  })
+
+  it('routes /reasoning (and /effort) to the reasoning action with arg options', () => {
+    expect(resolveDesktopCommand('/reasoning')?.surface).toEqual({ kind: 'action', action: 'reasoning' })
+    expect(resolveDesktopCommand('/effort')?.surface).toEqual({ kind: 'action', action: 'reasoning' })
+    expect(resolveDesktopCommand('/reasoning')?.args).toBe(true)
+    expect(isDesktopSlashSuggestion('/reasoning')).toBe(true)
+    expect(isDesktopSlashSuggestion('/effort')).toBe(false) // alias: executes, stays out of the popover
+    expect(desktopSlashUnavailableMessage('/reasoning')).toBeNull()
+  })
+
+  it('treats /clear and /models as aliases of /new and /model', () => {
+    expect(resolveDesktopCommand('/clear')?.name).toBe('/new')
+    expect(resolveDesktopCommand('/models')?.name).toBe('/model')
+    expect(isDesktopSlashCommand('/clear')).toBe(true)
+    expect(isDesktopSlashCommand('/models')).toBe(true)
   })
 
   it('flags /model as a picker-owned command so the desktop opens the overlay', () => {
@@ -207,7 +223,8 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
     expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
     expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
-    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/verbose')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })

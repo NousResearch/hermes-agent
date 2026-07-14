@@ -1951,6 +1951,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    SendResult,
     _prefix_within_utf16_limit,
     _reply_anchor_for_event,
     merge_pending_message_event,
@@ -16546,11 +16547,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     msg = "✅ Hermes update finished successfully."
                 else:
                     msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
-                await adapter.send(
+                result = await adapter.send(
                     chat_id,
                     msg,
                     metadata=_non_conversational_metadata(metadata, platform=platform),
                 )
+                if result is not None and getattr(result, "success", True) is False:
+                    error = getattr(result, "error", "send returned success=False")
+                    if getattr(result, "retryable", False):
+                        logger.info(
+                            "Update notification deferred after transient send failure "
+                            "for %s:%s: %s",
+                            platform_str,
+                            chat_id,
+                            error,
+                        )
+                        cleanup = False
+                        active_pending_path = pending_path
+                        claimed_path.replace(pending_path)
+                        return False
+                    logger.warning(
+                        "Post-update notification to %s:%s was not delivered: %s",
+                        platform_str,
+                        chat_id,
+                        error,
+                    )
+                    return True
                 logger.info(
                     "Sent post-update notification to %s:%s (exit=%s)",
                     platform_str,
@@ -16567,6 +16589,56 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exit_code_path.unlink(missing_ok=True)
 
         return True
+
+    async def _send_lifecycle_message_with_retry(
+        self,
+        adapter: BasePlatformAdapter,
+        chat_id: str,
+        content: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        max_wait: float = 60.0,
+    ) -> Optional[SendResult]:
+        """Send a lifecycle message, retrying only explicitly safe failures.
+
+        Telegram deliberately gates its send path until the first successful
+        getUpdates cycle after polling starts.  That healthy idle cycle may take
+        tens of seconds, so a fixed startup sleep can race it.  Keep retries
+        bounded and require ``SendResult.retryable``: ambiguous timeouts and
+        permanent API errors must not be retried because they could duplicate a
+        lifecycle message or create startup noise.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_wait
+        delay = 1.0
+
+        send_kwargs = {"metadata": metadata} if metadata is not None else {}
+        while True:
+            result = await adapter.send(
+                chat_id,
+                content,
+                **send_kwargs,
+            )
+            if result is None or getattr(result, "success", True):
+                return result
+            if not getattr(result, "retryable", False):
+                return result
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return result
+            retry_after = getattr(result, "retry_after", None)
+            wait = retry_after if retry_after is not None else delay
+            if wait > remaining:
+                return result
+            logger.info(
+                "Lifecycle notification deferred after transient send failure; "
+                "retrying in %.1fs: %s",
+                wait,
+                getattr(result, "error", "transient send failure"),
+            )
+            await asyncio.sleep(wait)
+            delay = min(delay * 2, 8.0)
 
     async def _send_restart_notification(self) -> Optional[tuple[str, str, Optional[str]]]:
         """Notify the chat that initiated /restart that the gateway is back."""
@@ -16610,7 +16682,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
+            result = await self._send_lifecycle_message_with_retry(
+                adapter,
                 str(chat_id),
                 "♻ Gateway restarted successfully. Your session continues.",
                 metadata=_non_conversational_metadata(metadata, platform=platform),
@@ -16680,7 +16753,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
                 if metadata:
-                    result = await adapter.send(
+                    result = await self._send_lifecycle_message_with_retry(
+                        adapter,
                         str(home.chat_id),
                         message,
                         metadata=_non_conversational_metadata(metadata, platform=platform),
@@ -16688,13 +16762,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     _startup_meta = _non_conversational_metadata(platform=platform)
                     if _startup_meta:
-                        result = await adapter.send(
+                        result = await self._send_lifecycle_message_with_retry(
+                            adapter,
                             str(home.chat_id),
                             message,
                             metadata=_startup_meta,
                         )
                     else:
-                        result = await adapter.send(str(home.chat_id), message)
+                        result = await self._send_lifecycle_message_with_retry(
+                            adapter,
+                            str(home.chat_id),
+                            message,
+                        )
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",

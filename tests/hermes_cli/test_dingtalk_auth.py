@@ -335,42 +335,51 @@ class TestEnsureQrcodeInstalled:
         """A real qrcode (or any object) in sys.modules short-circuits install."""
         from hermes_cli import dingtalk_auth
 
-        # Inject a fake qrcode module — import succeeds, no subprocess call.
+        # Inject a fake qrcode module — import succeeds, no install attempted.
         fake_qrcode = MagicMock()
         with patch.dict(sys.modules, {"qrcode": fake_qrcode}), \
-             patch("subprocess.check_call") as mock_install:
+             patch("hermes_cli.tools_config._pip_install") as mock_install:
             assert dingtalk_auth._ensure_qrcode_installed() is True
         mock_install.assert_not_called()
 
     def test_falls_through_to_install_when_missing(self):
-        """When import fails, the function tries uv pip install."""
+        """When import fails, the function installs via _pip_install and
+        re-imports. `_pip_install` (not subprocess.check_call — the real
+        function delegates to it via hermes_cli.tools_config, which shells
+        out with subprocess.run) is the actual seam to mock."""
         from hermes_cli import dingtalk_auth
 
         fake_qrcode = MagicMock()
         install_calls = []
 
-        def fake_check_call(cmd, **kwargs):
-            install_calls.append(cmd)
-            # After the install command runs, "complete" by injecting the module
+        def fake_pip_install(args, **kwargs):
+            install_calls.append(args)
+            # After the install "succeeds", inject the module so the
+            # function's re-import finds it.
             sys.modules["qrcode"] = fake_qrcode
+            return MagicMock(returncode=0)
 
-        # Force the initial import to miss by removing qrcode first
+        # None in sys.modules is CPython's documented sentinel for "this
+        # import is known to fail" — it forces ImportError deterministically
+        # regardless of whether qrcode happens to be really installed in
+        # the venv running this test.
         with patch.dict(sys.modules, {"qrcode": None}, clear=False), \
-             patch("subprocess.check_call", side_effect=fake_check_call):
-            sys.modules.pop("qrcode", None)
+             patch("hermes_cli.tools_config._pip_install", side_effect=fake_pip_install):
             assert dingtalk_auth._ensure_qrcode_installed() is True
-        assert any("uv" in c or "pip" in c for cmd in install_calls for c in cmd)
+        assert any("qrcode" in args for args in install_calls)
 
     def test_returns_false_when_both_installers_fail(self):
-        """If uv and pip both fail, return False without raising."""
+        """If _pip_install exhausts uv/pip and reports failure, return False
+        without raising — and without a real install attempt reaching the
+        network (this is what the un-awaited subprocess.check_call mock
+        used to miss: the real code path shells out via _pip_install)."""
         from hermes_cli import dingtalk_auth
-        import subprocess as _subprocess
 
-        # Ensure qrcode isn't already imported
+        # None in sys.modules forces the initial (and, since _pip_install
+        # reports failure below, only) import attempt to raise ImportError.
         with patch.dict(sys.modules, {"qrcode": None}, clear=False), \
-             patch("subprocess.check_call",
-                   side_effect=_subprocess.CalledProcessError(1, "uv")):
-            sys.modules.pop("qrcode", None)
+             patch("hermes_cli.tools_config._pip_install",
+                   return_value=MagicMock(returncode=1)):
             assert dingtalk_auth._ensure_qrcode_installed() is False
 
 

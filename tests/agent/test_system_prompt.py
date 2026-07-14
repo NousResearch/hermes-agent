@@ -37,6 +37,7 @@ def _captured_context_cwd(agent):
 
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.load_identity_md", return_value=""),
         patch("run_agent.load_relationship_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
@@ -61,6 +62,7 @@ class TestContextFileCwd:
 def _stable_prompt(agent):
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.load_identity_md", return_value=""),
         patch("run_agent.load_relationship_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
@@ -69,10 +71,11 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
-def test_relationship_summary_is_injected_into_stable_prompt():
+def test_identity_and_relationship_are_injected_in_stable_order():
     agent = _make_agent()
     with (
         patch("run_agent.load_soul_md", return_value="SOUL"),
+        patch("run_agent.load_identity_md", return_value="IDENTITY"),
         patch("run_agent.load_relationship_md", return_value="RELATIONSHIP"),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
@@ -81,14 +84,16 @@ def test_relationship_summary_is_injected_into_stable_prompt():
         stable = build_system_prompt_parts(agent)["stable"]
 
     assert "SOUL" in stable
+    assert "IDENTITY" in stable
     assert "RELATIONSHIP" in stable
-    assert stable.index("SOUL") < stable.index("RELATIONSHIP")
+    assert stable.index("SOUL") < stable.index("IDENTITY") < stable.index("RELATIONSHIP")
 
 
 def test_relationship_summary_is_skipped_with_ignore_rules():
     agent = _make_agent(skip_context_files=True)
     with (
         patch("run_agent.load_soul_md", return_value="") as load_soul,
+        patch("run_agent.load_identity_md", return_value="IDENTITY") as load_identity,
         patch("run_agent.load_relationship_md", return_value="RELATIONSHIP") as load_relationship,
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
@@ -96,7 +101,9 @@ def test_relationship_summary_is_skipped_with_ignore_rules():
         stable = build_system_prompt_parts(agent)["stable"]
 
     load_soul.assert_not_called()
+    load_identity.assert_not_called()
     load_relationship.assert_not_called()
+    assert "IDENTITY" not in stable
     assert "RELATIONSHIP" not in stable
 
 

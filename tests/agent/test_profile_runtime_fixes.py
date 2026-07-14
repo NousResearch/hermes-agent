@@ -60,6 +60,25 @@ def test_profile_relationship_loader_uses_only_distilled_summary(tmp_path, monke
     assert "PRIVATE_DIARY_EVIDENCE" not in rendered
 
 
+def test_profile_identity_loader_uses_only_identity_file(tmp_path, monkeypatch):
+    from agent import prompt_builder
+
+    (tmp_path / "IDENTITY.md").write_text(
+        "# Moss Identity\n\nCOMPACT_IDENTITY", encoding="utf-8"
+    )
+    memories = tmp_path / "memories"
+    memories.mkdir()
+    (memories / "RELATIONSHIP.md").write_text(
+        "RELATIONSHIP_EVIDENCE", encoding="utf-8"
+    )
+    monkeypatch.setattr(prompt_builder, "get_hermes_home", lambda: tmp_path)
+
+    rendered = prompt_builder.load_identity_md()
+
+    assert "COMPACT_IDENTITY" in rendered
+    assert "RELATIONSHIP_EVIDENCE" not in rendered
+
+
 def _runner():
     from gateway.run import GatewayRunner
 

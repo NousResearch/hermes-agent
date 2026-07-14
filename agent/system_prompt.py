@@ -193,6 +193,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Compact profile identity. This stays separate from SOUL's broad values
+    # and AGENTS' operational rules so the runtime has one explicit identity
+    # layer with a bounded prompt cost.
+    if agent.load_soul_identity or not agent.skip_context_files:
+        _identity_content = _r.load_identity_md(_ctx_len)
+        if _identity_content:
+            stable_parts.append(_identity_content)
+
     # Profile-scoped relationship continuity. This is a compact distilled
     # layer; bookmarks, diary entries, and awareness evidence are deliberately
     # not injected into ordinary sessions.

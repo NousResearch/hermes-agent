@@ -137,9 +137,10 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
-# Relationship context is deliberately much smaller than general context
+# Identity and relationship context are deliberately much smaller than general context
 # files.  It is a distilled, low-frequency profile layer, not a transcript or
 # an inbox for every diary/bookmark entry.
+PROFILE_IDENTITY_MAX_CHARS = 5_000
 PROFILE_RELATIONSHIP_MAX_CHARS = 6_000
 
 HERMES_AGENT_HELP_GUIDANCE = (
@@ -1885,6 +1886,37 @@ def load_relationship_md(context_length: Optional[int] = None) -> Optional[str]:
             relationship_path,
             e,
         )
+        return None
+
+
+def load_identity_md(context_length: Optional[int] = None) -> Optional[str]:
+    """Load the compact profile identity layer, if present.
+
+    ``IDENTITY.md`` defines who the profile is and how it relates to the user.
+    Operational rules remain in ``AGENTS.md`` and evidence remains in memory
+    layers, keeping identity stable and small.
+    """
+    identity_path = get_hermes_home() / "IDENTITY.md"
+    if not identity_path.is_file():
+        return None
+    try:
+        content = identity_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return None
+        content = _scan_context_content(content, "IDENTITY.md")
+        max_chars = min(
+            PROFILE_IDENTITY_MAX_CHARS,
+            _get_context_file_max_chars(context_length),
+        )
+        content = _truncate_content(
+            content,
+            "IDENTITY.md",
+            max_chars=max_chars,
+            read_path=str(identity_path),
+        )
+        return f"# Identity Context\n\n{content}"
+    except Exception as e:
+        logger.debug("Could not read IDENTITY.md from %s: %s", identity_path, e)
         return None
 
 

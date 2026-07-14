@@ -857,10 +857,19 @@ def run_conversation(
 
         if moa_config:
             try:
+                from agent.message_content import flatten_message_text as _flatten_mt
                 from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
                 _moa_context = aggregate_moa_context(
-                    user_prompt=original_user_message if isinstance(original_user_message, str) else str(original_user_message),
+                    user_prompt=(
+                        original_user_message
+                        if isinstance(original_user_message, str)
+                        # Multimodal / decorated content list: extract the
+                        # visible text instead of str()-ing a Python repr of
+                        # the parts (which would leak base64 image payloads
+                        # into the aggregator prompt).
+                        else _flatten_mt(original_user_message)
+                    ),
                     api_messages=api_messages,
                     reference_models=moa_config.get("reference_models") or [],
                     aggregator=moa_config.get("aggregator") or {},
@@ -874,6 +883,14 @@ def run_conversation(
                             _base = _msg.get("content", "")
                             if isinstance(_base, str):
                                 _msg["content"] = _base + "\n\n" + _moa_context
+                            elif isinstance(_base, list):
+                                # Multimodal user turn (text + image parts):
+                                # append the MoA context as a trailing text
+                                # part instead of silently dropping it.
+                                _msg["content"] = [
+                                    *_base,
+                                    {"type": "text", "text": "\n\n" + _moa_context},
+                                ]
                             break
             except Exception as _moa_exc:
                 logger.warning("MoA context aggregation failed: %s", _moa_exc)

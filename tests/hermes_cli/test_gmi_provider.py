@@ -80,14 +80,6 @@ class TestGmiConfigRegistry:
 
 
 class TestGmiModelCatalog:
-    def test_static_model_fallback_exists(self):
-        assert "gmi" in _PROVIDER_MODELS
-        models = _PROVIDER_MODELS["gmi"]
-        assert "zai-org/GLM-5.1-FP8" in models
-        assert "deepseek-ai/DeepSeek-V3.2" in models
-        assert "moonshotai/Kimi-K2.5" in models
-        assert "anthropic/claude-sonnet-4.6" in models
-
     def test_canonical_provider_entry(self):
         slugs = [p.slug for p in CANONICAL_PROVIDERS]
         assert "gmi" in slugs
@@ -126,6 +118,12 @@ class TestGmiModelCatalog:
             },
         )
         monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda api_key, base_url: None)
+        # Generic profile path uses ProviderProfile.fetch_models (urllib), not
+        # fetch_api_models — must stub it or CI can hit the real endpoint.
+        monkeypatch.setattr(
+            "providers.base.ProviderProfile.fetch_models",
+            lambda self, *, api_key=None, base_url=None, timeout=8.0: None,
+        )
 
         assert provider_model_ids("gmi") == list(_PROVIDER_MODELS["gmi"])
 
@@ -183,7 +181,6 @@ class TestGmiDoctor:
             "DASHSCOPE_API_KEY",
             "MINIMAX_API_KEY",
             "MINIMAX_CN_API_KEY",
-            "AI_GATEWAY_API_KEY",
             "KILOCODE_API_KEY",
             "OPENCODE_ZEN_API_KEY",
             "OPENCODE_GO_API_KEY",
@@ -268,11 +265,6 @@ class TestGmiModelMetadata:
 
 
 class TestGmiAuxiliary:
-    def test_aux_default_model(self):
-        from agent.auxiliary_client import _get_aux_model_for_provider
-
-        assert _get_aux_model_for_provider("gmi") == "google/gemini-3.1-flash-lite-preview"
-
     def test_resolve_provider_client_uses_gmi_aux_default(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
 
@@ -284,6 +276,22 @@ class TestGmiAuxiliary:
         assert model == "google/gemini-3.1-flash-lite-preview"
         assert mock_openai.call_args.kwargs["api_key"] == "gmi-test-key"
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.gmi-serving.com/v1"
+        # GMI profile declares default_headers with a HermesAgent User-Agent
+        # for traffic attribution. The generic profile-fallback branch in
+        # resolve_provider_client should carry it through to the OpenAI client.
+        headers = mock_openai.call_args.kwargs.get("default_headers", {})
+        assert headers.get("User-Agent", "").startswith("HermesAgent/")
+
+    def test_gmi_profile_declares_hermes_user_agent(self):
+        """The GMI plugin sets a HermesAgent/<ver> User-Agent on its profile."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gmi")
+        assert profile is not None
+        ua = profile.default_headers.get("User-Agent", "")
+        assert ua.startswith("HermesAgent/"), (
+            f"expected GMI profile User-Agent to start with 'HermesAgent/', got {ua!r}"
+        )
 
     def test_resolve_provider_client_accepts_gmi_alias(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")

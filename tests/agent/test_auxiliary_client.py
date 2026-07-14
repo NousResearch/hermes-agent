@@ -658,6 +658,52 @@ class TestAnthropicOAuthFlag:
         assert model == "claude-haiku-4-5-20251001"
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
+    def test_empty_pool_entry_falls_back_to_oauth_resolver(self):
+        class _Entry:
+            access_token = None
+            base_url = "https://reference-only.invalid"
+
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, _Entry())),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="cc-oauth-token") as mock_resolve,
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            client, model = _try_anthropic()
+
+        assert client is not None
+        assert model == "claude-haiku-4-5-20251001"
+        mock_resolve.assert_called_once_with()
+        assert mock_build.call_args.args == (
+            "cc-oauth-token",
+            "https://api.anthropic.com",
+        )
+
+    def test_empty_pool_entry_with_explicit_key_discards_pool_base_url(self):
+        class _Entry:
+            access_token = None
+            base_url = "https://reference-only.invalid"
+
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, _Entry())),
+            patch(
+                "agent.anthropic_adapter.resolve_anthropic_token",
+                side_effect=AssertionError("explicit key should avoid resolver"),
+            ),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()) as mock_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            client, model = _try_anthropic(explicit_api_key="explicit-test-key")
+
+        assert client is not None
+        assert model == "claude-haiku-4-5-20251001"
+        assert mock_build.call_args.args == (
+            "explicit-test-key",
+            "https://api.anthropic.com",
+        )
+
 
 class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):

@@ -2646,7 +2646,16 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
     pool_present, entry = _select_pool_entry("anthropic")
     if pool_present and entry is not None:
-        token = explicit_api_key or _pool_runtime_api_key(entry)
+        pool_token = _pool_runtime_api_key(entry)
+        if pool_token:
+            token = explicit_api_key or pool_token
+        else:
+            # A reference-only pool entry (for example env:CLAUDE_CODE_OAUTH_TOKEN)
+            # can be selectable without embedding runtime credentials. Discard
+            # the empty entry, including its base URL, before choosing between
+            # an explicit key and the normal OAuth/credentials-file resolver.
+            entry = None
+            token = explicit_api_key or resolve_anthropic_token()
     else:
         # Pool absent, OR pool present but no usable entry (expired token +
         # stale refresh_token, all entries exhausted, etc). Fall through to the

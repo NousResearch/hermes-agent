@@ -175,6 +175,7 @@ def _build_server() -> Any:
                 _make_handler(name),
                 name=name,
                 description=description,
+                input_schema=params_schema,
                 # FastMCP accepts JSON schema directly via the
                 # input_schema parameter on newer versions; older
                 # versions use parameters_schema. Try both for compat.

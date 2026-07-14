@@ -297,10 +297,11 @@ def _gateway_loop_exception_handler(
             except Exception:
                 task_name = repr(task)
         logger.warning(
-            "Gateway swallowed transient network error from %s: %s: %s",
+            "Gateway swallowed transient network error from %s: %s: %s — %s",
             task_name or "<unknown task>",
             type(exc).__name__,
             exc,
+            message,
             exc_info=(type(exc), exc, exc.__traceback__),
         )
         return

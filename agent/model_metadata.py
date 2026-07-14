@@ -1390,6 +1390,8 @@ def is_output_cap_error(error_msg: str) -> bool:
         "max_tokens" in error_lower
         or "max_output_tokens" in error_lower
         or "max_completion_tokens" in error_lower
+        or ("requested" in error_lower       # vLLM / llama.cpp / Qwen style:
+            and "output tokens" in error_lower)  # "you requested N output tokens"
     )
     if not mentions_output_param:
         return False
@@ -1422,7 +1424,22 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "prompt contains" in error_lower
         or "reduce the length" in error_lower
     )
-    return not input_overflow_signal
+
+    # vLLM / llama.cpp / Qwen style: "This model's maximum context length is N
+    # tokens. However, you requested M output tokens and your prompt contains at
+    # least K input tokens, for a total of at least N+1 tokens…"  This IS an
+    # output-cap error — it describes input+output exceeding the window.  Don't
+    # let the presence of "input tokens" or "reduce the length" (which says
+    # "reduce the length of the input prompt OR the number of requested output
+    # tokens") trick us into treating it as a pure input overflow.
+    vllm_style = (
+        "maximum context length" in error_lower
+        and "requested" in error_lower
+        and "output tokens" in error_lower
+        and "prompt contains" in error_lower
+    )
+
+    return (not input_overflow_signal) or vllm_style
 
 
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:

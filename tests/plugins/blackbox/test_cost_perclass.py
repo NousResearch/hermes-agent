@@ -135,6 +135,33 @@ def test_nested_moa_pricing_calls_use_each_physical_model_route(monkeypatch):
     ]
 
 
+def test_nested_moa_unknown_physical_route_is_honestly_partial(monkeypatch):
+    """A nonzero unknown physical call withholds the per-class split."""
+    priced = CostResult(
+        amount_usd=Decimal("0.01"), status="estimated",
+        source="official_docs_snapshot", label="~$0.01",
+        cost_input_usd=Decimal("0.01"), cost_output_usd=Decimal("0"),
+        cost_cache_read_usd=Decimal("0"), cost_cache_write_usd=Decimal("0"),
+    )
+    unknown = CostResult(
+        amount_usd=None, status="unknown", source="none", label="n/a"
+    )
+    seq = iter([priced, unknown])
+    monkeypatch.setattr(cost_mod, "estimate_usage_cost", lambda *a, **k: next(seq))
+    calls = [{"pricing_calls": [
+        {"model": "advisor-model", "provider": "advisor-provider",
+         "input_tokens": 100, "output_tokens": 10},
+        {"model": "unknown-model", "provider": "unknown-provider",
+         "input_tokens": 30, "output_tokens": 20},
+    ]}]
+
+    total, status, perclass = compute_turn_cost("default", "moa", None, calls)
+
+    assert total == 0.01
+    assert status == "partial"
+    assert all(value is None for value in perclass.values())
+
+
 def test_zero_token_failed_advisor_does_not_make_moa_turn_partial(monkeypatch):
     """A failed advisor emitted no billable usage, so its unknown route costs $0."""
     def fake_estimate(model, usage, *, provider=None, base_url=None):

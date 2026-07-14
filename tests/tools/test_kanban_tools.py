@@ -1128,6 +1128,90 @@ def test_create_session_id_arg_overrides_env(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_stamps_gateway_sender_when_not_a_worker(monkeypatch, worker_env):
+    """In a top-level gateway turn (no HERMES_KANBAN_TASK), the card's
+    created_by records the originating human as ``<platform>:<uid>/<name>``
+    so the board audit spine attributes work to the human, not the profile.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "hermes")
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "U12345")
+    monkeypatch.setenv("HERMES_SESSION_USER_NAME", "ada")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    d = json.loads(kt._handle_create({"title": "from slack", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.created_by == "slack:U12345/ada"
+    finally:
+        conn.close()
+
+
+def test_create_gateway_sender_without_name(monkeypatch, worker_env):
+    """When the gateway carries a user id but no display name, created_by
+    falls back to ``<platform>:<uid>`` (no trailing slash)."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "U999")
+    monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    d = json.loads(kt._handle_create({"title": "no name", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.created_by == "slack:U999"
+    finally:
+        conn.close()
+
+
+def test_create_worker_keeps_profile_created_by_for_parent_gate(monkeypatch, worker_env):
+    """A dispatcher-spawned worker (HERMES_KANBAN_TASK set) must keep its
+    profile in created_by even when a gateway sender is present — the
+    parent-completion gate (``_verify_created_cards``) trusts ``created_by
+    == <assignee profile>``. Overwriting it with a human id would break that
+    gate, so the human-sender stamp is suppressed for workers.
+    """
+    # worker_env already sets HERMES_KANBAN_TASK + HERMES_PROFILE=test-worker.
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "U12345")
+    monkeypatch.setenv("HERMES_SESSION_USER_NAME", "ada")
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    d = json.loads(kt._handle_create({
+        "title": "worker child", "assignee": "peer", "parents": [worker_env],
+    }))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.created_by == "test-worker"
+    finally:
+        conn.close()
+
+
+def test_create_falls_back_to_profile_without_gateway(monkeypatch, worker_env):
+    """No gateway sender (CLI/cron/ACP) → created_by uses HERMES_PROFILE."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.setenv("HERMES_PROFILE", "techlead")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+    d = json.loads(kt._handle_create({"title": "cli child", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        new_task = kb.get_task(conn, d["task_id"])
+        assert new_task.created_by == "techlead"
+    finally:
+        conn.close()
+
+
 def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
     """No env var, no arg → session_id stays NULL. Important for backwards
     compatibility: pre-ACP-propagation hosts and CLI-driven creates must

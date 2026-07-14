@@ -838,6 +838,44 @@ def _handle_comment(args: dict, **kw) -> str:
         return tool_error(f"kanban_comment: {e}")
 
 
+def _resolve_created_by() -> str:
+    """Resolve the principal to stamp on a newly-created card.
+
+    Precedence:
+
+    1. **Gateway human sender** — when the agent is answering a gateway
+       conversation (Slack/Telegram/etc.) *and* is not itself a
+       dispatcher-spawned worker (``HERMES_KANBAN_TASK`` unset), stamp the
+       originating human as ``<platform>:<user_id>/<display-name>`` so the
+       board's audit spine records who actually asked for the work, not
+       just the answering profile. The shared multi-user server deployment
+       relies on this attribution.
+    2. **Profile** — the historic default (``HERMES_PROFILE``), used for
+       dispatcher-spawned worker fan-out and CLI/dashboard paths.
+
+    Workers (``HERMES_KANBAN_TASK`` set) intentionally keep the profile
+    value: ``_verify_created_cards`` trusts ``created_by == <assignee
+    profile>`` to gate parent completion, so overwriting it with a human
+    identity there would break the gate. The human-sender stamp only
+    applies to top-level gateway turns, which are not subject to that gate.
+    """
+    # Dispatcher-spawned workers always stamp their profile (parent-gate).
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        try:
+            from gateway.session_context import get_session_env
+
+            platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip()
+            user_id = get_session_env("HERMES_SESSION_USER_ID", "").strip()
+            if platform and user_id:
+                user_name = get_session_env("HERMES_SESSION_USER_NAME", "").strip()
+                return f"{platform}:{user_id}/{user_name}" if user_name else f"{platform}:{user_id}"
+        except Exception:
+            # No gateway context (CLI/cron/ACP) or import unavailable —
+            # fall through to the profile default.
+            pass
+    return os.environ.get("HERMES_PROFILE") or "worker"
+
+
 def _handle_create(args: dict, **kw) -> str:
     """Create a child task. Orchestrator workers use this to fan out.
 
@@ -938,7 +976,7 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
-                created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                created_by=_resolve_created_by(),
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)

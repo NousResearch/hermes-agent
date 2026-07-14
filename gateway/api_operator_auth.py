@@ -19,12 +19,14 @@ VALID_SCOPE_DOMAINS = frozenset({
 
 def normalize_scopes(values: Iterable[str]) -> tuple[str, ...]:
     scopes = {str(value).strip().lower() for value in values if str(value).strip()}
-    if "*" in scopes:
-        return ("*",)
     for scope in scopes:
+        if scope == "*":
+            continue
         domain, separator, access = scope.partition(":")
         if separator != ":" or domain not in VALID_SCOPE_DOMAINS or access not in {"read", "write"}:
             raise ValueError(f"unknown scope: {scope}")
+    if "*" in scopes:
+        return ("*",)
     return tuple(sorted(scopes))
 
 

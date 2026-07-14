@@ -1130,9 +1130,9 @@ if __name__ == "__main__":
     try:
         import fal_client  # noqa: F401
         print("✅ fal_client library available")
-    except ImportError:
+    except ImportError as _b904_exc:
         print("❌ fal_client library not found — pip install fal-client")
-        raise SystemExit(1)
+        raise SystemExit(1) from _b904_exc
 
     model_id, meta = _resolve_fal_model()
     print(f"🤖 Active model: {meta.get('display', model_id)} ({model_id})")

@@ -400,7 +400,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
             )
     except ValueError:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         # Fail CLOSED on the security path. This guard exists specifically to
         # cover credential stores the narrow list above misses (auth.json,
         # .anthropic_oauth.json, mcp-tokens/, ...). If the canonical lookup
@@ -410,7 +410,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
         # legitimate file is a recoverable annoyance; a leaked credential is not.
         raise ValueError(
             "path could not be verified against the credential deny-list and cannot be attached"
-        )
+        ) from _b904_exc
 
 
 def _strip_trailing_punctuation(value: str) -> str:

@@ -220,12 +220,12 @@ class CodexAppServerClient:
         self._send({"id": rid, "method": method, "params": params or {}})
         try:
             msg = q.get(timeout=timeout)
-        except queue.Empty:
+        except queue.Empty as _b904_exc:
             with self._pending_lock:
                 self._pending.pop(rid, None)
             raise TimeoutError(
                 f"codex app-server method {method!r} timed out after {timeout}s"
-            )
+            ) from _b904_exc
         if "error" in msg:
             err = msg["error"]
             raise CodexAppServerError(

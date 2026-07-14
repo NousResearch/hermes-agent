@@ -285,7 +285,7 @@ def _run_execution_chain(
         try:
             return callback(**call_kwargs)
         except _DownstreamExecutionError as exc:
-            raise exc.original
+            raise exc.original from exc
         except Exception as exc:
             logger.warning(
                 "Middleware '%s' callback %s raised: %s",

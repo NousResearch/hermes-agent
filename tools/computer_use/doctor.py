@@ -145,7 +145,7 @@ def _drive_health_report(
     try:
         resp = json.loads(call_line)
     except (ValueError, TypeError) as e:
-        raise RuntimeError(f"health_report response was not valid JSON: {e}\nraw: {call_line[:200]}")
+        raise RuntimeError(f"health_report response was not valid JSON: {e}\nraw: {call_line[:200]}") from e
 
     if "error" in resp:
         raise RuntimeError(f"health_report JSON-RPC error: {resp['error']}")

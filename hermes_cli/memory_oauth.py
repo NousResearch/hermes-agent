@@ -24,8 +24,8 @@ def _resolve_flow(provider: str):
         raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
     try:
         return importlib.import_module(f"plugins.memory.{provider}.oauth_flow")
-    except ImportError:
-        raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
+    except ImportError as _b904_exc:
+        raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect") from _b904_exc
 
 
 @contextmanager
@@ -43,7 +43,7 @@ def _scope_to_profile(profile: Optional[str]):
     try:
         profiles_mod.validate_profile_name(requested)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not profiles_mod.profile_exists(requested):
         raise HTTPException(status_code=404, detail=f"Profile '{requested}' does not exist.")
 
@@ -67,7 +67,7 @@ async def start_memory_oauth(provider: str, profile: Optional[str] = None):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}") from exc
 
 
 @router.get("/{provider}/oauth/status")
@@ -80,4 +80,4 @@ async def memory_oauth_status(provider: str, profile: Optional[str] = None):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read {provider} OAuth status: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to read {provider} OAuth status: {exc}") from exc

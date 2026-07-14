@@ -7575,8 +7575,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Resolve platform enum
         try:
             platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            raise RuntimeError(f"unknown platform '{platform_name}'")
+        except (ValueError, KeyError) as _b904_exc:
+            raise RuntimeError(f"unknown platform '{platform_name}'") from _b904_exc
 
         # Adapter must be live
         adapter = self.adapters.get(platform)
@@ -15519,8 +15519,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     from gateway.platform_registry import platform_registry
                     if not platform_registry.is_registered(platform.value):
                         raise ValueError(platform_name)
-                except Exception:
-                    raise ValueError(platform_name)
+                except Exception as _b904_exc:
+                    raise ValueError(platform_name) from _b904_exc
         except Exception:
             logger.warning(
                 "Synthetic process event has invalid platform metadata: %r",

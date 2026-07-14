@@ -2122,10 +2122,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     ),
                     timeout=_UPDATER_START_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as _b904_exc:
                 raise RuntimeError(
                     "start_polling() timed out — connection pool may be wedged"
-                )
+                ) from _b904_exc
             logger.info(
                 "[%s] Telegram polling resumed after network error (attempt %d)",
                 self.name, attempt,
@@ -2524,10 +2524,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         ),
                         timeout=_UPDATER_START_TIMEOUT,
                     )
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError as _b904_exc:
                     raise RuntimeError(
                         "start_polling() timed out — connection pool may be wedged"
-                    )
+                    ) from _b904_exc
                 logger.info(
                     "[%s] Telegram polling resumed after conflict retry %d/%d",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
@@ -3225,7 +3225,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         on_abandon=lambda app=self._app: _shutdown_abandoned_app(app),
                     )
                     break
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError as _b904_exc:
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)
                         logger.warning(
@@ -3238,7 +3238,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             f"Telegram initialization timed out after {_max_connect} attempts "
                             f"({_init_timeout:.0f}s each). Check network connectivity to api.telegram.org "
                             f"or set HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT to a lower value."
-                        )
+                        ) from _b904_exc
                 except OSError as init_err:
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)

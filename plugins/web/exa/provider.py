@@ -67,7 +67,7 @@ def _get_exa_client() -> Any:
     except ImportError:
         pass
     except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
-        raise ImportError(str(exc))
+        raise ImportError(str(exc)) from exc
 
     from exa_py import Exa  # noqa: WPS433 — deliberately lazy
 

@@ -364,7 +364,7 @@ class TrajectoryCompressor:
             )
             print(f"✅ Loaded tokenizer: {self.config.tokenizer_name}")
         except Exception as e:
-            raise RuntimeError(f"Failed to load tokenizer '{self.config.tokenizer_name}': {e}")
+            raise RuntimeError(f"Failed to load tokenizer '{self.config.tokenizer_name}': {e}") from e
     
     def _init_summarizer(self):
         """Initialize LLM routing for summarization (sync and async).

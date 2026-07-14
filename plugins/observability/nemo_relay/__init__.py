@@ -318,7 +318,7 @@ class _Runtime:
             managed_result = _resolve_awaitable(make_managed_execute(_impl))
         except Exception as exc:
             if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
-                raise downstream_error
+                raise downstream_error from exc
             raise
         return raw_response["value"] if raw_response["set"] else managed_result
 

@@ -85,7 +85,7 @@ def _load_firecrawl_cls() -> type:
         except ImportError:
             pass
         except Exception as exc:  # noqa: BLE001 — surface install hint
-            raise ImportError(str(exc))
+            raise ImportError(str(exc)) from exc
         from firecrawl import Firecrawl as _cls  # noqa: WPS433 — deliberately lazy
 
         _FIRECRAWL_CLS_CACHE = _cls

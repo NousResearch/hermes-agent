@@ -1140,7 +1140,7 @@ async def vision_analyze_tool(
         try:
             resolved = await resolve_image_source(image_url, ResolveContext(task_id=task_id))
         except ImageResolutionError as exc:
-            raise ValueError(str(exc))
+            raise ValueError(str(exc)) from exc
 
         detected_mime_type = resolved.mime
         temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")

@@ -828,12 +828,12 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
         try:
             from honcho import Honcho
-        except ImportError:
+        except ImportError as _b904_exc:
             raise ImportError(
                 "honcho-ai is required for Honcho integration. "
                 "Install it with: pip install honcho-ai  "
                 "(or run `hermes honcho setup` to configure)."
-            )
+            ) from _b904_exc
 
         # Allow config.yaml honcho.base_url to override the SDK's environment
         # mapping, enabling remote self-hosted Honcho deployments without

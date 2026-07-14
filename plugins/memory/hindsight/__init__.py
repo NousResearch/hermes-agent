@@ -1025,7 +1025,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 except ImportError:
                     pass
                 except Exception as _e:
-                    raise ImportError(str(_e))
+                    raise ImportError(str(_e)) from _e
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")

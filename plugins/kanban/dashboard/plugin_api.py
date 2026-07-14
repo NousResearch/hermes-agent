@@ -107,7 +107,7 @@ def _resolve_board(board: Optional[str]) -> Optional[str]:
     try:
         normed = kanban_db._normalize_board_slug(board)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if normed and normed != kanban_db.DEFAULT_BOARD and not kanban_db.board_exists(normed):
         raise HTTPException(
             status_code=404,
@@ -651,7 +651,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
                 pass
         return body
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         conn.close()
 
@@ -756,7 +756,7 @@ async def upload_task_attachment(
         except HTTPException:
             raise
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}")
+            raise HTTPException(status_code=500, detail=f"failed to store attachment: {exc}") from exc
 
         att_id = kanban_db.add_attachment(
             conn,
@@ -770,7 +770,7 @@ async def upload_task_attachment(
         att = kanban_db.get_attachment(conn, att_id)
         return {"attachment": _attachment_dict(att) if att else None}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         conn.close()
 
@@ -789,8 +789,8 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
         try:
             stored = Path(att.stored_path).resolve()
             stored.relative_to(root)
-        except (ValueError, OSError):
-            raise HTTPException(status_code=404, detail="attachment file unavailable")
+        except (ValueError, OSError) as _b904_exc:
+            raise HTTPException(status_code=404, detail="attachment file unavailable") from _b904_exc
         if not stored.is_file():
             raise HTTPException(status_code=404, detail="attachment file missing on disk")
         return FileResponse(
@@ -850,7 +850,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     conn, task_id, payload.assignee or None,
                 )
             except RuntimeError as e:
-                raise HTTPException(status_code=409, detail=str(e))
+                raise HTTPException(status_code=409, detail=str(e)) from e
             if not ok:
                 raise HTTPException(status_code=404, detail="task not found")
 
@@ -1138,7 +1138,7 @@ def add_link(payload: LinkBody, board: Optional[str] = Query(None)):
         kanban_db.link_tasks(conn, payload.parent_id, payload.child_id)
         return {"ok": True}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         conn.close()
 
@@ -2078,12 +2078,12 @@ def create_board_endpoint(payload: CreateBoardBody):
             default_workdir=default_workdir,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload.switch:
         try:
             kanban_db.set_current_board(meta["slug"])
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     meta["default_workspace_kind"] = _default_workspace_kind(meta)
     return {"board": meta, "current": kanban_db.get_current_board()}
 
@@ -2094,7 +2094,7 @@ def rename_board(slug: str, payload: RenameBoardBody):
     try:
         normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not normed or not kanban_db.board_exists(normed):
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
     meta = kanban_db.write_board_metadata(
@@ -2113,7 +2113,7 @@ def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete
     try:
         res = kanban_db.remove_board(slug, archive=not delete)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": res, "current": kanban_db.get_current_board()}
 
 
@@ -2128,7 +2128,7 @@ def switch_board(slug: str):
     try:
         normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not normed or not kanban_db.board_exists(normed):
         raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
     kanban_db.set_current_board(normed)
@@ -2170,7 +2170,7 @@ def list_profile_roster():
         from hermes_cli import profiles as profiles_mod
         profiles = profiles_mod.list_profiles()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to list profiles: {exc}")
+        raise HTTPException(status_code=500, detail=f"failed to list profiles: {exc}") from exc
     return {
         "profiles": [
             {
@@ -2216,7 +2216,7 @@ def update_profile_description(profile_name: str, payload: DescribeBody):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to update profile: {exc}")
+        raise HTTPException(status_code=500, detail=f"failed to update profile: {exc}") from exc
     return {"ok": True, "profile": canon, "description": text}
 
 
@@ -2239,7 +2239,7 @@ def auto_describe_profile(profile_name: str, payload: DescribeAutoBody):
             overwrite=bool(payload.overwrite),
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"describer crashed: {exc}")
+        raise HTTPException(status_code=500, detail=f"describer crashed: {exc}") from exc
     return {
         "ok": bool(outcome.ok),
         "profile": outcome.profile_name,
@@ -2363,7 +2363,7 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
         from hermes_cli.config import load_config, save_config
         cfg = load_config() or {}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to load config: {exc}")
+        raise HTTPException(status_code=500, detail=f"failed to load config: {exc}") from exc
 
     kanban_section = cfg.setdefault("kanban", {})
     if not isinstance(kanban_section, dict):
@@ -2415,7 +2415,7 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
     try:
         save_config(cfg)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"failed to save config: {exc}")
+        raise HTTPException(status_code=500, detail=f"failed to save config: {exc}") from exc
 
     # Echo back the resolved state (callers usually re-render from it).
     return get_orchestration_settings()

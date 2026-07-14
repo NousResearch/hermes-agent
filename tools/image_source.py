@@ -132,7 +132,7 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
             try:
                 raise_if_read_blocked(str(host_target))
             except ValueError as exc:
-                raise SourceUnsafe(str(exc), src=s, origin="file")
+                raise SourceUnsafe(str(exc), src=s, origin="file") from exc
         data = await asyncio.to_thread(host_target.read_bytes)
         return _finalize(data, "", "file", s)
     if _is_local_terminal_backend():
@@ -156,7 +156,7 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
     try:
         data = base64.b64decode(payload, validate=True)
     except Exception as exc:
-        raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
+        raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64]) from exc
     return data, declared  # real mime verified in _finalize via magic bytes
 
 
@@ -193,7 +193,7 @@ async def _download_to_bytes(url: str) -> bytes:
         await _download_image(url, tmp)
         return await asyncio.to_thread(tmp.read_bytes)
     except PermissionError as exc:  # website policy block
-        raise SourceUnsafe(str(exc), src=url, origin="http")
+        raise SourceUnsafe(str(exc), src=url, origin="http") from exc
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -310,7 +310,7 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     try:
         data = base64.b64decode(res.get("output", ""), validate=True)
     except Exception as exc:
-        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
+        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src) from exc
     if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("image exceeds size limit", src=src, origin="container")
     return _finalize(data, "", "container", src)

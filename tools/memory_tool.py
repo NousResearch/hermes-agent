@@ -785,7 +785,7 @@ class MemoryStore:
                     pass
                 raise
         except (OSError, IOError) as e:
-            raise RuntimeError(f"Failed to write memory file {path}: {e}")
+            raise RuntimeError(f"Failed to write memory file {path}: {e}") from e
 
 
 def load_on_disk_store() -> "MemoryStore":

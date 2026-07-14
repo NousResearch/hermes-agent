@@ -58,7 +58,7 @@ def _ensure_parallel_sdk_installed() -> None:
     except ImportError:
         pass
     except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
-        raise ImportError(str(exc))
+        raise ImportError(str(exc)) from exc
 
 
 def _get_sync_client() -> Any:

@@ -102,7 +102,7 @@ try:
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
     from starlette.concurrency import run_in_threadpool
-except ImportError:
+except ImportError as _b904_exc:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
@@ -118,11 +118,11 @@ except ImportError:
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
         from starlette.concurrency import run_in_threadpool
-    except Exception:
+    except Exception as _b904_exc:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
             f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
-        )
+        ) from _b904_exc
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
@@ -1481,8 +1481,8 @@ def _fs_path(raw_path: str) -> Path:
         if not candidate.is_absolute():
             candidate = Path.cwd() / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    except (OSError, RuntimeError, ValueError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from _b904_exc
 
 
 def _fs_mime_type(path: Path) -> str:
@@ -1506,14 +1506,14 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
     target = _fs_path(str(path))
     try:
         st = target.stat()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="File not found")
-    except NotADirectoryError:
-        raise HTTPException(status_code=404, detail="File not found")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not readable")
+    except FileNotFoundError as _b904_exc:
+        raise HTTPException(status_code=404, detail="File not found") from _b904_exc
+    except NotADirectoryError as _b904_exc:
+        raise HTTPException(status_code=404, detail="File not found") from _b904_exc
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not readable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path") from exc
     if stat.S_ISDIR(st.st_mode):
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
@@ -1602,8 +1602,8 @@ async def get_media(path: str):
     """
     try:
         target = Path(path).expanduser().resolve()
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    except (OSError, RuntimeError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from _b904_exc
 
     if target.suffix.lower() not in _MEDIA_CONTENT_TYPES:
         raise HTTPException(status_code=415, detail="Unsupported media type")
@@ -1624,12 +1624,12 @@ async def get_media(path: str):
 def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
     try:
         return path.expanduser().resolve(strict=require_exists)
-    except FileNotFoundError:
+    except FileNotFoundError as _b904_exc:
         if require_exists:
-            raise HTTPException(status_code=404, detail="Path not found")
+            raise HTTPException(status_code=404, detail="Path not found") from _b904_exc
         raise
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    except (OSError, RuntimeError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from _b904_exc
 
 
 def _ensure_managed_root(raw_path: str | Path) -> Path:
@@ -1638,7 +1638,7 @@ def _ensure_managed_root(raw_path: str | Path) -> Path:
         root.mkdir(parents=True, exist_ok=True)
         resolved = root.resolve()
     except (OSError, RuntimeError) as exc:
-        raise HTTPException(status_code=500, detail=f"Managed files root is unavailable: {exc}")
+        raise HTTPException(status_code=500, detail=f"Managed files root is unavailable: {exc}") from exc
     if not resolved.is_dir():
         raise HTTPException(status_code=500, detail="Managed files root is not a directory")
     return resolved
@@ -1784,15 +1784,15 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
 def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
     try:
         resolved = target.resolve()
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    except (OSError, RuntimeError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Invalid path") from _b904_exc
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
     try:
         st = resolved.stat()
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}") from exc
 
     is_dir = resolved.is_dir()
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
@@ -1816,8 +1816,8 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
         raise HTTPException(status_code=400, detail="Upload payload must be base64 encoded")
     try:
         data = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
-        raise HTTPException(status_code=400, detail="Upload payload is not valid base64")
+    except (binascii.Error, ValueError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Upload payload is not valid base64") from _b904_exc
     if len(data) > _MANAGED_FILE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File is too large")
     return data, mime_type
@@ -1882,10 +1882,10 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
         img_dir = Path(home) / "images"
         try:
             img_dir.mkdir(parents=True, exist_ok=True)
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except PermissionError as _b904_exc:
+            raise HTTPException(status_code=403, detail="Image directory is not writable") from _b904_exc
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}")
+            raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}") from exc
 
         stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
         stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
@@ -1894,10 +1894,10 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
 
         try:
             target.write_bytes(data)
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Image directory is not writable")
+        except PermissionError as _b904_exc:
+            raise HTTPException(status_code=403, detail="Image directory is not writable") from _b904_exc
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not write image: {exc}")
+            raise HTTPException(status_code=500, detail=f"Could not write image: {exc}") from exc
 
     return {
         "ok": True,
@@ -1922,10 +1922,10 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
             for child in target.iterdir()
             if not _is_sensitive_path(child)
         ]
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Directory is not readable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="Directory is not readable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read directory: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not read directory: {exc}") from exc
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
     locked_root = policy.locked_root
@@ -1953,17 +1953,17 @@ async def read_managed_file(request: Request, path: str):
     try:
         size = target.stat().st_size
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}") from exc
     if size > _MANAGED_FILE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File is too large")
 
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     try:
         encoded = base64.b64encode(target.read_bytes()).decode("ascii")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not readable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not readable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not read file: {exc}") from exc
 
     return {
         "name": target.name,
@@ -1997,7 +1997,7 @@ async def download_managed_file(request: Request, path: str):
     try:
         size = target.stat().st_size
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}") from exc
     if size > _MANAGED_FILE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File is too large")
 
@@ -2023,10 +2023,10 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not writable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not writable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}") from exc
 
     return {
         "ok": True,
@@ -2061,10 +2061,10 @@ async def upload_managed_file_stream(
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not writable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not writable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not create parent directory: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not create parent directory: {exc}") from exc
 
     # Write to a sibling temp file first so a partial/aborted upload never
     # clobbers an existing file, then atomically rename into place.
@@ -2088,10 +2088,10 @@ async def upload_managed_file_stream(
         renamed = True
     except HTTPException:
         raise
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not writable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not writable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}") from exc
     finally:
         # Clean up the temp file on every non-success exit, including
         # BaseException paths the `except` clauses above don't catch — most
@@ -2118,10 +2118,10 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 
     try:
         target.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="Directory is not writable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="Directory is not writable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}") from exc
 
     return {
         "ok": True,
@@ -2151,7 +2151,7 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
             target.unlink()
     except OSError as exc:
         status_code = 409 if target.is_dir() and not payload.recursive else 500
-        raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
+        raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}") from exc
 
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 
@@ -2191,10 +2191,10 @@ async def fs_read_text(path: str):
     try:
         with target.open("rb") as handle:
             data = handle.read(bytes_to_read)
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not readable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not readable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
+        raise HTTPException(status_code=400, detail=str(exc) or "File read failed") from exc
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
@@ -2232,10 +2232,10 @@ async def fs_write_text(payload: FsWriteText):
         st: Optional[os.stat_result] = target.stat()
     except FileNotFoundError:
         st = None
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not writable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not writable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path") from exc
 
     if st is not None and stat.S_ISDIR(st.st_mode):
         raise HTTPException(status_code=400, detail="Path points to a directory")
@@ -2248,12 +2248,12 @@ async def fs_write_text(payload: FsWriteText):
     try:
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, target)
-    except PermissionError:
+    except PermissionError as _b904_exc:
         tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=403, detail="File is not writable")
+        raise HTTPException(status_code=403, detail="File is not writable") from _b904_exc
     except OSError as exc:
         tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}") from exc
 
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
@@ -2265,10 +2265,10 @@ async def fs_read_data_url(path: str):
         raise HTTPException(status_code=413, detail="File too large")
     try:
         encoded = base64.b64encode(target.read_bytes()).decode("ascii")
-    except PermissionError:
-        raise HTTPException(status_code=403, detail="File is not readable")
+    except PermissionError as _b904_exc:
+        raise HTTPException(status_code=403, detail="File is not readable") from _b904_exc
     except OSError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
+        raise HTTPException(status_code=400, detail=str(exc) or "File read failed") from exc
     return {"dataUrl": f"data:{_fs_mime_type(target)};base64,{encoded}"}
 
 
@@ -2307,7 +2307,7 @@ async def _git_op(fn, *args):
     try:
         return await loop.run_in_executor(None, fn, *args)
     except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc) or "git operation failed")
+        raise HTTPException(status_code=400, detail=str(exc) or "git operation failed") from exc
 
 
 def _git_path(path: str) -> str:
@@ -2947,7 +2947,7 @@ async def get_curator_status():
     try:
         from agent import curator
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Curator unavailable: {exc}")
+        raise HTTPException(status_code=500, detail=f"Curator unavailable: {exc}") from exc
     try:
         state = curator.load_state()
     except Exception:
@@ -2981,7 +2981,7 @@ async def run_curator():
     try:
         proc = _spawn_hermes_action(["curator", "run"], "curator-run")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to run curator: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to run curator: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "curator-run"}
 
 
@@ -2997,9 +2997,9 @@ async def get_learning_graph(profile: Optional[str] = None):
 
         with _profile_scope(profile):
             return build_learning_graph()
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("GET /api/learning/graph failed")
-        raise HTTPException(status_code=500, detail="Failed to build learning graph")
+        raise HTTPException(status_code=500, detail="Failed to build learning graph") from _b904_exc
 
 
 class LearningNodeRef(BaseModel):
@@ -3115,7 +3115,7 @@ async def run_prompt_size():
     try:
         proc = _spawn_hermes_action(["prompt-size"], "prompt-size")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "prompt-size"}
 
 
@@ -3124,7 +3124,7 @@ async def run_dump():
     try:
         proc = _spawn_hermes_action(["dump"], "dump")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "dump"}
 
 
@@ -3133,7 +3133,7 @@ async def run_config_migrate():
     try:
         proc = _spawn_hermes_action(["config", "migrate"], "config-migrate")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "config-migrate"}
 
 
@@ -3168,10 +3168,10 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
         )
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
-        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Upload failed: {exc}") from exc
     except Exception as exc:
         _log.exception("debug share failed")
-        raise HTTPException(status_code=500, detail=f"Failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed: {exc}") from exc
 
     return {
         "ok": True,
@@ -3440,7 +3440,7 @@ async def restart_gateway(profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
-        raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}") from exc
     return {
         "ok": True,
         "pid": proc.pid,
@@ -3557,7 +3557,7 @@ async def update_hermes():
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:
         _log.exception("Failed to spawn hermes update")
-        raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to start update: {exc}") from exc
     return {
         "ok": True,
         "pid": proc.pid,
@@ -3729,8 +3729,8 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
 
     try:
         audio_bytes = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
-        raise HTTPException(status_code=400, detail="Audio payload is not valid base64")
+    except (binascii.Error, ValueError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Audio payload is not valid base64") from _b904_exc
 
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Audio recording is empty")
@@ -3756,7 +3756,7 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
         raise
     except Exception as exc:
         _log.exception("Desktop voice transcription failed")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
     finally:
         if temp_path:
             try:
@@ -3852,11 +3852,11 @@ async def get_elevenlabs_voices():
             return {"available": False, "voices": [], "error": "unauthorized"}
         if _voice_list_error_logged_once(f"http-{exc.code}"):
             _log.warning("ElevenLabs voice list failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices") from exc
     except Exception as exc:
         if _voice_list_error_logged_once(str(exc)):
             _log.warning("ElevenLabs voice list failed: %s", exc)
-        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices")
+        raise HTTPException(status_code=502, detail="Could not load ElevenLabs voices") from exc
     _voice_list_error_logged_once(None)  # success — re-arm logging for next failure
 
     voices = []
@@ -3897,12 +3897,12 @@ async def speak_text(payload: TTSSpeakRequest):
         result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
     except Exception as exc:
         _log.exception("Desktop voice TTS failed")
-        raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Speech synthesis failed: {exc}") from exc
 
     try:
         result = json.loads(result_json) if isinstance(result_json, str) else result_json
-    except Exception:
-        raise HTTPException(status_code=500, detail="Invalid TTS response")
+    except Exception as _b904_exc:
+        raise HTTPException(status_code=500, detail="Invalid TTS response") from _b904_exc
 
     if not result.get("success"):
         raise HTTPException(
@@ -3927,7 +3927,7 @@ async def speak_text(payload: TTSSpeakRequest):
         with open(file_path, "rb") as fh:
             audio_bytes = fh.read()
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not read audio: {exc}")
+        raise HTTPException(status_code=500, detail=f"Could not read audio: {exc}") from exc
     finally:
         try:
             os.unlink(file_path)
@@ -4092,9 +4092,9 @@ def get_sessions(
             db.close()
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("GET /api/sessions failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
 
 @app.get("/api/profiles/sessions")
@@ -4383,9 +4383,9 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
             db.close()
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("GET /api/sessions/search failed")
-        raise HTTPException(status_code=500, detail="Search failed")
+        raise HTTPException(status_code=500, detail="Search failed") from _b904_exc
 
 
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -5324,9 +5324,9 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
             _write_memory_provider_config_values(name, provider, body.values)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception:
+        except Exception as _b904_exc:
             _log.exception("Failed to persist memory provider setup values for %s", name)
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
     return _install_memory_provider_setup(name)
 
 
@@ -5343,9 +5343,9 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
             return {"ok": True}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception:
+        except Exception as _b904_exc:
             _log.exception("PUT /api/memory/providers/%s/config (declared) failed", name)
-            raise HTTPException(status_code=500, detail="Internal server error")
+            raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
     provider = _load_memory_provider(name)
     if provider is None:
@@ -5370,9 +5370,9 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
         raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("PUT /api/memory/providers/%s/config failed", name)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
 
 @app.get("/api/config")
@@ -5552,9 +5552,9 @@ def get_model_options(
             )
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("GET /api/model/options failed")
-        raise HTTPException(status_code=500, detail="Failed to list model options")
+        raise HTTPException(status_code=500, detail="Failed to list model options") from _b904_exc
 
 
 @app.get("/api/model/recommended-default")
@@ -5675,9 +5675,9 @@ def get_auxiliary_models(profile: Optional[str] = None):
         return {"tasks": tasks, "main": main}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("GET /api/model/auxiliary failed")
-        raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
+        raise HTTPException(status_code=500, detail="Failed to read auxiliary config") from _b904_exc
 
 
 @app.get("/api/model/moa")
@@ -5691,9 +5691,9 @@ def get_moa_models(profile: Optional[str] = None):
             return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("GET /api/model/moa failed")
-        raise HTTPException(status_code=500, detail="Failed to read MoA config")
+        raise HTTPException(status_code=500, detail="Failed to read MoA config") from _b904_exc
 
 
 @app.put("/api/model/moa")
@@ -5735,9 +5735,9 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
             return {"ok": True, **normalized}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("PUT /api/model/moa failed")
-        raise HTTPException(status_code=500, detail="Failed to save MoA config")
+        raise HTTPException(status_code=500, detail="Failed to save MoA config") from _b904_exc
 
 
 @app.post("/api/model/set")
@@ -5796,9 +5796,9 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         return await asyncio.to_thread(_apply_assignment)
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("POST /api/model/set failed")
-        raise HTTPException(status_code=500, detail="Failed to save model assignment")
+        raise HTTPException(status_code=500, detail="Failed to save model assignment") from _b904_exc
 
 
 def _apply_model_assignment_sync(
@@ -6107,9 +6107,9 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
         return {"ok": True}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("PUT /api/config failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
 
 def _catalog_provider_env_metadata() -> dict:
@@ -6294,9 +6294,9 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
         # message to the SPA so the user understands why the write was
         # refused instead of seeing an opaque 500.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("PUT /api/env failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
 
 # Live credential probes keyed by env var. Each entry is (method, url, auth)
@@ -6416,9 +6416,9 @@ async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
         # the message to the SPA so the user understands why the delete was
         # refused instead of seeing an opaque 500. Mirrors PUT /api/env.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("DELETE /api/env failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
 
 @app.post("/api/env/reveal")
@@ -8075,9 +8075,9 @@ async def update_messaging_platform(
         return {"ok": True, "platform": platform_id}
     except HTTPException:
         raise
-    except Exception:
+    except Exception as _b904_exc:
         _log.exception("PUT /api/messaging/platforms/%s failed", platform_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from _b904_exc
 
 
 @app.post("/api/messaging/platforms/{platform_id}/test")
@@ -8667,7 +8667,7 @@ async def disconnect_oauth_provider(
             return {"ok": bool(cleared), "provider": provider_id}
         except Exception as e:
             _log.exception("disconnect %s failed", provider_id)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -9572,7 +9572,7 @@ async def start_oauth_login(
         raise
     except Exception as e:
         _log.exception("oauth/start %s failed", provider_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     raise HTTPException(status_code=400, detail="Unsupported flow")
 
 
@@ -10053,7 +10053,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
                 db.set_session_title(sid, body.title or "")
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
-                raise HTTPException(status_code=400, detail=str(e))
+                raise HTTPException(status_code=400, detail=str(e)) from e
         if body.archived is not None:
             db.set_session_archived(sid, body.archived)
         result = {"ok": True, "title": db.get_session_title(sid) or ""}
@@ -10409,7 +10409,7 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
         canon = profiles_mod.normalize_profile_name(raw)
         profiles_mod.validate_profile_name(canon)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not profiles_mod.profile_exists(canon):
         raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
     return canon, profiles_mod.get_profile_dir(canon)
@@ -10595,7 +10595,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
         raise
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.post("/api/cron/jobs")
@@ -10859,7 +10859,7 @@ async def list_cron_blueprints():
         return {"blueprints": entries}
     except Exception as e:
         _log.exception("GET /api/cron/blueprints failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/cron/blueprints/instantiate")
@@ -10888,7 +10888,7 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         raise
     except Exception as e:
         _log.exception("POST /api/cron/blueprints/instantiate failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 # ---------------------------------------------------------------------------
@@ -11245,7 +11245,7 @@ async def list_mcp_catalog(profile: Optional[str] = None):
         from hermes_cli import mcp_catalog
     except Exception as exc:
         _log.exception("mcp_catalog import failed")
-        raise HTTPException(status_code=500, detail=f"Catalog unavailable: {exc}")
+        raise HTTPException(status_code=500, detail=f"Catalog unavailable: {exc}") from exc
 
     entries = []
     try:
@@ -11357,7 +11357,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Install failed: {exc}")
+            raise HTTPException(status_code=500, detail=f"Install failed: {exc}") from exc
         return {"ok": True, "name": name, "background": True, "action": action}
 
     # No git step — install synchronously via the catalog API. install_entry
@@ -11376,7 +11376,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         raise
     except Exception as exc:
         _log.exception("install_mcp_catalog_entry failed")
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "name": name, "background": False}
 
 
@@ -11658,7 +11658,7 @@ async def start_gateway(profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.exception("Failed to spawn gateway start")
-        raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "gateway-start"}
 
 
@@ -11670,7 +11670,7 @@ async def stop_gateway(profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.exception("Failed to spawn gateway stop")
-        raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
 
 
@@ -11864,7 +11864,7 @@ async def reset_memory(body: MemoryReset):
                 path.unlink()
                 deleted.append(fname)
             except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}") from exc
     return {"ok": True, "deleted": deleted}
 
 
@@ -11887,7 +11887,7 @@ async def run_doctor():
         proc = _spawn_hermes_action(["doctor"], "doctor")
     except Exception as exc:
         _log.exception("Failed to spawn doctor")
-        raise HTTPException(status_code=500, detail=f"Failed to run doctor: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to run doctor: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "doctor"}
 
 
@@ -11897,7 +11897,7 @@ async def run_security_audit():
         proc = _spawn_hermes_action(["security", "audit"], "security-audit")
     except Exception as exc:
         _log.exception("Failed to spawn security audit")
-        raise HTTPException(status_code=500, detail=f"Failed to run security audit: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to run security audit: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "security-audit"}
 
 
@@ -11929,13 +11929,13 @@ async def run_backup(body: BackupRequest):
             raise HTTPException(
                 status_code=500,
                 detail=f"Could not create backup directory: {exc}",
-            )
+            ) from exc
         args.append(str(archive))
     try:
         proc = _spawn_hermes_action(args, "backup")
     except Exception as exc:
         _log.exception("Failed to spawn backup")
-        raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to run backup: {exc}") from exc
     response = {"ok": True, "pid": proc.pid, "name": "backup"}
     if archive is not None:
         response["archive"] = str(archive)
@@ -11947,10 +11947,10 @@ async def download_dashboard_backup(archive: str):
     try:
         backup_dir = _dashboard_backup_dir().expanduser().resolve(strict=False)
         target = Path(archive).expanduser().resolve(strict=True)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Backup not found")
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="Invalid backup path")
+    except FileNotFoundError as _b904_exc:
+        raise HTTPException(status_code=404, detail="Backup not found") from _b904_exc
+    except (OSError, RuntimeError) as _b904_exc:
+        raise HTTPException(status_code=400, detail="Invalid backup path") from _b904_exc
 
     if not _path_is_under(backup_dir, target):
         raise HTTPException(status_code=403, detail="Backup is outside the dashboard backup directory")
@@ -11991,7 +11991,7 @@ async def run_import(body: ImportRequest):
         proc = _spawn_hermes_action(args, "import")
     except Exception as exc:
         _log.exception("Failed to spawn import")
-        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "import"}
 
 
@@ -12017,7 +12017,7 @@ async def run_import_upload(
         raise HTTPException(
             status_code=500,
             detail=f"Could not create import staging directory: {exc}",
-        )
+        ) from exc
 
     safe_name = _safe_backup_upload_name(file.filename)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -12044,16 +12044,16 @@ async def run_import_upload(
         renamed = True
     except HTTPException:
         raise
-    except PermissionError:
+    except PermissionError as _b904_exc:
         raise HTTPException(
             status_code=403,
             detail="Import staging directory is not writable",
-        )
+        ) from _b904_exc
     except OSError as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Could not write uploaded archive: {exc}",
-        )
+        ) from exc
     finally:
         if not renamed:
             tmp_path.unlink(missing_ok=True)
@@ -12073,7 +12073,7 @@ async def run_import_upload(
         proc = _spawn_hermes_action(args, "import")
     except Exception as exc:
         _log.exception("Failed to spawn import")
-        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}") from exc
     return {
         "ok": True,
         "pid": proc.pid,
@@ -12279,7 +12279,7 @@ async def prune_checkpoints():
         proc = _spawn_hermes_action(["checkpoints", "prune"], "checkpoints-prune")
     except Exception as exc:
         _log.exception("Failed to spawn checkpoints prune")
-        raise HTTPException(status_code=500, detail=f"Failed to prune checkpoints: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to prune checkpoints: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "checkpoints-prune"}
 
 
@@ -12346,7 +12346,7 @@ async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = 
         raise
     except Exception as exc:
         _log.exception("Failed to spawn skills install")
-        raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": name}
 
 
@@ -12370,7 +12370,7 @@ async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str
         raise
     except Exception as exc:
         _log.exception("Failed to spawn skills uninstall")
-        raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": action}
 
 
@@ -12391,7 +12391,7 @@ async def update_skills_hub(
         raise
     except Exception as exc:
         _log.exception("Failed to spawn skills update")
-        raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}") from exc
     return {"ok": True, "pid": proc.pid, "name": "skills-update"}
 
 
@@ -12524,7 +12524,7 @@ async def list_skills_hub_sources(profile: Optional[str] = None):
         raise
     except Exception as exc:
         _log.exception("skills hub sources listing failed")
-        raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}") from exc
 
 
 @app.get("/api/skills/hub/search")
@@ -12575,7 +12575,7 @@ async def search_skills_hub(
         raise
     except Exception as exc:
         _log.exception("skills hub search failed")
-        raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}") from exc
 
 
 @app.get("/api/skills/hub/preview")
@@ -12637,7 +12637,7 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
         result = await asyncio.to_thread(_run)
     except Exception as exc:
         _log.exception("skills hub preview failed")
-        raise HTTPException(status_code=502, detail=f"Hub preview failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Hub preview failed: {exc}") from exc
     if result is None:
         raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
     return result
@@ -12732,7 +12732,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
         result = await asyncio.to_thread(_run)
     except Exception as exc:
         _log.exception("skills hub scan failed")
-        raise HTTPException(status_code=502, detail=f"Hub scan failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Hub scan failed: {exc}") from exc
     if result is None:
         raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
     return result
@@ -12882,7 +12882,7 @@ def _resolve_profile_dir(name: str) -> Path:
     try:
         profiles_mod.validate_profile_name(name)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     if not profiles_mod.profile_exists(name):
         raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
     return profiles_mod.get_profile_dir(name)
@@ -13063,10 +13063,10 @@ async def create_profile_endpoint(body: ProfileCreate):
         if not collision:
             profiles_mod.create_wrapper_script(body.name)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _log.exception("POST /api/profiles failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     # Optional explicit model assignment for the new profile. Best-effort:
     # the profile already exists, so a model-write hiccup must not 500 the
@@ -13165,12 +13165,12 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     try:
         profiles_mod.set_active_profile(body.name)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _log.exception("POST /api/profiles/active failed")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {"ok": True, "active": profiles_mod.normalize_profile_name(body.name)}
 
 
@@ -13222,14 +13222,14 @@ async def open_profile_terminal_endpoint(name: str):
                     detail="No supported terminal emulator found",
                 )
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except HTTPException:
         raise
     except Exception as e:
         _log.exception("POST /api/profiles/%s/open-terminal failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {"ok": True, "command": command}
 
 
@@ -13239,12 +13239,12 @@ async def rename_profile_endpoint(name: str, body: ProfileRename):
     try:
         path = profiles_mod.rename_profile(name, body.new_name)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except (ValueError, FileExistsError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _log.exception("PATCH /api/profiles/%s failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {"ok": True, "name": body.new_name, "path": str(path)}
 
 
@@ -13257,12 +13257,12 @@ async def delete_profile_endpoint(name: str):
     try:
         path = profiles_mod.delete_profile(name, yes=True)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _log.exception("DELETE /api/profiles/%s failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {"ok": True, "path": str(path)}
 
 
@@ -13273,7 +13273,7 @@ async def get_profile_soul(name: str):
         try:
             return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
         except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}") from e
     return {"content": "", "exists": False}
 
 
@@ -13284,7 +13284,7 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         soul_path.write_text(body.content, encoding="utf-8")
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
-        raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}") from e
     return {"ok": True}
 
 
@@ -13307,7 +13307,7 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
         )
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/description failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {"ok": True, "description": text, "description_auto": False}
 
 
@@ -13327,7 +13327,7 @@ async def update_profile_model_endpoint(name: str, body: ProfileModelUpdate):
         _write_profile_model(profile_dir, provider, model)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/model failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {"ok": True, "provider": provider, "model": model}
 
 
@@ -13347,7 +13347,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
         outcome = profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
     except Exception as e:
         _log.exception("POST /api/profiles/%s/describe-auto failed", name)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return {
         "ok": bool(outcome.ok),
         "reason": outcome.reason,
@@ -13936,7 +13936,7 @@ async def select_toolset_provider(
         try:
             apply_provider_selection(name, body.provider, config)
         except KeyError as exc:
-            raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+            raise HTTPException(status_code=400, detail=str(exc).strip('"')) from exc
         save_config(config)
     return {"ok": True, "name": name, "provider": body.provider}
 
@@ -13992,7 +13992,7 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
                 try:
                     save_env_value(key, value.strip())
                 except ValueError as exc:
-                    raise HTTPException(status_code=400, detail=str(exc))
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
                 saved.append(key)
             else:
                 skipped.append(key)
@@ -14052,7 +14052,7 @@ async def run_toolset_post_setup(
         _log.exception("Failed to spawn tools post-setup")
         raise HTTPException(
             status_code=500, detail=f"Failed to run post-setup: {exc}"
-        )
+        ) from exc
     return {"ok": True, "pid": proc.pid, "name": "tools-post-setup", "key": body.key}
 
 
@@ -14109,7 +14109,7 @@ async def grant_computer_use_permissions(profile: Optional[str] = None):
         _log.exception("Failed to spawn computer-use permissions grant")
         raise HTTPException(
             status_code=500, detail=f"Failed to request permissions: {exc}"
-        )
+        ) from exc
     return {"ok": True, "pid": proc.pid, "name": "computer-use-grant"}
 
 
@@ -14149,7 +14149,7 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
             save_config(parsed)
         return {"ok": True}
     except yaml.YAMLError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}") from e
 
 
 # ---------------------------------------------------------------------------

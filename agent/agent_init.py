@@ -1152,7 +1152,7 @@ def init_agent(
                 else:
                     print("⚠️  Warning: API key appears invalid or missing")
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+            raise RuntimeError(f"Failed to initialize OpenAI client: {e}") from e
     
     # Provider fallback chain — ordered list of backup providers tried
     # when the primary is exhausted (rate-limit, overload, connection

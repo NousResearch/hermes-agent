@@ -120,9 +120,9 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> List[Dict[str, Any]]
         if redact:
             try:
                 parsed = json.loads(_redact(json.dumps(parsed), redact))
-            except (json.JSONDecodeError, ValueError):
+            except (json.JSONDecodeError, ValueError) as _b904_exc:
                 logger.warning("Trace upload redacted tool arguments are not valid JSON; refusing upload")
-                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE)
+                raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from _b904_exc
         blocks.append({
             "type": "tool_use",
             "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",

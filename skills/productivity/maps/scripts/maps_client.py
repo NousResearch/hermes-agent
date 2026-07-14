@@ -184,7 +184,7 @@ def http_get(url, params=None, retries=MAX_RETRIES, silent=False):
                 time.sleep(RETRY_DELAY * attempt)
             else:
                 if silent:
-                    raise RuntimeError(last_error)
+                    raise RuntimeError(last_error) from exc
                 error_exit(last_error)
         except urllib.error.URLError as exc:
             last_error = f"URL error: {exc.reason}"
@@ -220,7 +220,7 @@ def http_get_text(url, params=None, retries=MAX_RETRIES, silent=False):
                 time.sleep(RETRY_DELAY * attempt)
             else:
                 if silent:
-                    raise RuntimeError(last_error)
+                    raise RuntimeError(last_error) from exc
                 error_exit(last_error)
         except urllib.error.URLError as exc:
             last_error = f"URL error: {exc.reason}"

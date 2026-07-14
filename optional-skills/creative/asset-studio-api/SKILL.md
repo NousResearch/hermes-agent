@@ -1,6 +1,6 @@
 ---
 name: asset-studio-api
-description: Read and (confirm-gated) write access to a local asset-studio carousel-authoring server.
+description: asset-studio carousel API: Instagram/FB posts, flows, characters.
 version: 1.0.0
 author: zealchaiwut, Hermes Agent
 license: MIT
@@ -76,7 +76,11 @@ warning even with `--confirm`.
 
 ## How to Run
 
-All calls go through one client script, via `terminal`.
+All calls go through one client script, via `terminal`. **Never write ad hoc
+`execute_code`/`curl`/`requests`/`subprocess` calls against this API, and
+never search the asset-studio source tree for how to do something — this
+script is the only sanctioned path, including for routes it has no named
+shortcut for (use `call`, see below).**
 `$HERMES_HOME/skills/creative/asset-studio-api/scripts/` is where this
 skill lives once installed:
 

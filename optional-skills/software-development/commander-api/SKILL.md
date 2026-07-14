@@ -1,6 +1,6 @@
 ---
 name: commander-api
-description: Read and (confirm-gated) write access to a local Commander sprint dashboard.
+description: Commander sprint dashboard API: board, sprints, tickets, issues.
 version: 1.0.0
 author: zealchaiwut, Hermes Agent
 license: MIT
@@ -80,7 +80,11 @@ the real project list — don't guess.
 
 ## How to Run
 
-All calls go through one client script, via `terminal`.
+All calls go through one client script, via `terminal`. **Never write ad hoc
+`execute_code`/`curl`/`requests`/`subprocess` calls against this API, and
+never search the Commander source tree for how to do something — this
+script is the only sanctioned path, including for routes it has no named
+shortcut for (use `call`, see below).**
 `$HERMES_HOME/skills/software-development/commander-api/scripts/` is where
 this skill lives once installed:
 

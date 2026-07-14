@@ -1,6 +1,6 @@
 ---
 name: perf-coach
-description: Read-only training load, scores, today's plan, and weight.
+description: Training load, scores, today's plan, and weight trend (read-only).
 version: 1.0.0
 author: zealchaiwut, Hermes Agent
 license: MIT

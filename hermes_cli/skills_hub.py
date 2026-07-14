@@ -950,6 +950,23 @@ def do_list(source_filter: str = "all",
     all_skills = _find_all_skills(skip_disabled=True)
     disabled_names = get_disabled_skill_names()
 
+    # When --enabled-only is set, also apply tool/toolset conditional activation
+    # rules (the same _skill_should_show() check that the system-prompt builder
+    # uses) so the list really matches which skills will load for the profile.
+    available_toolsets: set | None = None
+    if enabled_only:
+        from agent.prompt_builder import _skill_should_show
+
+        try:
+            from hermes_cli.config import load_config
+        except Exception:
+            load_config = None  # type: ignore[assignment]
+        if load_config is not None:
+            cfg = load_config()
+            ts_list = cfg.get("toolsets") if isinstance(cfg, dict) else None
+            if isinstance(ts_list, list):
+                available_toolsets = set(ts_list)
+
     title = "Installed Skills"
     if enabled_only:
         title += " (enabled only)"
@@ -991,6 +1008,13 @@ def do_list(source_filter: str = "all",
         is_enabled = name not in disabled_names
         if enabled_only and not is_enabled:
             continue
+
+        # When --enabled-only, also filter by tool/toolset conditions so the
+        # list matches what the system-prompt builder will actually load.
+        if enabled_only and available_toolsets is not None:
+            conditions = skill.get("conditions") or {}
+            if not _skill_should_show(conditions, None, available_toolsets):
+                continue
 
         if source_type == "hub":
             hub_count += 1

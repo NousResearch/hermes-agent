@@ -559,6 +559,22 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return parse_frontmatter(content)
 
 
+def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
+    """Extract conditional activation fields from parsed frontmatter."""
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    hermes = metadata.get("hermes") or {}
+    if not isinstance(hermes, dict):
+        hermes = {}
+    return {
+        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
+        "requires_toolsets": hermes.get("requires_toolsets", []),
+        "fallback_for_tools": hermes.get("fallback_for_tools", []),
+        "requires_tools": hermes.get("requires_tools", []),
+    }
+
+
 def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """
     Extract category from skill path based on directory structure.
@@ -753,11 +769,14 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                conditions = _extract_conditions(frontmatter)
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "conditions": conditions,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

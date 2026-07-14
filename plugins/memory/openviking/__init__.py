@@ -1861,6 +1861,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._deferred_commit_lock = threading.Lock()
         self._committed_session_ids: Set[str] = set()
         self._committed_session_lock = threading.Lock()
+        # Connection settings and _client are one published state. Serialize
+        # refreshes so callers never observe a new config with the old client.
+        self._client_refresh_lock = threading.Lock()
         self._runtime_start_lock = threading.Lock()
         self._runtime_start_thread: Optional[threading.Thread] = None
         self._runtime_start_pending = False
@@ -2072,6 +2075,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _start_runtime_openviking_waiter(
         self,
         *,
+        endpoint: str,
         status_callback=None,
         warning_callback=None,
     ) -> None:
@@ -2082,6 +2086,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._runtime_start_thread = threading.Thread(
             target=self._finish_runtime_openviking_start,
             kwargs={
+                "endpoint": endpoint,
                 "status_callback": status_callback,
                 "warning_callback": warning_callback,
             },
@@ -2093,52 +2098,68 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _finish_runtime_openviking_start(
         self,
         *,
+        endpoint: Optional[str] = None,
         status_callback=None,
         warning_callback=None,
     ) -> None:
-        endpoint = self._endpoint
+        endpoint = endpoint or self._endpoint
         if not _wait_for_openviking_health(
             endpoint,
             timeout_seconds=_LOCAL_OPENVIKING_AUTOSTART_TIMEOUT,
-            should_stop=lambda: self._shutting_down,
+            should_stop=lambda: self._shutting_down or self._endpoint != endpoint,
         ):
+            if self._shutting_down or self._endpoint != endpoint:
+                return
             _emit_runtime_warning(
                 _runtime_openviking_timeout_message(endpoint),
                 warning_callback,
             )
             return
 
-        try:
-            client = _VikingClient(
-                endpoint,
-                self._api_key,
-                account=self._account,
-                user=self._user,
-                agent=self._agent,
-            )
-            if not client.health():
-                _emit_runtime_warning(
-                    f"OpenViking server at {endpoint} is still not reachable after auto-start; "
-                    "OpenViking memory disabled for this Hermes run.",
-                    warning_callback,
-                )
+        warning_message = ""
+        status_message = ""
+        with self._client_refresh_lock:
+            if self._shutting_down or self._endpoint != endpoint:
                 return
-        except ImportError:
-            logger.warning("httpx not installed — OpenViking plugin disabled")
-            return
-        except Exception as e:
+            try:
+                client = _VikingClient(
+                    endpoint,
+                    self._api_key,
+                    account=self._account,
+                    user=self._user,
+                    agent=self._agent,
+                )
+                healthy = client.health()
+                if self._shutting_down or self._endpoint != endpoint:
+                    return
+                if not healthy:
+                    warning_message = (
+                        f"OpenViking server at {endpoint} is still not reachable after auto-start; "
+                        "OpenViking memory disabled for this Hermes run."
+                    )
+                else:
+                    self._client = client
+                    status_message = (
+                        f"Local OpenViking server at {endpoint} is reachable; "
+                        "OpenViking memory is active for later turns."
+                    )
+            except ImportError:
+                logger.warning("httpx not installed — OpenViking plugin disabled")
+                return
+            except Exception as e:
+                warning_message = (
+                    f"OpenViking server at {endpoint} could not be attached after auto-start: {e}. "
+                    "OpenViking memory disabled for this Hermes run."
+                )
+
+        if warning_message:
             _emit_runtime_warning(
-                f"OpenViking server at {endpoint} could not be attached after auto-start: {e}. "
-                "OpenViking memory disabled for this Hermes run.",
+                warning_message,
                 warning_callback,
             )
             return
-
-        self._client = client
-        _emit_runtime_status(
-            f"Local OpenViking server at {endpoint} is reachable; OpenViking memory is active for later turns.",
-            status_callback,
-        )
+        if status_message:
+            _emit_runtime_status(status_message, status_callback)
 
     def _handle_runtime_openviking_unreachable(
         self,
@@ -2199,6 +2220,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 if self._shutting_down:
                     return
                 self._start_runtime_openviking_waiter(
+                    endpoint=endpoint,
                     status_callback=status_callback,
                     warning_callback=warning_callback,
                 )
@@ -2268,6 +2290,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # return whatever client the caller wired up (matches legacy behavior).
         if not self._env_refresh_enabled:
             return self._client
+
+        with self._client_refresh_lock:
+            return self._ensure_client_locked()
+
+    def _ensure_client_locked(self) -> Optional["_VikingClient"]:
+        """Resolve and publish one client/config state under the refresh lock."""
+        if self._shutting_down:
+            self._client = None
+            return None
 
         settings = _resolve_connection_settings(_load_hermes_openviking_config())
         endpoint = settings["endpoint"]

@@ -2,7 +2,6 @@
 
 import json
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -1579,6 +1578,79 @@ class TestEnsureClientReloadsEnv:
             "viking://user/peers/hermes/memories/"
         )
 
+    def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+                self.api_key = api_key
+
+            def health(self):
+                if self.endpoint == "https://new.example":
+                    refresh_entered.set()
+                    assert release_refresh.wait(2.0)
+                    return False
+                return True
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://new.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-new")
+        monkeypatch.delenv("OPENVIKING_ACCOUNT", raising=False)
+        monkeypatch.delenv("OPENVIKING_USER", raising=False)
+        monkeypatch.delenv("OPENVIKING_AGENT", raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        stale_client = _StubClient("https://old.example", "sk-old")
+        provider._endpoint = stale_client.endpoint
+        provider._api_key = stale_client.api_key
+        provider._account = ""
+        provider._user = ""
+        provider._agent = "hermes"
+        provider._client = stale_client
+        provider._env_refresh_enabled = True
+
+        results = {}
+        errors = []
+        second_started = threading.Event()
+        second_done = threading.Event()
+
+        def refresh_client(name, *, started=None, done=None):
+            if started is not None:
+                started.set()
+            try:
+                results[name] = provider._ensure_client()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+            finally:
+                if done is not None:
+                    done.set()
+
+        first = threading.Thread(target=refresh_client, args=("first",))
+        first.start()
+        assert refresh_entered.wait(2.0)
+
+        second = threading.Thread(
+            target=refresh_client,
+            args=("second",),
+            kwargs={"started": second_started, "done": second_done},
+        )
+        second.start()
+        assert second_started.wait(2.0)
+        completed_during_refresh = second_done.wait(0.2)
+
+        release_refresh.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors == []
+        assert completed_during_refresh is False
+        assert results == {"first": None, "second": None}
+        assert all(client is not stale_client for client in results.values())
+
     def test_handle_tool_call_after_reload_to_local_endpoint_starts_runtime_recovery(
         self,
         tmp_path,
@@ -1700,26 +1772,13 @@ class TestEnsureClientReloadsEnv:
             def is_alive(self):
                 return True
 
-        health_barrier = threading.Barrier(2)
-
-        class _StubClient:
-            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
-                self.endpoint = endpoint
-
-            def health(self):
-                health_barrier.wait(timeout=2)
-                return False
-
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
-        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:31933")
-        monkeypatch.setenv("OPENVIKING_API_KEY", "")
-
         provider = OpenVikingMemoryProvider()
-        provider._env_refresh_enabled = True
+        provider._endpoint = "http://127.0.0.1:31933"
         start_calls = []
         start_lock = threading.Lock()
         first_start_entered = threading.Event()
         release_start = threading.Event()
+        second_started = threading.Event()
 
         def start_local(endpoint):
             with start_lock:
@@ -1738,21 +1797,27 @@ class TestEnsureClientReloadsEnv:
 
         errors = []
 
-        def access_client():
+        def recover(*, started=None):
+            if started is not None:
+                started.set()
             try:
-                provider._ensure_client()
+                provider._handle_runtime_openviking_unreachable()
             except BaseException as exc:  # pragma: no cover - surfaced below
                 errors.append(exc)
 
         threads = [
-            threading.Thread(target=access_client, name=f"openviking-access-{index}")
-            for index in range(2)
+            threading.Thread(target=recover, name="openviking-recovery-1"),
+            threading.Thread(
+                target=recover,
+                kwargs={"started": second_started},
+                name="openviking-recovery-2",
+            ),
         ]
         for thread in threads:
             thread.start()
 
         assert first_start_entered.wait(timeout=2)
-        time.sleep(0.05)
+        assert second_started.wait(timeout=2)
         release_start.set()
         for thread in threads:
             thread.join(timeout=2)

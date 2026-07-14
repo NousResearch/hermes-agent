@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import threading
 import time
 import zipfile
 from types import SimpleNamespace
@@ -973,7 +974,8 @@ def test_initialize_emits_starting_status_before_runtime_waiter_can_attach(monke
     provider = OpenVikingMemoryProvider()
     statuses = []
 
-    def start_waiter(*, status_callback=None, warning_callback=None):
+    def start_waiter(*, endpoint, status_callback=None, warning_callback=None):
+        assert endpoint == "http://127.0.0.1:1934"
         assert callable(status_callback)
         status_callback("Local OpenViking server is reachable; OpenViking memory is active.")
 
@@ -1032,6 +1034,47 @@ def test_runtime_openviking_waiter_attaches_client_after_health_recovers(monkeyp
     provider._shutting_down = True
     assert wait_kwargs["should_stop"]() is True
     assert any("OpenViking memory is active" in message for message in statuses)
+
+
+def test_runtime_waiter_does_not_replace_client_after_endpoint_changes(monkeypatch):
+    wait_entered = threading.Event()
+    release_wait = threading.Event()
+
+    def wait_for_health(endpoint, *, timeout_seconds, should_stop=None):
+        assert endpoint == "http://127.0.0.1:1934"
+        wait_entered.set()
+        assert release_wait.wait(2.0)
+        return True
+
+    class FakeVikingClient:
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            self.endpoint = endpoint
+
+        def health(self):
+            return True
+
+    monkeypatch.setattr(openviking_module, "_wait_for_openviking_health", wait_for_health)
+    monkeypatch.setattr(openviking_module, "_VikingClient", FakeVikingClient)
+
+    provider = OpenVikingMemoryProvider()
+    provider._endpoint = "http://127.0.0.1:1934"
+    provider._api_key = ""
+    provider._account = ""
+    provider._user = ""
+    provider._agent = "hermes"
+
+    waiter = threading.Thread(target=provider._finish_runtime_openviking_start)
+    waiter.start()
+    assert wait_entered.wait(2.0)
+
+    replacement_client = FakeVikingClient("https://new.example")
+    provider._endpoint = replacement_client.endpoint
+    provider._client = replacement_client
+    release_wait.set()
+    waiter.join(timeout=2.0)
+
+    assert not waiter.is_alive()
+    assert provider._client is replacement_client
 
 
 def test_runtime_openviking_waiter_warns_when_background_start_times_out(monkeypatch):

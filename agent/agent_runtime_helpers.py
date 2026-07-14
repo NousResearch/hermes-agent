@@ -1971,6 +1971,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             }
             try:
                 from hermes_cli.config import (
+                    apply_custom_provider_extra_headers_to_client_kwargs,
                     apply_custom_provider_tls_to_client_kwargs,
                     get_compatible_custom_providers,
                     load_config_readonly,
@@ -1985,6 +1986,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                     str(effective_base or ""),
                     get_compatible_custom_providers(load_config_readonly()),
                 )
+                # Also reapply user-configured extra_headers from
+                # custom_providers[].extra_headers — the TLS call above
+                # only handles ssl_ca_cert/ssl_verify. (#64217)
+                apply_custom_provider_extra_headers_to_client_kwargs(
+                    agent._client_kwargs,
+                    str(effective_base or ""),
+                    get_compatible_custom_providers(load_config_readonly()),
+                )
             except Exception:
                 logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
@@ -1995,6 +2004,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             # scratch.  Without this, model switches clear attribution headers
             # and OpenRouter logs show "Unknown" for subsequent requests.
             agent._apply_client_headers_for_base_url(effective_base)
+            # Reapply user-configured default_headers that were lost when
+            # _client_kwargs was rebuilt from scratch above.  Without this,
+            # mid-session model switches to WAF-protected custom providers
+            # silently drop header overrides and start producing 403s. (#64217)
+            agent._apply_user_default_headers()
             agent.client = agent._create_openai_client(
                 dict(agent._client_kwargs),
                 reason="switch_model",

@@ -410,6 +410,158 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-05-12",
     ),
+    # OpenCode Go (https://opencode.ai/docs/go/) — $5-10/mo subscription
+    (
+        "opencode-go",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.74"),
+        output_cost_per_million=Decimal("3.48"),
+        cache_read_cost_per_million=Decimal("0.0145"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "deepseek-v4-flash",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "glm-5.2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "glm-5.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "kimi-k2.7-code",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.95"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.19"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "kimi-k2.6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.95"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.16"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "mimo-v2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "mimo-v2.5-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.74"),
+        output_cost_per_million=Decimal("3.48"),
+        cache_read_cost_per_million=Decimal("0.0145"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    # MiniMax M3 (pricing from source; no cache-write cost listed)
+    (
+        "opencode-go",
+        "minimax-m3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    (
+        "opencode-go",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        cache_write_cost_per_million=Decimal("0.375"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    # Qwen 3.7 Max (>256K tier; ≤256K pricing not listed separately)
+    (
+        "opencode-go",
+        "qwen3.7-max",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.50"),
+        output_cost_per_million=Decimal("7.50"),
+        cache_read_cost_per_million=Decimal("0.50"),
+        cache_write_cost_per_million=Decimal("3.125"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    # Qwen 3.7 Plus — ≤256K context tier (default estimate)
+    (
+        "opencode-go",
+        "qwen3.7-plus",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.40"),
+        output_cost_per_million=Decimal("1.60"),
+        cache_read_cost_per_million=Decimal("0.04"),
+        cache_write_cost_per_million=Decimal("0.50"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
+    # Qwen 3.6 Plus — ≤256K context tier (default estimate; >256K is 4×)
+    (
+        "opencode-go",
+        "qwen3.6-plus",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.50"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("0.05"),
+        cache_write_cost_per_million=Decimal("0.625"),
+        source="official_docs_snapshot",
+        source_url="https://opencode.ai/docs/go/",
+        pricing_version="opencode-go-2026-06-01",
+    ),
     # Google Gemini
     (
         "google",

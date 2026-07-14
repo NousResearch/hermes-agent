@@ -1,0 +1,17 @@
+name: bug-fix-verify
+description: "Fix a reported bug, run tests, document the fix"
+domain: software-development
+complexity: 5
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: pytest or project test suite'"
+    weight: 0.4
+  - type: content_match
+    path: /tmp/CHANGES.md
+    pattern: "Fixed:"
+    weight: 0.3
+  - type: file_exists
+    path: /tmp/fix_applied.patch
+    weight: 0.3
+timeout_seconds: 300
+max_turns: 20

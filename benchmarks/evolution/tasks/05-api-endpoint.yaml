@@ -1,0 +1,17 @@
+name: api-endpoint
+description: "Add a new REST API endpoint with request validation"
+domain: software-development
+complexity: 5
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: pytest tests/test_api.py -v'"
+    weight: 0.4
+  - type: content_match
+    path: /tmp/api_changes.md
+    pattern: "(?i)endpoint|route|path|method"
+    weight: 0.3
+  - type: file_exists
+    path: /tmp/api_changes.md
+    weight: 0.3
+timeout_seconds: 180
+max_turns: 15

@@ -1463,6 +1463,41 @@ def init_agent(
     from agent.memory_manager import inject_memory_provider_tools as _inject_memory_provider_tools
     _inject_memory_provider_tools(agent)
 
+    # ── Evolution Engine (autonomous evaluation + self-improvement) ──
+    # Follows the same pattern as MemoryManager: one manager per session,
+    # enabled via evolution.enabled in config.yaml.  No-op when disabled.
+    agent._evolution_manager = None
+    try:
+        from agent.evolution.config import EvolutionConfig as _EvoConfig
+        _evo_config = _EvoConfig.from_config(_agent_cfg if isinstance(_agent_cfg, dict) else None)
+        if _evo_config.enabled:
+            from agent.evolution.evolution_manager import EvolutionManager as _EvoMgr
+            agent._evolution_manager = _EvoMgr()
+            agent._evolution_manager.initialize(
+                session_id=agent.session_id,
+                config=_evo_config,
+            )
+            # Register evolution tools when enabled
+            from agent.evolution.evolution_hooks import on_session_start as _evo_session_start
+            _evo_session_start(agent)
+            try:
+                from agent.evolution.evolution_tools import get_evolution_tool_schemas
+                from tools.registry import registry as _tool_registry
+                for schema in get_evolution_tool_schemas():
+                    _tool_registry.register(
+                        name=schema["name"],
+                        toolset="evolution",
+                        schema=schema,
+                        handler=lambda **kw: f"Evolution tool '{schema['name']}' called. Use hermes evolution commands.",
+                    )
+            except Exception as _evo_tool_err:
+                _ra().logger.debug("Evolution tool registration skipped: %s", _evo_tool_err)
+            _ra().logger.info("Evolution Engine activated (mode=%s)", _evo_config.mode)
+        else:
+            _ra().logger.debug("Evolution Engine disabled in config")
+    except Exception as _evo_exc:
+        _ra().logger.debug("Evolution Engine init skipped: %s", _evo_exc)
+
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
     try:

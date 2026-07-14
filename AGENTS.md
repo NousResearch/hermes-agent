@@ -238,6 +238,7 @@ hermes-agent/
 ├── hermes_logging.py     # setup_logging() — agent.log / errors.log / gateway.log (profile-aware)
 ├── batch_runner.py       # Parallel batch processing
 ├── agent/                # Agent internals (provider adapters, memory, caching, compression, etc.)
+│   └── evolution/        #   Evolution Engine — autonomous evaluation + self-improvement
 ├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
@@ -1011,6 +1012,125 @@ Key config knobs (under `delegation:` in `config.yaml`):
 Durability rule: background `delegate_task` is detached from the current
 turn but still process-local. For work that must survive process restart, use
 `cronjob` or `terminal(background=True, notify_on_complete=True)` instead.
+
+---
+
+## Evolution Engine (autonomous evaluation + self-improvement)
+
+The Evolution Engine (HAEE) is a built-in autonomous evaluation and
+self-improvement system. It closes the loop between agent failures and
+improvements: the agent attempts a task, HAEE evaluates the result,
+analyzes failures, proposes fixes, gates them for safety, and applies
+them — all without external orchestration.
+
+**Research foundation:** HarnessX AEGIS pipeline (ICLR 2026), SIA 3-agent
+loop (hexo-ai/sia), Darwin Gödel Machine / HyperAgents (Meta, ICLR 2026).
+
+### Core loop
+
+```
+Task → Attempt → Evaluate → [pass: baseline] → [fail: Analyze → Propose → Gate → Apply → Retry]
+```
+
+### Components
+
+| Module | Role |
+|--------|------|
+| `agent/evolution/evolution_manager.py` | Central orchestrator (MemoryManager pattern) |
+| `agent/evolution/task_definition.py` | YAML-based task spec with 5 criterion types |
+| `agent/evolution/trajectory_collector.py` | Captures full execution traces during agent operation |
+| `agent/evolution/evaluator.py` | Scores tasks via test_pass, file_exists, content_match, command_output, llm_judge |
+| `agent/evolution/failure_analyzer.py` | 2-tier root-cause analysis (rules + LLM), 10 failure categories |
+| `agent/evolution/improvement_proposer.py` | Generates skill_create, tool_create, prompt_modify, etc. |
+| `agent/evolution/regression_gate.py` | 5 deterministic safety gates including seesaw constraint |
+| `agent/evolution/harness_variants.py` | Variant isolation when fixes help some tasks but hurt others |
+| `agent/evolution/evolution_store.py` | SQLite persistence for runs, iterations, regression baselines |
+| `agent/evolution/auxiliary_llm.py` | Separate LLM client for analysis/proposals (default: DeepSeek). Provides sync wrappers (`analyze_sync`, `propose_sync`, `judge_sync`) that work from any context. |
+
+### Improvement pipeline
+
+Tier 1 (deterministic) generates real SKILL.md content — not templates:
+
+- **verify-before-complete**: 5-section skill teaching the agent to verify work before declaring done
+- **workaround-{task}**: Documents alternative approaches using existing tools for missing capabilities
+- **detect-and-break-loops**: Teaches loop detection via pattern recognition + escape strategies
+- **troubleshoot-{tool}**: Tool-specific error diagnosis with common causes checklist
+- **time-efficient-{task}**: Prioritization strategies for tasks approaching turn limits
+
+All generated skills include YAML frontmatter, "When to Use", "How to Run", "Procedure", "Pitfalls", and "Verification" sections. Tier 2 (LLM via DeepSeek) generates task-specific proposals with full content.
+
+### Main API
+
+```python
+# Single-call entry point — drives the complete evolution loop
+run = manager.run_full_cycle(task, executor)
+# executor: Callable[[EvolutionRun], bool]
+# Runs execute → evaluate → analyze → propose → gate → apply → retry
+# until success or exhaustion
+```
+
+### Safety architecture
+
+Five deterministic gates run on every proposal before application:
+
+1. **Manifest completeness** — proposal declares what it changes
+2. **Content validation** — valid SKILL.md frontmatter, valid Python syntax
+3. **Smoke test** — code compiles and imports
+4. **Size limits** — 15KB max skills, 500 char descriptions
+5. **Seesaw constraint** — no regression on previously-solved tasks
+
+LLMs propose; gates dispose. No LLM judgment is trusted for safety decisions.
+
+### Integration points
+
+- **agent_init.py** — EvolutionManager initialized at agent startup (like MemoryManager)
+- **conversation_loop.py** — model call tracking via post_api_request hook
+- **run_agent.py** — tool call tracking in _execute_tool_calls wrapper (transport-agnostic: uses `_get_tool_call_name_static()` for OpenAI/Anthropic/dict formats)
+- **turn_finalizer.py** — session-end cleanup
+- Zero runtime overhead when `evolution.enabled: false` (default)
+
+### CLI
+
+```bash
+hermes evolution status        # Show engine status + recent runs
+hermes evolution define-task   # Load task from YAML
+hermes evolution list-tasks    # List all defined tasks
+hermes evolution run <task>    # Benchmark a single task
+hermes evolution benchmark     # Run full benchmark suite
+hermes evolution history       # Show evolution run history
+hermes evolution variants      # Show harness variant stats
+hermes evolution enable        # Turn on
+hermes evolution disable       # Turn off
+```
+
+### Config
+
+```yaml
+evolution:
+  enabled: false            # Master switch
+  mode: on_failure          # on_failure | continuous | manual
+  max_iterations: 5         # Max improvement attempts per task
+  regression_gate:
+    enabled: true
+    max_regression_tasks: 20
+  safety:
+    require_approval_for: [tool_create, tool_modify, prompt_modify]
+    auto_approve: [skill_create, skill_patch]
+```
+
+### Tests
+
+- `tests/test_evolution_e2e.py` — 58 unit tests covering every component
+- `tests/test_evolution_integration.py` — 9 integration tests with live API
+- `benchmarks/evolution/persona_test.py` — 4-persona E2E benchmark
+
+### Design invariants
+
+- Built-in, not external — evolution happens during operation, not as a batch job
+- Deterministic safety over LLM judgment — HarnessX's key insight
+- Trace-first — every decision grounded in execution data
+- Minimal token overhead — auxiliary model runs only on failure
+- Follows existing patterns — MemoryManager, plugin hooks, config.yaml
 
 ---
 

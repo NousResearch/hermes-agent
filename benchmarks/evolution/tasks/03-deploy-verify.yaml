@@ -1,0 +1,17 @@
+name: deploy-verify
+description: "Deploy application and verify health endpoint responds"
+domain: devops
+complexity: 4
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: docker build && docker push'"
+    weight: 0.3
+  - type: command_output
+    command: "echo 'healthy'"
+    expected_output: "healthy"
+    weight: 0.4
+  - type: file_exists
+    path: /tmp/health.txt
+    weight: 0.3
+timeout_seconds: 120
+max_turns: 12

@@ -4367,6 +4367,45 @@ def run_conversation(
             except Exception:
                 pass
 
+            # ── Conversation Observer: watch for recurring task patterns ──
+            try:
+                from agent.evolution.conversation_observer import get_observer
+                get_observer().observe_turn(messages)
+            except Exception:
+                pass
+
+            # ── Auto-Trigger: silently evaluate + improve during normal use ──
+            try:
+                from agent.evolution.auto_trigger import get_auto_trigger
+                trigger = get_auto_trigger()
+                nudge = trigger.check_and_trigger(
+                    messages,
+                    session_id=getattr(agent, "session_id", ""),
+                )
+                if nudge and hasattr(agent, "_emit_status"):
+                    agent._emit_status(nudge)
+            except Exception:
+                pass
+
+            # ── Evolution Engine: record model call in active trajectory ──
+            try:
+                _evo_mgr = getattr(agent, "_evolution_manager", None)
+                if _evo_mgr is not None:
+                    _evo_run = _evo_mgr.get_active_run()
+                    if _evo_run is not None and _evo_run.collector is not None and _evo_run.collector.is_active:
+                        _tc_names = [tc.function.name for tc in (getattr(assistant_message, "tool_calls", None) or [])]
+                        _usage = agent._usage_summary_for_api_request_hook(response) if hasattr(agent, "_usage_summary_for_api_request_hook") else {}
+                        _evo_run.collector.record_model_call(
+                            model=agent.model or "",
+                            input_tokens=int(_usage.get("input_tokens", 0)) if isinstance(_usage, dict) else 0,
+                            output_tokens=int(_usage.get("output_tokens", 0)) if isinstance(_usage, dict) else 0,
+                            duration_ms=int(api_duration) if api_duration else 0,
+                            tool_calls=_tc_names,
+                            summary=(assistant_message.content or "")[:200],
+                        )
+            except Exception:
+                pass
+
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:
                 if agent.verbose_logging:

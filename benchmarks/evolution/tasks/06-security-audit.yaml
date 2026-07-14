@@ -1,0 +1,18 @@
+name: security-audit
+description: "Audit codebase for OWASP Top 10 vulnerabilities"
+domain: security
+complexity: 7
+success_criteria:
+  - type: content_match
+    path: /tmp/security_audit.md
+    pattern: "(?i)vulnerability|exploit|injection|XSS|CSRF|auth"
+    weight: 0.4
+  - type: content_match
+    path: /tmp/security_audit.md
+    pattern: "(?i)remediation|fix|patch|mitigate"
+    weight: 0.3
+  - type: file_exists
+    path: /tmp/security_audit.md
+    weight: 0.3
+timeout_seconds: 300
+max_turns: 20

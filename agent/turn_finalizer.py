@@ -543,4 +543,13 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
+    # ── Evolution Engine: shutdown evolution manager at session end ──
+    try:
+        _evo_mgr = getattr(agent, "_evolution_manager", None)
+        if _evo_mgr is not None:
+            from agent.evolution.evolution_hooks import on_session_end as _evo_session_end
+            _evo_session_end(agent)
+    except Exception:
+        pass
+
     return result

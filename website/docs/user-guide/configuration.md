@@ -603,6 +603,65 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
+## Evolution Engine Configuration
+
+The Evolution Engine gives Hermes autonomous evaluation and self-improvement capabilities — it scores agent task attempts, analyzes failures, proposes fixes, and applies them. See [Evolution Engine](/user-guide/features/evolution) for the full guide.
+
+```yaml
+evolution:
+  enabled: false            # Master on/off switch (default: false)
+  mode: on_failure          # "on_failure" | "continuous" | "manual"
+  max_iterations: 5         # Max improvement attempts per task (1-20)
+
+  # Regression gate — prevents fixes from breaking previously-solved tasks
+  regression_gate:
+    enabled: true
+    max_regression_tasks: 20  # Max prior tasks to check for regression
+
+  # Safety — which improvement types need human approval
+  safety:
+    require_approval_for: [tool_create, tool_modify, prompt_modify]
+    auto_approve: [skill_create, skill_patch]
+
+  # Storage
+  trace_retention_days: 90
+  max_trace_size_bytes: 10485760  # 10MB per trace
+
+  # Optional: route evolution work to a different/cheaper model
+  auxiliary_provider: deepseek     # defaults to main model if unset
+  auxiliary_model: deepseek-chat
+```
+
+**No separate API key needed.** HAEE uses your existing Hermes model through the standard auxiliary client — the same one used for context compression and session search. Optionally route to a different model:
+
+```yaml
+  # Optional: use a cheaper model for evolution work
+  auxiliary_provider: auto       # "auto" uses main model
+  auxiliary_model: auto
+```
+
+### Nudge Level
+
+Controls how intrusive auto-improvements are:
+
+```yaml
+  nudge_level: notify   # silent | notify | approve | off
+```
+
+- `silent` — skills apply silently, PR branches apply silently
+- `notify` — skills notify, **PR branches ask first** (default)
+- `approve` — skills notify, PR branches ask first
+- `off` — disable auto-trigger entirely
+
+PR branches are never created without permission unless set to `silent`.
+
+Enable it:
+```bash
+hermes evolution enable
+```
+
+Then use Hermes normally. HAEE watches conversations, auto-discovers tasks, and improves silently. Zero overhead when disabled. 10 pre-built tasks ship with the engine — run `hermes evolution benchmark` to start.
+
 ## Memory Configuration
 
 ```yaml

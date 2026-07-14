@@ -1,0 +1,17 @@
+name: config-migration
+description: "Migrate configuration from old format to new format"
+domain: devops
+complexity: 4
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: validate new config is parseable'"
+    weight: 0.4
+  - type: file_exists
+    path: /tmp/migrated_config.yaml
+    weight: 0.3
+  - type: content_match
+    path: /tmp/migrated_config.yaml
+    pattern: "(?i)key|value"
+    weight: 0.3
+timeout_seconds: 120
+max_turns: 10

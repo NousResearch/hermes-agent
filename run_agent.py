@@ -5720,17 +5720,47 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
+        # ── Evolution Engine: pre-tool-call tracking ──
+        _evo_mgr = getattr(self, "_evolution_manager", None)
+        _evo_run = _evo_mgr.get_active_run() if _evo_mgr is not None else None
+        _evo_collector = _evo_run.collector if _evo_run is not None else None
+        _evo_active = _evo_collector is not None and _evo_collector.is_active
+        _evo_tool_start_times = {}
+        if _evo_active:
+            import time as _time
+            for _tc in tool_calls:
+                _fn_name = self._get_tool_call_name_static(_tc) or str(_tc)
+                _evo_tool_start_times[_fn_name] = _time.monotonic()
+
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
             if not _should_parallelize_tool_batch(tool_calls):
-                return self._execute_tool_calls_sequential(
+                self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
+            else:
+                self._execute_tool_calls_concurrent(
                     assistant_message, messages, effective_task_id, api_call_count
                 )
 
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
-            )
+            # ── Evolution Engine: post-tool-call tracking ──
+            if _evo_active:
+                import time as _time2
+                for _tc in tool_calls:
+                    _fn_name = self._get_tool_call_name_static(_tc) or str(_tc)
+                    _start = _evo_tool_start_times.get(_fn_name, _time2.monotonic())
+                    _dur_ms = int((_time2.monotonic() - _start) * 1000)
+                    try:
+                        _evo_collector.record_tool_call(
+                            tool_name=_fn_name,
+                            tool_args={},
+                            duration_ms=_dur_ms,
+                            status="success",
+                            result_summary="Tool executed",
+                        )
+                    except Exception:
+                        pass
         finally:
             self._executing_tools = False
 

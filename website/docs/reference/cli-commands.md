@@ -73,6 +73,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes bundles` | Group several skills under a single `/<name>` slash command. See [Skill Bundles](../user-guide/features/skills.md#skill-bundles). |
 | `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
+| `hermes evolution` | Autonomous evaluation and self-improvement engine — define tasks, run benchmarks, analyze failures, propose fixes. Subcommands: `status`, `define-task`, `list-tasks`, `run`, `benchmark`, `history`, `variants`, `enable`, `disable`. See [Evolution Engine](../user-guide/features/evolution.md). |
 | `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
@@ -1118,6 +1119,35 @@ hermes bundles delete backend-dev
 ```
 
 In a chat session, `/bundles` lists installed bundles and `/<bundle-name>` loads one.
+
+## `hermes evolution`
+
+```bash
+hermes evolution <subcommand>
+```
+
+The Evolution Engine gives Hermes autonomous evaluation and self-improvement. Define tasks with success criteria, run benchmarks, and let the engine analyze failures, propose fixes, and apply them — all gated behind deterministic safety checks.
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show engine status, config, and recent evolution runs |
+| `enable` | Enable the Evolution Engine |
+| `disable` | Disable the Evolution Engine |
+| `define-task <file>` | Load a task definition from a YAML file |
+| `list-tasks` | List all defined evolution tasks with their criteria |
+| `run <task>` | Run a tracked task attempt with evolution instrumentation |
+| `run <task> --iterations N` | Run N iterations for statistical confidence |
+| `run <task> --verbose` | Show per-criterion pass/fail details |
+| `run <task> --cwd <path>` | Set working directory for evaluation commands |
+| `benchmark` | Run full benchmark suite on all defined tasks |
+| `benchmark <task>` | Run benchmark on a specific task |
+| `history` | Show recent evolution run history |
+| `history <task>` | Filter history by task name |
+| `history --verbose` | Show per-iteration details (analysis, proposals, gates) |
+| `history --limit N` | Show up to N runs (default 20) |
+| `variants` | Show active harness variant statistics |
+
+See [Evolution Engine](../user-guide/features/evolution.md) for task definition, success criteria types, safety architecture, and configuration.
 
 ## `hermes curator`
 

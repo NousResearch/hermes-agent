@@ -1,0 +1,17 @@
+name: dependency-update
+description: "Update project dependencies and verify nothing breaks"
+domain: devops
+complexity: 3
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: pip install -r requirements.txt && pytest'"
+    weight: 0.5
+  - type: file_exists
+    path: /tmp/update_report.md
+    weight: 0.25
+  - type: content_match
+    path: /tmp/update_report.md
+    pattern: "(?i)updated|upgraded|version"
+    weight: 0.25
+timeout_seconds: 240
+max_turns: 12

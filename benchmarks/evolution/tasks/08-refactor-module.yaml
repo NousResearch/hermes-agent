@@ -1,0 +1,17 @@
+name: refactor-module
+description: "Refactor a module for readability without changing behavior"
+domain: software-development
+complexity: 7
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: full test suite to verify no regressions'"
+    weight: 0.5
+  - type: content_match
+    path: /tmp/refactor_notes.md
+    pattern: "(?i)before|after|changed|extracted"
+    weight: 0.25
+  - type: file_exists
+    path: /tmp/refactor_notes.md
+    weight: 0.25
+timeout_seconds: 300
+max_turns: 20

@@ -1,0 +1,17 @@
+name: data-pipeline
+description: "Build ETL pipeline: extract data, transform, load to output"
+domain: data-science
+complexity: 5
+success_criteria:
+  - type: test_pass
+    command: "echo 'Run: python etl_pipeline.py'"
+    weight: 0.4
+  - type: file_exists
+    path: /tmp/etl_output.json
+    weight: 0.3
+  - type: content_match
+    path: /tmp/etl_pipeline.py
+    pattern: "def (extract|transform|load)"
+    weight: 0.3
+timeout_seconds: 180
+max_turns: 15

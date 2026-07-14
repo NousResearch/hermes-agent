@@ -1147,6 +1147,39 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("inflight") is None  # stale entry cleaned up
 
+    def test_stale_maxed_oneshot_kept_when_running_check_errors(
+        self, tmp_cron_dir, monkeypatch
+    ):
+        """If the running-set lookup fails, do not delete a possibly live run.
+
+        This is the fail-closed sibling of #62002/#62014: the liveness check is
+        the only signal distinguishing "expired but live" from "stale and dead".
+        Treating a lookup error as "not running" reopens the data-loss path by
+        deleting the job record underneath an in-flight one-shot.
+        """
+        import cron.scheduler as scheduler_mod
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        ttl = _oneshot_run_claim_ttl_seconds()
+        t0 = _hermes_now()
+        run_at = (t0 - timedelta(seconds=ttl + 300)).isoformat()
+        save_jobs([{
+            "id": "inflight-error", "name": "flight check", "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 1},
+            "run_claim": {"at": run_at, "by": "this-machine"},
+        }])
+
+        def fail_running_set():
+            raise RuntimeError("running set unavailable")
+
+        monkeypatch.setattr(scheduler_mod, "get_running_job_ids", fail_running_set)
+
+        assert get_due_jobs() == []
+        assert get_job("inflight-error") is not None
+
     def test_run_claim_heartbeat_keeps_long_run_claimed_past_ttl(
         self, tmp_cron_dir, monkeypatch
     ):

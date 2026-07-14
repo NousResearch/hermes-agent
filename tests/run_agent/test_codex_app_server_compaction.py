@@ -194,3 +194,31 @@ def test_codex_app_server_native_compaction_notice_emits_status_and_event():
             },
         )
     ]
+
+
+def test_codex_native_boundary_clears_stale_hermes_fallback_streak():
+    from unittest.mock import patch
+
+    from agent.context_compressor import ContextCompressor
+
+    with patch(
+        "agent.context_compressor.get_model_context_length",
+        return_value=100_000,
+    ):
+        compressor = ContextCompressor(model="test-model", quiet_mode=True)
+    compressor._fallback_compression_streak = 1
+    compressor._last_summary_fallback_used = True
+
+    agent = DummyAgent(
+        TurnResult(thread_id="thread-1", turn_id="normal-turn-1")
+    )
+    agent.context_compressor = compressor
+    turn = TurnResult(
+        thread_id="thread-1",
+        turn_id="normal-turn-1",
+        compacted=True,
+    )
+
+    assert _record_codex_app_server_compaction(agent, turn) is True
+    assert compressor._fallback_compression_streak == 0
+    assert compressor._verify_compaction_cleared_threshold is True

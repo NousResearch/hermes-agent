@@ -2064,7 +2064,9 @@ DEFAULT_CONFIG = {
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
     # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # Set explicitly to pin a backend:
+        # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -2120,15 +2122,20 @@ DEFAULT_CONFIG = {
             # "volume": 1.0,
             # "normalize_audio": True,
         },
+        "deepinfra": {
+            "model": "",  # empty = first tts-tagged model from the live catalog
+            "voice": "default",
+            # "base_url": "",  # override DEEPINFRA_BASE_URL for TTS only
+        },
     },
-    
+
     "stt": {
         "enabled": True,
         # When true, gateway voice messages are transcribed for the agent and
         # the raw transcript is also echoed back to the user as a 🎙️ message.
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -2144,6 +2151,10 @@ DEFAULT_CONFIG = {
             "language_code": "",  # auto-detect by default; set to "eng", "spa", "fra", etc. to force
             "tag_audio_events": False,
             "diarize": False,
+        },
+        "deepinfra": {
+            "model": "",  # empty = first stt-tagged model from the live catalog
+            # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
         },
     },
 
@@ -2695,6 +2706,12 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Timeout (seconds) for SessionDB() init inside cron jobs.
+        # SessionDB opens/migrates state.db synchronously and has no timeout
+        # of its own against a wedged sqlite3.connect. An unbounded hang here
+        # wedges the job's dispatch guard forever. Also overridable via
+        # HERMES_CRON_SESSION_DB_TIMEOUT env var. 0 = unlimited (skip the bound).
+        "session_db_timeout_seconds": 10,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -3722,7 +3739,6 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
-
     # ── Tool API keys ──
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",

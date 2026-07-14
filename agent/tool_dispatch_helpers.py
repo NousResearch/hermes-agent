@@ -155,10 +155,11 @@ def _plan_tool_batch_segments(tool_calls) -> List[tuple]:
         try:
             function_args = json.loads(tool_call.function.arguments)
         except Exception:
+            _raw = tool_call.function.arguments
             logging.debug(
                 "Could not parse args for %s — treating as sequential barrier; raw=%s",
                 tool_name,
-                tool_call.function.arguments[:200],
+                _raw[:200] if isinstance(_raw, str) else repr(_raw)[:200],
             )
             _add_sequential(tool_call)
             continue

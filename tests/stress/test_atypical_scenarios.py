@@ -453,6 +453,12 @@ def _(home, kb):
     """Dispatching a task whose workspace can't be resolved should go
     through the spawn-failure circuit breaker, not crash."""
     kb.init_db()
+    # The dispatcher skips (never claims) tasks whose assignee is not a
+    # real profile on disk (#kanban-dispatcher-crash-loop 2026-05-05), so
+    # the workspace-failure path under test is only reachable with an
+    # existing profile dir.
+    from hermes_cli.profiles import get_profile_dir
+    get_profile_dir("w").mkdir(parents=True, exist_ok=True)
     conn = kb.connect()
     try:
         tid = kb.create_task(
@@ -470,10 +476,13 @@ def _(home, kb):
         # - Task auto-blocked (after N retries, but we only ran 1 tick)
         print(f"  after 1 tick with nonexistent workspace: status={task.status}")
         if task.status == "ready":
-            # Expected path: workspace failure led to release
-            spawn_failures = task.spawn_failures
-            print(f"  spawn_failures counter: {spawn_failures}")
-            assert spawn_failures >= 1, "spawn_failures counter didn't increment"
+            # Expected path: workspace failure led to release. The counter
+            # is consecutive_failures — #20410 unified the old spawn-only
+            # spawn_failures column into one circuit-breaker counter across
+            # spawn/timeout/crash outcomes.
+            failures = task.consecutive_failures
+            print(f"  consecutive_failures counter: {failures}")
+            assert failures >= 1, "consecutive_failures counter didn't increment"
         elif task.status == "running":
             # Workspace not checked before spawn — the worker would hit
             # the bad path itself. Defensible for `dir:` workspaces that
@@ -933,8 +942,11 @@ def _(home, kb):
 
 @scenario("parent_in_different_status_states")
 def _(home, kb):
-    """recompute_ready promotes a todo child only if ALL parents are
-    in 'done'. Verify against parents in every non-done state."""
+    """recompute_ready promotes a todo child only when ALL parents are
+    terminal — 'done' or 'archived'. Verify against parents in every
+    non-terminal state. ('archived' counts as terminal since the
+    "treat archived parent tasks as terminal for dependency resolution"
+    fix: a cancelled parent must not wedge its children in todo forever.)"""
     kb.init_db()
     conn = kb.connect()
     try:
@@ -957,8 +969,8 @@ def _(home, kb):
             (p_running, "todo"),
             (p_blocked, "todo"),
             (p_triage, "todo"),
-            (p_archived, "todo"),  # archived != done!
-            (p_done, "ready"),     # only done parent unblocks child
+            (p_archived, "ready"),  # archived is terminal like done — unblocks
+            (p_done, "ready"),      # done parent unblocks child
         ]:
             child = kb.create_task(
                 conn, title=f"child-of-{parent}", assignee="w", parents=[parent],
@@ -969,7 +981,8 @@ def _(home, kb):
                 f"child of {parent} ({kb.get_task(conn, parent).status}): "
                 f"expected {expected}, got {actual}"
             )
-        print("  child promotion correctly gated on parent.status == 'done'")
+        print("  child promotion correctly gated on terminal parent status "
+              "('done' / 'archived')")
     finally:
         conn.close()
 

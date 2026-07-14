@@ -17,6 +17,16 @@ import pytest
 from hermes_cli import kanban_db as kb
 
 
+def _record_owned_exit(conn, task_id, pid, raw_status):
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    kb._record_worker_exit(pid, raw_status)
+    kb._worker_exit_context[pid] = kb._WorkerProcess(
+        pid=pid, task_id=task_id, run_id=task.current_run_id, board="default",
+        proc=None, started_at=0, process_group=None, log_path="/tmp/test.log", route={},
+    )
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME with an empty kanban DB."""
@@ -450,7 +460,9 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
-        assert killed == [signal.SIGTERM]
+        # A stale board PID without this gateway's live Popen record is
+        # diagnostic only; reclaim must never signal a potentially reused PID.
+        assert killed == []
 
 
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
@@ -777,6 +789,8 @@ def test_detect_crashed_workers_isolated_failure_normal_retry(
             )
             task_ids.append(tid)
         conn.commit()
+        for i in range(2):
+            _record_owned_exit(conn, task_ids[i], 80000 + i, 256)
 
         crashed = kb.detect_crashed_workers(conn)
         assert len(crashed) == 2
@@ -919,8 +933,8 @@ def test_rate_limit_exit_requeues_without_counting_failure(
                 (pid, 0, tid),
             )
             conn.commit()
-            _kb._record_worker_exit(
-                pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
+            _record_owned_exit(
+                conn, tid, pid, _exited_status(_kb.KANBAN_RATE_LIMIT_EXIT_CODE)
             )
 
             crashed = kb.detect_crashed_workers(conn)
@@ -972,7 +986,7 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
                 (pid, f"{host}:w{i}", tid),
             )
             conn.commit()
-            _kb._record_worker_exit(pid, _exited_status(1))  # generic failure
+            _record_owned_exit(conn, tid, pid, _exited_status(1))  # generic failure
             kb.detect_crashed_workers(conn)
 
         task = kb.get_task(conn, tid)

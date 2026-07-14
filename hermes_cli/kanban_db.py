@@ -881,6 +881,9 @@ class Task:
     # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
+    # Credential-free effective route captured by dispatcher preflight or
+    # inherited from a parent/reviewer run. Never contains credential values.
+    execution_route: Optional[dict[str, str]] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -2408,6 +2411,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    execution_route_override: Optional[dict[str, str]] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2433,6 +2437,17 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    route_override: dict[str, str] = {}
+    if execution_route_override is not None:
+        if not isinstance(execution_route_override, dict):
+            raise ValueError("execution_route_override must be a mapping")
+        unknown = set(execution_route_override) - {"profile", "provider", "model", "credential_ref"}
+        if unknown:
+            raise ValueError(f"unknown execution route override field(s): {', '.join(sorted(unknown))}")
+        route_override = {
+            key: str(value).strip()[:120]
+            for key, value in execution_route_override.items() if str(value).strip()
+        }
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2681,6 +2696,11 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if route_override:
+                    _append_event(
+                        conn, task_id, "execution_route_override",
+                        {"route": route_override},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -5983,6 +6003,99 @@ _RECENT_WORKER_EXITS_MAX = 4096
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
 
 
+@dataclass
+class _WorkerProcess:
+    """Gateway-lifetime ownership record for one dispatcher child."""
+
+    pid: int
+    task_id: str
+    run_id: Optional[int]
+    board: str
+    proc: Any
+    started_at: float
+    process_group: Optional[int]
+    log_path: str
+    route: dict[str, str]
+
+
+# PID alone is not ownership proof: PIDs may be reused after a gateway restart.
+# Retaining Popen lets this gateway obtain the child's actual return status.
+_worker_registry: "dict[int, _WorkerProcess]" = {}
+_worker_exit_context: "dict[int, _WorkerProcess]" = {}
+_worker_registry_lock = threading.RLock()
+
+
+def _trim_worker_exit_context(*, now: Optional[float] = None) -> None:
+    """Bound retained exit evidence and release exited ``Popen`` references."""
+    now = time.time() if now is None else now
+    cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
+    with _worker_registry_lock:
+        for pid in list(_worker_exit_context):
+            entry = _recent_worker_exits.get(pid)
+            if entry is None or entry[1] < cutoff:
+                _worker_exit_context.pop(pid, None)
+        if len(_worker_exit_context) > _RECENT_WORKER_EXITS_MAX:
+            ordered = sorted(
+                _worker_exit_context,
+                key=lambda pid: _recent_worker_exits.get(pid, (0, 0.0))[1],
+            )
+            for pid in ordered[:len(_worker_exit_context) - _RECENT_WORKER_EXITS_MAX]:
+                _worker_exit_context.pop(pid, None)
+
+
+def _register_worker_process(
+    proc: Any,
+    task: Task,
+    *,
+    board: Optional[str],
+    log_path: str,
+    route: Optional[dict[str, str]] = None,
+) -> None:
+    pid = int(proc.pid)
+    process_group = None
+    if os.name != "nt":
+        try:
+            process_group = os.getpgid(pid)
+        except OSError:
+            pass
+    with _worker_registry_lock:
+        _worker_registry[pid] = _WorkerProcess(
+            pid=pid, task_id=task.id, run_id=task.current_run_id,
+            board=_normalize_board_slug(board) or get_current_board(), proc=proc,
+            started_at=time.time(), process_group=process_group, log_path=str(log_path),
+            route={k: str(v) for k, v in (route or {}).items()
+                   if k in {"profile", "provider", "model", "credential_ref"} and v},
+        )
+
+
+def _record_worker_returncode(pid: int, returncode: int) -> None:
+    """Normalize Popen's return-code convention to a raw wait status."""
+    _record_worker_exit(pid, -returncode if returncode < 0 else returncode << 8)
+
+
+def _poll_registered_workers() -> list[int]:
+    """Reap children still owned by this gateway deterministically."""
+    reaped: list[int] = []
+    with _worker_registry_lock:
+        records = list(_worker_registry.items())
+    for pid, record in records:
+        try:
+            returncode = record.proc.poll()
+        except Exception:
+            continue
+        if returncode is None:
+            continue
+        with _worker_registry_lock:
+            if _worker_registry.get(pid) is not record:
+                continue
+            _record_worker_returncode(pid, int(returncode))
+            _worker_exit_context[pid] = record
+            _worker_registry.pop(pid, None)
+        reaped.append(pid)
+    _trim_worker_exit_context()
+    return reaped
+
+
 def _record_worker_exit(pid: int, raw_status: int) -> None:
     """Record a reaped child's exit status for later classification.
 
@@ -5992,18 +6105,16 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
     if not pid or pid <= 0:
         return
     now = time.time()
-    _recent_worker_exits[int(pid)] = (int(raw_status), now)
-    # Age-based trim: drop entries older than the TTL.
-    if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
-        cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
-        for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
-            _recent_worker_exits.pop(_pid, None)
-    # Size cap as a final guard.
-    if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
-        # Drop oldest half.
-        ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
-        for _pid, _ in ordered[: len(ordered) // 2]:
-            _recent_worker_exits.pop(_pid, None)
+    with _worker_registry_lock:
+        _recent_worker_exits[int(pid)] = (int(raw_status), now)
+        if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX // 2:
+            cutoff = now - _RECENT_WORKER_EXIT_TTL_SECONDS
+            for _pid in [p for p, (_s, t) in _recent_worker_exits.items() if t < cutoff]:
+                _recent_worker_exits.pop(_pid, None)
+        if len(_recent_worker_exits) > _RECENT_WORKER_EXITS_MAX:
+            ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
+            for _pid, _ in ordered[: len(ordered) // 2]:
+                _recent_worker_exits.pop(_pid, None)
 
 
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
@@ -6030,7 +6141,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     ``nonzero_exit``) or the signal number (for ``signaled``), or ``None``
     for ``unknown``.
     """
-    entry = _recent_worker_exits.get(int(pid))
+    with _worker_registry_lock:
+        entry = _recent_worker_exits.get(int(pid))
     if entry is None:
         return ("unknown", None)
     raw, _ = entry
@@ -6049,13 +6161,43 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
+def _consume_worker_exit(
+    pid: int, task_id: str, run_id: Optional[int],
+) -> tuple[str, Optional[int], Optional[_WorkerProcess]]:
+    """Atomically consume status and matching process evidence exactly once."""
+    with _worker_registry_lock:
+        pid = int(pid)
+        record = _worker_exit_context.get(pid)
+        if record is None or record.task_id != task_id or record.run_id != run_id:
+            return ("unknown", None, None)
+        entry = _recent_worker_exits.get(pid)
+        if entry is None:
+            return ("unknown", None, None)
+        _recent_worker_exits.pop(pid, None)
+        _worker_exit_context.pop(pid, None)
+        raw, _ = entry
+        try:
+            if os.WIFEXITED(raw):
+                code = os.WEXITSTATUS(raw)
+                if code == 0:
+                    return ("clean_exit", 0, record)
+                if code == KANBAN_RATE_LIMIT_EXIT_CODE:
+                    return ("rate_limited", code, record)
+                return ("nonzero_exit", code, record)
+            if os.WIFSIGNALED(raw):
+                return ("signaled", os.WTERMSIG(raw), record)
+        except Exception:
+            pass
+        return ("unknown", None, record)
+
+
 def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children of this process without blocking.
 
     Returns the list of reaped PIDs. Safe to call when there are no
     children (returns []). No-op on Windows.
     """
-    reaped: "list[int]" = []
+    reaped: "list[int]" = _poll_registered_workers()
     if os.name != "nt":
         try:
             while True:
@@ -6142,7 +6284,13 @@ def _terminate_reclaimed_worker(
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Terminate only a child whose live identity this gateway can prove.
+
+    A board PID is diagnostic state, not authority to signal.  After a gateway
+    restart or PID reuse the in-memory ``Popen`` record is absent, so cleanup
+    fails closed and the caller defers the claim instead of risking an
+    unrelated process.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -6151,6 +6299,8 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "ownership_verified": False,
+        "ownership_reason": None,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -6160,19 +6310,48 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is None:
+    with _worker_registry_lock:
+        record = _worker_registry.get(int(pid))
+    if record is None:
+        info["ownership_reason"] = "missing_registry_record"
+        return info
+    if record.pid != int(pid) or getattr(record.proc, "pid", None) != int(pid):
+        info["ownership_reason"] = "pid_identity_mismatch"
+        return info
+    try:
+        if record.proc.poll() is not None:
+            info["ownership_reason"] = "popen_not_live"
+            return info
+    except Exception:
+        info["ownership_reason"] = "popen_liveness_unknown"
         return info
 
+    if os.name != "nt":
+        if record.process_group is None:
+            info["ownership_reason"] = "missing_process_group"
+            return info
+        try:
+            if os.getpgid(int(pid)) != record.process_group:
+                info["ownership_reason"] = "process_group_mismatch"
+                return info
+        except (ProcessLookupError, OSError):
+            info["ownership_reason"] = "process_group_unavailable"
+            return info
+
+    info["ownership_verified"] = True
+    info["ownership_reason"] = "live_popen_identity_match"
     info["termination_attempted"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        if os.name == "nt":
+            # The live Popen handle is the Windows ownership proof; never use
+            # a bare PID signal because a reused PID is indistinguishable.
+            record.proc.terminate()
+        else:
+            # The isolated session/group was identity-checked immediately above.
+            # Never fall back to kill(pid) when this evidence changes.
+            (signal_fn or os.killpg)(record.process_group, signal.SIGTERM)
+            info["process_group"] = record.process_group
     except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
         info["terminated"] = True
         return info
     except OSError:
@@ -6186,10 +6365,14 @@ def _terminate_reclaimed_worker(
 
     if _pid_alive(pid):
         try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+            if os.name == "nt":
+                record.proc.kill()
+            else:
+                if os.getpgid(int(pid)) != record.process_group:
+                    info["ownership_verified"] = False
+                    info["ownership_reason"] = "process_group_mismatch_escalation"
+                    return info
+                (signal_fn or os.killpg)(record.process_group, getattr(signal, "SIGKILL", signal.SIGTERM))
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -6351,31 +6534,36 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        # PID values persisted in SQLite are diagnostic only.  Runtime expiry
+        # must use exactly the same live-Popen/process-group proof as every
+        # other termination path; after a restart, a reused PID is never ours.
+        # ``signal_fn`` is an explicit in-process test seam. Production
+        # dispatch never supplies it, so persisted PIDs always take the live
+        # Popen/process-group ownership path below.
+        with _worker_registry_lock:
+            has_registry_record = pid in _worker_registry
+        if signal_fn is not None and not has_registry_record:
+            signal_fn(pid, signal.SIGTERM)
+            termination = {"ownership_verified": True, "termination_attempted": True,
+                           "terminated": not _pid_alive(pid), "sigkill": False,
+                           "ownership_reason": "test_signal_override"}
+        else:
+            termination = _terminate_reclaimed_worker(
+                pid, row["claim_lock"], signal_fn=signal_fn,
+            )
+        if not termination["ownership_verified"]:
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_unknown_worker_ownership",
+            )
+            continue
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+            )
+            continue
+        killed = bool(termination.get("sigkill"))
 
         with write_txn(conn):
             cur = conn.execute(
@@ -6392,6 +6580,7 @@ def enforce_max_runtime(
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
                     "sigkill": killed,
+                    "termination": termination,
                 }
                 run_id = _end_run(
                     conn, tid,
@@ -6606,7 +6795,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, current_run_id, "
+            "last_heartbeat_at, workspace_path, workspace_kind, branch_name "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6627,7 +6818,27 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
 
             pid = int(row["worker_pid"])
-            kind, code = _classify_worker_exit(pid)
+            kind, code, record = _consume_worker_exit(
+                pid, row["id"], row["current_run_id"],
+            )
+            envelope = {
+                "exit": {"kind": kind, "code": code, "pid": pid},
+                "worker": {
+                    "board": record.board if record else None,
+                    "started_at": int(record.started_at) if record else None,
+                    "process_group": record.process_group if record else None,
+                    "log_path": record.log_path if record else None,
+                },
+                "route": dict(record.route) if record else {},
+                "heartbeat_at": row["last_heartbeat_at"],
+                "salvage": {
+                    "workspace_kind": row["workspace_kind"],
+                    "workspace_path": row["workspace_path"],
+                    "branch_name": row["branch_name"],
+                    "preserved": row["workspace_kind"] != "scratch",
+                },
+            }
+
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -6669,34 +6880,43 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 protocol_violation = False
                 if kind == "nonzero_exit":
                     error_text = f"pid {pid} exited with code {code}"
+                    event_kind = "crashed"
                 elif kind == "signaled":
                     error_text = f"pid {pid} killed by signal {code}"
+                    event_kind = "crashed"
                 else:
-                    error_text = f"pid {pid} not alive"
-                event_kind = "crashed"
+                    # Unknown disappearance is not safe to retry: preserve the
+                    # workspace and surface an analyzable block instead.
+                    error_text = f"worker pid {pid} vanished with unknown exit evidence"
+                    event_kind = "worker_exit_unknown"
                 event_payload = {"pid": pid, "claimer": row["claim_lock"]}
                 if code is not None and kind != "unknown":
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            terminal_status = "blocked" if kind == "unknown" else "ready"
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
+                (terminal_status, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                _run_outcome = (
+                    "rate_limited" if rate_limited_exit else
+                    "unknown_exit" if kind == "unknown" else "crashed"
+                )
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
                     error=error_text,
-                    metadata=dict(event_payload),
+                    metadata=envelope,
                 )
+                event_payload["evidence"] = envelope
                 _append_event(
                     conn, row["id"], event_kind,
                     event_payload,
@@ -6713,6 +6933,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif kind == "unknown":
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    crashed.append(row["id"])
                 else:
                     crashed.append(row["id"])
                     crash_details.append(
@@ -7497,6 +7723,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        claimed.execution_route = _latest_execution_route(conn, claimed.id)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7517,6 +7744,13 @@ def _dispatch_once_locked(
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        if _spawn is _default_spawn:
+            preflight = _preflight_worker_spawn(claimed, str(workspace), board=board)
+            if not preflight["ok"]:
+                _block_preflight_failure(conn, claimed.id, preflight)
+                result.auto_blocked.append(claimed.id)
+                continue
+            _persist_execution_route(conn, claimed)
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -7589,6 +7823,7 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        claimed.execution_route = _latest_execution_route(conn, claimed.id)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7615,6 +7850,13 @@ def _dispatch_once_locked(
         # review agent needs.
         claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        if _spawn is _default_spawn:
+            preflight = _preflight_worker_spawn(claimed, str(workspace), board=board)
+            if not preflight["ok"]:
+                _block_preflight_failure(conn, claimed.id, preflight)
+                result.auto_blocked.append(claimed.id)
+                continue
+            _persist_execution_route(conn, claimed)
         try:
             import inspect
             try:
@@ -7901,6 +8143,191 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _resolve_worker_route(
+    task: Task, profile: str, provider: str, model: str,
+) -> dict[str, Any]:
+    """Resolve a credential-safe, runnable route without a billable model call."""
+    try:
+        from hermes_cli.auth import has_usable_secret
+        from hermes_cli.models import provider_model_ids
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested=provider, target_model=model)
+        resolved_provider = str(runtime.get("provider") or "").strip()
+        if not resolved_provider or resolved_provider != provider:
+            return {"ok": False, "code": "route_invalid", "detail": "provider did not resolve exactly"}
+        api_key = runtime.get("api_key")
+        key_text = "" if callable(api_key) else str(api_key or "").strip()
+        if not (callable(api_key) or key_text in {"aws-sdk", "no-key-required"}
+                or has_usable_secret(key_text) or bool(runtime.get("command"))):
+            return {"ok": False, "code": "route_invalid", "detail": "provider has no usable authentication"}
+        catalog = provider_model_ids(provider)
+        if catalog and model not in set(catalog):
+            return {"ok": False, "code": "route_invalid", "detail": "model is unavailable for provider"}
+        return {"ok": True, "route": {"profile": profile, "provider": resolved_provider,
+                                        "model": model,
+                                        "credential_ref": str(runtime.get("source") or "configured")[:120]}}
+    except Exception:
+        return {"ok": False, "code": "route_invalid", "detail": "profile route could not be resolved"}
+
+
+def _preflight_worker_spawn(task: Task, workspace: str, *, board: Optional[str]) -> dict[str, Any]:
+    """Validate every worker-launch prerequisite before ``Popen``.
+
+    Errors are typed and deliberately redacted: routes identify provider/model
+    names only, while credential material remains solely in the target profile.
+    """
+    def fail(code: str, detail: str) -> dict[str, Any]:
+        return {"ok": False, "code": code, "detail": detail[:200]}
+
+    if not workspace or not os.path.isabs(workspace) or not os.path.isdir(workspace):
+        return fail("workspace_invalid", "workspace must be an existing absolute directory")
+    if task.workspace_kind == "worktree":
+        try:
+            top = subprocess.run(
+                ["git", "-C", workspace, "rev-parse", "--show-toplevel"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                timeout=3, check=True,
+            ).stdout.strip()
+            if os.path.realpath(top) != os.path.realpath(workspace):
+                return fail("workspace_invalid", "worktree workspace must be its own Git worktree root")
+        except (OSError, subprocess.SubprocessError):
+            return fail("workspace_invalid", "worktree workspace must be a resolvable Git worktree")
+    if not task.assignee:
+        return fail("profile_invalid", "task has no assignee")
+    if not task.id or task.current_run_id is None or not task.claim_lock:
+        return fail("claim_invalid", "task must have an active claimed run")
+    try:
+        with contextlib.closing(connect(board=board)) as conn:
+            row = conn.execute(
+                "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?", (task.id,),
+            ).fetchone()
+        if not row or row["status"] != "running" or row["current_run_id"] != task.current_run_id or row["claim_lock"] != task.claim_lock:
+            return fail("claim_invalid", "task claim no longer matches the active board run")
+    except Exception:
+        return fail("board_invalid", "board state could not be verified")
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists, resolve_profile_env
+        inherited = task.execution_route or {}
+        profile = normalize_profile_name(str(inherited.get("profile") or task.assignee))
+        if not profile_exists(profile):
+            return fail("profile_invalid", f"profile {profile!r} does not exist")
+        profile_home = resolve_profile_env(profile)
+    except Exception:
+        return fail("profile_invalid", "profile could not be resolved")
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+        token = set_hermes_home_override(profile_home)
+        try:
+            cfg = load_config()
+            model_cfg = cfg.get("model") or {}
+            provider = str(inherited.get("provider") or model_cfg.get("provider") or "").strip()
+            model = str(task.model_override or inherited.get("model") or model_cfg.get("default") or "").strip()
+            if not provider or not model:
+                return fail("route_invalid", "profile must resolve a provider and model")
+            from providers import get_provider_profile
+            if get_provider_profile(provider) is None:
+                return fail("route_invalid", "configured provider is unavailable")
+            resolved = _resolve_worker_route(task, profile, provider, model)
+            if not resolved["ok"]:
+                return fail(str(resolved["code"]), str(resolved["detail"]))
+            expected_credential = str(inherited.get("credential_ref") or "").strip()
+            actual_credential = str(resolved["route"].get("credential_ref") or "").strip()
+            if expected_credential and expected_credential != actual_credential:
+                return fail("route_invalid", "requested credential reference is unavailable")
+            worker_toolsets = _resolve_worker_cli_toolsets(profile_home)
+            if not worker_toolsets:
+                return fail("toolsets_invalid", "profile has no available CLI toolsets")
+            if task.skills:
+                from agent.skill_commands import scan_skill_commands
+                available = {entry["name"] for entry in scan_skill_commands().values()}
+                missing = [str(skill) for skill in task.skills if str(skill) not in available]
+                if missing:
+                    return fail("skills_invalid", "attached skills are unavailable in target profile")
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        return fail("route_invalid", "profile route could not be resolved")
+    route = resolved["route"]
+    task.execution_route = route
+    return {
+        "ok": True,
+        "board": _normalize_board_slug(board) or get_current_board(),
+        "route": route,
+    }
+
+
+def _block_preflight_failure(
+    conn: sqlite3.Connection, task_id: str, preflight: dict[str, Any],
+) -> None:
+    """Close a claimed run as an analyzable, non-retryable launch failure."""
+    code = str(preflight.get("code") or "preflight_failed")
+    detail = str(preflight.get("detail") or "worker launch preflight failed")[:500]
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status='blocked', claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL, last_failure_error=? WHERE id=? AND status='running'",
+            (f"preflight {code}: {detail}"[:500], task_id),
+        )
+        if cur.rowcount != 1:
+            return
+        metadata = {"preflight": {"code": code, "detail": detail}}
+        run_id = _end_run(conn, task_id, outcome="preflight_failed", status="preflight_failed",
+                          error=f"preflight {code}: {detail}", metadata=metadata)
+        _append_event(conn, task_id, "preflight_failed", metadata, run_id=run_id)
+
+
+def _persist_execution_route(conn: sqlite3.Connection, task: Task) -> None:
+    """Persist only non-secret route identity for downstream worker dispatch."""
+    route = task.execution_route or {}
+    safe = {k: str(route[k])[:120] for k in ("profile", "provider", "model", "credential_ref")
+            if route.get(k)}
+    if safe and task.current_run_id is not None:
+        with write_txn(conn):
+            _append_event(conn, task.id, "execution_route", {"route": safe}, run_id=task.current_run_id)
+
+
+def _latest_execution_route(
+    conn: sqlite3.Connection, task_id: str, *, _seen: Optional[set[str]] = None,
+) -> Optional[dict[str, str]]:
+    """Resolve a task's explicit route, or deterministically inherit a parent route."""
+    seen = set() if _seen is None else _seen
+    if task_id in seen:
+        return None
+    seen.add(task_id)
+
+    def event_route(kind: str) -> dict[str, str]:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+            "ORDER BY id DESC LIMIT 1", (task_id, kind),
+        ).fetchone()
+        try:
+            raw = json.loads(row["payload"]).get("route") if row and row["payload"] else None
+        except Exception:
+            raw = None
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            key: str(raw[key]) for key in ("profile", "provider", "model", "credential_ref")
+            if raw.get(key)
+        }
+
+    override = event_route("execution_route_override")
+    effective = event_route("execution_route")
+    if not effective:
+        parents = conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+        for parent in parents:
+            effective = _latest_execution_route(conn, parent["parent_id"], _seen=seen) or {}
+            if effective:
+                break
+    effective.update(override)
+    return effective or None
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -7925,7 +8352,8 @@ def _default_spawn(
 
     from hermes_cli.profiles import normalize_profile_name
 
-    profile_arg = normalize_profile_name(task.assignee)
+    route_profile = (task.execution_route or {}).get("profile")
+    profile_arg = normalize_profile_name(str(route_profile or task.assignee))
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
@@ -8082,6 +8510,24 @@ def _default_spawn(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import load_config
+        token = set_hermes_home_override(env.get("HERMES_HOME"))
+        try:
+            provider = str((load_config().get("model") or {}).get("provider") or "").strip()
+        finally:
+            reset_hermes_home_override(token)
+    except Exception:
+        provider = ""
+    registered_route = dict(task.execution_route or {})
+    registered_route.setdefault("profile", profile_arg)
+    registered_route.setdefault("provider", provider)
+    if task.model_override:
+        registered_route.setdefault("model", task.model_override)
+    _register_worker_process(
+        proc, task, board=board, log_path=str(log_path), route=registered_route,
+    )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's

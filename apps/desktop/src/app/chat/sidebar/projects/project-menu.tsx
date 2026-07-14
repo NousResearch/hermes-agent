@@ -27,6 +27,7 @@ import {
   updateProject
 } from '@/store/projects'
 
+import { WorkspaceDocumentsPanel } from './workspace-documents-panel'
 import type { SidebarProjectTree } from './workspace-groups'
 
 // Curated codicons for the project glyph (tinted by the chosen color).
@@ -90,6 +91,7 @@ export function ProjectMenu({
   const target = { id: project.id, name: project.label }
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
   const [appearanceOpen, setAppearanceOpen] = useState(false)
+  const [docsOpen, setDocsOpen] = useState(false)
   // Open toward the content area: right when the sidebar is on the left, left
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
@@ -173,6 +175,10 @@ export function ProjectMenu({
             <Codicon name="copy" size="0.875rem" />
             <span>{p.copyPath}</span>
           </DropdownMenuItem>
+          <DropdownMenuItem disabled={!project.path} onSelect={() => setDocsOpen(true)}>
+            <Codicon name="book" size="0.875rem" />
+            <span>{p.menuDocuments}</span>
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           {project.isAuto ? (
             <DropdownMenuItem onSelect={removeAuto} variant="destructive">
@@ -230,6 +236,14 @@ export function ProjectMenu({
         open={confirmDeleteOpen}
         title={`${p.menuDelete} "${project.label}"?`}
       />
+      {project.path && (
+        <WorkspaceDocumentsPanel
+          label={project.label}
+          onOpenChange={setDocsOpen}
+          open={docsOpen}
+          workspaceRoot={project.path}
+        />
+      )}
     </Popover>
   )
 }

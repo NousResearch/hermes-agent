@@ -1335,6 +1335,7 @@ export interface Translations {
       reorder: (label: string) => string
       toggle: (label: string) => string
       back: string
+      menuDocuments: string
     }
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
@@ -1366,6 +1367,48 @@ export interface Translations {
       ageDay: string
       ageHour: string
       ageMin: string
+    }
+  }
+
+  workspaceDocs: {
+    title: string
+    description: (label: string) => string
+    newButton: string
+    createTitle: string
+    createDesc: string
+    loading: string
+    loadFailed: string
+    empty: string
+    emptyHint: string
+    invalid: string
+    back: string
+    fieldTitle: string
+    fieldStatus: string
+    fieldDescription: string
+    fieldTags: string
+    tagsPlaceholder: string
+    fieldBody: string
+    save: string
+    saveFailed: string
+    saved: string
+    archive: string
+    archiveFailed: string
+    archived: string
+    readFailed: string
+    dirtyHint: string
+    titlePlaceholder: string
+    docType: {
+      'skill-template': string
+      'memory-note': string
+      'workspace-instructions': string
+      'prompt-template': string
+      runbook: string
+      'generic-md': string
+    }
+    status: {
+      draft: string
+      ready: string
+      archived: string
     }
   }
 

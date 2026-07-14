@@ -2289,6 +2289,155 @@ async def fs_default_cwd():
 
 
 # ---------------------------------------------------------------------------
+# Workspace documents — REST CRUD over ``agent.workspace_docs``'s schema and
+# path safety. Documents are inert safekeeping Markdown files under
+# ``<workspaceRoot>/.hermes/docs``; this slice is backend-only (list/read/
+# write/archive) — no MDX rendering, import/export, or model tool here. All
+# path resolution, traversal checks, and profile/sandbox/container-mirror
+# safety guards are owned by ``agent.workspace_docs``, not reimplemented here.
+# ---------------------------------------------------------------------------
+
+from agent import workspace_docs as _workspace_docs  # noqa: E402
+
+
+def _workspace_doc_error_response(exc: Exception) -> HTTPException:
+    if isinstance(exc, _workspace_docs.WorkspaceDocSafetyError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, _workspace_docs.WorkspaceDocPathError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, _workspace_docs.WorkspaceDocValidationError):
+        return HTTPException(status_code=422, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+def _workspace_doc_frontmatter_json(frontmatter) -> Dict[str, Any]:
+    return {
+        "docType": frontmatter.doc_type.value,
+        "title": frontmatter.title,
+        "workspaceId": frontmatter.workspace_id,
+        "createdAt": frontmatter.created_at,
+        "updatedAt": frontmatter.updated_at,
+        "status": frontmatter.status.value,
+        "applyState": frontmatter.apply_state.value,
+        "description": frontmatter.description,
+        "tags": list(frontmatter.tags),
+    }
+
+
+def _workspace_doc_summary_json(summary) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {"path": summary.relative_path, "valid": summary.valid}
+    if summary.error is not None:
+        entry["error"] = summary.error
+    if summary.frontmatter is not None:
+        entry.update(_workspace_doc_frontmatter_json(summary.frontmatter))
+    return entry
+
+
+@app.get("/api/workspace-docs/list")
+async def workspace_docs_list(workspaceRoot: str):
+    try:
+        summaries = _workspace_docs.list_workspace_docs(workspaceRoot)
+    except _workspace_docs.WorkspaceDocError as exc:
+        raise _workspace_doc_error_response(exc)
+    return {"documents": [_workspace_doc_summary_json(summary) for summary in summaries]}
+
+
+@app.get("/api/workspace-docs/read")
+async def workspace_docs_read(workspaceRoot: str, path: str):
+    try:
+        target = _workspace_docs.resolve_workspace_doc_path(workspaceRoot, path)
+    except _workspace_docs.WorkspaceDocError as exc:
+        raise _workspace_doc_error_response(exc)
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="Document is not valid UTF-8 text")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Document is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Could not read document")
+
+    try:
+        frontmatter, body = _workspace_docs.parse_workspace_doc(content)
+    except _workspace_docs.WorkspaceDocValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "path": path,
+        "content": content,
+        "body": body,
+        "frontmatter": _workspace_doc_frontmatter_json(frontmatter),
+    }
+
+
+class WorkspaceDocWrite(BaseModel):
+    workspaceRoot: str
+    path: str
+    frontmatter: Dict[str, Any]
+    body: str = ""
+
+
+@app.post("/api/workspace-docs")
+async def workspace_docs_write(payload: WorkspaceDocWrite):
+    frontmatter = dict(payload.frontmatter or {})
+    frontmatter["type"] = _workspace_docs.WORKSPACE_DOC_FRONTMATTER_TYPE
+    if not frontmatter.get("workspace_id"):
+        frontmatter["workspace_id"] = _workspace_docs.resolve_workspace_identity(payload.workspaceRoot).identity
+    now = datetime.now(timezone.utc).isoformat()
+    frontmatter.setdefault("created_at", now)
+    frontmatter["updated_at"] = now
+
+    try:
+        _target, validated = _workspace_docs.write_workspace_doc(
+            payload.workspaceRoot,
+            payload.path,
+            frontmatter=frontmatter,
+            body=payload.body,
+        )
+    except _workspace_docs.WorkspaceDocError as exc:
+        raise _workspace_doc_error_response(exc)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Document is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write document: {exc}")
+
+    return {
+        "ok": True,
+        "path": payload.path,
+        "frontmatter": _workspace_doc_frontmatter_json(validated),
+    }
+
+
+class WorkspaceDocArchive(BaseModel):
+    workspaceRoot: str
+    path: str
+
+
+@app.post("/api/workspace-docs/archive")
+async def workspace_docs_archive(payload: WorkspaceDocArchive):
+    try:
+        _target, archived = _workspace_docs.archive_workspace_doc(payload.workspaceRoot, payload.path)
+    except _workspace_docs.WorkspaceDocError as exc:
+        raise _workspace_doc_error_response(exc)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Document not found")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Document is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not archive document: {exc}")
+
+    return {
+        "ok": True,
+        "path": payload.path,
+        "frontmatter": _workspace_doc_frontmatter_json(archived),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Git ops — the remote half of the desktop coding rail + review pane.
 #
 # The desktop runs these as Electron-local git on the user's machine; over a

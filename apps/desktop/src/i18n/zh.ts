@@ -1784,7 +1784,8 @@ export const zh: Translations = {
       enter: label => `打开 ${label}`,
       reorder: label => `重新排序 ${label}`,
       toggle: label => `展开/收起 ${label} 会话`,
-      back: '全部项目'
+      back: '全部项目',
+      menuDocuments: '工作区文档'
     },
     newSessionIn: label => `在 ${label} 中新建会话`,
     showMoreIn: (count, label) => `在 ${label} 中再显示 ${count} 个`,
@@ -1816,6 +1817,48 @@ export const zh: Translations = {
       ageDay: '天',
       ageHour: '时',
       ageMin: '分'
+    }
+  },
+
+  workspaceDocs: {
+    title: '工作区文档',
+    description: label => `${label} 的安全保存笔记。只有明确提升后才会生效。`,
+    newButton: '新建文档',
+    createTitle: '新建文档',
+    createDesc: '选择文档类型并从模板开始。',
+    loading: '正在加载文档…',
+    loadFailed: '无法加载工作区文档',
+    empty: '还没有工作区文档。',
+    emptyHint: '创建运行手册、记忆笔记、技能模板或普通笔记来开始。',
+    invalid: '无效',
+    back: '返回',
+    fieldTitle: '标题',
+    fieldStatus: '状态',
+    fieldDescription: '描述',
+    fieldTags: '标签',
+    tagsPlaceholder: '逗号分隔的标签',
+    fieldBody: '正文',
+    save: '保存',
+    saveFailed: '无法保存文档',
+    saved: '已保存',
+    archive: '归档',
+    archiveFailed: '无法归档文档',
+    archived: '已归档',
+    readFailed: '无法打开文档',
+    dirtyHint: '有未保存的更改',
+    titlePlaceholder: '未命名文档',
+    docType: {
+      'skill-template': '技能模板',
+      'memory-note': '记忆笔记',
+      'workspace-instructions': '工作区说明',
+      'prompt-template': '提示模板',
+      runbook: '运行手册',
+      'generic-md': '笔记'
+    },
+    status: {
+      draft: '草稿',
+      ready: '就绪',
+      archived: '已归档'
     }
   },
 

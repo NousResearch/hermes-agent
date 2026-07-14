@@ -1609,7 +1609,8 @@ export const en: Translations = {
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
       toggle: label => `Toggle ${label} sessions`,
-      back: 'All projects'
+      back: 'All projects',
+      menuDocuments: 'Documents'
     },
     newSessionIn: label => `New session in ${label}`,
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,
@@ -1641,6 +1642,48 @@ export const en: Translations = {
       ageDay: 'd',
       ageHour: 'h',
       ageMin: 'm'
+    }
+  },
+
+  workspaceDocs: {
+    title: 'Workspace documents',
+    description: label => `Safekeeping notes for ${label}. Inert until you promote them elsewhere.`,
+    newButton: 'New document',
+    createTitle: 'New document',
+    createDesc: 'Choose a document type to start from a template.',
+    loading: 'Loading documents…',
+    loadFailed: 'Could not load workspace documents',
+    empty: 'No workspace documents yet.',
+    emptyHint: 'Create a runbook, memory note, skill template, or generic note to get started.',
+    invalid: 'Invalid',
+    back: 'Back',
+    fieldTitle: 'Title',
+    fieldStatus: 'Status',
+    fieldDescription: 'Description',
+    fieldTags: 'Tags',
+    tagsPlaceholder: 'comma, separated, tags',
+    fieldBody: 'Body',
+    save: 'Save',
+    saveFailed: 'Could not save document',
+    saved: 'Saved',
+    archive: 'Archive',
+    archiveFailed: 'Could not archive document',
+    archived: 'Archived',
+    readFailed: 'Could not open document',
+    dirtyHint: 'Unsaved changes',
+    titlePlaceholder: 'Untitled document',
+    docType: {
+      'skill-template': 'Skill template',
+      'memory-note': 'Memory note',
+      'workspace-instructions': 'Workspace instructions',
+      'prompt-template': 'Prompt template',
+      runbook: 'Runbook',
+      'generic-md': 'Note'
+    },
+    status: {
+      draft: 'Draft',
+      ready: 'Ready',
+      archived: 'Archived'
     }
   },
 

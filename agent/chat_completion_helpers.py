@@ -1705,9 +1705,8 @@ def _fallback_reasoning_config(fallback_entry: Dict[str, Any]) -> Dict[str, Any]
     if isinstance(reasoning, dict):
         return dict(reasoning)
 
-    effort = fallback_entry.get("reasoning_effort")
-    if isinstance(effort, str):
-        return parse_reasoning_effort(effort)
+    if "reasoning_effort" in fallback_entry:
+        return parse_reasoning_effort(fallback_entry.get("reasoning_effort"))
 
     return None
 
@@ -1901,8 +1900,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
         fb_reasoning_config = _fallback_reasoning_config(fb)
-        if fb_reasoning_config is not None:
-            agent.reasoning_config = fb_reasoning_config
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
@@ -2043,9 +2040,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from hermes_cli.config import load_config
             from hermes_constants import resolve_reasoning_config
 
-            agent.reasoning_config = resolve_reasoning_config(
+            resolved_reasoning_config = resolve_reasoning_config(
                 load_config() or {}, agent.model
             )
+            if fb_reasoning_config is not None:
+                agent.reasoning_config = fb_reasoning_config
+            elif resolved_reasoning_config is not None:
+                agent.reasoning_config = resolved_reasoning_config
+            else:
+                primary_reasoning_config = (getattr(agent, "_primary_runtime", {}) or {}).get(
+                    "reasoning_config"
+                )
+                agent.reasoning_config = (
+                    dict(primary_reasoning_config)
+                    if isinstance(primary_reasoning_config, dict)
+                    else primary_reasoning_config
+                )
             logger.info(
                 "Fallback %s: reasoning_config resolved: %s",
                 agent.model, agent.reasoning_config,

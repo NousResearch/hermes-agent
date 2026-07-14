@@ -2333,7 +2333,7 @@ class TestExecuteToolCalls:
             or "interrupted" in messages[0]["content"].lower()
         )
 
-    def test_invalid_json_args_defaults_empty(self, agent):
+    def test_invalid_json_args_are_rejected_without_dispatch(self, agent):
         tc = _mock_tool_call(
             name="web_search", arguments="not valid json", call_id="c1"
         )
@@ -2341,13 +2341,12 @@ class TestExecuteToolCalls:
         messages = []
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-            # Invalid JSON args should fall back to empty dict
-            args, kwargs = mock_hfc.call_args
-            assert args[:3] == ("web_search", {}, "task-1")
-            assert set(kwargs.get("enabled_tools", [])) == agent.valid_tool_names
+            mock_hfc.assert_not_called()
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert messages[0]["tool_call_id"] == "c1"
+        assert "valid json object" in messages[0]["content"].lower()
+        assert "tool was not executed" in messages[0]["content"].lower()
 
     def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -2776,6 +2775,7 @@ class TestConcurrentToolExecution:
         assert "fast-result" in messages[0]["content"]
         assert messages[1]["tool_call_id"] == "c2"
         assert "timed out after" in messages[1]["content"]
+        assert messages[1]["effect_disposition"] == "unknown"
         assert [batch[-1]["tool_call_id"] for batch in flushed] == ["c1", "c2"]
         assert "fast-result" in flushed[0][-1]["content"]
         assert "timed out after" in flushed[1][-1]["content"]
@@ -2966,7 +2966,7 @@ class TestConcurrentToolExecution:
         """Agent-owned tool paths should close observer tool spans."""
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -2990,7 +2990,7 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
         """_invoke_tool should return error JSON when a plugin blocks the tool."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked by test policy",
         )
         with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
@@ -3002,7 +3002,7 @@ class TestConcurrentToolExecution:
     def test_invoke_tool_blocked_skips_handle_function_call(self, agent, monkeypatch):
         """Blocked registry tools should not reach handle_function_call."""
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked",
         )
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
@@ -3019,7 +3019,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked by policy",
         )
         agent._checkpoint_mgr.enabled = True
@@ -3049,7 +3049,7 @@ class TestConcurrentToolExecution:
         hook_calls = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked by policy",
         )
         monkeypatch.setattr(
@@ -3076,7 +3076,7 @@ class TestConcurrentToolExecution:
         hook_calls = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -3123,7 +3123,7 @@ class TestConcurrentToolExecution:
             lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -3161,7 +3161,7 @@ class TestConcurrentToolExecution:
             lambda kind, **kwargs: [request_middleware(**kwargs)] if kind == "tool_request" else [],
         )
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         monkeypatch.setattr(
@@ -3196,7 +3196,7 @@ class TestConcurrentToolExecution:
         """Blocked memory tool should not reset the nudge counter."""
         agent._turns_since_memory = 5
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked",
         )
         with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
@@ -3209,7 +3209,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_memory_remove_notifies_provider_with_old_text(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         calls = []
@@ -3241,7 +3241,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_memory_failed_remove_skips_provider_notification(self, agent, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: None,
         )
         notify = MagicMock(side_effect=AssertionError("should not notify"))
@@ -3281,7 +3281,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked" if args[0] == "write_file" else None,
         )
 
@@ -3308,7 +3308,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked" if args[0] == "patch" else None,
         )
 
@@ -3335,7 +3335,7 @@ class TestConcurrentToolExecution:
         messages = []
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             lambda *args, **kwargs: "Blocked" if args[0] == "terminal" else None,
         )
 
@@ -3369,7 +3369,7 @@ class TestConcurrentToolExecution:
             return "Blocked" if call_count["n"] == 1 else None
 
         monkeypatch.setattr(
-            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            "hermes_cli.plugins.resolve_pre_tool_block",
             block_first_only,
         )
 
@@ -3586,8 +3586,8 @@ class TestMcpParallelToolBatch:
     def test_mcp_tools_default_sequential(self):
         """MCP tools without supports_parallel_tool_calls are sequential."""
         from run_agent import _should_parallelize_tool_batch
-        tc1 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c1")
-        tc2 = _mock_tool_call(name="mcp_github_search_code", arguments='{"q":"test"}', call_id="c2")
+        tc1 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c1")
+        tc2 = _mock_tool_call(name="mcp__github__search_code", arguments='{"q":"test"}', call_id="c2")
         assert not _should_parallelize_tool_batch([tc1, tc2])
 
     def test_mcp_tools_parallel_when_server_opted_in(self):
@@ -3596,17 +3596,17 @@ class TestMcpParallelToolBatch:
         from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
-            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
-            _mcp_tool_server_names["mcp_github_search_code"] = "github"
+            _mcp_tool_server_names["mcp__github__list_repos"] = "github"
+            _mcp_tool_server_names["mcp__github__search_code"] = "github"
         try:
-            tc1 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c1")
-            tc2 = _mock_tool_call(name="mcp_github_search_code", arguments='{"q":"test"}', call_id="c2")
+            tc1 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c1")
+            tc2 = _mock_tool_call(name="mcp__github__search_code", arguments='{"q":"test"}', call_id="c2")
             assert _should_parallelize_tool_batch([tc1, tc2])
         finally:
             with _lock:
                 _parallel_safe_servers.discard("github")
-                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
-                _mcp_tool_server_names.pop("mcp_github_search_code", None)
+                _mcp_tool_server_names.pop("mcp__github__list_repos", None)
+                _mcp_tool_server_names.pop("mcp__github__search_code", None)
 
     def test_mixed_mcp_and_builtin_parallel(self):
         """MCP parallel tools mixed with built-in parallel-safe tools."""
@@ -3614,15 +3614,15 @@ class TestMcpParallelToolBatch:
         from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
-            _mcp_tool_server_names["mcp_docs_search"] = "docs"
+            _mcp_tool_server_names["mcp__docs__search"] = "docs"
         try:
-            tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
+            tc1 = _mock_tool_call(name="mcp__docs__search", arguments='{"query":"api"}', call_id="c1")
             tc2 = _mock_tool_call(name="web_search", arguments='{"query":"test"}', call_id="c2")
             assert _should_parallelize_tool_batch([tc1, tc2])
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
-                _mcp_tool_server_names.pop("mcp_docs_search", None)
+                _mcp_tool_server_names.pop("mcp__docs__search", None)
 
     def test_mixed_parallel_and_serial_mcp_servers(self):
         """One parallel MCP server + one non-parallel MCP server = sequential."""
@@ -3631,17 +3631,17 @@ class TestMcpParallelToolBatch:
         with _lock:
             _parallel_safe_servers.add("docs")
             # "github" is NOT in _parallel_safe_servers
-            _mcp_tool_server_names["mcp_docs_search"] = "docs"
-            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
+            _mcp_tool_server_names["mcp__docs__search"] = "docs"
+            _mcp_tool_server_names["mcp__github__list_repos"] = "github"
         try:
-            tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
-            tc2 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c2")
+            tc1 = _mock_tool_call(name="mcp__docs__search", arguments='{"query":"api"}', call_id="c1")
+            tc2 = _mock_tool_call(name="mcp__github__list_repos", arguments='{"org":"openai"}', call_id="c2")
             assert not _should_parallelize_tool_batch([tc1, tc2])
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
-                _mcp_tool_server_names.pop("mcp_docs_search", None)
-                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
+                _mcp_tool_server_names.pop("mcp__docs__search", None)
+                _mcp_tool_server_names.pop("mcp__github__list_repos", None)
 
 
 class TestHandleMaxIterations:
@@ -3788,6 +3788,48 @@ class TestHandleMaxIterations:
         assert result == "Summary"
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
+
+    def test_summary_keeps_provider_preferences_for_nous(self, agent):
+        agent.base_url = "https://proxy.example.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "nous"
+        agent.providers_allowed = ["deepseek"]
+        agent.providers_ignored = ["deepinfra"]
+        agent.provider_sort = "throughput"
+        agent.provider_require_parameters = True
+        agent.provider_data_collection = "deny"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        from agent.portal_tags import nous_portal_tags
+
+        assert kwargs["extra_body"]["tags"] == nous_portal_tags()
+        assert kwargs["extra_body"]["provider"] == {
+            "only": ["deepseek"],
+            "ignore": ["deepinfra"],
+            "sort": "throughput",
+            "require_parameters": True,
+            "data_collection": "deny",
+        }
+
+    def test_summary_keeps_nous_profile_body_without_routing_preferences(self, agent):
+        agent.base_url = "https://proxy.example.com/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "nous"
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        from agent.portal_tags import nous_portal_tags
+
+        assert kwargs["extra_body"] == {"tags": nous_portal_tags()}
 
     def test_summary_drops_invalid_provider_sort(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"
@@ -5312,6 +5354,281 @@ class TestRunConversation:
         assert mock_record_failure.call_count == 0, (
             "_record_task_failure should not be called outside kanban mode"
         )
+
+    # ── Output-cap retry: safe_out uses provider available_out + request estimate ──
+
+    def test_output_cap_retry_uses_provider_available_out(self, agent):
+        """run_conversation retries an output-cap error with max_tokens <=
+        available_out - 64, and does NOT halve context_length or trigger
+        compression.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] <= 936
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_with_large_api_only_content(self, agent):
+        """When a large system prompt makes api_messages huge while persisted
+        messages stay tiny, the retry cap must still respect provider
+        available_tokens — not blow up to the full context window.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        # Huge API-only system prompt; persisted messages are tiny.
+        agent._cached_system_prompt = "S" * 796_000
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        # The current branch (messages-only estimate) would send max_tokens
+        # near 199927 — this test fails on it.
+        assert second_call["max_tokens"] <= 936
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_request_pressure_lower_bound(self, agent):
+        """When the provider reports a large available_tokens but local request
+        pressure leaves less room, the retry cap is the smaller of the two.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        # A large API-only system prompt so the local estimate is the binding
+        # constraint, not the provider's available_tokens.
+        agent._cached_system_prompt = "S" * 796_000
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 190000 = available_tokens: 50000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        first_call = agent.client.chat.completions.create.call_args_list[0].kwargs
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+
+        # Verify the local estimate is actually the lower bound.
+        from agent.model_metadata import estimate_request_tokens_rough
+        estimated_request = estimate_request_tokens_rough(
+            first_call["messages"], tools=agent.tools or None,
+        )
+        local_available = 200_000 - estimated_request
+        expected_cap = max(1, min(50_000, local_available) - 64)
+        assert local_available < 50_000
+        assert second_call["max_tokens"] == expected_cap
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_safety_floor_at_one(self, agent):
+        """When provider available_tokens is 1, the retry cap is floored at 1."""
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199999 = available_tokens: 1"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert second_call["max_tokens"] == 1
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_with_compression_disabled(self, agent):
+        """Output-cap retry must still work when compression.enabled is false.
+        The recovery is a max_tokens-only retry — it does not require compression,
+        so the compression-disabled guard must not block it.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = False
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Two API calls: the failed one and the retried one.
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert result.get("compaction_disabled") is None
+        assert second_call["max_tokens"] <= 936
+        assert agent.context_compressor.context_length == 200_000
+        mock_compress.assert_not_called()
+
+    def test_output_cap_retry_with_compression_disabled_vllm_format(self, agent):
+        """vLLM/LM Studio error messages contain 'prompt contains ... input
+        tokens' which is_output_cap_error() treats as an input-overflow signal
+        (returns False).  But parse_available_output_tokens_from_error() CAN
+        extract a valid available_tokens from them.  The compression-disabled
+        guard must exempt these too — otherwise users on vLLM/LM Studio with
+        compression off get a terminal failure instead of a max-tokens retry.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = False
+        agent.context_compressor.context_length = 131_072
+        agent.context_compressor.should_compress = MagicMock(return_value=False)
+
+        # vLLM-format error (from tests/test_output_cap_parsing.py)
+        error_msg = (
+            "This model's maximum context length is 131072 tokens. "
+            "However, you requested 1024 output tokens and your prompt "
+            "contains at least 65537 input tokens, for a total of at least "
+            "66561 tokens."
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        mock_compress = MagicMock()
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert len(agent.client.chat.completions.create.call_args_list) == 2
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert result["completed"] is True
+        assert result.get("compaction_disabled") is None
+        # parse_available_output_tokens_from_error returns 65535 for this message
+        assert second_call["max_tokens"] <= 65471  # 65535 - 64
+        assert agent.context_compressor.context_length == 131_072
+        mock_compress.assert_not_called()
 
 
 class TestHookPayloadSanitizesSimpleNamespace:
@@ -6998,7 +7315,7 @@ class TestInterruptVprintForceTrue:
                 if "force=True" not in stripped:
                     violations.append(f"line {i}: {stripped}")
         assert not violations, (
-            f"Interrupt _vprint calls missing force=True:\n"
+            "Interrupt _vprint calls missing force=True:\n"
             + "\n".join(violations)
         )
 

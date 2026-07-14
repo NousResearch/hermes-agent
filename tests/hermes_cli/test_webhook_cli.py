@@ -35,6 +35,7 @@ def _make_args(**kwargs):
         "deliver_chat_id": "",
         "secret": "",
         "payload": "",
+        "script": "",
     }
     defaults.update(kwargs)
     return Namespace(**defaults)
@@ -71,6 +72,12 @@ class TestSubscribe:
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
         assert _load_subscriptions()["s"]["secret"] == "my-secret"
+
+    def test_script_option_is_persisted(self):
+        webhook_command(_make_args(
+            webhook_action="subscribe", name="s", script="todoist_filter.py"
+        ))
+        assert _load_subscriptions()["s"]["script"] == "todoist_filter.py"
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))

@@ -90,6 +90,7 @@ DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"
+WEBHOOK_MAX_BODY_BYTES = 3 * 1024 * 1024
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
 # delivery within minutes, not days. 5000 entries with FIFO eviction is
@@ -142,6 +143,17 @@ _WHATSAPP_MIME_EXTENSION_OVERRIDES: Dict[str, str] = {
     # of .jpg, which trips up tools that switch on extension.
     "image/jpeg": ".jpg",
 }
+
+
+async def _read_limited_request_body(request: Any, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes`` from an aiohttp request body."""
+    try:
+        body = await request.content.readexactly(max_bytes + 1)
+    except asyncio.IncompleteReadError as exc:
+        body = exc.partial
+    if len(body) > max_bytes:
+        raise ValueError("payload too large")
+    return body
 
 
 def _ext_for_mime(mime: str) -> Optional[str]:
@@ -375,6 +387,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
         return super()._open_dm_opted_in()
 
+    def _is_interactive_sender_authorized(self, sender_id: str) -> bool:
+        """Authorize inbound button/list taps before running resolvers.
+
+        Interactive replies bypass the normal ``_build_message_event_from_cloud``
+        path (which calls ``_should_process_message``), so approval /
+        slash-confirm / clarify taps must re-check DM policy here. Uses the
+        strict ``_is_dm_allowed`` gate (not intake/pairing) so a stale prompt
+        cannot be answered after the sender is removed from the allowlist.
+        """
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
+        return self._is_dm_allowed(principal)
+
     # ------------------------------------------------------------------ lifecycle
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
@@ -403,7 +429,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
         # Inbound webhook server.
-        app = web.Application()
+        # client_max_size backstops the bounded reader in _handle_webhook —
+        # aiohttp enforces the cap on request.read()/post() paths too
+        # (#58536/#58902/#59180 pattern).
+        app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_verify)
         app.router.add_post(self._webhook_path, self._handle_webhook)
@@ -790,6 +819,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Render a dangerous-command approval prompt with native buttons.
 
@@ -801,6 +832,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
 
+        del allow_permanent  # This adapter already offers one-shot Approve / Deny only.
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
@@ -809,6 +841,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             f"⚠️ *Command Approval Required*\n\n"
             f"```\n{cmd_preview}\n```\n\n"
             f"Reason: {description}"
+            + ("\n\nSmart DENY: owner override applies to this one operation only." if smart_denied else "")
         )
 
         approval_id = uuid.uuid4().hex[:12]
@@ -1411,15 +1444,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
              multiply downstream agent work because of a transient bug
              during dispatch.
         """
+        # Meta's documented max payload is 3MB. Read one byte past the limit
+        # so oversized chunked bodies are rejected before buffering the rest.
         try:
-            raw = await request.read()
+            raw = await _read_limited_request_body(
+                request,
+                WEBHOOK_MAX_BODY_BYTES,
+            )
+        except ValueError:
+            return web.Response(status=413)
         except Exception:
             return web.Response(status=400)
-
-        # Meta's documented max payload is 3MB. Reject earlier than aiohttp
-        # would so we don't even compute HMAC over giant junk.
-        if len(raw) > 3 * 1024 * 1024:
-            return web.Response(status=413)
 
         # Refuse to accept anything if app_secret isn't configured. Without
         # it we can't authenticate the sender, and the handler would be a
@@ -1623,6 +1658,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         button_id = str(inner.get("id") or "").strip()
         if not button_id:
             return False
+
+        sender_id = str(raw_message.get("from") or "").strip()
+        if not self._is_interactive_sender_authorized(sender_id):
+            logger.warning(
+                "[whatsapp_cloud] Rejected unauthorized interactive tap "
+                "from %s (button_id=%r)",
+                sender_id or "<unknown>",
+                button_id,
+            )
+            # Claim the webhook entry so the tap is not re-dispatched as
+            # plain text (which could re-enter the agent loop).
+            return True
 
         # Clarify: cl:<clarify_id>:<idx|other>
         if button_id.startswith("cl:"):

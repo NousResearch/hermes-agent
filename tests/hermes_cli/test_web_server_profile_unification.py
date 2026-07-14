@@ -316,6 +316,36 @@ class TestProfileScopedModel:
         resp = client.get("/api/model/options", params={"profile": "ghost"})
         assert resp.status_code == 404
 
+    def test_model_options_hides_unconfigured_providers_by_default(self, client, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["explicit_only"] is False
+        assert calls[-1]["include_unconfigured"] is False
+
+        resp = client.get("/api/model/options", params={"explicit_only": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["explicit_only"] is True
+
+        resp = client.get("/api/model/options", params={"include_unconfigured": "1"})
+        assert resp.status_code == 200
+        assert calls[-1]["include_unconfigured"] is True
+
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
         with empty model info ("no model set" — silently wrong)."""
@@ -428,7 +458,9 @@ class TestProfileScopedGateway:
             return None
 
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", fake_get_running_pid)
+        # get_status probes via the TTL-cached wrapper (PR #53511 salvage);
+        # patch the cached name so the fake still intercepts the probe.
+        monkeypatch.setattr(web_server, "get_running_pid_cached", fake_get_running_pid)
         monkeypatch.setattr(
             web_server,
             "read_runtime_status",
@@ -463,7 +495,7 @@ class TestProfileScopedGateway:
             "updated_at": "2026-06-17T00:00:00+00:00",
         }
         monkeypatch.setattr(web_server, "check_config_version", lambda: (1, 1))
-        monkeypatch.setattr(web_server, "get_running_pid", lambda: None)
+        monkeypatch.setattr(web_server, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(web_server, "read_runtime_status", lambda: runtime)
         monkeypatch.setattr(
             web_server, "get_runtime_status_running_pid", lambda payload: 4242

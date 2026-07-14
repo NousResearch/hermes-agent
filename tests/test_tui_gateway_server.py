@@ -4792,6 +4792,38 @@ def test_input_detect_drop_path_with_spaces_and_remainder(tmp_path):
     assert server._sessions["sid"]["attached_images"][0] == str(img)
 
 
+def test_resolve_checkpoints_from_config_enabled(monkeypatch):
+    """_resolve_checkpoints_from_config returns True when config has checkpoints.enabled: true."""
+    import hermes_cli.config as _cfg_mod
+    monkeypatch.setattr(_cfg_mod, "read_raw_config", lambda: {"checkpoints": {"enabled": True}})
+    from hermes_cli.main import _resolve_checkpoints_from_config
+    assert _resolve_checkpoints_from_config() is True
+
+
+def test_resolve_checkpoints_from_config_disabled_by_default(monkeypatch):
+    """_resolve_checkpoints_from_config returns False when config has no checkpoints section."""
+    import hermes_cli.config as _cfg_mod
+    monkeypatch.setattr(_cfg_mod, "read_raw_config", lambda: {})
+    from hermes_cli.main import _resolve_checkpoints_from_config
+    assert _resolve_checkpoints_from_config() is False
+
+
+def test_resolve_checkpoints_from_config_bool_shorthand(monkeypatch):
+    """_resolve_checkpoints_from_config handles YAML shorthand (checkpoints: true)."""
+    import hermes_cli.config as _cfg_mod
+    monkeypatch.setattr(_cfg_mod, "read_raw_config", lambda: {"checkpoints": True})
+    from hermes_cli.main import _resolve_checkpoints_from_config
+    assert _resolve_checkpoints_from_config() is True
+
+
+def test_resolve_checkpoints_from_config_read_error(monkeypatch):
+    """_resolve_checkpoints_from_config returns False when config read fails."""
+    import hermes_cli.config as _cfg_mod
+    monkeypatch.setattr(_cfg_mod, "read_raw_config", lambda: (_ for _ in ()).throw(RuntimeError("bad config")))
+    from hermes_cli.main import _resolve_checkpoints_from_config
+    assert _resolve_checkpoints_from_config() is False
+
+
 def test_rollback_restore_resolves_number_and_file_path():
     calls = {}
 

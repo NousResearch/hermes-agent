@@ -1997,6 +1997,30 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     return max(1536, sized) if limit_mb > 2048 else sized
 
 
+def _resolve_checkpoints_from_config() -> bool:
+    """Read checkpoints.enabled from config.yaml.
+
+    Called by _launch_tui() when the --checkpoints CLI flag is not passed.
+    Uses read_raw_config() (lightweight, cached) rather than load_config()
+    (deep-merge + migration pipeline). The isinstance(cp_cfg, bool) guard
+    handles the YAML shorthand format (``checkpoints: true`` instead of
+    ``checkpoints: { enabled: true }``). Same guard exists at cli.py:3271.
+
+    Returns False on any error — startup config reads must never block.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        raw = read_raw_config() or {}
+        cp_cfg = raw.get("checkpoints", {})
+        if isinstance(cp_cfg, bool):
+            return cp_cfg
+        if isinstance(cp_cfg, dict):
+            return bool(cp_cfg.get("enabled", False))
+    except Exception:
+        pass
+    return False
+
+
 def _launch_tui(
     resume_session_id: Optional[str] = None,
     tui_dev: bool = False,
@@ -2085,6 +2109,8 @@ def _launch_tui(
         env["HERMES_TUI_QUERY"] = query
     if image:
         env["HERMES_TUI_IMAGE"] = image
+    if not checkpoints:
+        checkpoints = _resolve_checkpoints_from_config()
     if checkpoints:
         env["HERMES_TUI_CHECKPOINTS"] = "1"
     if pass_session_id:

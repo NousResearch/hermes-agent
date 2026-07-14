@@ -567,6 +567,46 @@ def test_base_gateway_metadata_for_resumed_telegram_dm_topic_uses_direct_topic()
     }
 
 
+def test_base_gateway_metadata_carries_feishu_thread_reply_anchor():
+    """Feishu threads need a reply anchor so media/file sends can use the
+    ReplyMessage + reply_in_thread path. Regression for #39526: without this,
+    media reached the adapter with no anchor and fell into the invalid
+    receive_id_type='thread_id' CreateMessage path (99992402 / dropped)."""
+    source = SimpleNamespace(
+        platform=Platform.FEISHU,
+        chat_type="group",
+        thread_id="omt_topic_abc",
+    )
+
+    metadata = _thread_metadata_for_source(source, "om_user_msg_1")
+
+    assert metadata == {
+        "thread_id": "omt_topic_abc",
+        "reply_to_message_id": "om_user_msg_1",
+    }
+    # Must NOT leak telegram-only keys onto Feishu metadata.
+    assert "telegram_reply_to_message_id" not in metadata
+    assert "direct_messages_topic_id" not in metadata
+
+
+def test_base_gateway_metadata_feishu_thread_falls_back_to_source_message_id():
+    """When no explicit reply anchor is passed, fall back to the source message
+    id so a Feishu thread send still has an anchor for reply_in_thread."""
+    source = SimpleNamespace(
+        platform=Platform.FEISHU,
+        chat_type="group",
+        thread_id="omt_topic_abc",
+        message_id="om_source_42",
+    )
+
+    metadata = _thread_metadata_for_source(source)
+
+    assert metadata == {
+        "thread_id": "omt_topic_abc",
+        "reply_to_message_id": "om_source_42",
+    }
+
+
 def test_base_gateway_replies_to_triggering_message_for_telegram_dm_topic():
     """Private DM topic lanes should anchor replies to the active user message."""
     event = SimpleNamespace(

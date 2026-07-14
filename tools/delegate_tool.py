@@ -53,17 +53,6 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
-# Build a description fragment listing toolsets available for subagents.
-# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
-# (hermes-* prefixed), and scenario toolsets.
-_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
-_SUBAGENT_TOOLSETS = sorted(
-    name for name, defn in TOOLSETS.items()
-    if name not in _EXCLUDED_TOOLSET_NAMES
-    and not name.startswith("hermes-")
-    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
-)
-_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 
 # ---------------------------------------------------------------------------
@@ -2381,15 +2370,11 @@ def _recover_tasks_from_json_string(
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
-    toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
-    acp_command: Optional[str] = None,
-    acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
-    model: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2489,9 +2474,7 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model}
-        ]
+        task_list = [{"goal": goal, "context": context, "role": top_role}]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2527,69 +2510,29 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
-
-            # Resolve task-specific model and provider credentials if model is set
-            task_model = t.get("model") or model
-            task_creds = dict(creds)
-            if task_model:
-                from hermes_cli.runtime_provider import resolve_provider, resolve_runtime_provider
-                prov = None
-                model_name = task_model
-                parts = task_model.split("/", 1)
-                if len(parts) > 1:
-                    try:
-                        resolved_prov = resolve_provider(parts[0].lower().strip())
-                        if resolved_prov:
-                            prov = resolved_prov
-                            model_name = parts[1]
-                    except Exception:
-                        pass
-                if not prov:
-                    prov = creds.get("provider") or "auto"
-                try:
-                    runtime = resolve_runtime_provider(requested=prov, target_model=model_name)
-                    task_creds = {
-                        "model": model_name,
-                        "provider": runtime.get("provider"),
-                        "base_url": runtime.get("base_url"),
-                        "api_key": runtime.get("api_key"),
-                        "api_mode": runtime.get("api_mode"),
-                        "request_overrides": dict(runtime.get("request_overrides") or {}),
-                        "max_output_tokens": runtime.get("max_output_tokens"),
-                        "command": runtime.get("command"),
-                        "args": list(runtime.get("args") or []),
-                    }
-                except Exception as exc:
-                    logger.debug("Failed to resolve task-specific provider/model: %s", exc)
-                    task_creds["model"] = task_model
 
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=task_creds["model"],
+                # Subagents always inherit the parent's toolsets; the model
+                # cannot choose or narrow them (no model-facing toolsets arg).
+                toolsets=None,
+                model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=task_creds["provider"],
-                override_base_url=task_creds["base_url"],
-                override_api_key=task_creds["api_key"],
-                override_api_mode=task_creds["api_mode"],
-                override_request_overrides=task_creds.get("request_overrides") or creds.get("request_overrides"),
-                override_max_tokens=task_creds.get("max_output_tokens") or creds.get("max_output_tokens"),
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or task_creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else task_creds.get("args"))
-                ),
+                override_provider=creds["provider"],
+                override_base_url=creds["base_url"],
+                override_api_key=creds["api_key"],
+                override_api_mode=creds["api_mode"],
+                override_request_overrides=creds.get("request_overrides"),
+                override_max_tokens=creds.get("max_output_tokens"),
+                override_acp_command=creds.get("command"),
+                override_acp_args=creds.get("args"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3466,22 +3409,8 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['browser'] for web interaction, "
-                    "['terminal', 'file', 'web'] for full-stack tasks."
-                ),
-            },
-            "model": {
-                "type": "string",
-                "description": "Optional model override for the delegated task (e.g. 'openrouter/deepseek/deepseek-v4-flash').",
-            },
+
+
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3492,20 +3421,13 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": "Task-specific context",
                         },
-                        "toolsets": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
-                        },
+
                         "role": {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
-                        "model": {
-                            "type": "string",
-                            "description": "Per-task model override.",
-                        },
+
                     },
                     "required": ["goal"],
                 },
@@ -3586,15 +3508,11 @@ registry.register(
     handler=lambda args, **kw: delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
-        toolsets=args.get("toolsets"),
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
-        model=args.get("model"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

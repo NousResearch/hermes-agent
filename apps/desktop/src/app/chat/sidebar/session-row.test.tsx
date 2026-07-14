@@ -5,10 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
-import { en } from '@/i18n/en'
-import { ja } from '@/i18n/ja'
-import { zh } from '@/i18n/zh'
-import { zhHant } from '@/i18n/zh-hant'
+import { LOCALE_OPTIONS, TRANSLATIONS } from '@/i18n'
+import type * as I18n from '@/i18n'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -16,27 +14,35 @@ import type * as WindowsStore from '@/store/windows'
 
 import { SidebarSessionRow } from './session-row'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
 
-vi.mock('@/i18n', () => ({
-  useI18n: () => ({
-    t: {
-      sidebar: {
-        row: {
-          ageMin: 'm',
-          ageNow: 'now',
-          backgroundRunning: 'Running in background',
-          finishedUnread: 'Finished',
-          handoffOrigin: (platform: string) => `Started on ${platform}`,
-          needsInput: 'Needs input',
-          sessionActions: 'Session actions',
-          sessionRunning: 'Running',
-          waitingForAnswer: 'Waiting for answer'
+vi.mock('@/i18n', async importOriginal => {
+  const actual = await importOriginal<typeof I18n>()
+
+  return {
+    ...actual,
+    useI18n: () => ({
+      t: {
+        sidebar: {
+          row: {
+            ageMin: 'm',
+            ageNow: 'now',
+            backgroundRunning: 'Running in background',
+            finishedUnread: 'Finished',
+            handoffOrigin: (platform: string) => `Started on ${platform}`,
+            needsInput: 'Needs input',
+            sessionActions: 'Session actions',
+            sessionRunning: 'Running',
+            waitingForAnswer: 'Waiting for answer'
+          }
         }
       }
-    }
-  })
-}))
+    })
+  }
+})
 
 vi.mock('@/app/chat/profile-tag', () => ({ ProfileTag: () => null }))
 vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
@@ -122,6 +128,45 @@ const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"
 
 const noop = vi.fn()
 
+type GestureAction = 'archive' | 'pin' | 'resume' | 'tab' | 'window'
+
+const GESTURE_CASES: readonly {
+  action: GestureAction
+  event: 'auxclick' | 'click'
+  label: string
+  modifiers?: MouseEventInit
+}[] = [
+  { action: 'resume', event: 'click', label: 'ordinary click' },
+  { action: 'tab', event: 'click', label: 'exact Ctrl-click', modifiers: { ctrlKey: true } },
+  { action: 'tab', event: 'click', label: 'exact Cmd-click', modifiers: { metaKey: true } },
+  { action: 'pin', event: 'click', label: 'exact Shift-click', modifiers: { shiftKey: true } },
+  {
+    action: 'window',
+    event: 'click',
+    label: 'exact Cmd+Shift-click',
+    modifiers: { metaKey: true, shiftKey: true }
+  },
+  {
+    action: 'archive',
+    event: 'click',
+    label: 'exact Ctrl+Shift-click',
+    modifiers: { ctrlKey: true, shiftKey: true }
+  },
+  {
+    action: 'window',
+    event: 'click',
+    label: 'Ctrl+Shift+Alt-click',
+    modifiers: { altKey: true, ctrlKey: true, shiftKey: true }
+  },
+  {
+    action: 'window',
+    event: 'click',
+    label: 'Ctrl+Shift+Meta-click',
+    modifiers: { ctrlKey: true, metaKey: true, shiftKey: true }
+  },
+  { action: 'tab', event: 'auxclick', label: 'middle auxclick', modifiers: { button: 1 } }
+]
+
 describe('SidebarSessionRow', () => {
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
     render(
@@ -141,8 +186,9 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(kebab)).toBeNull()
   })
 
-  it('archives immediately on Ctrl+Shift-click without resuming or pinning', () => {
+  it.each(GESTURE_CASES)('$label dispatches only $action', ({ action, event, modifiers = {} }) => {
     const onArchive = vi.fn()
+    const onDelete = vi.fn()
     const onPin = vi.fn()
     const onResume = vi.fn()
 
@@ -152,83 +198,52 @@ describe('SidebarSessionRow', () => {
         isSelected={false}
         isWorking={false}
         onArchive={onArchive}
-        onDelete={noop}
+        onDelete={onDelete}
         onPin={onPin}
         onResume={onResume}
-        session={makeSession({ title: 'Archive me' })}
+        session={makeSession({ title: 'Gesture target' })}
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Archive me' }), { ctrlKey: true, shiftKey: true })
+    const row = screen.getByRole('button', { name: 'Gesture target' })
 
-    expect(onArchive).toHaveBeenCalledOnce()
-    expect(onPin).not.toHaveBeenCalled()
-    expect(onResume).not.toHaveBeenCalled()
-    expect(openSession).not.toHaveBeenCalled()
-  })
+    if (event === 'auxclick') {
+      fireEvent(row, new MouseEvent('auxclick', { bubbles: true, ...modifiers }))
+    } else {
+      fireEvent.click(row, modifiers)
+    }
 
-  it('keeps Cmd+Shift-click as the standalone-window gesture', () => {
-    const onArchive = vi.fn()
+    const callbackActions: Record<Exclude<GestureAction, 'tab' | 'window'>, ReturnType<typeof vi.fn>> = {
+      archive: onArchive,
+      pin: onPin,
+      resume: onResume
+    }
 
-    render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        isWorking={false}
-        onArchive={onArchive}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        session={makeSession({ title: 'Open in a window' })}
-      />
-    )
+    for (const [candidate, callback] of Object.entries(callbackActions)) {
+      expect(callback).toHaveBeenCalledTimes(action === candidate ? 1 : 0)
+    }
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open in a window' }), { metaKey: true, shiftKey: true })
+    expect(onDelete).not.toHaveBeenCalled()
 
-    expect(onArchive).not.toHaveBeenCalled()
-    expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'window')
-  })
-
-  it('keeps archived-session settings copy gesture-neutral in the updated locales', () => {
-    const archivedSessionCopy = [
-      en.settings.sessions.archivedIntro,
-      zh.settings.sessions.archivedIntro,
-      zhHant.settings.sessions.archivedIntro,
-      ja.settings.sessions.archivedIntro
-    ]
-
-    for (const copy of archivedSessionCopy) {
-      expect(copy).not.toMatch(/\b(?:ctrl|cmd|shift|click)\b|⌘|点击|點擊|クリック/iu)
+    if (action === 'tab' || action === 'window') {
+      expect(openSession).toHaveBeenCalledOnce()
+      expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), action)
+    } else {
+      expect(openSession).not.toHaveBeenCalled()
     }
   })
 
-  it.each([{ altKey: true }, { metaKey: true }])(
-    'does not archive a Ctrl+Shift-click with extra modifiers',
-    (modifiers: { altKey?: boolean; metaKey?: boolean }) => {
-      const onArchive = vi.fn()
+  it('keeps archived-session settings copy gesture-neutral in every registered locale', () => {
+    const requiredLocales = LOCALE_OPTIONS.map(locale => locale.id)
 
-      render(
-        <SidebarSessionRow
-          isPinned={false}
-          isSelected={false}
-          isWorking={false}
-          onArchive={onArchive}
-          onDelete={noop}
-          onPin={noop}
-          onResume={noop}
-          session={makeSession({ title: 'Keep me active' })}
-        />
+    expect(Object.keys(TRANSLATIONS).sort()).toEqual([...requiredLocales].sort())
+
+    for (const locale of requiredLocales) {
+      expect(TRANSLATIONS[locale].settings.sessions.archivedIntro, locale).not.toMatch(
+        /\b(?:ctrl|cmd|shift|click)\b|[⌘⌃⌥]|点击|點擊|クリック|اضغط|النقر/iu
       )
-
-      fireEvent.click(screen.getByRole('button', { name: 'Keep me active' }), {
-        ctrlKey: true,
-        shiftKey: true,
-        ...modifiers
-      })
-
-      expect(onArchive).not.toHaveBeenCalled()
     }
-  )
+  })
 
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(

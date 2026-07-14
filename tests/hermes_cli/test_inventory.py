@@ -973,3 +973,78 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
+
+
+# ─── apply_picker_prefs (desktop/TUI picker parity, PR: desktop picker prefs) ──
+
+
+def _picker_rows():
+    """A realistic desktop payload substrate: two real providers, an internal
+    Claude failover lane, plus openai-api/anthropic that config hides."""
+    def row(slug, name):
+        return {
+            "slug": slug, "name": name, "models": ["m1"], "total_models": 1,
+            "is_current": False, "is_user_defined": False, "source": "built-in",
+        }
+    return [
+        row("openrouter", "OpenRouter"),
+        row("anthropic", "Anthropic"),
+        row("openai-api", "OpenAI API"),
+        row("claude-apr", "Claude APR"),
+        row("claude-apx-3", "Claude APX-3 (sub#3 api-proxy)"),
+        row("claude-bpx-7", "Claude BPX-7 (sub#7 bridge)"),
+        row("gemini-bridge", "Gemini Bridge"),
+    ]
+
+
+def test_apply_picker_prefs_off_by_default_keeps_everything():
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    with _list_auth_returning(_picker_rows()):
+        payload = build_models_payload(ctx)  # default apply_picker_prefs=False
+    slugs = [r["slug"] for r in payload["providers"]]
+    # failover lanes + hidden providers all still present when prefs are off
+    assert "claude-apx-3" in slugs
+    assert "anthropic" in slugs
+    assert "openai-api" in slugs
+
+
+def test_apply_picker_prefs_hides_failover_lanes_and_config_hidden():
+    """apply_picker_prefs=True mirrors list_picker_providers: drop the
+    claude-{apx,bpx}-N failover lanes AND the config model.picker.hide set,
+    and honor model.picker.order — same as the CLI/Discord picker."""
+    ctx = _empty_ctx(provider="openrouter", model="m1", base_url="")
+    cfg = {
+        "model": {
+            "picker": {
+                "hide": ["openai-api", "anthropic"],
+                "order": ["claude-apr", "gemini-bridge", "openrouter"],
+            }
+        }
+    }
+    with _list_auth_returning(_picker_rows()), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        payload = build_models_payload(ctx, apply_picker_prefs=True)
+    slugs = [r["slug"] for r in payload["providers"]]
+    # failover lanes hidden
+    assert "claude-apx-3" not in slugs
+    assert "claude-bpx-7" not in slugs
+    # config-hidden providers dropped
+    assert "anthropic" not in slugs
+    assert "openai-api" not in slugs
+    # ordered per config; unlisted rows (the auto-added moa row) trail after
+    assert [s for s in slugs if s != "moa"] == [
+        "claude-apr", "gemini-bridge", "openrouter",
+    ]
+    assert slugs[-1] == "moa"
+
+
+def test_apply_picker_prefs_never_hides_current_provider():
+    """The currently-active provider is never hidden, even if it's a failover
+    lane or in the hide set — you must always see/switch off what you're on."""
+    ctx = _empty_ctx(provider="claude-apx-3", model="m1", base_url="")
+    cfg = {"model": {"picker": {"hide": ["anthropic"]}}}
+    with _list_auth_returning(_picker_rows()), \
+         patch("hermes_cli.config.load_config", return_value=cfg):
+        payload = build_models_payload(ctx, apply_picker_prefs=True)
+    slugs = [r["slug"] for r in payload["providers"]]
+    assert "claude-apx-3" in slugs  # current lane stays visible

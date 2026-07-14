@@ -14141,6 +14141,7 @@ def _(rid, params: dict) -> dict:
             refresh=bool(params.get("refresh")),
             probe_custom_providers=bool(params.get("refresh")),
             probe_current_custom_provider=not bool(params.get("refresh")),
+            apply_picker_prefs=True,
         )
         return _ok(rid, payload)
     except Exception as e:

@@ -97,6 +97,42 @@ These have sensible defaults in the ABC. Override as needed:
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
+| `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
+| `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
+
+## Per-turn context selection and observation
+
+`compress()` answers "context is too long → make it shorter". Two optional,
+no-op-default hooks cover the orthogonal *selection / observation* axis, so an
+engine no longer has to force `should_compress()` to `True` and abuse
+`compress()` as a per-turn callback:
+
+```python
+def select_context(self, request_messages, *, conversation_messages=None,
+                   incoming_message=None, budget_tokens=0):
+    """Choose/replace the context for THIS request, before dispatch.
+
+    Return a new message list to use for this one provider call (retrieval,
+    topic routing, role/branch switching), or None to leave it unchanged.
+    Request-only: the persisted conversation history is never mutated.
+    """
+
+def on_turn_complete(self, messages, usage=None, **kwargs):
+    """Observe a finished turn after the assistant/tool loop completes.
+
+    Receives a shallow copy of the finalized transcript plus the turn's
+    canonical usage dict (or None if no provider response was reached), so the
+    engine can ingest/index/summarize for the next select_context(). The return
+    value is ignored.
+    """
+```
+
+Contract:
+
+- **No-op by default, fail-open.** Both default to `return None`. A missing hook, an exception, or an invalid return value leaves the request untouched — so a failing engine is never worse than not installing one.
+- **`select_context()` is request-only.** The returned list replaces the messages for a single provider call; persisted history is never written. Returning `None`, `[]`, a non-list, or a list containing non-dicts all fall open to the unmodified request.
+- **Ordering / cache stability.** The hook runs **before** prompt cache-control and every request sanitizer, so (a) a replacement still passes the same validation as any request, and (b) the no-op default leaves the request byte-identical — prompt-cache behaviour is unchanged for non-implementing engines. An engine that replaces the list changes only its own cache prefix. Evaluated per provider request (re-runs on retries).
+- **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only.
 
 ## Engine tools
 

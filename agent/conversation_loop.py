@@ -627,12 +627,17 @@ def _apply_context_engine_selection(
 
     if selected is None:
         return api_messages
-    if isinstance(selected, list) and all(isinstance(m, dict) for m in selected):
+    # Require a NON-EMPTY list of dicts. An empty list must fall open to the
+    # original request: ``all([])`` is ``True``, so without the emptiness check
+    # a ``[]`` returned by a buggy/failing engine would replace a valid request
+    # with an empty message list that the downstream sanitizers cannot restore,
+    # reaching the provider as an invalid request instead of failing open.
+    if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
         return selected
 
     logger.warning(
-        "Context engine select_context returned a non-list of dicts; "
-        "ignoring (session=%s)",
+        "Context engine select_context returned an invalid value "
+        "(not a non-empty list of dicts); ignoring (session=%s)",
         session_label,
     )
     return api_messages

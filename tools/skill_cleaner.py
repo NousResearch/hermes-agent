@@ -1,9 +1,9 @@
 """Report-only Hermes skill cleaner/audit helpers.
 
-This module intentionally performs **no mutations**. It inventories skill cards,
-runs the existing skills guard, checks a minimal verified-card contract, estimates
-prompt bloat, and reports likely duplicate/overlapping skills so a human/curator
-can decide what to consolidate.
+This module intentionally performs **no mutations**. It inventories skills,
+runs the existing skills guard, checks the documented skill frontmatter, estimates
+the rendered prompt-index footprint, and reports likely duplicate/overlapping
+skills so a human/curator can decide what to consolidate.
 """
 
 from __future__ import annotations
@@ -17,17 +17,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files, parse_frontmatter
-from hermes_constants import display_hermes_home, get_bundled_skills_dir, get_hermes_home, get_skills_dir
+from agent.skill_utils import (
+    extract_skill_description,
+    get_all_skills_dirs,
+    iter_skill_index_files,
+    parse_frontmatter,
+)
+from hermes_constants import (
+    display_hermes_home,
+    get_bundled_skills_dir,
+    get_hermes_home,
+    get_skills_dir,
+)
 from tools.skills_guard import scan_skill
 
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,}")
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _NUMBERED_STEP_RE = re.compile(r"(?m)^\s*\d+\.\s+\S+")
 _SESSION_ARTIFACT_RE = re.compile(
-    r"\b(?:PR\s*#?\d+|pull request\s*#?\d+|issue\s*#?\d+|(?=[0-9a-f]{7,40}\b)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40})\b",
+    r"\b(?:PR\s*#?\d+|pull request\s*#?\d+|issue\s*#?\d+)\b",
     re.IGNORECASE,
 )
+_CONTENT_HASH_FIELD_RE = re.compile(r"^\s*content_sha256\s*:")
 
 
 @dataclass
@@ -93,8 +104,25 @@ def _estimate_tokens(text: str) -> int:
 
 def _token_set(text: str) -> set[str]:
     stop = {
-        "the", "and", "for", "with", "that", "this", "when", "from", "into", "your",
-        "skill", "skills", "hermes", "agent", "use", "using", "will", "must", "should",
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "when",
+        "from",
+        "into",
+        "your",
+        "skill",
+        "skills",
+        "hermes",
+        "agent",
+        "use",
+        "using",
+        "will",
+        "must",
+        "should",
     }
     return {tok.lower() for tok in _TOKEN_RE.findall(text) if tok.lower() not in stop}
 
@@ -140,118 +168,179 @@ def _nested_get(data: dict[str, Any], dotted: str) -> Any:
     return cur
 
 
-def _check_required_card_field(findings: list[CardFinding], card: dict[str, Any], dotted: str) -> None:
-    value = _nested_get(card, dotted)
-    missing = value is None or value == "" or value == [] or value == {}
-    if missing:
-        findings.append(CardFinding("warning", "missing_skill_card_field", f"skill_card.{dotted} is required by the verified-card contract."))
+def _canonical_skill_content_for_hash(raw: str) -> str:
+    """Return SKILL.md content with its frontmatter content hash field omitted.
+
+    The hash cannot cover its own value. Preserve every other byte so the digest
+    changes when the actual skill content or other frontmatter changes.
+    """
+    lines = raw.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return raw
+
+    frontmatter_end: int | None = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            frontmatter_end = index
+            break
+    if frontmatter_end is None:
+        return raw
+
+    return "".join(
+        line
+        for index, line in enumerate(lines)
+        if not (index < frontmatter_end and _CONTENT_HASH_FIELD_RE.match(line))
+    )
 
 
 def _skill_card_findings(card: Any, raw: str) -> list[CardFinding]:
     findings: list[CardFinding] = []
+    if card is None:
+        return findings
     if not isinstance(card, dict):
         return [
             CardFinding(
                 "warning",
-                "missing_skill_card",
-                "Add skill_card provenance/risk/scope/verification/dependency metadata before trusting this skill as verified.",
+                "invalid_skill_card",
+                "Optional skill_card metadata must be a mapping when present.",
             )
         ]
 
-    required_fields = (
-        "card_version",
-        "source.origin",
-        "source.upstream_url",
-        "source.author",
-        "source.imported_at",
-        "scope.summary",
-        "scope.allowed_surfaces",
-        "scope.denied_surfaces",
-        "risk.level",
-        "risk.reasons",
-        "risk.approval_required_for",
-        "verification.reviewed_by",
-        "verification.reviewed_at",
-        "verification.spec_reference",
-        "verification.content_sha256",
-        "verification.modified_since_review",
-        "dependencies.required_env_vars",
-        "dependencies.required_commands",
-        "dependencies.network_access",
-    )
-    for field_name in required_fields:
-        _check_required_card_field(findings, card, field_name)
-
-    level = str(_nested_get(card, "risk.level") or "").strip().lower()
-    if level and level not in {"low", "medium", "high", "critical"}:
-        findings.append(CardFinding("warning", "invalid_risk_level", "skill_card.risk.level must be low, medium, high, or critical."))
-
-    for dotted in (
-        "scope.allowed_surfaces",
-        "scope.denied_surfaces",
-        "risk.reasons",
-        "risk.approval_required_for",
-        "dependencies.required_env_vars",
-        "dependencies.required_commands",
-    ):
-        value = _nested_get(card, dotted)
-        if value is not None and not isinstance(value, list):
-            findings.append(CardFinding("warning", "invalid_skill_card_field", f"skill_card.{dotted} should be a list."))
-
-    modified = _nested_get(card, "verification.modified_since_review")
-    if modified is True:
-        findings.append(CardFinding("warning", "modified_since_review", "Skill card says content changed since review; re-review before trusting."))
-
+    # There is no repository-wide skill_card schema. Treat it as optional and
+    # validate only an explicit integrity claim, without inventing required
+    # provenance, risk, scope, or dependency fields.
     expected_hash = _nested_get(card, "verification.content_sha256")
-    if isinstance(expected_hash, str) and len(expected_hash.strip()) == 64:
-        actual_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if isinstance(expected_hash, str) and re.fullmatch(
+        r"[0-9a-fA-F]{64}", expected_hash.strip()
+    ):
+        canonical = _canonical_skill_content_for_hash(raw)
+        actual_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         if expected_hash.strip().lower() != actual_hash:
-            findings.append(CardFinding("warning", "content_hash_mismatch", "skill_card verification hash does not match current SKILL.md content."))
+            findings.append(
+                CardFinding(
+                    "warning",
+                    "content_hash_mismatch",
+                    "skill_card verification hash does not match current SKILL.md content.",
+                )
+            )
+    elif expected_hash is not None:
+        findings.append(
+            CardFinding(
+                "warning",
+                "invalid_content_hash",
+                "skill_card verification hash must be a 64-character SHA-256 digest.",
+            )
+        )
 
     return findings
 
 
-def _card_contract_findings(frontmatter: dict[str, Any], body: str, raw: str, skill_dir: Path) -> list[CardFinding]:
+def _card_contract_findings(
+    frontmatter: dict[str, Any], body: str, raw: str, skill_dir: Path
+) -> list[CardFinding]:
     findings: list[CardFinding] = []
     name = str(frontmatter.get("name") or skill_dir.name).strip()
     description = str(frontmatter.get("description") or "").strip()
 
     if not raw.startswith("---"):
-        findings.append(CardFinding("error", "missing_frontmatter", "SKILL.md must start with YAML frontmatter."))
+        findings.append(
+            CardFinding(
+                "error",
+                "missing_frontmatter",
+                "SKILL.md must start with YAML frontmatter.",
+            )
+        )
     if not name or not _NAME_RE.match(name):
-        findings.append(CardFinding("error", "invalid_name", "Frontmatter `name` must be lowercase kebab/underscore identifier."))
+        findings.append(
+            CardFinding(
+                "error",
+                "invalid_name",
+                "Frontmatter `name` must be lowercase kebab/underscore identifier.",
+            )
+        )
     if not description:
-        findings.append(CardFinding("error", "missing_description", "Frontmatter `description` is required for discoverability."))
+        findings.append(
+            CardFinding(
+                "error",
+                "missing_description",
+                "Frontmatter `description` is required for discoverability.",
+            )
+        )
     elif len(description) > 220:
-        findings.append(CardFinding("warning", "long_description", "Description is too long for a compact skill card."))
+        findings.append(
+            CardFinding(
+                "warning",
+                "long_description",
+                "Description is too long for a compact skill card.",
+            )
+        )
 
     lower_body = body.lower()
     if len(body.strip()) < 400:
-        findings.append(CardFinding("warning", "thin_body", "Body is thin; class-level skills need actionable workflow detail."))
-    if not any(marker in lower_body for marker in ("when to use", "trigger", "use when", "scope")):
-        findings.append(CardFinding("warning", "missing_trigger", "Add trigger/when-to-use guidance."))
-    if not (_NUMBERED_STEP_RE.search(body) or any(marker in lower_body for marker in ("steps", "workflow", "procedure"))):
-        findings.append(CardFinding("warning", "missing_workflow", "Add concrete workflow steps or a procedure section."))
-    if not any(marker in lower_body for marker in ("verify", "verification", "validate", "checks", "tests")):
-        findings.append(CardFinding("warning", "missing_verification", "Add verification/checks guidance."))
+        findings.append(
+            CardFinding(
+                "warning",
+                "thin_body",
+                "Body is thin; class-level skills need actionable workflow detail.",
+            )
+        )
+    if not any(
+        marker in lower_body
+        for marker in ("when to use", "trigger", "use when", "scope")
+    ):
+        findings.append(
+            CardFinding(
+                "warning", "missing_trigger", "Add trigger/when-to-use guidance."
+            )
+        )
+    if not (
+        _NUMBERED_STEP_RE.search(body)
+        or any(marker in lower_body for marker in ("steps", "workflow", "procedure"))
+    ):
+        findings.append(
+            CardFinding(
+                "warning",
+                "missing_workflow",
+                "Add concrete workflow steps or a procedure section.",
+            )
+        )
+    if not any(
+        marker in lower_body
+        for marker in ("verify", "verification", "validate", "checks", "tests")
+    ):
+        findings.append(
+            CardFinding(
+                "warning", "missing_verification", "Add verification/checks guidance."
+            )
+        )
     if _SESSION_ARTIFACT_RE.search(body):
-        findings.append(CardFinding("warning", "session_artifact", "Body appears to include PR/issue/SHA session artifacts; move stale detail to references or remove."))
-
-    estimated_tokens = _estimate_tokens(raw)
-    if estimated_tokens > 4000:
-        findings.append(CardFinding("error", "prompt_bloat", f"Estimated {estimated_tokens:,} tokens; split details into references/templates/scripts."))
-    elif estimated_tokens > 2000:
-        findings.append(CardFinding("warning", "large_card", f"Estimated {estimated_tokens:,} tokens; review for prompt bloat."))
+        findings.append(
+            CardFinding(
+                "warning",
+                "session_artifact",
+                "Body appears to include PR/issue session artifacts; move stale detail to references or remove.",
+            )
+        )
 
     return findings
 
 
-def _scan_one(skill_md: Path, root: Path, source: str) -> tuple[SkillCardReport, set[str]]:
+def _rendered_index_entry(name: str, description: str) -> str:
+    """Mirror the name/description payload rendered by build_skills_system_prompt."""
+    return f"- {name}: {description}" if description else f"- {name}"
+
+
+def _scan_one(
+    skill_md: Path, root: Path, source: str
+) -> tuple[SkillCardReport, set[str]]:
     raw = skill_md.read_text(encoding="utf-8")
     frontmatter, body = parse_frontmatter(raw)
     skill_dir = skill_md.parent
     name = str(frontmatter.get("name") or skill_dir.name).strip() or skill_dir.name
-    guard = scan_skill(skill_dir, source="official" if source == "bundled" else "agent-created")
+    description = extract_skill_description(frontmatter)
+    guard = scan_skill(
+        skill_dir, source="official" if source == "bundled" else "agent-created"
+    )
     rel = _relative_to_root(skill_dir, root)
     card_findings = _card_contract_findings(frontmatter, body, raw, skill_dir)
     card_findings.extend(_skill_card_findings(frontmatter.get("skill_card"), raw))
@@ -261,8 +350,8 @@ def _scan_one(skill_md: Path, root: Path, source: str) -> tuple[SkillCardReport,
         path=str(skill_dir),
         rel_path=rel,
         char_count=len(raw),
-        estimated_tokens=_estimate_tokens(raw),
-        description=str(frontmatter.get("description") or "").strip(),
+        estimated_tokens=_estimate_tokens(_rendered_index_entry(name, description)),
+        description=description,
         guard_verdict=guard.verdict,
         guard_findings=len(guard.findings),
         card_findings=card_findings,
@@ -271,7 +360,9 @@ def _scan_one(skill_md: Path, root: Path, source: str) -> tuple[SkillCardReport,
     return report, tokens
 
 
-def audit_skills(*, include_bundled: bool = False, similarity_threshold: float = 0.42) -> SkillCleanerReport:
+def audit_skills(
+    *, include_bundled: bool = False, similarity_threshold: float = 0.42
+) -> SkillCleanerReport:
     """Build a read-only skill-cleaner report for the active Hermes profile."""
     reports: list[SkillCardReport] = []
     token_sets: dict[str, set[str]] = {}
@@ -294,11 +385,27 @@ def audit_skills(*, include_bundled: bool = False, similarity_threshold: float =
     for idx, (left_key, left) in enumerate(keyed):
         for right_key, right in keyed[idx + 1 :]:
             if left.name == right.name and left.path != right.path:
-                duplicates.append(DuplicateCandidate(left.name, right.name, 1.0, "same skill name in multiple locations"))
+                duplicates.append(
+                    DuplicateCandidate(
+                        left.name,
+                        right.name,
+                        1.0,
+                        "same skill name in multiple locations",
+                    )
+                )
                 continue
-            sim = _jaccard(token_sets.get(left_key, set()), token_sets.get(right_key, set()))
+            sim = _jaccard(
+                token_sets.get(left_key, set()), token_sets.get(right_key, set())
+            )
             if sim >= similarity_threshold:
-                duplicates.append(DuplicateCandidate(left.name, right.name, round(sim, 3), "high content-term overlap"))
+                duplicates.append(
+                    DuplicateCandidate(
+                        left.name,
+                        right.name,
+                        round(sim, 3),
+                        "high content-term overlap",
+                    )
+                )
 
     duplicates.sort(key=lambda d: d.similarity, reverse=True)
     reports.sort(key=lambda s: (s.estimated_tokens, s.name), reverse=True)
@@ -322,7 +429,9 @@ def report_to_dict(report: SkillCleanerReport) -> dict[str, Any]:
     return data
 
 
-def format_markdown_report(report: SkillCleanerReport, *, duplicate_limit: int = 30, finding_limit: int = 80) -> str:
+def format_markdown_report(
+    report: SkillCleanerReport, *, duplicate_limit: int = 30, finding_limit: int = 80
+) -> str:
     counts = report.finding_counts
     lines = [
         "# Hermes Skill Cleaner Report",
@@ -331,15 +440,15 @@ def format_markdown_report(report: SkillCleanerReport, *, duplicate_limit: int =
         "",
         f"- Generated: `{report.generated_at}`",
         f"- Hermes home: `{report.hermes_home}`",
-        f"- Scanned roots: {', '.join(f'`{r}`' for r in report.scanned_roots) or '(none)' }",
+        f"- Scanned roots: {', '.join(f'`{r}`' for r in report.scanned_roots) or '(none)'}",
         f"- Skills scanned: **{len(report.skills)}**",
-        f"- Estimated loaded skill-card tokens: **{report.total_estimated_tokens:,}**",
+        f"- Estimated rendered skill-index entry tokens: **{report.total_estimated_tokens:,}**",
         f"- Card findings: errors={counts.get('error', 0)}, warnings={counts.get('warning', 0)}, info={counts.get('info', 0)}",
         f"- Duplicate candidates: **{len(report.duplicates)}**",
         "",
-        "## Largest skill cards",
+        "## Largest rendered skill-index entries",
         "",
-        "| Skill | Source | Est. tokens | Guard | Path |",
+        "| Skill | Source | Est. index tokens | Guard | Path |",
         "|---|---:|---:|---|---|",
     ]
     for skill in report.skills[:20]:
@@ -348,20 +457,24 @@ def format_markdown_report(report: SkillCleanerReport, *, duplicate_limit: int =
             f"{skill.guard_verdict} ({skill.guard_findings}) | `{skill.rel_path}` |"
         )
 
-    lines.extend(["", "## Verified skill-card findings", ""])
+    lines.extend(["", "## Skill findings", ""])
     emitted = 0
     for skill in report.skills:
         for finding in skill.card_findings:
             if emitted >= finding_limit:
                 break
-            lines.append(f"- **{finding.severity.upper()}** `{skill.name}` `{finding.code}` — {finding.message}")
+            lines.append(
+                f"- **{finding.severity.upper()}** `{skill.name}` `{finding.code}` — {finding.message}"
+            )
             emitted += 1
         if emitted >= finding_limit:
             break
     if emitted == 0:
-        lines.append("- No verified-card findings.")
+        lines.append("- No skill findings.")
     elif sum(len(s.card_findings) for s in report.skills) > emitted:
-        lines.append(f"- ...truncated at {finding_limit} findings; see JSON for all findings.")
+        lines.append(
+            f"- ...truncated at {finding_limit} findings; see JSON for all findings."
+        )
 
     lines.extend(["", "## Duplicate / consolidation candidates", ""])
     if not report.duplicates:
@@ -369,9 +482,13 @@ def format_markdown_report(report: SkillCleanerReport, *, duplicate_limit: int =
     else:
         lines.extend(["| Similarity | Left | Right | Reason |", "|---:|---|---|---|"])
         for dup in report.duplicates[:duplicate_limit]:
-            lines.append(f"| {dup.similarity:.3f} | `{dup.left}` | `{dup.right}` | {dup.reason} |")
+            lines.append(
+                f"| {dup.similarity:.3f} | `{dup.left}` | `{dup.right}` | {dup.reason} |"
+            )
         if len(report.duplicates) > duplicate_limit:
-            lines.append(f"\n_Truncated at {duplicate_limit} duplicate candidates; see JSON for all pairs._")
+            lines.append(
+                f"\n_Truncated at {duplicate_limit} duplicate candidates; see JSON for all pairs._"
+            )
 
     lines.extend([
         "",
@@ -383,7 +500,9 @@ def format_markdown_report(report: SkillCleanerReport, *, duplicate_limit: int =
     return "\n".join(lines)
 
 
-def write_report_files(report: SkillCleanerReport, output_dir: Path | None = None) -> tuple[Path, Path]:
+def write_report_files(
+    report: SkillCleanerReport, output_dir: Path | None = None
+) -> tuple[Path, Path]:
     """Write markdown and JSON report artifacts under the active profile reports dir."""
     if output_dir is None:
         output_dir = get_hermes_home() / "reports" / "skill-cleaner"
@@ -392,7 +511,10 @@ def write_report_files(report: SkillCleanerReport, output_dir: Path | None = Non
     md_path = output_dir / f"skill-cleaner-{stamp}.md"
     json_path = output_dir / f"skill-cleaner-{stamp}.json"
     md_path.write_text(format_markdown_report(report), encoding="utf-8")
-    json_path.write_text(json.dumps(report_to_dict(report), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    json_path.write_text(
+        json.dumps(report_to_dict(report), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
     return md_path, json_path
 
 

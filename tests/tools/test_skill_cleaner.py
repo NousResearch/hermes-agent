@@ -1,19 +1,23 @@
+import hashlib
 import json
 from pathlib import Path
 
-from tools.skill_cleaner import audit_skills, main, report_to_dict, write_report_files
+from tools.skill_cleaner import (
+    _canonical_skill_content_for_hash,
+    audit_skills,
+    main,
+    report_to_dict,
+    write_report_files,
+)
 
 
-def _write_skill(root: Path, rel: str, *, name: str, description: str, body: str) -> Path:
+def _write_skill(
+    root: Path, rel: str, *, name: str, description: str, body: str
+) -> Path:
     skill_dir = root / rel
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\n"
-        f"name: {name}\n"
-        f"description: {description}\n"
-        "---\n"
-        f"# {name}\n\n"
-        f"{body}\n",
+        f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n\n{body}\n",
         encoding="utf-8",
     )
     return skill_dir
@@ -61,7 +65,9 @@ def test_audit_uses_active_profile_home_and_writes_report(tmp_path, monkeypatch)
     assert payload["summary"]["skill_count"] == 1
 
 
-def test_verified_card_contract_flags_thin_missing_metadata(tmp_path, monkeypatch):
+def test_documented_frontmatter_contract_flags_thin_missing_metadata(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-b"))
     skill_dir = tmp_path / "profile-b" / "skills" / "bad-card"
     skill_dir.mkdir(parents=True)
@@ -73,8 +79,41 @@ def test_verified_card_contract_flags_thin_missing_metadata(tmp_path, monkeypatc
     assert "missing_frontmatter" in codes
     assert "missing_description" in codes
     assert "thin_body" in codes
-    assert "missing_skill_card" in codes
+    assert "missing_skill_card" not in codes
     assert report.finding_counts["error"] >= 2
+
+
+def test_optional_skill_card_hash_excludes_its_own_field(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-hash"))
+    skill_dir = tmp_path / "profile-hash" / "skills" / "hash-audit"
+    skill_dir.mkdir(parents=True)
+    template = (
+        "---\n"
+        "name: hash-audit\n"
+        "description: Verify optional content hashes.\n"
+        "skill_card:\n"
+        "  verification:\n"
+        "    content_sha256: HASH_PLACEHOLDER\n"
+        "---\n"
+        "# hash-audit\n\n" + _healthy_body("content hashes") + "\n"
+    )
+    digest = hashlib.sha256(
+        _canonical_skill_content_for_hash(template).encode("utf-8")
+    ).hexdigest()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(template.replace("HASH_PLACEHOLDER", digest), encoding="utf-8")
+
+    report = audit_skills()
+    codes = {finding.code for finding in report.skills[0].card_findings}
+    assert "content_hash_mismatch" not in codes
+
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8") + "Changed after review.\n",
+        encoding="utf-8",
+    )
+    changed_report = audit_skills()
+    changed_codes = {finding.code for finding in changed_report.skills[0].card_findings}
+    assert "content_hash_mismatch" in changed_codes
 
 
 def test_audit_includes_configured_external_skill_dirs(tmp_path, monkeypatch):
@@ -114,7 +153,10 @@ def test_duplicate_detection_can_include_bundled_root(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(active_home))
     monkeypatch.setenv("HERMES_BUNDLED_SKILLS", str(bundled_root))
 
-    duplicate_body = _healthy_body("duplicate skill overlap") + "\nshared terraform dns deployment audit approval gate " * 8
+    duplicate_body = (
+        _healthy_body("duplicate skill overlap")
+        + "\nshared terraform dns deployment audit approval gate " * 8
+    )
     _write_skill(
         active_home / "skills",
         "operations/dns-audit",
@@ -139,28 +181,64 @@ def test_duplicate_detection_can_include_bundled_root(tmp_path, monkeypatch):
     assert with_bundled.duplicates[0].similarity >= 0.8
 
 
-def test_session_artifact_detection_ignores_numeric_date_references(tmp_path, monkeypatch):
+def test_session_artifact_detection_ignores_dates_and_durable_sha_pins(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-dates"))
     _write_skill(
         tmp_path / "profile-dates" / "skills",
         "ops/date-reference",
         name="date-reference",
         description="Audit dated reference names without false SHA matches.",
-        body=_healthy_body("dated references") + "\nOpen references/report-20260525.md when needed.",
+        body=_healthy_body("dated references")
+        + "\nOpen references/report-20260525.md when needed.",
     )
     _write_skill(
         tmp_path / "profile-dates" / "skills",
         "ops/sha-reference",
         name="sha-reference",
-        description="Audit real SHA-like artifacts.",
-        body=_healthy_body("SHA references") + "\nMove stale detail for deadbee when found.",
+        description="Audit durable SHA-pinned dependencies.",
+        body=_healthy_body("SHA references")
+        + "\nUse actions/checkout@deadbeef1234567890 for the pinned dependency.",
+    )
+    _write_skill(
+        tmp_path / "profile-dates" / "skills",
+        "ops/pr-reference",
+        name="pr-reference",
+        description="Audit stale pull request references.",
+        body=_healthy_body("PR references")
+        + "\nMove stale detail from PR #1234 to references.",
     )
 
     report = audit_skills()
-    findings_by_name = {skill.name: {finding.code for finding in skill.card_findings} for skill in report.skills}
+    findings_by_name = {
+        skill.name: {finding.code for finding in skill.card_findings}
+        for skill in report.skills
+    }
 
     assert "session_artifact" not in findings_by_name["date-reference"]
-    assert "session_artifact" in findings_by_name["sha-reference"]
+    assert "session_artifact" not in findings_by_name["sha-reference"]
+    assert "session_artifact" in findings_by_name["pr-reference"]
+
+
+def test_prompt_footprint_measures_rendered_index_not_full_body(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-index"))
+    _write_skill(
+        tmp_path / "profile-index" / "skills",
+        "ops/large-reference",
+        name="large-reference",
+        description="A deliberately long description that the real prompt builder truncates before rendering.",
+        body=_healthy_body("large references") + ("\nDetailed procedure text." * 1000),
+    )
+
+    report = audit_skills()
+    skill = report.skills[0]
+    codes = {finding.code for finding in skill.card_findings}
+
+    assert skill.char_count > 20_000
+    assert skill.estimated_tokens < 30
+    assert "prompt_bloat" not in codes
+    assert "large_card" not in codes
 
 
 def test_cli_no_write_json_smoke(tmp_path, monkeypatch, capsys):

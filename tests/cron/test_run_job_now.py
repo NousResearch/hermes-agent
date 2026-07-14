@@ -64,10 +64,14 @@ class TestRunJobNow:
         result = scheduler.run_job_now("abc123", verbose=False)
         assert result["success"] is False
         assert result["error"] == "boom"
-        # failed jobs still deliver; the delivery wrapper gets the raw error plus
-        # success=False so it can own the ⚠️ failure framing.
+        # Failed jobs still deliver. The error is now framed by
+        # _summarize_cron_failure_for_delivery (a compact one-liner) rather than
+        # handed raw to the wrapper — matching run_one_job's path. A non-transient
+        # defect like "boom" is delivered (not suppressed) with a "failed:" frame.
         assert calls["deliver"], "failure should still deliver an alert"
-        assert calls["deliver"] == ["boom"]
+        assert len(calls["deliver"]) == 1
+        assert "boom" in calls["deliver"][0]
+        assert "failed" in calls["deliver"][0].lower()
         assert calls["deliver_success"] == [False]
         assert calls["mark"][0][1] is False
 

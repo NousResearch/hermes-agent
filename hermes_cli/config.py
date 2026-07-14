@@ -2767,6 +2767,17 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Suppress the IMMEDIATE per-run failure page when a self-healing
+        # RECURRING job fails on a TRANSIENT provider-capacity/rate-limit/timeout
+        # blip (e.g. the Claude sub relay returns 503 "no eligible sub" when the
+        # subscription pool is momentarily capped). The run is still recorded
+        # (last_status reflects the error, output is saved) and the separate
+        # consecutive-sample monitor still pages loud when the condition
+        # persists — this only silences the single-blip chat noise from a job
+        # that re-fires on its own schedule. One-shot jobs are never suppressed
+        # (their only signal is that one delivery). Set false to restore the old
+        # page-on-every-transient-failure behavior.
+        "suppress_transient_failure_page": True,
         # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
         # and the agent has it in context (no "what is Task #2?" amnesia).
         # Default False preserves the historical isolation guarantee (cron

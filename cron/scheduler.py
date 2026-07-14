@@ -52,6 +52,88 @@ from hermes_time import now as _hermes_now
 logger = logging.getLogger(__name__)
 
 
+# Transient provider-capacity / rate-limit / timeout failures. These are NOT a
+# real job defect: the requested backend was momentarily unavailable (the Claude
+# sub relay had no un-capped subscription to route to, a rate/usage limit was
+# hit, or the provider timed out) and the very next scheduled tick will usually
+# succeed. For a self-healing RECURRING job, a single transient blip should NOT
+# fire an immediate per-run failure page — the job re-fires on its own schedule,
+# and the separate consecutive-sample monitor (crons.ace) still owns the loud
+# path when the condition actually persists. See _is_transient_cron_failure and
+# _should_suppress_transient_failure_page below.
+def _is_transient_cron_failure(error: str | None) -> bool:
+    """True when a cron failure is a transient provider-capacity/rate/timeout blip.
+
+    Deliberately matches the same wording families the delivery summarizer
+    already special-cases, PLUS the Claude sub-relay capacity 503s
+    (``no eligible sub`` / ``all_capped`` outage and ``pool at capacity``
+    backpressure) that previously fell through to a raw provider-JSON page.
+    """
+    if not error:
+        return False
+    text = str(error)
+    lower = text.lower()
+    # Claude sub-relay capacity 503s (outage: no un-capped sub; backpressure:
+    # inflight ceiling). Both are momentary and clear on the next tick.
+    if "no eligible sub" in lower or "all_capped" in lower or "pool at capacity" in lower:
+        return True
+    # Provider rate/usage limits and 429s.
+    if "429" in text or "rate limit" in lower or "usage limit" in lower or "quota" in lower:
+        return True
+    # Provider timeouts (read/connect/inactivity).
+    if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:
+        return True
+    return False
+
+
+def _job_is_recurring(job: dict) -> bool:
+    """True for a self-healing recurring job (fires again on its own schedule).
+
+    A one-shot (``schedule.kind == "once"`` or a finite ``repeat.times``) has a
+    single run whose only signal to the operator IS its delivery — never
+    suppress its page. A recurring job re-fires, so a transient blip on one run
+    is safely absorbed by the next tick + the consecutive-sample monitor.
+    """
+    schedule = job.get("schedule") or {}
+    if schedule.get("kind") == "once":
+        return False
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    # times is None → infinite/recurring; times>0 finite → treat as one-shot-ish
+    # (it has a bounded number of runs and each one is worth reporting).
+    if isinstance(times, int) and times > 0:
+        return False
+    return True
+
+
+def _should_suppress_transient_failure_page(job: dict, error: str | None) -> bool:
+    """Whether to SKIP the immediate per-run failure page for this cron run.
+
+    Suppress only when ALL hold:
+      * the failure is a transient provider-capacity/rate/timeout blip
+        (``_is_transient_cron_failure``), AND
+      * the job is recurring / self-healing (``_job_is_recurring``), AND
+      * the safety toggle ``cron.suppress_transient_failure_page`` is on
+        (default True; set False in config.yaml to restore the old loud
+        page-on-every-transient-failure behavior).
+
+    When suppressed, the run is still recorded (``mark_job_run`` runs, output is
+    saved, ``last_status`` reflects the error) — only the immediate chat page is
+    skipped. The separate consecutive-sample monitor (crons.ace) still pages
+    loud when the condition persists, so a real outage is never silenced.
+    """
+    if not _is_transient_cron_failure(error):
+        return False
+    if not _job_is_recurring(job):
+        return False
+    try:
+        cfg = load_config()
+        enabled = cfg.get("cron", {}).get("suppress_transient_failure_page", True)
+    except Exception:
+        enabled = True
+    return bool(enabled)
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
 
@@ -63,8 +145,30 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     text = (error or "unknown error").strip()
     lower = text.lower()
 
+    # Claude sub-relay capacity 503s — name the actual condition instead of
+    # leaking a raw ``RuntimeError: HTTP 503: {"error":"no eligible sub"}`` blob.
+    if "no eligible sub" in lower or "all_capped" in lower or "pool at capacity" in lower:
+        cap = (
+            "sub pool momentarily at capacity"
+            if "pool at capacity" in lower
+            else "Claude sub pool capped (no un-capped subscription available)"
+        )
+        # Only a recurring job self-heals on the next tick; a one-shot /
+        # finite-repeat capacity failure (never suppressed) must NOT be told it
+        # will retry automatically, or the operator delays manual intervention.
+        retry_note = (
+            "Transient; retrying on the next scheduled tick. "
+            if _job_is_recurring(job)
+            else "Transient; this job will not retry automatically. "
+        )
+        return (
+            f"⚠️ Cron '{job_name}' failed: provider capacity — {cap}. "
+            f"{retry_note}"
+            "Full details saved in cron output."
+        )
+
     # Provider/API failures are the common noisy path. Keep these short.
-    if "429" in text or "rate limit" in lower or "usage limit" in lower:
+    if "429" in text or "rate limit" in lower or "usage limit" in lower or "quota" in lower:
         reason = "rate limit"
         if "weekly usage limit" in lower:
             reason = "weekly usage limit"
@@ -3691,17 +3795,30 @@ def _process_one_job(job: dict, *, verbose: bool = True, adapters=None, loop=Non
 
         # Deliver the final response to the origin/target chat.
         # If the agent responded with [SILENT], skip delivery (but
-        # output is already saved above).  Failed jobs always deliver.
-        # On failure, hand the raw error to _deliver_result and let the wrapper
-        # own the status framing (avoids the old double-wrap: a "Cron job failed"
-        # body nested inside a separate "Cronjob Response" header).
-        deliver_content = final_response if success else (error or "unknown error")
+        # output is already saved above).  Failed jobs deliver a summarized,
+        # one-line failure (not a raw provider-JSON blob) via
+        # _summarize_cron_failure_for_delivery — matching run_one_job's path so
+        # both firing bodies frame failures identically.
+        deliver_content = (
+            final_response if success
+            else _summarize_cron_failure_for_delivery(job, error)
+        )
         # Treat whitespace-only final responses the same as empty
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.
         should_deliver = bool(deliver_content.strip())
         if should_deliver and success and _is_cron_silence_response(deliver_content):
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+            should_deliver = False
+        # Transient provider-capacity/rate/timeout blip on a self-healing
+        # recurring job: skip the immediate per-run failure page (the run is
+        # still recorded below; the consecutive-sample monitor owns loud). See
+        # _should_suppress_transient_failure_page.
+        if should_deliver and not success and _should_suppress_transient_failure_page(job, error):
+            logger.info(
+                "Job '%s': transient failure (%s) — suppressing immediate page (recurring job re-fires next tick)",
+                job["id"], (error or "")[:120],
+            )
             should_deliver = False
 
         delivery_error = None
@@ -3887,6 +4004,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # tolerance the cron contract relies on.
             if should_deliver and success and _is_cron_silence_response(deliver_content):
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+            # Transient provider-capacity/rate/timeout blip on a self-healing
+            # recurring job: skip the immediate per-run failure page (the run is
+            # still recorded below; the consecutive-sample monitor owns loud).
+            # See _should_suppress_transient_failure_page.
+            if should_deliver and not success and _should_suppress_transient_failure_page(job, error):
+                logger.info(
+                    "Job '%s': transient failure (%s) — suppressing immediate page (recurring job re-fires next tick)",
+                    job["id"], (error or "")[:120],
+                )
                 should_deliver = False
 
             if should_deliver:

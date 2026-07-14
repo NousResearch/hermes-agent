@@ -1866,9 +1866,10 @@ def init_agent(
     agent.compression_in_place = compression_in_place
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
 
-    # Reject models whose context window is below the minimum required
-    # for reliable tool-calling workflows (64K tokens).
-    _ctx = getattr(agent.context_compressor, "context_length", 0)
+    # Plugin engines and the non-quiet CLI path resolve during construction.
+    # Quiet built-in compressors validate at first-turn setup after restoration.
+    _ctx = (getattr(agent.context_compressor, "context_length", 0)
+            if _selected_engine is not None or not agent.quiet_mode else 0)
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
@@ -1966,7 +1967,12 @@ def init_agent(
                 hermes_home=str(get_hermes_home()),
                 platform=agent.platform or "cli",
                 model=agent.model,
-                context_length=getattr(agent.context_compressor, "context_length", 0),
+                context_length=(
+                    getattr(agent.context_compressor, "_resolved_context_length", None)
+                    or (getattr(agent.context_compressor, "context_length", 0)
+                        if not isinstance(agent.context_compressor, ContextCompressor)
+                        else 0)
+                ),
                 conversation_id=getattr(agent, "_gateway_session_key", None),
             )
         except Exception as _ce_err:
@@ -2118,8 +2124,16 @@ def init_agent(
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(_cc, "api_key", ""),
         "compressor_provider": getattr(_cc, "provider", agent.provider),
-        "compressor_context_length": _cc.context_length,
-        "compressor_threshold_tokens": _cc.threshold_tokens,
+        "compressor_context_length": (
+            getattr(_cc, "_resolved_context_length", None)
+            if isinstance(_cc, ContextCompressor)
+            else getattr(_cc, "context_length", 0)
+        ) or 0,
+        "compressor_threshold_tokens": (
+            getattr(_cc, "_threshold_tokens", None)
+            if isinstance(_cc, ContextCompressor)
+            else getattr(_cc, "threshold_tokens", 0)
+        ) or 0,
     }
     if agent.api_mode == "anthropic_messages":
         agent._primary_runtime.update({

@@ -1506,7 +1506,7 @@ class TestSummaryFailureTrackingForGatewayWarning:
         fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
         assert len(fallback) <= 8300
         assert "deterministic fallback" in fallback
-        assert "1 compacted message(s)" in fallback
+        assert "3 compacted message(s)" in fallback
         assert "ASSISTANT: head assistant" in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
@@ -2350,10 +2350,25 @@ class TestSummaryTargetRatio:
     def test_configured_threshold_used_at_512k_and_above(self):
         """At 512K+ the configured (default 50%) percentage is used directly."""
         with patch("agent.context_compressor.get_model_context_length", return_value=512_000):
+            c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.75)
+            _ = c.context_length
+        assert c.threshold_percent == 0.75
+        assert c.threshold_tokens == 384_000
+
+    def test_threshold_floor_does_not_apply_at_512k(self):
+        """At 512K and above the configured percentage is used directly."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=512_000):
             c = ContextCompressor(model="test", quiet_mode=True)
             _ = c.context_length
         assert c.threshold_percent == 0.50
         assert c.threshold_tokens == 256_000
+
+    def test_small_context_floor_is_raise_only(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            c = ContextCompressor(model="test", quiet_mode=True, threshold_percent=0.85)
+            _ = c.context_length
+        assert c.threshold_percent == 0.85
+        assert c.threshold_tokens == 85_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""

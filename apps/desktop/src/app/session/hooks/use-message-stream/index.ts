@@ -360,8 +360,26 @@ export function useMessageStream({
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
           const dedupeReference = normalize(visibleFinalText)
 
-          const kept = parts.filter(part => {
+          // Find the last tool-call part index. Text parts before it came from
+          // earlier API calls in the tool-calling loop and are NOT covered by
+          // the final_response in message.complete (which only contains the
+          // last API call's content). Preserve them so pre-tool-call narration
+          // isn't lost.
+          let lastToolCallIndex = -1
+          for (let i = parts.length - 1; i >= 0; i--) {
+            if (parts[i].type === 'tool-call') {
+              lastToolCallIndex = i
+              break
+            }
+          }
+
+          const kept = parts.filter((part, index) => {
             if (part.type === 'text') {
+              // Keep text parts before the last tool-call — from earlier API calls.
+              if (lastToolCallIndex >= 0 && index < lastToolCallIndex) {
+                return true
+              }
+              // Text after last tool-call is from the final API call — covered by finalText.
               return false
             }
 

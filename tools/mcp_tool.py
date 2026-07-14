@@ -1950,11 +1950,16 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
+                        t.cancel()
+                    except RuntimeError:
+                        # Event loop already closed (benign shutdown race).
                         pass
+                    else:
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -1994,11 +1999,16 @@ class MCPServerTask:
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
-                    t.cancel()
                     try:
-                        await t
-                    except (asyncio.CancelledError, Exception):
+                        t.cancel()
+                    except RuntimeError:
+                        # Event loop already closed (benign shutdown race).
                         pass
+                    else:
+                        try:
+                            await t
+                        except (asyncio.CancelledError, Exception):
+                            pass
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()

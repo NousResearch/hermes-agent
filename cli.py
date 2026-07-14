@@ -10511,7 +10511,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     days = int(parts[i + 1])
                 except ValueError:
-                    print(f"  Invalid --days value: {parts[i + 1]}")
+                    self._console_print(f"  Invalid --days value: {parts[i + 1]}")
                     return
                 i += 2
             elif parts[i] == "--source" and i + 1 < len(parts):
@@ -10530,10 +10530,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             db = SessionDB()
             engine = InsightsEngine(db)
             report = engine.generate(days=days, source=source)
-            print(engine.format_terminal(report))
+            self._console_print(engine.format_terminal(report))
             db.close()
         except Exception as e:
-            print(f"  Error generating insights: {e}")
+            self._console_print(f"  Error generating insights: {e}")
 
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.

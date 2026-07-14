@@ -31,7 +31,13 @@ _VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
 _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
-_CONVERSATIONS_URL = "https://api.supermemory.ai/v4/conversations"
+_DEFAULT_API_BASE = "https://api.supermemory.ai"
+
+
+def _conversations_url() -> str:
+    # Honor self-hosted servers (SUPERMEMORY_BASE_URL), matching the SDK client.
+    base = os.environ.get("SUPERMEMORY_BASE_URL", "").strip() or _DEFAULT_API_BASE
+    return base.rstrip("/") + "/v4/conversations"
 _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 _TRIVIAL_RE = re.compile(
     r"^(ok|okay|thanks|thank you|got it|sure|yes|no|yep|nope|k|ty|thx|np)\.?$",
@@ -388,7 +394,7 @@ class _SupermemoryClient:
             payload["metadata"] = self._merge_metadata(metadata)
 
         req = urllib.request.Request(
-            _CONVERSATIONS_URL,
+            _conversations_url(),
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self._api_key}",

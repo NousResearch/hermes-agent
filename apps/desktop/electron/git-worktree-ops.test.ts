@@ -3,11 +3,13 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import {
   addWorktree,
   ensureGitRepo,
+  listBaseBranches,
   listBranches,
   parseWorktrees,
   sanitizeBranch,
@@ -206,6 +208,56 @@ test('addWorktree: existing default branch switches the main checkout, not .work
     assert.equal(fs.realpathSync(result.path), fs.realpathSync(dir))
     assert.equal(git('branch', '--show-current'), trunk)
     assert.equal(fs.existsSync(path.join(dir, '.worktrees', trunk)), false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('listBaseBranches: lists local branches and flags the default', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-base-branches-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
+
+  try {
+    await ensureGitRepo('git', dir)
+    const trunk = git('branch', '--show-current')
+    execFileSync('git', ['branch', 'feature'], { cwd: dir })
+
+    const branches = await listBaseBranches(dir, 'git')
+    const names = branches.map(b => b.name).sort()
+
+    assert.deepEqual(names, [trunk, 'feature'].sort())
+    // No remote → all local.
+    assert.equal(branches.every(b => !b.isRemote), true)
+    // The trunk is flagged as the default.
+    assert.equal(branches.find(b => b.name === trunk).isDefault, true)
+    assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('listBaseBranches: empty on a non-repo path', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-base-nonrepo-'))
+
+  try {
+    assert.deepEqual(await listBaseBranches(dir, 'git'), [])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: base param branches off a specified local branch', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-base-add-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
+
+  try {
+    await ensureGitRepo('git', dir)
+    execFileSync('git', ['branch', 'staging'], { cwd: dir })
+
+    const result = await addWorktree(dir, { base: 'staging', branch: 'new-from-staging', name: 'new-from-staging' }, 'git')
+
+    assert.equal(result.branch, 'new-from-staging')
+    assert.equal(git('-C', result.path, 'merge-base', 'HEAD', 'staging').length > 0, true)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

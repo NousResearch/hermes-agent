@@ -1291,6 +1291,37 @@ class CuaDriverBackend(ComputerUseBackend):
                 logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
+            # Fallback: retry without on_screen_only filter — the driver's
+            # is_on_screen detection can be unreliable (e.g. on certain window
+            # managers, virtual desktops, or when no window is focused).
+            # When the retry succeeds, we do client-side filtering.
+            lw_fallback = self._session.call_tool(
+                "list_windows", {"on_screen_only": False}
+            )
+            sc_fb = lw_fallback.get("structuredContent") or {}
+            raw_fb = sc_fb.get("windows") if sc_fb else None
+            if raw_fb:
+                windows = [
+                    {
+                        "app_name": w.get("app_name", ""),
+                        "pid": int(w["pid"]),
+                        "window_id": int(w["window_id"]),
+                        "off_screen": not w.get("is_on_screen", True),
+                        "title": w.get("title", ""),
+                        "z_index": w.get("z_index", 0),
+                    }
+                    for w in raw_fb
+                ]
+                windows.sort(key=lambda w: w["z_index"])
+            else:
+                raw_fb_text = (
+                    lw_fallback["data"]
+                    if isinstance(lw_fallback.get("data"), str)
+                    else ""
+                )
+                windows = _parse_windows_from_text(raw_fb_text)
+
+        if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
                                  elements=[], app="", window_title="", png_bytes_len=0)
 

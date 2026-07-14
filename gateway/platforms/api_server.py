@@ -4569,7 +4569,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
-    @_admit_api_agent_request
     def _make_run_tool_sse_callbacks(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return tool_start/tool_complete callbacks for /v1/runs SSE correlation.
 

@@ -2439,8 +2439,7 @@ def _fallback_reasoning_config(fallback_entry: Dict[str, Any]) -> Dict[str, Any]
         return dict(reasoning)
 
     if "reasoning_effort" in fallback_entry:
-        effort = fallback_entry.get("reasoning_effort")
-        return parse_reasoning_effort(effort)
+        return parse_reasoning_effort(fallback_entry.get("reasoning_effort"))
 
     return None
 
@@ -2678,8 +2677,6 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # provider; restore_primary_runtime will revert it from the snapshot.
         agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
         fb_reasoning_config = _fallback_reasoning_config(fb)
-        if fb_reasoning_config is not None:
-            agent.reasoning_config = fb_reasoning_config
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
@@ -2820,9 +2817,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from hermes_cli.config import load_config
             from hermes_constants import resolve_reasoning_config
 
-            agent.reasoning_config = resolve_reasoning_config(
+            resolved_reasoning_config = resolve_reasoning_config(
                 load_config() or {}, agent.model
             )
+            if fb_reasoning_config is not None:
+                agent.reasoning_config = fb_reasoning_config
+            elif resolved_reasoning_config is not None:
+                agent.reasoning_config = resolved_reasoning_config
+            else:
+                primary_reasoning_config = (getattr(agent, "_primary_runtime", {}) or {}).get(
+                    "reasoning_config"
+                )
+                agent.reasoning_config = (
+                    dict(primary_reasoning_config)
+                    if isinstance(primary_reasoning_config, dict)
+                    else primary_reasoning_config
+                )
             logger.info(
                 "Fallback %s: reasoning_config resolved: %s",
                 agent.model, agent.reasoning_config,

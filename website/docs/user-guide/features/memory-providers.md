@@ -1,12 +1,24 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori, MongoDB"
+description: "External memory provider plugins: Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memori; community plugin: MongoDB"
 ---
 
 # Memory Providers
 
-Hermes Agent supports 10 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md:
+
+- Honcho
+- OpenViking
+- Mem0
+- Hindsight
+- Holographic
+- RetainDB
+- ByteRover
+- Supermemory
+- Memori
+
+Community memory provider plugins such as MongoDB can also be installed into `$HERMES_HOME/plugins/<name>`. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +34,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, mongodb
+  provider: openviking   # or another bundled provider; use mongodb after installing the community plugin
 ```
 
 ## How It Works
@@ -543,6 +555,8 @@ hermes memory setup
 
 ---
 
+The providers above are bundled. The following community plugin is installed separately before selection.
+
 ### MongoDB
 
 Hybrid search (vector + BM25 fused via `$rankFusion`), TTL-driven automatic forgetting, time-decay relevance, and entity graph traversal — all from a single MongoDB cluster (self-hosted or Atlas free tier). Optional embedding via OpenAI or Voyage; runs as a tuned BM25 + entity-graph store without an embedding provider.
@@ -550,7 +564,7 @@ Hybrid search (vector + BM25 fused via `$rankFusion`), TTL-driven automatic forg
 | | |
 |---|---|
 | **Best for** | Single-backend deployments wanting hybrid search, TTL forgetting, and graph queries without separate vector/graph stores |
-| **Requires** | `pip install hermes-mongodb-memory` + MongoDB 7+ ([Atlas free tier](https://www.mongodb.com/cloud/atlas) or self-hosted) |
+| **Requires** | `hermes-mongodb-memory` 0.2.0+ + MongoDB 7+ ([Atlas free tier](https://www.mongodb.com/cloud/atlas) or self-hosted) |
 | **Data storage** | MongoDB / Atlas |
 | **Cost** | Free (Atlas free tier or self-hosted) |
 
@@ -558,15 +572,18 @@ Hybrid search (vector + BM25 fused via `$rankFusion`), TTL-driven automatic forg
 
 **Setup:**
 ```bash
-pip install hermes-mongodb-memory
+pip install --upgrade hermes-mongodb-memory
+hermes-mongodb-memory install
 hermes config set memory.provider mongodb
 hermes memory setup
 hermes mongodb init-indexes   # create collection + TTL indexes
 ```
 
+The installer copies the provider into `$HERMES_HOME/plugins/mongodb`, which is the directory current Hermes releases scan for community memory providers. The package also publishes provider entry points for future entry-point-based loaders.
+
 For optional vector search, add `[openai]` or `[voyage]` to the install:
 ```bash
-pip install "hermes-mongodb-memory[openai]"   # or [voyage], or [all]
+pip install --upgrade "hermes-mongodb-memory[openai]"   # or [voyage], or [all]
 ```
 
 **Config:** `$HERMES_HOME/mongodb.json` (env vars override file values)
@@ -610,7 +627,7 @@ pip install "hermes-mongodb-memory[openai]"   # or [voyage], or [all]
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
-| **MongoDB** | Local/Cloud | Free | 6 | `hermes-mongodb-memory` | Hybrid `$rankFusion` + TTL forgetting + entity `$graphLookup` |
+| **MongoDB** (community) | Local/Cloud | Free | 6 | `hermes-mongodb-memory` + installer | Hybrid `$rankFusion` + TTL forgetting + entity `$graphLookup` |
 
 ## Profile Isolation
 
@@ -619,7 +636,7 @@ Each provider's data is isolated per [profile](/user-guide/profiles):
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
-- **Tenant-scoped providers** (MongoDB) namespace records by `tenant_scope` (`global` / `per-workspace` / `per-profile`) inside a shared cluster
+- **Tenant-scoped providers** (MongoDB community plugin) namespace records by `tenant_scope` (`global` / `per-workspace` / `per-profile`) inside a shared cluster
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 
 ## Building a Memory Provider

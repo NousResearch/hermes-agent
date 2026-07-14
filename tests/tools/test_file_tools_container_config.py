@@ -21,6 +21,11 @@ def _make_env_config(**overrides):
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": True,
         "docker_forward_env": ["MY_SECRET", "API_KEY"],
+        "docker_env": {},
+        "docker_extra_args": [],
+        "modal_mode": "auto",
+        "docker_persist_across_processes": True,
+        "docker_orphan_reaper": True,
     }
     base.update(overrides)
     return base
@@ -72,6 +77,30 @@ class TestFileToolsContainerConfig:
         del cfg["docker_forward_env"]
         cc = self._run(cfg, "t4").get("container_config", {})
         assert cc.get("docker_forward_env") == []
+
+    def test_docker_env_passed(self):
+        """docker_env is forwarded to container_config (order-dependent-container regression)."""
+        cc = self._run(_make_env_config(docker_env={"HTTP_PROXY": "http://proxy:8080"}), "t5").get("container_config", {})
+        assert cc.get("docker_env") == {"HTTP_PROXY": "http://proxy:8080"}
+
+    def test_docker_env_defaults_to_empty_dict(self):
+        """docker_env defaults to {} when absent from config."""
+        cfg = _make_env_config()
+        del cfg["docker_env"]
+        cc = self._run(cfg, "t6").get("container_config", {})
+        assert cc.get("docker_env") == {}
+
+    def test_docker_extra_args_passed(self):
+        """docker_extra_args is forwarded to container_config (order-dependent-container regression)."""
+        cc = self._run(_make_env_config(docker_extra_args=["--network=fetcher-net"]), "t7").get("container_config", {})
+        assert cc.get("docker_extra_args") == ["--network=fetcher-net"]
+
+    def test_docker_extra_args_defaults_to_empty_list(self):
+        """docker_extra_args defaults to [] when absent from config."""
+        cfg = _make_env_config()
+        del cfg["docker_extra_args"]
+        cc = self._run(cfg, "t8").get("container_config", {})
+        assert cc.get("docker_extra_args") == []
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):
         """CWD-only task overrides collapse to default but must keep their cwd."""

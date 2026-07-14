@@ -93,6 +93,16 @@ def _get_zoneinfo(name: str) -> Optional[ZoneInfo]:
         return None
 
 
+def resolve_timezone() -> Optional[ZoneInfo]:
+    """Resolve the current scoped timezone without consulting the cache.
+
+    Use this for request-scoped profile reads and other paths that must observe
+    runtime config changes immediately. Hot-path callers should use
+    :func:`get_timezone` instead.
+    """
+    return _get_zoneinfo(_resolve_timezone_name())
+
+
 def get_timezone() -> Optional[ZoneInfo]:
     """Return the user's configured ZoneInfo, or None (meaning server-local).
 

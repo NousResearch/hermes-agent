@@ -158,6 +158,14 @@ _INTERNAL_NOTE_RE = re.compile(
     r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as (?:informational background data|authoritative reference data[^\]]*)\.\]\s*',
     re.IGNORECASE,
 )
+_PROMPT_STRUCTURING_TAG_RE = re.compile(
+    r'<\s*/?\s*(?:'
+    r'analysis|assistant|developer|final|human|input|instructions?|observation|'
+    r'output|response|result|system|thinking|user|'
+    r'function(?:_calls?|_result)?|tool(?:_calls?|_result|_use)?'
+    r')\b[^<>]*>',
+    re.IGNORECASE,
+)
 
 
 def sanitize_context(text: str) -> str:
@@ -166,6 +174,20 @@ def sanitize_context(text: str) -> str:
     text = _INTERNAL_NOTE_RE.sub('', text)
     text = _FENCE_TAG_RE.sub('', text)
     return text
+
+
+def _neutralize_prompt_structuring_tags(text: str) -> str:
+    """Make role/control tags readable data instead of model prompt delimiters.
+
+    This is intentionally separate from ``sanitize_context`` because that
+    helper also scrubs assistant output. Memory-provider text is untrusted at
+    the prompt-injection boundary, while legitimate assistant output may quote
+    XML tags. Escaping only the delimiters preserves the provider's text.
+    """
+    return _PROMPT_STRUCTURING_TAG_RE.sub(
+        lambda match: match.group(0).replace('<', '&lt;').replace('>', '&gt;'),
+        text,
+    )
 
 
 class StreamingContextScrubber:
@@ -340,12 +362,15 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    safe = _neutralize_prompt_structuring_tags(clean)
+    if safe != clean:
+        logger.warning("memory provider returned prompt-structuring tags; neutralized")
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
         "NOT new user input. Treat as authoritative reference data — "
         "this is the agent's persistent memory and should inform all responses.]\n\n"
-        f"{clean}\n"
+        f"{safe}\n"
         "</memory-context>"
     )
 

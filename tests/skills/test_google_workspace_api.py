@@ -20,6 +20,10 @@ API_PATH = (
     Path(__file__).resolve().parents[2]
     / "skills/productivity/google-workspace/scripts/google_api.py"
 )
+SETUP_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "skills/productivity/google-workspace/scripts/setup.py"
+)
 
 
 @pytest.fixture
@@ -52,6 +56,63 @@ def api_module(monkeypatch, tmp_path):
     # Bypass authentication check — no real token file in CI.
     module._ensure_authenticated = lambda: None
     return module
+
+
+@pytest.fixture
+def setup_module(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    spec = importlib.util.spec_from_file_location("gws_setup_test", SETUP_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_get_auth_url_requests_apps_script_scopes(setup_module, monkeypatch, capsys):
+    """OAuth setup must request every Apps Script capability without live I/O."""
+    setup_module.CLIENT_SECRET_PATH.write_text("{}")
+    monkeypatch.setattr(setup_module, "_ensure_deps", lambda: None)
+
+    fake_flow = types.SimpleNamespace(
+        code_verifier="test-verifier",
+        authorization_url=MagicMock(return_value=("https://auth.example.test", "test-state")),
+    )
+    from_client_secrets_file = MagicMock(return_value=fake_flow)
+    flow_module = types.ModuleType("google_auth_oauthlib.flow")
+    setattr(
+        flow_module,
+        "Flow",
+        types.SimpleNamespace(from_client_secrets_file=from_client_secrets_file),
+    )
+    oauth_module = types.ModuleType("google_auth_oauthlib")
+    oauth_module.__path__ = []
+
+    with patch.dict(
+        sys.modules,
+        {
+            "google_auth_oauthlib": oauth_module,
+            "google_auth_oauthlib.flow": flow_module,
+        },
+    ):
+        setup_module.get_auth_url()
+
+    requested_scopes = set(from_client_secrets_file.call_args.kwargs["scopes"])
+    assert {
+        "https://www.googleapis.com/auth/script.projects",
+        "https://www.googleapis.com/auth/script.scriptapp",
+        "https://www.googleapis.com/auth/script.processes",
+        "https://www.googleapis.com/auth/script.external_request",
+    } <= requested_scopes
+    assert capsys.readouterr().out.strip() == "https://auth.example.test"
+    assert json.loads(setup_module.PENDING_AUTH_PATH.read_text()) == {
+        "state": "test-state",
+        "code_verifier": "test-verifier",
+        "redirect_uri": setup_module.REDIRECT_URI,
+    }
 
 
 def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):

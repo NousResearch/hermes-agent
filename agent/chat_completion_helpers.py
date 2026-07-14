@@ -1929,6 +1929,21 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # and every Hermes-internal underscore-prefixed scaffolding key.
             for schema_foreign in ("tool_name", "codex_reasoning_items", "codex_message_items", "timestamp"):
                 api_msg.pop(schema_foreign, None)
+            # api_content (the persist-what-you-send sidecar) carries the
+            # exact bytes every main-loop call sent for this message —
+            # substitute it before dropping the key (Hermes bookkeeping,
+            # never a provider field), mirroring the loop's api_messages
+            # build. Popping without substituting would send CLEAN content
+            # here, diverging the summary request's prefix at the EARLIEST
+            # sidecar-carrying message and re-prefilling the whole transcript
+            # at exactly the moment the context is largest.
+            _sidecar = api_msg.pop("api_content", None)
+            if (
+                isinstance(_sidecar, str)
+                and _sidecar
+                and api_msg.get("role") in ("user", "assistant")
+            ):
+                api_msg["content"] = _sidecar
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 api_msg.pop(internal_key, None)
             if _needs_sanitize:

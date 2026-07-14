@@ -155,7 +155,10 @@ from agent.model_metadata import (
 )
 from agent.usage_pricing import normalize_usage
 # Re-exported for tests that monkeypatch these symbols on run_agent.
-from agent.context_compressor import ContextCompressor  # noqa: F401
+from agent.context_compressor import (  # noqa: F401
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+)
 from agent.retry_utils import jittered_backoff  # noqa: F401
 from agent.prompt_builder import (  # noqa: F401  # re-exported via _ra() / mock.patch("run_agent.<name>") / from run_agent import <name>
     DEFAULT_AGENT_IDENTITY,
@@ -1928,9 +1931,16 @@ class AIAgent:
                     continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
+                # api_content sidecar: the exact bytes sent to the API when
+                # they differ from the clean content (stamped by the turn
+                # prologue for prefetch/plugin injections). Written verbatim
+                # so replay can reproduce the sent prefix byte-for-byte.
+                _row_api_content = msg.get("api_content")
+                if not isinstance(_row_api_content, str):
+                    _row_api_content = None
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
-                # (never to the live dict). A multimodal override is a complete
+# (never to the live dict). A multimodal override is a complete
                 # clean replacement for an API-local noted payload. Preserve the
                 # historical text-only guard for a list payload, though: a plain
                 # text override must not erase its image/audio transcript summary.
@@ -1943,12 +1953,55 @@ class AIAgent:
                     _ov_idx == _msg_idx or msg is pending_cli_message
                 )
                 if is_current_turn_user and msg.get("role") == "user":
-                    if _ov_content is not None and (
-                        not isinstance(content, list) or isinstance(_ov_content, list)
+                    # Preflight compaction can re-anchor the override index at
+                    # a message whose content was MERGED with the compaction
+                    # summary (merge-summary-into-tail). Overwriting that with
+                    # the clean gateway text would silently drop the summary
+                    # from the durable transcript. The wire is already
+                    # consistent — the merge popped the sidecar and the merged
+                    # content is what gets sent — so keep it.
+                    if (
+                        _ov_content is not None
+                        and (not isinstance(content, list) or isinstance(_ov_content, list))
+                        and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
                     ):
+                        # The live content is what the API call sends; the
+                        # override is the cleaned transcript value. If they
+                        # differ and no injection already stamped the sidecar,
+                        # keep the sent bytes in api_content so replay matches
+                        # the wire (#48677 divergence, closed for the cache
+                        # prefix too).
+                        if (
+                            _row_api_content is None
+                            and isinstance(content, str)
+                            and content != _ov_content
+                        ):
+                            _row_api_content = content
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
+                # Store the sidecar only when it actually differs.
+                if _row_api_content == content:
+                    _row_api_content = None
+                # Load-time sanitize divergence: get_messages_as_conversation
+                # replays user/assistant rows through
+                # ``sanitize_context(content).strip()``, so content that
+                # sanitize would rewrite (echoed/pasted <memory-context>
+                # fences or system notes) replays different bytes after a
+                # session reload even though THIS turn sent it verbatim.
+                # Capture the sent bytes in the sidecar so a reloaded session
+                # replays what was actually on the wire. Compared in wire form
+                # (both sides .strip()-ed — the api_messages build strips
+                # every outgoing content string) so plain surrounding
+                # whitespace doesn't grow redundant sidecars.
+                if (
+                    _row_api_content is None
+                    and role in ("user", "assistant")
+                    and isinstance(content, str)
+                    and content
+                    and sanitize_context(content).strip() != content.strip()
+                ):
+                    _row_api_content = content
                 # Persist multimodal tool results as their text summary only —
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
@@ -1985,6 +2038,7 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=_row_timestamp,
+                    api_content=_row_api_content,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the

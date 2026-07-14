@@ -655,6 +655,9 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
             continue
         new_msg = msg.copy()
         new_msg["content"] = _strip_images_from_content(content)
+        # Content rewritten → the api_content sidecar (exact bytes previously
+        # sent) is stale; replaying it would resend the pre-rewrite bytes.
+        new_msg.pop("api_content", None)
         result.append(new_msg)
         changed = True
 
@@ -3464,6 +3467,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
+                # Content rewritten → the api_content sidecar (exact bytes
+                # previously sent) is stale; drop it so replay can't resend
+                # the pre-merge bytes without the summary.
+                msg.pop("api_content", None)
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

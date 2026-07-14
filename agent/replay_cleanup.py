@@ -311,6 +311,11 @@ def strip_stale_dangerous_confirmations(
                 )
                 redacted = dict(msg)
                 redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+                # Drop the api_content sidecar: it carries the exact bytes
+                # previously sent — i.e. the dangerous confirmation this
+                # redaction exists to expire. Replaying it verbatim would
+                # undo the redaction on the wire.
+                redacted.pop("api_content", None)
                 cleaned.append(redacted)
                 continue
         cleaned.append(msg)

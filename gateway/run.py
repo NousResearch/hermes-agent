@@ -849,6 +849,23 @@ def _build_replay_entry(
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    # api_content sidecar (persist-what-you-send, prompt-cache stability):
+    # forward the exact bytes previously sent to the API for this message so
+    # the agent's api_messages build can substitute them and keep the request
+    # prefix byte-stable across turns. Forward ONLY when this replay pipeline
+    # did not rewrite the content (timestamp injection, auto-continue strip,
+    # mirror prefix): a rewritten clean content means the pipeline decided
+    # different bytes must replay — resending the stored sidecar would
+    # reintroduce exactly what was stripped. Dropping it costs one cache
+    # boundary; resending stripped noise is a behavior regression.
+    _sidecar = msg.get("api_content")
+    if (
+        role in ("user", "assistant")
+        and isinstance(_sidecar, str)
+        and _sidecar
+        and content == msg.get("content")
+    ):
+        entry["api_content"] = _sidecar
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:

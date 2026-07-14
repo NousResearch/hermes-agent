@@ -83,6 +83,7 @@ class HonchoSessionManager:
         config: Any | None = None,
         runtime_user_peer_name: str | None = None,
         runtime_user_peer_name_alt: str | None = None,
+        read_only: bool = False,
     ):
         """
         Initialize the session manager.
@@ -94,12 +95,14 @@ class HonchoSessionManager:
                     write_frequency, observation, etc.).
             runtime_user_peer_name: Gateway user identity for per-user memory scoping.
             runtime_user_peer_name_alt: Optional stable alternate gateway identity.
+            read_only: Disable the async writer for lookup-only sessions.
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
         self._runtime_user_peer_name = runtime_user_peer_name
         self._runtime_user_peer_name_alt = runtime_user_peer_name_alt
+        self._read_only = read_only
         self._cache: dict[str, HonchoSession] = {}
         self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
@@ -143,7 +146,7 @@ class HonchoSessionManager:
         # Async write queue — started lazily on first enqueue
         self._async_queue: queue.Queue | None = None
         self._async_thread: threading.Thread | None = None
-        if write_frequency == "async":
+        if write_frequency == "async" and not read_only:
             self._async_queue = queue.Queue()
             self._async_thread = threading.Thread(
                 target=self._async_writer_loop,
@@ -417,6 +420,40 @@ class HonchoSessionManager:
         # Write to cache under lock — only one writer wins
         with self._cache_lock:
             self._cache[key] = session
+        return session
+
+    def open_read_only(self, key: str) -> HonchoSession:
+        """Open local handles for read-only lookup without remote mutation.
+
+        ``Honcho.session(id)`` without metadata or configuration creates only
+        an SDK resource handle and performs no API call. In particular, this
+        path never calls ``add_peers()``, fetches/creates messages, or uploads
+        local memory files.
+        """
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+
+        user_peer_id = self._resolve_user_peer_id(key)
+        assistant_peer_id = self._sanitize_id(
+            self._config.ai_peer if self._config else "hermes-assistant"
+        )
+        honcho_session_id = self._sanitize_id(key)
+
+        session = HonchoSession(
+            key=key,
+            user_peer_id=user_peer_id,
+            assistant_peer_id=assistant_peer_id,
+            honcho_session_id=honcho_session_id,
+        )
+        remote_session = self.honcho.session(honcho_session_id)
+
+        with self._cache_lock:
+            existing = self._cache.get(key)
+            if existing is not None:
+                return existing
+            self._cache[key] = session
+            self._sessions_cache[honcho_session_id] = remote_session
         return session
 
     def _flush_session(self, session: HonchoSession) -> bool:

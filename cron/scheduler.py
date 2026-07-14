@@ -200,6 +200,30 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_job_requests_memory_provider_tools(job: dict, cfg: dict) -> bool:
+    """Return whether cron explicitly opts into memory-provider tools.
+
+    The resolved cron toolset may include ``memory`` through composite
+    expansion, so it is not proof of user intent. Only a per-job
+    ``enabled_toolsets`` selection or an explicit ``platform_toolsets.cron``
+    entry unlocks provider initialization. A per-job list takes precedence
+    over the platform setting, matching ``_resolve_cron_enabled_toolsets``.
+    """
+    per_job = job.get("enabled_toolsets")
+    if isinstance(per_job, list):
+        return "memory" in {str(toolset) for toolset in per_job}
+
+    try:
+        platform_toolsets = (cfg or {}).get("platform_toolsets") or {}
+        cron_toolsets = platform_toolsets.get("cron")
+    except AttributeError:
+        return False
+    if not isinstance(cron_toolsets, list):
+        return False
+    return "memory" in {str(toolset) for toolset in cron_toolsets}
+
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -3167,6 +3191,14 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        _cron_enabled_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+        _cron_memory_provider_opt_in = _cron_job_requests_memory_provider_tools(
+            job, _cfg
+        )
+        _cron_disabled_toolsets = _resolve_cron_disabled_toolsets(_cfg)
+        if "memory" in _cron_disabled_toolsets:
+            _cron_memory_provider_opt_in = False
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3185,8 +3217,8 @@ def run_job(
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
-            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            enabled_toolsets=_cron_enabled_toolsets,
+            disabled_toolsets=_cron_disabled_toolsets,
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
             # HERMES_HOME. When a workdir is configured, also inject project
@@ -3195,6 +3227,10 @@ def run_job(
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Provider tools remain off unless the job or cron platform
+            # explicitly selects the memory toolset. Built-in file memory
+            # stays disabled even when provider lookup is enabled.
+            skip_memory_provider=not _cron_memory_provider_opt_in,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

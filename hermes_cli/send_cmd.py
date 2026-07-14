@@ -27,6 +27,10 @@ Design notes:
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import sys
 from pathlib import Path
@@ -247,9 +251,9 @@ def _load_hermes_env() -> None:
             try:
                 load_dotenv(str(env_path), override=True, encoding="latin-1")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Step 2: bridge top-level config.yaml values into the environment so
     # gateway.config.load_gateway_config() sees them. Scalars only; don't
@@ -274,7 +278,7 @@ def _load_hermes_env() -> None:
         from hermes_cli.config import _expand_env_vars
         raw = _expand_env_vars(raw)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Managed scope: overlay administrator-pinned values before bridging to env,
     # so a managed top-level scalar wins here too. Fail-open via the helper.
@@ -282,7 +286,7 @@ def _load_hermes_env() -> None:
         from hermes_cli import managed_scope
         raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not isinstance(raw, dict):
         return

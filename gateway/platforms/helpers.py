@@ -238,7 +238,7 @@ class ThreadParticipationTracker:
                 if isinstance(data, list):
                     return [str(thread_id) for thread_id in data]
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return []
 
     def _save(self) -> None:

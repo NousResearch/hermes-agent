@@ -362,7 +362,7 @@ def _ensure_target_ready(target: Path) -> Optional[str]:
                         try:
                             child.unlink()
                         except OSError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
         target.mkdir(parents=True, exist_ok=True)
         stamp.write_text(want, encoding="utf-8")
     except OSError as e:
@@ -396,7 +396,7 @@ def _activate_target_on_syspath(target: Path) -> None:
         import importlib
         importlib.invalidate_caches()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def activate_durable_lazy_target() -> None:
@@ -716,7 +716,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             try:
                 constraints.unlink()
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 # =============================================================================
@@ -827,7 +827,7 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         if hasattr(_md, "_cache_clear"):
             _md._cache_clear()  # type: ignore[attr-defined]
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     still_missing = feature_missing(feature)
     if still_missing:

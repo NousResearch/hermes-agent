@@ -13,6 +13,10 @@ Config stored in ~/.hermes/config.yaml under:
 """
 from typing import List, Optional, Set
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 from hermes_cli.config import cfg_get, load_config, save_config
 from hermes_cli.colors import Colors, color
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS
@@ -110,7 +114,7 @@ def _select_platform() -> Optional[str]:
             key = options[idx][0]
             return None if key == "global" else key
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 

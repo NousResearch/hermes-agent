@@ -9,6 +9,10 @@ Usage:
     .venv/bin/python scripts/discord-voice-doctor.py
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 import shutil
@@ -183,7 +187,7 @@ def check_env_vars():
             project_env=PROJECT_ROOT / ".env",
         )
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     ok = True
 
@@ -212,7 +216,7 @@ def check_env_vars():
                     if r.status_code == 200:
                         label = f"{r.json().get('username', '?')} ({mask(uid)})"
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             user_labels.append(label)
         check("DISCORD_ALLOWED_USERS", True, f"{len(users)} user(s): {', '.join(user_labels)}")
     else:

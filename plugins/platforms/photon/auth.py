@@ -115,7 +115,7 @@ def _save_auth(data: Dict[str, Any]) -> None:
     try:
         os.chmod(tmp, 0o600)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     tmp.replace(path)
 
 
@@ -414,7 +414,7 @@ def poll_for_token(
             try:
                 body = resp.json() or {}
             except json.JSONDecodeError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             err = body.get("error") or body.get("message") or ""
             if err == "authorization_pending":
                 if on_pending:
@@ -487,7 +487,7 @@ def _header_value(headers: Optional[Any], name: str) -> Optional[str]:
         if value:
             return str(value)
     except AttributeError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         for key, value in dict(headers).items():
             if str(key).lower() == name.lower() and value:
@@ -575,7 +575,7 @@ def _safe(fn: Callable[[], None]) -> None:
     try:
         fn()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def login_device_flow(
@@ -598,7 +598,7 @@ def login_device_flow(
             target = code.verification_uri_complete or code.verification_uri
             webbrowser.open(target, new=2)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Poll once for the approved token, then collect every candidate shape so
     # we can validate against the dashboard API before persisting (avoids
     # saving a token that authenticates the session lookup but 404s on the

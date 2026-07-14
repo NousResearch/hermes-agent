@@ -328,7 +328,7 @@ def _extract_error_preview(result: Any, max_len: int = 180) -> str:
             if isinstance(data, dict) and isinstance(data.get("error"), str):
                 text = data["error"]
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Collapse whitespace, trim to max_len.
     text = " ".join(text.split())
     if len(text) > max_len:

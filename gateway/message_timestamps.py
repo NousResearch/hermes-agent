@@ -8,6 +8,10 @@ persisted message content should stay clean so replay does not accumulate
 from __future__ import annotations
 
 import re
+
+import logging
+logger = logging.getLogger(__name__)
+
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
@@ -55,7 +59,7 @@ def coerce_message_timestamp(ts_value: Any, tz=None) -> Optional[float]:
         try:
             return float(text)
         except (TypeError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             dt = datetime.fromisoformat(text)
         except (TypeError, ValueError):

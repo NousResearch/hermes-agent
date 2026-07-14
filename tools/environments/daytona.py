@@ -55,7 +55,7 @@ class DaytonaEnvironment(BaseEnvironment):
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("terminal.daytona", prompt=False)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception as e:
             raise ImportError(str(e)) from e
         from daytona import (
@@ -138,7 +138,7 @@ class DaytonaEnvironment(BaseEnvironment):
                 if requested_cwd in {"~", "/home/daytona"}:
                     self.cwd = home
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
 
         self._sync_manager = FileSyncManager(
@@ -193,7 +193,7 @@ class DaytonaEnvironment(BaseEnvironment):
         try:
             self._sandbox.process.exec(f"rm -f {shlex.quote(remote_tar)}")
         except Exception:
-            pass  # best-effort cleanup
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort cleanup
 
     def _daytona_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via SDK exec."""
@@ -228,7 +228,7 @@ class DaytonaEnvironment(BaseEnvironment):
                 try:
                     sandbox.stop()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         if login:
             shell_cmd = f"bash -l -c {shlex.quote(cmd_string)}"

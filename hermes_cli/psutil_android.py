@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import shutil
+
+import logging
+logger = logging.getLogger(__name__)
+
 import tarfile
 from pathlib import Path, PurePosixPath
 
@@ -61,7 +65,7 @@ def _safe_extract_tar_gz(archive: Path, destination: Path) -> None:
             try:
                 target.chmod(member.mode & 0o777)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def prepare_patched_psutil_sdist(archive: Path, destination: Path) -> Path:

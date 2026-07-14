@@ -24,6 +24,10 @@ Agent workflow:
 from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import shutil
@@ -101,7 +105,7 @@ def install_deps():
         print("Dependencies already installed.")
         return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print("Installing Google API dependencies...")
 

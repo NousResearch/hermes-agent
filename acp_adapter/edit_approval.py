@@ -219,7 +219,7 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
             path.relative_to(tmp_root)
             return True
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if cwd:
             root = Path(cwd).expanduser().resolve(strict=False)
             try:

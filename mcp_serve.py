@@ -106,7 +106,7 @@ def _row_to_index_entry(row: dict) -> dict:
             if isinstance(parsed, dict):
                 origin = parsed
         except (TypeError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if not origin:
         # Pre-origin_json rows: synthesize the minimal origin from columns.
         origin = {
@@ -164,7 +164,7 @@ def _load_sessions_index_from_db() -> dict:
         try:
             db.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _load_sessions_index_from_json() -> dict:

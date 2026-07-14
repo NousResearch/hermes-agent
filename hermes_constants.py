@@ -4,6 +4,10 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import shutil
 import stat
@@ -105,7 +109,7 @@ def get_hermes_home() -> Path:
                 sys.stderr.write(msg + "\n")
                 sys.stderr.flush()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return _get_platform_default_hermes_home()
 
@@ -137,7 +141,7 @@ def get_default_hermes_root() -> Path:
         # HERMES_HOME is under ~/.hermes (normal or profile mode)
         return native_home
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Docker / custom deployment.
     # Check if this is a profile path: <root>/profiles/<name>
@@ -665,7 +669,7 @@ def secure_parent_dir(path: Path) -> None:
     try:
         os.chmod(parent, 0o700)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _norm_home_path(path: str | None) -> str:
@@ -711,7 +715,7 @@ def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
         if pw_home:
             candidates.append(pw_home)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     userprofile = str(env.get("USERPROFILE") or os.getenv("USERPROFILE", "")).strip()
     if userprofile:
         candidates.append(userprofile)
@@ -937,7 +941,7 @@ def is_container() -> bool:
                 _container_detected = True
                 return True
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
     # runtime still shows up in the mount table (overlay rootfs, runtime mount
     # paths), so scan mountinfo as a last resort.
@@ -948,7 +952,7 @@ def is_container() -> bool:
                 _container_detected = True
                 return True
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     _container_detected = False
     return False
 

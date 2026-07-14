@@ -1031,7 +1031,7 @@ class DockerEnvironment(BaseEnvironment):
             from tools.env_passthrough import get_all_passthrough
             passthrough_keys = set(get_all_passthrough())
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Explicit docker_forward_env entries are an intentional opt-in and must
         # win over the generic Hermes secret blocklist. Only implicit passthrough
         # keys are filtered. Also strip Hermes-internal dynamic secrets

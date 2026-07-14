@@ -11,6 +11,10 @@ that will be useful when we add named profiles (multiple agents running
 concurrently under distinct configurations).
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import hashlib
 import json
 import os
@@ -159,7 +163,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
         return int(stat_path.read_text(encoding="utf-8").split()[21])
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
     # cross-platform creation time.  Quantize to centiseconds so repeated reads
@@ -187,7 +191,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     try:
         raw = cmdline_path.read_bytes()
     except (FileNotFoundError, PermissionError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     else:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
@@ -203,7 +207,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Windows fallback: psutil (already used by _pid_exists)
     try:
@@ -213,7 +217,7 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if cmdline_parts:
             return " ".join(cmdline_parts)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None
 
@@ -544,11 +548,11 @@ def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
     try:
         pid_path.unlink(missing_ok=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         _get_gateway_lock_path(pid_path).unlink(missing_ok=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _write_gateway_lock_record(handle) -> None:
@@ -559,7 +563,7 @@ def _write_gateway_lock_record(handle) -> None:
     try:
         os.fsync(handle.fileno())
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _try_acquire_file_lock(handle) -> bool:
@@ -620,11 +624,11 @@ def _pid_exists(pid: int) -> bool:
         except getattr(psutil, "NoSuchProcess", ()):
             return False
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return bool(psutil.pid_exists(int(pid)))
 
     except ImportError:
-        pass  # Fall through to stdlib fallback.
+        logger.debug("Suppressed exception", exc_info=True)  # Fall through to stdlib fallback.
     if _IS_WINDOWS:
         try:
             import ctypes
@@ -681,9 +685,9 @@ def _pid_exists(pid: int) -> bool:
                 if r.returncode == 0 and r.stdout.strip().startswith("Z"):
                     return False
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         except (IndexError, PermissionError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
             return True
@@ -705,7 +709,7 @@ def _release_file_lock(handle) -> None:
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def acquire_gateway_runtime_lock() -> bool:
@@ -741,7 +745,7 @@ def release_gateway_runtime_lock() -> None:
     try:
         handle.close()
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     _clear_running_pid_cache()
 
 
@@ -765,7 +769,7 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
         try:
             handle.close()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def write_pid_file() -> None:
@@ -790,7 +794,7 @@ def write_pid_file() -> None:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -980,7 +984,7 @@ def remove_pid_file() -> None:
         path.unlink(missing_ok=True)
         _clear_running_pid_cache()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
@@ -1008,7 +1012,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if existing:
         try:
             existing_pid = int(existing["pid"])
@@ -1076,12 +1080,12 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                                         stale = True
                                     break
                     except (OSError, PermissionError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         if stale:
             try:
                 lock_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             return False, existing
 
@@ -1096,7 +1100,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
     return True, None
 
@@ -1114,7 +1118,7 @@ def release_scoped_lock(scope: str, identity: str) -> None:
     try:
         lock_path.unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def release_all_scoped_locks(
@@ -1158,7 +1162,7 @@ def release_all_scoped_locks(
                 lock_file.unlink(missing_ok=True)
                 removed += 1
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return removed
 
 
@@ -1227,14 +1231,14 @@ def _consume_pid_marker_for_self(
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return False
 
     if _marker_is_stale(written_at, ttl_s):
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return False
 
     # Cross-profile guard (#29092): reject markers written by a gateway
@@ -1277,7 +1281,7 @@ def _consume_pid_marker_for_self(
     try:
         path.unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return matches
 
@@ -1332,7 +1336,7 @@ def clear_takeover_marker() -> None:
     try:
         _get_takeover_marker_path().unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def write_planned_stop_marker(target_pid: int) -> bool:
@@ -1398,7 +1402,7 @@ def planned_stop_marker_targets_self() -> bool:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return False
 
     if _marker_is_stale(written_at, _PLANNED_STOP_MARKER_TTL_S):
@@ -1407,7 +1411,7 @@ def planned_stop_marker_targets_self() -> bool:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return False
 
     our_pid = os.getpid()
@@ -1433,7 +1437,7 @@ def clear_planned_stop_marker() -> None:
     try:
         _get_planned_stop_marker_path().unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def get_running_pid(

@@ -271,7 +271,7 @@ def _record_codex_app_server_compaction(
 
             agent._emit_status(COMPACTION_STATUS)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
@@ -419,7 +419,7 @@ def run_codex_app_server_turn(
         try:
             agent._codex_session.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         agent._codex_session = None
         return {
             "final_response": (
@@ -446,7 +446,7 @@ def run_codex_app_server_turn(
         try:
             agent._codex_session.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         agent._codex_session = None
 
     # Splice projected messages into the conversation. The projector emits
@@ -931,7 +931,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 try:
                     close_fn()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
 
 def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None):

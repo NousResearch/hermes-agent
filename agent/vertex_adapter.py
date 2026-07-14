@@ -31,7 +31,7 @@ try:
     from tools.lazy_deps import ensure as _lazy_ensure
     _lazy_ensure("provider.vertex", prompt=False)
 except Exception:
-    pass  # lazy_deps unavailable or install failed — fall through to the real ImportError below
+    logging.debug("Suppressed exception", exc_info=True)  # lazy_deps unavailable or install failed — fall through to the real ImportError below
 
 try:
     import google.auth

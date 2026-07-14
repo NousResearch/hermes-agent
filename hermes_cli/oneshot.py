@@ -21,7 +21,10 @@ Env var fallbacks (used when the corresponding arg is not passed):
 
 from __future__ import annotations
 
+
 import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -163,7 +166,7 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def run_oneshot(
@@ -252,7 +255,7 @@ def run_oneshot(
         try:
             devnull.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if failure is not None:
         # Re-raise control-flow exceptions so the parent handles them as usual

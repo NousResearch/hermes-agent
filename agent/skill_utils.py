@@ -544,7 +544,7 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     try:
         trusted_roots.extend(get_external_skills_dirs())
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Prefer the lexical path under a trusted skill root before resolving
     # symlinks. Slash-command discovery can legitimately find a skill via

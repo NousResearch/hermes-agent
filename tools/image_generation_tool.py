@@ -1094,7 +1094,7 @@ def check_image_generation_requirements() -> bool:
             _load_fal_client()
             return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     configured = _read_configured_image_provider()
     if not configured or configured == "fal":
@@ -1589,7 +1589,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
                     info["max_reference_images"] = int(caps["max_reference_images"])
                 return info
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # In-tree FAL path (provider unset or == "fal").
     try:
@@ -1603,7 +1603,7 @@ def _active_image_capabilities() -> Dict[str, Any]:
             info["modalities"] = ["text"]
             info["max_reference_images"] = 0
     except Exception:  # noqa: BLE001
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return info
 

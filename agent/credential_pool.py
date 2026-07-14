@@ -1854,7 +1854,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             if not is_provider_explicitly_configured("anthropic"):
                 return changed, active_sources
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # API-key vs OAuth is a user-visible choice at `hermes setup` ("Claude
         # Pro/Max subscription" vs "Anthropic API key").  The signal that the
@@ -2390,7 +2390,7 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                             },
                         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return changed, active_sources
 

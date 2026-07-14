@@ -24,6 +24,10 @@ or produced no perf data (suggests HERMES_DEV_PERF wiring is broken).
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import pty
@@ -463,11 +467,11 @@ def run_once(args: argparse.Namespace) -> dict[str, Any]:
                 os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only script (imports pty at top)
                 os.waitpid(pid, 0)
         except (ProcessLookupError, ChildProcessError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             os.close(fd)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     time.sleep(0.2)
     return summarize(log, since_ms)
@@ -548,7 +552,7 @@ def loop_mode(args: argparse.Namespace) -> int:
                     try:
                         mtimes[str(path)] = path.stat().st_mtime
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         return mtimes
 
     previous_metrics: dict[str, float] | None = None

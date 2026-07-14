@@ -88,7 +88,7 @@ def _hermes_version() -> str:
 
         return version("hermes-agent")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli import __version__
 
@@ -187,7 +187,7 @@ def _normalize_chat_content(
                             parts.append(part)
                             total_len += len(part)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                 # Silently skip image_url / other non-text parts
             elif isinstance(item, list):
                 nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
@@ -542,7 +542,7 @@ class ResponseStore:
         try:
             self._conn.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()
@@ -878,7 +878,7 @@ def _notify_cron_provider_jobs_changed() -> None:
         from cron.scheduler import _notify_provider_jobs_changed
         _notify_provider_jobs_changed()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 # Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
 # user-supplied prompt for exfiltration/injection payloads at create/update
@@ -1048,13 +1048,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
             process_depth = process_registry.completion_queue.qsize()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             from tools.async_delegation import active_count
 
             active_delegations = active_count()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return active_api_runs, process_depth, active_delegations
 
     @staticmethod
@@ -1113,7 +1113,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if profile and profile not in {"default", "custom"}:
                 return profile
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return "hermes-agent"
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
@@ -2129,7 +2129,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     loop.call_soon_threadsafe(queue.put_nowait, event)
             except RuntimeError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         def _delta(delta: str) -> None:
             if delta:
@@ -2185,7 +2185,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             self._background_tasks.add(task)
         except TypeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
@@ -2731,13 +2731,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 try:
                     agent.interrupt("SSE client disconnected")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if not agent_task.done():
                 agent_task.cancel()
                 try:
                     await agent_task
                 except (asyncio.CancelledError, Exception):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             logger.info("SSE client disconnected; interrupted agent task %s", completion_id)
         except Exception as _exc:
             # Agent crashed mid-stream.  Try to emit an error chunk
@@ -2754,7 +2754,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
                 await response.write(b"data: [DONE]\n\n")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return response
 
@@ -3226,7 +3226,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                     _args[_k] = "[" + str(len(_args[_k])) + " chars — truncated for response.completed]"
                             _item["arguments"] = json.dumps(_args)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 elif _item.get("type") == "function_call_output":
                     _output = _item.get("output", [])
                     if isinstance(_output, list) and _output:
@@ -3303,13 +3303,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 try:
                     agent.interrupt("SSE client disconnected")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if not agent_task.done():
                 agent_task.cancel()
                 try:
                     await agent_task
                 except (asyncio.CancelledError, Exception):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             logger.info("SSE client disconnected; interrupted agent task %s", response_id)
         except asyncio.CancelledError:
             # Server-side cancellation (e.g. shutdown, request timeout) —
@@ -3322,7 +3322,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 try:
                     agent.interrupt("SSE task cancelled")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if not agent_task.done():
                 agent_task.cancel()
             logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
@@ -3349,7 +3349,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "response": failed_env,
                 })
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(agent_error)[:300])
 
         return response
@@ -3977,7 +3977,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
             except (TypeError, AttributeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 
@@ -4309,7 +4309,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 loop.call_soon_threadsafe(q.put_nowait, event)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
@@ -4452,7 +4452,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "delta": delta,
                 })
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         self._set_run_status(
             run_id,
@@ -4517,7 +4517,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     try:
                         loop.call_soon_threadsafe(q.put_nowait, event)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars
@@ -4553,12 +4553,12 @@ class APIServerAdapter(BasePlatformAdapter):
                                 try:
                                     reset_current_session_key(approval_token)
                                 except Exception:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                             if session_tokens:
                                 try:
                                     clear_session_vars(session_tokens)
                                 except Exception:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -4624,7 +4624,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": time.time(),
                     })
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
@@ -4642,7 +4642,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "error": _redact_api_error_text(exc),
                     })
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             finally:
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
@@ -4654,12 +4654,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
                     unregister_gateway_notify(approval_session_key)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # Sentinel: signal SSE stream to close
                 try:
                     _put_event_if_active(None)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
@@ -4671,7 +4671,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             self._background_tasks.add(task)
         except TypeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
 
@@ -4830,7 +4830,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "resolved": resolved,
                 })
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return web.json_response({
             "object": "hermes.run.approval_response",
@@ -4859,7 +4859,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 agent.interrupt("Stop requested via API")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return web.json_response({"run_id": run_id, "status": "stopping"})
 
@@ -4891,7 +4891,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     if approval_session_key:
                         unregister_gateway_notify(approval_session_key)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # The transport TTL always bounds buffering. Live control state is
             # independent and survives until the executor-backed task returns.
             self._run_streams.pop(run_id, None)
@@ -4939,7 +4939,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 return False
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True
 
     def _port_is_available(self) -> bool:
@@ -5025,7 +5025,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 self._background_tasks.add(sweep_task)
             except TypeError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 

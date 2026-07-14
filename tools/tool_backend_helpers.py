@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 from pathlib import Path
 from typing import Any, Dict
 
@@ -61,7 +65,7 @@ def nous_tool_gateway_unavailable_message(
         if message:
             return message
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return (
         f"{capability} is unavailable. Run `hermes model` to refresh your "
         "Nous Portal login and billing status."
@@ -157,7 +161,7 @@ def prefers_gateway(config_section: str) -> bool:
         if isinstance(section, dict):
             return is_truthy_value(section.get("use_gateway"), default=False)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 

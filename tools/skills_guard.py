@@ -22,6 +22,10 @@ Usage:
         print(format_scan_report(result))
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import re
 import fnmatch
 import hashlib
@@ -758,7 +762,7 @@ def scan_skill_cached(
         cache_root.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     result.scan_provenance = provenance
     return result, provenance
 

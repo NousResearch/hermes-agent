@@ -11,6 +11,10 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import subprocess
@@ -458,7 +462,7 @@ def _bws_version(binary: Path) -> str:
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return "version unknown"
 
 

@@ -73,7 +73,7 @@ def _detect_openclaw_processes() -> list[str]:
             if result.stdout.strip() == "active":
                 found.append("systemd service: openclaw-gateway.service")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # -- process scan ------------------------------------------------------
     if sys.platform == "win32":
@@ -100,7 +100,7 @@ def _detect_openclaw_processes() -> list[str]:
             if result.stdout.strip():
                 found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     else:
         try:
             result = subprocess.run(
@@ -111,7 +111,7 @@ def _detect_openclaw_processes() -> list[str]:
                 pids = result.stdout.strip().split()
                 found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return found
 

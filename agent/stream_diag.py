@@ -67,7 +67,7 @@ def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response
     try:
         diag["http_status"] = getattr(http_response, "status_code", None)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         headers = getattr(http_response, "headers", None) or {}
         captured: Dict[str, str] = {}
@@ -83,7 +83,7 @@ def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response
                 continue
         diag["headers"] = captured
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def flatten_exception_chain(error: BaseException) -> str:
@@ -180,7 +180,7 @@ def log_stream_retry(
                 if diag.get("http_status") is not None:
                     _http_status = str(diag.get("http_status"))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         logger.warning(
             "Stream %s on attempt %s/%s — retrying. "
@@ -256,7 +256,7 @@ def emit_stream_drop(
             if started is not None:
                 _suffix = f" after {max(0.0, time.time() - float(started)):.1f}s"
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         agent._buffer_status(
             f"⚠️ {provider} stream {kind} ({type(error).__name__}){_suffix} "
@@ -267,7 +267,7 @@ def emit_stream_drop(
             f"after {type(error).__name__}"
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 __all__ = [

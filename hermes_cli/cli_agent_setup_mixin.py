@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import sys
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 from rich.markup import escape as _escape
 
 
@@ -157,7 +161,7 @@ class CLIAgentSetupMixin:
                         _default, resolved_provider,
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.
@@ -327,7 +331,7 @@ class CLIAgentSetupMixin:
                 )
                 self._session_db._conn.commit()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         
         try:
             runtime = runtime_override or {
@@ -415,7 +419,7 @@ class CLIAgentSetupMixin:
 
                 seed_credits_at_session_start(self.agent)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -517,7 +521,7 @@ class CLIAgentSetupMixin:
             )
             self._session_db._conn.commit()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return True
 

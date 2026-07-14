@@ -241,7 +241,7 @@ def _debug(msg: str) -> None:
     try:
         print(f"[voice] {msg}", file=sys.stderr, flush=True)
     except (BrokenPipeError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _beeps_enabled() -> bool:
@@ -253,7 +253,7 @@ def _beeps_enabled() -> bool:
         if isinstance(voice_cfg, dict):
             return bool(voice_cfg.get("beep_enabled", True))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return True
 
 
@@ -350,7 +350,7 @@ def stop_and_transcribe() -> Optional[str]:
             if os.path.isfile(wav_path):
                 os.unlink(wav_path)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # transcribe_recording returns {"success": bool, "transcript": str, ...}
     # — matches cli.py:_voice_stop_and_transcribe's result.get("transcript").
@@ -439,7 +439,7 @@ def start_continuous(
         try:
             on_status("listening")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return True
 
@@ -479,7 +479,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                 try:
                     on_status("transcribing")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             try:
                 wav_path = rec.stop()
             except Exception as e:
@@ -531,7 +531,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                             try:
                                 on_silent_limit()
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
 
                     _play_beep(frequency=660, count=2)
                     with _continuous_lock:
@@ -540,7 +540,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                         try:
                             on_status("idle")
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
             threading.Thread(target=_transcribe_and_cleanup, daemon=True).start()
             return
@@ -563,7 +563,7 @@ def stop_continuous(force_transcribe: bool = False) -> None:
         try:
             on_status("idle")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def is_continuous_active() -> bool:
@@ -600,7 +600,7 @@ def _continuous_on_silence() -> None:
         try:
             on_status("transcribing")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     wav_path = rec.stop()
     # Peak RMS is the critical diagnostic when stop() returns None despite
@@ -641,7 +641,7 @@ def _continuous_on_silence() -> None:
                 if os.path.isfile(wav_path):
                     os.unlink(wav_path)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     with _continuous_lock:
         if not _continuous_active:
@@ -670,16 +670,16 @@ def _continuous_on_silence() -> None:
             try:
                 on_silent_limit()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             rec.cancel()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if on_status:
             try:
                 on_status("idle")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return
 
     # CLI parity (cli.py:10619-10621): wait for any in-flight TTS to
@@ -714,14 +714,14 @@ def _continuous_on_silence() -> None:
                 try:
                     on_status("idle")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             return
 
         if on_status:
             try:
                 on_status("listening")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     else:
         # Do not auto-restart. Clean up state and notify idle.
         _debug("_continuous_on_silence: auto_restart=False, stopping loop")
@@ -731,7 +731,7 @@ def _continuous_on_silence() -> None:
             try:
                 on_status("idle")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 # ── TTS API ──────────────────────────────────────────────────────────
@@ -818,7 +818,7 @@ def speak_text(text: str) -> None:
                 if os.path.isfile(ogg_path):
                     os.unlink(ogg_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             _debug(f"speak_text: TTS tool produced no audio at {mp3_path}")
     except Exception as e:

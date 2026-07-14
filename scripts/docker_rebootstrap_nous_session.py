@@ -35,6 +35,10 @@ Design constraints
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 from typing import Any, Optional
@@ -141,7 +145,7 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
     try:
         os.chmod(auth_path, 0o600)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return "reseeded"
 
 

@@ -201,7 +201,7 @@ def is_network_accessible(host: str) -> bool:
         return True
     except ValueError:
         # when host variable is a hostname, we should try to resolve below
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         resolved = _socket.getaddrinfo(
@@ -304,7 +304,7 @@ def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> b
         except ValueError:
             return False
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         token_ip = ipaddress.ip_address(token_host)
@@ -313,7 +313,7 @@ def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> b
         except ValueError:
             return False
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if token_host.startswith("*."):
         suffix = token_host[1:]
@@ -802,7 +802,7 @@ def cleanup_image_cache(max_age_hours: int = 24) -> int:
                 f.unlink()
                 removed += 1
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return removed
 
 
@@ -1125,7 +1125,7 @@ def _media_delivery_recency_seconds() -> float:
             seconds = float(custom)
             return max(0.0, seconds)
     except (TypeError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return float(_MEDIA_DELIVERY_TRUST_RECENT_DEFAULT_SECONDS)
 
 
@@ -1599,7 +1599,7 @@ def cleanup_document_cache(max_age_hours: int = 24) -> int:
                 f.unlink()
                 removed += 1
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return removed
 
 
@@ -2730,7 +2730,7 @@ class BasePlatformAdapter(ABC):
                 try:
                     self._status_write_logged = logged
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             key = (self.platform.value, context)
             if key not in logged:
                 logger.warning(
@@ -3846,7 +3846,7 @@ class BasePlatformAdapter(ABC):
                     except asyncio.TimeoutError:
                         # Slow network — abandon this tick, keep the loop
                         # on schedule so the next send_typing fires fresh.
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     except asyncio.CancelledError:
                         raise
                     except Exception as typing_err:
@@ -3871,7 +3871,7 @@ class BasePlatformAdapter(ABC):
                 if stop_event.is_set():
                     return
         except asyncio.CancelledError:
-            pass  # Normal cancellation when handler completes
+            logger.debug("Suppressed exception", exc_info=True)  # Normal cancellation when handler completes
         finally:
             # Ensure the underlying platform typing loop is stopped.
             # _keep_typing may have called send_typing() after an outer
@@ -3881,7 +3881,7 @@ class BasePlatformAdapter(ABC):
                 try:
                     await self.stop_typing(chat_id)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             self._typing_paused.discard(chat_id)
 
     async def _stop_typing_refresh(
@@ -3902,7 +3902,7 @@ class BasePlatformAdapter(ABC):
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     # The task is cancelled; don't let a slow adapter-specific
                     # cleanup block response delivery or shutdown.
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if not hasattr(self, "stop_typing"):
                 return
             attempts = max(1, stop_attempts)
@@ -3910,7 +3910,7 @@ class BasePlatformAdapter(ABC):
                 try:
                     await self.stop_typing(chat_id)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if attempt < attempts - 1:
                     await asyncio.sleep(0)
         finally:
@@ -3937,7 +3937,7 @@ class BasePlatformAdapter(ABC):
         try:
             await self.stop_typing(chat_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def register_post_delivery_callback(
         self,
@@ -4490,7 +4490,7 @@ class BasePlatformAdapter(ABC):
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except asyncio.TimeoutError:
                 logger.warning(
                     "[%s] Cancelled task for %s did not exit within 5s; "
@@ -5020,7 +5020,7 @@ class BasePlatformAdapter(ABC):
                         try:
                             os.remove(_tts_path)
                         except OSError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
@@ -5220,7 +5220,7 @@ class BasePlatformAdapter(ABC):
                     drain_task.add_done_callback(self._background_tasks.discard)
                 except TypeError:
                     # Tests stub create_task() with non-hashable sentinels; tolerate.
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 return  # Drain task owns the session now.
                 
         except asyncio.CancelledError:
@@ -5289,7 +5289,7 @@ class BasePlatformAdapter(ABC):
                             timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
                         )
                 except (asyncio.TimeoutError, Exception):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.
@@ -5344,7 +5344,7 @@ class BasePlatformAdapter(ABC):
                         drain_task.add_done_callback(self._background_tasks.discard)
                     except TypeError:
                         # Tests stub create_task() with non-hashable sentinels; tolerate.
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:

@@ -749,7 +749,7 @@ def migrate(
                 if tmp_path.exists():
                     tmp_path.unlink()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
         report.written = True
     except Exception as exc:

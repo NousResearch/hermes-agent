@@ -8,6 +8,10 @@ transaction. One definition here keeps the two stores from drifting.
 from __future__ import annotations
 
 import contextlib
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sqlite3
 
 
@@ -43,7 +47,7 @@ def write_txn(conn: sqlite3.Connection):
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
     else:
         conn.execute("COMMIT")

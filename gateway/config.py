@@ -282,7 +282,7 @@ class Platform(Enum):
                 cls._member_map_[pseudo._name_] = pseudo
                 return pseudo
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return None
 
@@ -304,7 +304,7 @@ class Platform(Enum):
                     ):
                         names.add(child.name.lower())
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return names
 
 
@@ -760,7 +760,7 @@ class GatewayConfig:
                 from hermes_cli.plugins import discover_plugins
                 discover_plugins()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             entry = platform_registry.get(platform.value)
             if entry:
                 if entry.is_connected is not None:
@@ -769,7 +769,7 @@ class GatewayConfig:
                     return entry.validate_config(config)
                 return True
         except Exception:
-            pass  # Registry not yet initialised during early import
+            logger.debug("Suppressed exception", exc_info=True)  # Registry not yet initialised during early import
 
         return False
     
@@ -841,7 +841,7 @@ class GatewayConfig:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)
             except ValueError:
-                pass  # Skip unknown platforms
+                logger.debug("Suppressed exception", exc_info=True)  # Skip unknown platforms
         
         reset_by_type = {}
         for type_name, policy_data in _coerce_dict(data.get("reset_by_type", {})).items():
@@ -853,7 +853,7 @@ class GatewayConfig:
                 platform = Platform(platform_name)
                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         
         default_policy = SessionResetPolicy()
         if "default_reset_policy" in data:
@@ -1579,7 +1579,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             try:
                 config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_port"] = int(wa_cloud_port)
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         wa_cloud_path = getenv("WHATSAPP_CLOUD_WEBHOOK_PATH")
         if wa_cloud_path:
             config.platforms[Platform.WHATSAPP_CLOUD].extra["webhook_path"] = wa_cloud_path
@@ -1772,7 +1772,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             try:
                 config.platforms[Platform.API_SERVER].extra["port"] = int(api_server_port)
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if api_server_host:
             config.platforms[Platform.API_SERVER].extra["host"] = api_server_host
         api_server_model_name = getenv("API_SERVER_MODEL_NAME", "")
@@ -1791,7 +1791,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             try:
                 config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
@@ -1821,7 +1821,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     msgraph_webhook_port
                 )
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if msgraph_webhook_client_state:
             config.platforms[Platform.MSGRAPH_WEBHOOK].extra["client_state"] = (
                 msgraph_webhook_client_state
@@ -2108,14 +2108,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         try:
             config.default_reset_policy.idle_minutes = int(idle_minutes)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     
     reset_hour = getenv("SESSION_RESET_HOUR")
     if reset_hour:
         try:
             config.default_reset_policy.at_hour = int(reset_hour)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Registry-driven enable for plugin platforms.  Built-ins have explicit
     # blocks above; plugins expose check_fn() which is the single source of

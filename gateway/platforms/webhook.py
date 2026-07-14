@@ -234,7 +234,7 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error('[webhook] Port %d already in use. Set a different port in config.yaml: platforms.webhook.port', self._port)
             return False
         except (ConnectionRefusedError, OSError):
-            pass  # port is free
+            logger.debug("Suppressed exception", exc_info=True)  # port is free
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -292,7 +292,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 from gateway.platform_registry import platform_registry
                 _is_known_platform = platform_registry.is_registered(deliver_type)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if self.gateway_runner and _is_known_platform:
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
@@ -859,7 +859,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     try:
                         store._ensure_loaded()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 entries = getattr(store, "_entries", {}) or {}
                 entry = entries.get(session_key)
                 session_id = getattr(entry, "session_id", None) if entry else None

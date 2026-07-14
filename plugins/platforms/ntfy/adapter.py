@@ -293,7 +293,7 @@ class NtfyAdapter(BasePlatformAdapter):
             try:
                 await self._stream_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._stream_task = None
 
         if self._http_client:

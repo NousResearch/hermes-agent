@@ -101,7 +101,7 @@ def _allowlist_env_for_platform(platform: str) -> Optional[str]:
         if entry and entry.allowed_users_env:
             return entry.allowed_users_env
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -135,7 +135,7 @@ def _sync_allowlist_add(platform: str, user_id: str) -> None:
     except Exception:
         # Best-effort: the pairing store grant still authorizes via the union,
         # so a failure here degrades to "grant recorded but not mirrored".
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _sync_allowlist_remove(platform: str, user_id: str) -> None:
@@ -158,7 +158,7 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
         else:
             remove_env_value(env_var)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _load_json_file(path: Path) -> dict:
@@ -223,12 +223,12 @@ def _secure_write(path: Path, data: str) -> None:
         try:
             os.chmod(path, 0o600)
         except OSError:
-            pass  # Windows doesn't support chmod the same way
+            logger.debug("Suppressed exception", exc_info=True)  # Windows doesn't support chmod the same way
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 

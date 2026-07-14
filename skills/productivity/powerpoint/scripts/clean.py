@@ -15,6 +15,10 @@ This script removes:
 - Content-Type overrides for deleted files
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 from pathlib import Path
 
@@ -120,7 +124,7 @@ def get_slide_referenced_files(unpacked_dir: Path) -> set:
             try:
                 referenced.add(target_path.relative_to(unpacked_dir.resolve()))
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return referenced
 
@@ -163,7 +167,7 @@ def get_referenced_files(unpacked_dir: Path) -> set:
             try:
                 referenced.add(target_path.relative_to(unpacked_dir.resolve()))
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return referenced
 

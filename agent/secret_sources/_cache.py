@@ -21,6 +21,10 @@ cache problem must never block Hermes startup.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import tempfile
 import time
@@ -180,7 +184,7 @@ class DiskCache(Generic[K]):
             try:
                 os.chmod(cache_dir, 0o700)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             payload = {
                 "key": self._key_serializer(key),
                 "secrets": entry.secrets,
@@ -200,14 +204,14 @@ class DiskCache(Generic[K]):
                 try:
                     os.unlink(tmp)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
         except OSError:
-            pass  # best-effort — a disk-cache miss next invocation is fine
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort — a disk-cache miss next invocation is fine
 
     def clear(self, home_path: Optional[Path] = None) -> None:
         """Delete the on-disk cache file if present (idempotent)."""
         try:
             self.path(home_path).unlink()
         except (FileNotFoundError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)

@@ -28,6 +28,10 @@ Falls back to a clear error message when not installed.
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import struct
 import sys
@@ -260,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             ws.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 if __name__ == "__main__":

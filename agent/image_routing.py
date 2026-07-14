@@ -273,7 +273,7 @@ def _resolve_inference_base_url(
         if runtime:
             return runtime
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not isinstance(cfg, dict):
         return ""
@@ -560,11 +560,11 @@ def _transcode_to_png(raw: bytes) -> Optional[bytes]:
 
         pillow_heif.register_heif_opener()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from io import BytesIO
 
@@ -641,7 +641,7 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         return None
     except Exception:
         # Keep attachment routing best-effort if the guard itself is unavailable.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         raw = path.read_bytes()

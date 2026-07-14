@@ -95,7 +95,7 @@ class _BackgroundLoop:
             try:
                 loop.close()
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
         """Submit a coroutine to the loop and block until done.
@@ -123,7 +123,7 @@ class _BackgroundLoop:
         try:
             loop.call_soon_threadsafe(loop.stop)
         except RuntimeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._loop = None
@@ -426,7 +426,7 @@ class LSPService:
                 # but don't block.  We're already on a slow path.
                 self._loop.run(client.shutdown(), timeout=1.0)
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if not already_broken:
             eventlog.log_spawn_failed(srv.server_id, per_server_root, exc)

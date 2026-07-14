@@ -30,11 +30,14 @@ Usage:
     python trajectory_compressor.py --input=data/my_run --sample_percent=10
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import time
 import yaml
-import logging
 import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -1532,7 +1535,7 @@ def main(
                                 try:
                                     entries.append(json.loads(line))
                                 except json.JSONDecodeError:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                     
                     total_original += len(entries)
                     sample_size = max(1, int(len(entries) * sample_percent / 100))

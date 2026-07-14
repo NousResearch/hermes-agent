@@ -140,7 +140,7 @@ def _run_async(coro):
                             asyncio.gather(*pending, return_exceptions=True)
                         )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -160,7 +160,7 @@ def _run_async(coro):
                         worker_loop.call_soon_threadsafe(t.cancel)
                 except RuntimeError:
                     # Loop already closed — nothing to cancel.
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             raise
         finally:
             # wait=False: don't block the caller on a stuck coroutine. We've
@@ -967,7 +967,7 @@ def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optio
         if isinstance(parsed_result, dict) and parsed_result.get("error"):
             return "error", "tool_error", str(parsed_result.get("error"))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return "ok", None, None
 
 
@@ -1234,7 +1234,7 @@ def handle_function_call(
                 from tools.file_tools import notify_other_tool_call
                 notify_other_tool_call(task_id or "default")
             except Exception:
-                pass  # file_tools may not be loaded yet
+                logger.debug("Suppressed exception", exc_info=True)  # file_tools may not be loaded yet
 
         # Measure tool dispatch latency so post_tool_call and
         # transform_tool_result hooks can observe per-tool duration.
@@ -1294,7 +1294,7 @@ def handle_function_call(
                 try:
                     reset_current_observability_context(_approval_tokens)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         _emit_post_tool_call_hook(

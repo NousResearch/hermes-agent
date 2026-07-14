@@ -15,6 +15,10 @@ the working winpty usage already shipping in ``tools/process_registry.py``.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 import time
 from typing import Optional, Sequence
@@ -159,7 +163,7 @@ class WinPtyBridge:
         try:
             self._proc.setwinsize(rows, cols)  # pywinpty: (rows, cols)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # -- teardown ---------------------------------------------------------
 
@@ -170,7 +174,7 @@ class WinPtyBridge:
         try:
             self._proc.terminate(force=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def __enter__(self) -> "WinPtyBridge":
         return self

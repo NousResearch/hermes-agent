@@ -8,6 +8,10 @@ the provider's config schema. Writes config to config.yaml + .env.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 import shlex
 from pathlib import Path
@@ -407,7 +411,7 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
         import stat
         env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
     except OSError:
-        pass  # Windows or read-only FS
+        logger.debug("Suppressed exception", exc_info=True)  # Windows or read-only FS
 
 
 # ---------------------------------------------------------------------------

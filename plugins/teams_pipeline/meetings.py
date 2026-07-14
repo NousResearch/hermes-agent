@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import tempfile
+
+import logging
+logger = logging.getLogger(__name__)
+
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -215,7 +219,7 @@ async def download_transcript_text(
         try:
             destination.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if not text:
         raise TeamsMeetingArtifactNotFoundError(

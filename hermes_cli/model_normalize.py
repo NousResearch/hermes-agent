@@ -30,6 +30,10 @@ Inspired by Clawdbot's ``normalizeAnthropicModelId`` pattern.
 from __future__ import annotations
 
 import re
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -432,7 +436,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         except Exception:
             # Fall through to the generic strip-vendor behaviour below
             # if the Copilot-specific path is unavailable for any reason.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # --- Copilot / Copilot ACP / openai-codex fallback:
     #     strip matching provider prefix, keep dots ---

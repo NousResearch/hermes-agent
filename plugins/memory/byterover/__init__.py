@@ -84,7 +84,7 @@ def _load_plugin_config() -> Dict[str, Any]:
         if isinstance(legacy_config, dict):
             return dict(legacy_config)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return {}
 
 

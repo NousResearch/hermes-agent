@@ -19,6 +19,10 @@ Usage::
     hermes profile delete coder          # remove profile + alias + service
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import re
@@ -418,10 +422,10 @@ def check_alias_collision(name: str) -> Optional[str]:
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             return f"'{canon}' conflicts with an existing command ({existing_path})"
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None  # safe
 
@@ -501,7 +505,7 @@ def remove_wrapper_script(name: str) -> bool:
                     wrapper_path.unlink()
                     return True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return False
 
 
@@ -533,7 +537,7 @@ def _migrate_profile_config_if_outdated(profile_dir: Path) -> None:
         # Profile creation should not fail because an old copied config could
         # not be migrated. The next `hermes doctor --fix` can still surface the
         # detailed error in the target profile.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def find_alias_for_profile(profile_name: str) -> Optional[str]:
@@ -717,7 +721,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         ):
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from gateway.status import (
             get_runtime_status_running_pid,
@@ -764,7 +768,7 @@ def _skills_dir_signature(skills_dir: Path) -> float:
                 except OSError:
                     continue
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return sig
 
 
@@ -1088,7 +1092,7 @@ def create_profile(
                         try:
                             os.chmod(str(dst), 0o600)
                         except OSError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled
@@ -1123,7 +1127,7 @@ def create_profile(
             )
             os.chmod(str(env_path), 0o600)
         except OSError:
-            pass  # best-effort — save_env_value creates the file on demand
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort — save_env_value creates the file on demand
 
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).
@@ -1133,7 +1137,7 @@ def create_profile(
             from hermes_cli.default_soul import DEFAULT_SOUL_MD
             soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
         except Exception:
-            pass  # best-effort — don't fail profile creation over this
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort — don't fail profile creation over this
 
     # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.
@@ -1146,7 +1150,7 @@ def create_profile(
                 encoding="utf-8",
             )
         except OSError:
-            pass  # best-effort — the feature still works via the empty skills/ dir
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort — the feature still works via the empty skills/ dir
 
     # Cloned configs can be older than the running Hermes (or predate schema
     # tracking entirely). Migrate config-only clones immediately so
@@ -1167,7 +1171,7 @@ def create_profile(
                 description_auto=False,
             )
         except Exception:
-            pass  # non-fatal — user can describe later with `hermes profile describe`
+            logger.debug("Suppressed exception", exc_info=True)  # non-fatal — user can describe later with `hermes profile describe`
 
     # Phase 4: when running inside a container under s6, register the
     # new profile's gateway as a runtime s6 service so
@@ -1314,7 +1318,7 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
             skip.add(parent.pid)
             parent = parent.parent()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         current_user = psutil.Process(os.getpid()).username()
@@ -1377,7 +1381,7 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[int]:
                 except Exception:
                     # environ() can raise AccessDenied even same-user on some
                     # platforms; fall back to the argv signal only.
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             if bound:
                 pids.append(pid)
@@ -1425,7 +1429,7 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
             try:
                 _terminate_pid(pid, force=True)
             except (ProcessLookupError, PermissionError, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
@@ -1577,14 +1581,14 @@ def delete_profile(name: str, yes: bool = False) -> Path:
                 try:
                     os.chmod(path, os.stat(path).st_mode | _stat.S_IWUSR)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # Also make the parent writable (needed for unlink/rmdir)
                 parent = os.path.dirname(path)
                 if parent:
                     try:
                         os.chmod(parent, os.stat(parent).st_mode | _stat.S_IWUSR)
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 func(path)
             else:
                 raise
@@ -1602,7 +1606,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             set_active_profile("default")
             print("✓ Active profile reset to default")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
@@ -1665,7 +1669,7 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     except ValueError:
         # Already registered (e.g. the container-boot reconciler ran
         # first and brought up a stale slot). That's fine.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as exc:
         # Don't fail profile create over a supervision-tree hiccup.
         print(f"⚠ Could not register s6 gateway service: {exc}")
@@ -1777,7 +1781,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         try:
             _terminate_pid(pid, force=True)
         except (ProcessLookupError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):
         print("✓ Gateway already stopped")
@@ -1851,7 +1855,7 @@ def get_active_profile_name() -> str:
         if len(parts) == 1 and _PROFILE_ID_RE.match(parts[0]):
             return parts[0]
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return "custom"
 
@@ -1992,7 +1996,7 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
             try:
                 os.chmod(target, member.mode & 0o777)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _inspect_profile_archive_roots(archive: Path) -> set[str]:
@@ -2141,7 +2145,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             try:
                 tmp.unlink(missing_ok=True)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             continue
 
         print(f"✓ Honcho host updated: {source_host} → {new_host}")
@@ -2197,7 +2201,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             set_active_profile(new_canon)
             print(f"✓ Active profile updated: {new_canon}")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return new_dir
 

@@ -494,7 +494,7 @@ try:
         if _host and _host not in _URL_TO_PROVIDER:
             _URL_TO_PROVIDER[_host] = _pp.name
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 
 def _infer_provider_from_url(base_url: str) -> Optional[str]:
@@ -627,7 +627,7 @@ def is_local_endpoint(base_url: str) -> bool:
         if isinstance(addr, ipaddress.IPv4Address) and addr in _TAILSCALE_CGNAT:
             return True
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Bare IP that looks like a private range (e.g. 172.26.x.x for WSL)
     # or Tailscale CGNAT (100.64.x.x–100.127.x.x).
     parts = host.split(".")
@@ -643,7 +643,7 @@ def is_local_endpoint(base_url: str) -> bool:
             if first == 100 and 64 <= second <= 127:
                 return True
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return False
 
 
@@ -708,7 +708,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 if r.status_code == 200:
                     result = "lm-studio"
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if result is None:
                 # Ollama exposes /api/tags and responds with {"models": [...]}
                 # LM Studio returns {"error": "Unexpected endpoint"} with status 200
@@ -721,9 +721,9 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                             if "models" in data:
                                 result = "ollama"
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if result is None:
                 # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
                 try:
@@ -733,7 +733,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                     if r.status_code == 200 and "default_generation_settings" in r.text:
                         result = "llamacpp"
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if result is None:
                 # vLLM: /version
                 try:
@@ -743,9 +743,9 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         if "version" in data:
                             result = "vllm"
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if result is not None:
         _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
@@ -1043,7 +1043,7 @@ def fetch_endpoint_model_metadata(
                         if n_ctx and model_alias and model_alias in cache:
                             cache[model_alias]["context_length"] = n_ctx
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             _endpoint_model_metadata_cache[normalized] = cache
             _endpoint_model_metadata_cache_time[normalized] = time.time()
@@ -1487,7 +1487,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                             try:
                                 return int(parts[-1])
                             except ValueError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
 
             # Fall back to GGUF model_info context_length (training max)
             model_info = data.get("model_info", {})
@@ -1495,7 +1495,7 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                 if "context_length" in key and isinstance(value, (int, float)):
                     return int(value)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -1629,9 +1629,9 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
                                 if ctx >= 1024:
                                     return ctx
                             except ValueError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -1748,7 +1748,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                     try:
                                         return int(parts[-1])
                                     except ValueError:
-                                        pass
+                                        logger.debug("Suppressed exception", exc_info=True)
                     # Fall back to GGUF model_info context_length (training max)
                     model_info = data.get("model_info", {})
                     for key, value in model_info.items():
@@ -1795,7 +1795,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                         if ctx and isinstance(ctx, (int, float)):
                             return int(ctx)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None
 
@@ -2113,7 +2113,7 @@ def get_model_context_length(
             if cp_ctx:
                 return cp_ctx
         except Exception:
-            pass  # fall through to probing
+            logger.debug("Suppressed exception", exc_info=True)  # fall through to probing
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
@@ -2213,7 +2213,7 @@ def get_model_context_length(
             from agent.bedrock_adapter import get_bedrock_context_length
             return get_bedrock_context_length(model)
         except ImportError:
-            pass  # boto3 not installed — fall through to generic resolution
+            logger.debug("Suppressed exception", exc_info=True)  # boto3 not installed — fall through to generic resolution
 
     if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
         ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)
@@ -2308,7 +2308,7 @@ def get_model_context_length(
             if ctx:
                 return ctx
         except Exception:
-            pass  # Fall through to models.dev
+            logger.debug("Suppressed exception", exc_info=True)  # Fall through to models.dev
 
     if effective_provider == "nous":
         ctx, source = _resolve_nous_context_length(

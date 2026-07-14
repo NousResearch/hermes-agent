@@ -663,7 +663,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
     except OSError as exc:
         logger.warning(
@@ -716,7 +716,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
             try:
                 fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
             except (OSError, IOError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _prompt_and_record(

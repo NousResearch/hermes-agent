@@ -343,7 +343,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
         try:
             return cache.read_bytes()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     sheet_bytes: bytes | None = None
     pet = load_pet(slug)
@@ -392,7 +392,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
     try:
         cache.write_bytes(data)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return data
 
 
@@ -410,7 +410,7 @@ def remove_pet(slug: str) -> bool:
     try:
         (_thumbs_dir() / f"{slug}.png").unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     directory = pets_dir() / slug
     if not directory.is_dir():
@@ -453,7 +453,7 @@ def rename_pet(slug: str, display_name: str) -> str | None:
             try:
                 (_thumbs_dir() / f"{slug}.png").rename(_thumbs_dir() / f"{desired}.png")
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             directory = pets_dir() / desired
             pet_json = directory / "pet.json"
             new_slug = desired

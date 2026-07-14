@@ -6,6 +6,10 @@ that can be copy-pasted into Discord/GitHub/Telegram for support context.
 No ANSI colors, no checkmarks — just data.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import platform
@@ -72,7 +76,7 @@ def _get_git_commit(project_root: Path) -> str:
             if value:
                 return value
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fall back to the build-time baked SHA (populated in published Docker
     # images, absent otherwise).  Defers the import so the dump module
@@ -83,7 +87,7 @@ def _get_git_commit(project_root: Path) -> str:
         if baked:
             return baked
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return "(unknown)"
 
@@ -107,7 +111,7 @@ def _get_git_commit_date(project_root: Path) -> str:
             if value:
                 return value
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return ""
 
@@ -412,7 +416,7 @@ def run_dump(args):
                 if _load_pool("openrouter").has_credentials():
                     display = "set (auth pool)"
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

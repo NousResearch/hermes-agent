@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, List, Optional
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 from hermes_cli.model_switch import ModelSwitchResult, resolve_display_context_length
 
@@ -53,7 +57,7 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
                 )
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     last = int(getattr(cc, "last_prompt_tokens", 0) or 0)
     if last > 0:
@@ -148,7 +152,7 @@ def enrich_model_switch_warnings_for_gateway(
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
                 cfg_ctx = int(model_cfg["context_length"])
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     messages = None
     db = getattr(runner, "_session_db", None)
@@ -158,7 +162,7 @@ def enrich_model_switch_warnings_for_gateway(
             entry = store.get_or_create_session(source)
             messages = db.get_messages_as_conversation(entry.session_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     merge_preflight_compression_warning(
         result,

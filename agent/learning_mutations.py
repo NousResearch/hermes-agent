@@ -18,6 +18,10 @@ file. Pure stdlib + existing skill/memory helpers.
 from __future__ import annotations
 
 from pathlib import Path
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any
 
 _MEMORY_FILES = {"memory": "MEMORY.md", "profile": "USER.md"}
@@ -203,4 +207,4 @@ def _clear_skill_cache() -> None:
 
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)

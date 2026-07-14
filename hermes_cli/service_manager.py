@@ -17,6 +17,10 @@ profile create/delete hooks (Phase 4) and the s6 dispatch path in
 from __future__ import annotations
 
 import re
+
+import logging
+logger = logging.getLogger(__name__)
+
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
@@ -495,7 +499,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             # owned by default. The chown is a no-op in that case, so
             # swallowing this keeps both root and unprivileged callers
             # on one code path.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Top-level event/ dir (this is the s6-svlisten1 event-subscription
     # dir at the service root, distinct from supervise/event/).
@@ -521,7 +525,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         try:
             os.chown(control, _HERMES_UID, _HERMES_GID)
         except PermissionError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # If a log/ subdir is present (the canonical s6 logger pattern —
     # see servicedir(7)), it gets its own s6-supervise instance and
@@ -541,7 +545,7 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             try:
                 os.chown(log_control, _HERMES_UID, _HERMES_GID)
             except PermissionError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 class S6Error(RuntimeError):
@@ -907,7 +911,7 @@ class S6ServiceManager:
 
                 write_planned_stop_marker(pid)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._run_svc("-d", "stop", name)
         _write_gateway_desired_state(name, "stopped")
 

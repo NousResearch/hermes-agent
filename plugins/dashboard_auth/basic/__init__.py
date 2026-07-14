@@ -387,7 +387,7 @@ def _resolve_secret(cfg_section: dict) -> bytes:
             if len(decoded) >= 16:
                 return decoded
         except (ValueError, TypeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return raw.encode("utf-8")
 
 

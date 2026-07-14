@@ -19,6 +19,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import shutil
 import sys
@@ -128,7 +132,7 @@ def smoke_test(host: str, headers: dict, ckpt_name: str | None) -> dict:
     try:
         cancelled = runner.cancel(pid)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return {
         "ran": True, "submitted": True, "prompt_id": pid,

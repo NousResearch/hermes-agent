@@ -380,7 +380,7 @@ def _detect_connection() -> tuple[bool, str | None]:
         if cfg.api_key:
             return True, "apikey"
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False, None
 
 

@@ -24,6 +24,10 @@ unchanged.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 import urllib.request
 from typing import Any, Optional
@@ -94,7 +98,7 @@ class _SafeWriter:
         try:
             self._inner.flush()
         except (OSError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def fileno(self):
         return self._inner.fileno()
@@ -137,7 +141,7 @@ def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
         if urllib.request.proxy_bypass_environment(host):
             return None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return proxy
 

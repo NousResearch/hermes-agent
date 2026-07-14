@@ -128,14 +128,14 @@ class _FileLock:
                 self._fh.seek(0)
                 msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             try:
                 import fcntl
 
                 fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             self._fh.close()
         finally:

@@ -29,6 +29,10 @@ Design constraints:
 from __future__ import annotations
 
 import errno
+
+import logging
+logger = logging.getLogger(__name__)
+
 import fcntl
 import os
 import select
@@ -236,7 +240,7 @@ class PtyBridge:
         try:
             fcntl.ioctl(self._fd, termios.TIOCSWINSZ, winsize)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # -- teardown ---------------------------------------------------------
 
@@ -268,7 +272,7 @@ class PtyBridge:
                 else:
                     self._proc.kill(sig)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             deadline = time.monotonic() + 0.5
             while self._proc.isalive() and time.monotonic() < deadline:
                 time.sleep(0.02)
@@ -276,7 +280,7 @@ class PtyBridge:
         try:
             self._proc.close(force=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Context-manager sugar — handy in tests and ad-hoc scripts.
     def __enter__(self) -> "PtyBridge":

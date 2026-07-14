@@ -5,6 +5,10 @@ Mounted at /api/plugins/hermes-achievements/ by Hermes dashboard.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import math
 import re
 import threading
@@ -212,7 +216,7 @@ def load_checkpoint() -> Dict[str, Any]:
             if isinstance(data.get("sessions"), dict):
                 return data
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return {"schema_version": 1, "generated_at": 0, "sessions": {}}
 
 
@@ -646,7 +650,7 @@ def scan_sessions(
                 except Exception:
                     # Progress callbacks are advisory — a broken publisher
                     # must never abort the scan itself.
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         save_checkpoint({
             "schema_version": 1,
@@ -749,7 +753,7 @@ def aggregate_stats(sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
                 if lt.tm_hour < 6 or lt.tm_hour >= 23:
                     agg["night_sessions"] += 1
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     agg["distinct_model_count"] = len({m for m in model_names if m and m != "None"})
     agg["distinct_provider_count"] = len(provider_names)
     return agg
@@ -899,7 +903,7 @@ def _run_scan_and_update_cache(publish_partial_snapshots: bool = True) -> None:
                 _SNAPSHOT_CACHE_AT = 0
             except Exception:
                 # Intermediate publication is best-effort; don't kill the scan.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         callback = _publish_partial if publish_partial_snapshots else None
         try:
@@ -1053,9 +1057,9 @@ async def reset_state():
     try:
         snapshot_path().unlink(missing_ok=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         checkpoint_path().unlink(missing_ok=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return {"ok": True}

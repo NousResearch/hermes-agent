@@ -287,7 +287,7 @@ def _jobs_lock():
                                 try:
                                     lock_fd.close()
                                 except OSError:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                                 lock_fd = None
                                 break
                             time.sleep(0.1)
@@ -308,7 +308,7 @@ def _jobs_lock():
                         elif msvcrt is not None:
                             getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
                     except (OSError, IOError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     finally:
                         lock_fd.close()
         finally:
@@ -427,7 +427,7 @@ def _secure_dir(path: Path):
     try:
         os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
-        pass  # Windows or other platforms where chmod is not supported
+        logger.debug("Suppressed exception", exc_info=True)  # Windows or other platforms where chmod is not supported
 
 
 def _secure_file(path: Path):
@@ -436,7 +436,7 @@ def _secure_file(path: Path):
         if path.exists():
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def ensure_dirs():
@@ -562,7 +562,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": f"once in {original}"
         }
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
@@ -676,7 +676,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
                 grace = period_seconds // 2
                 return max(MIN_GRACE, min(grace, MAX_GRACE))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return MIN_GRACE
 
@@ -766,7 +766,7 @@ def _atomic_write_epoch(path: Path) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -785,12 +785,12 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     try:
         _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if success:
         try:
             _atomic_write_epoch(TICKER_SUCCESS_FILE)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _epoch_file_age(path: Path) -> Optional[float]:
@@ -884,7 +884,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -952,7 +952,7 @@ def _resolve_default_model_snapshot() -> Optional[str]:
             from hermes_cli import managed_scope
             cfg = managed_scope.apply_managed_overlay(cfg)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         cfg = _expand_env_vars(cfg)
         model_cfg = cfg.get("model") or {}
         if isinstance(model_cfg, str):
@@ -1744,7 +1744,7 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
                     if 0 <= _age < claim_ttl_seconds:
                         return False  # someone holds a fresh claim
                 except Exception:
-                    pass  # malformed claim → overwrite
+                    logger.debug("Suppressed exception", exc_info=True)  # malformed claim → overwrite
             job["fire_claim"] = {"at": now.isoformat(), "by": _machine_id()}
             kind = job.get("schedule", {}).get("kind")
             if kind in {"cron", "interval"}:
@@ -1906,7 +1906,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     if 0 <= _age < _run_claim_ttl:
                         continue  # a fresh claim is held by an in-flight run
                 except (KeyError, ValueError, TypeError):
-                    pass  # malformed claim → fall through and (re)claim
+                    logger.debug("Suppressed exception", exc_info=True)  # malformed claim → fall through and (re)claim
 
             next_run = job.get("next_run_at")
             if not next_run:
@@ -2180,7 +2180,7 @@ def save_job_output(job_id: str, output: str):
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).

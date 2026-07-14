@@ -353,7 +353,7 @@ class QQAdapter(BasePlatformAdapter):
             try:
                 await self._listen_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._listen_task = None
 
         if self._heartbeat_task:
@@ -361,7 +361,7 @@ class QQAdapter(BasePlatformAdapter):
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._heartbeat_task = None
 
         await self._cleanup()
@@ -727,7 +727,7 @@ class QQAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat failed: %s", self._log_tag, exc)
         except asyncio.CancelledError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _send_identify(self) -> None:
         """Send op 2 Identify to authenticate the WebSocket connection.
@@ -1945,7 +1945,7 @@ class QQAdapter(BasePlatformAdapter):
             try:
                 os.unlink(wav_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             if transcript:
                 logger.debug("[%s] STT success: %r", self._log_tag, transcript[:100])
@@ -2007,7 +2007,7 @@ class QQAdapter(BasePlatformAdapter):
         try:
             os.unlink(src_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return result
 
@@ -2086,7 +2086,7 @@ class QQAdapter(BasePlatformAdapter):
             try:
                 os.unlink(silk_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return None
 
@@ -2311,7 +2311,7 @@ class QQAdapter(BasePlatformAdapter):
             try:
                 os.unlink(src_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Verify output and cache
         try:
@@ -3217,11 +3217,11 @@ class QQAdapter(BasePlatformAdapter):
         try:
             return datetime.fromisoformat(raw)
         except (ValueError, TypeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
         except (ValueError, TypeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return datetime.now(tz=timezone.utc)
 
     def _is_duplicate(self, msg_id: str) -> bool:

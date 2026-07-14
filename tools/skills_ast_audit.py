@@ -13,6 +13,10 @@ CLI: ``hermes skills audit --deep``
 from __future__ import annotations
 
 import ast
+
+import logging
+logger = logging.getLogger(__name__)
+
 from pathlib import Path
 from typing import List, Tuple
 
@@ -76,7 +80,7 @@ def _scan_source(content: str, rel_path: str) -> List[Finding]:
         V().visit(tree)
     except (RecursionError, ValueError, RuntimeError):
         # Hostile/pathological input: return what we collected so far.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return findings
 

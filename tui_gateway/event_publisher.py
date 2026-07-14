@@ -109,7 +109,7 @@ class WsPublisherTransport:
             except queue.Full:
                 # Best-effort: if the queue is wedged, the daemon thread
                 # will be torn down with the process.
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             w.join(timeout=3.0)
         self._worker = None
 
@@ -121,6 +121,6 @@ class WsPublisherTransport:
                 if self._ws is not None:
                     self._ws.close()  # type: ignore[union-attr]
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
         self._ws = None

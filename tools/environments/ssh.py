@@ -131,7 +131,7 @@ class SSHEnvironment(BaseEnvironment):
                 logger.debug("SSH: remote home = %s", home)
                 return home
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if self.user == "root":
             return "/root"
         return f"/home/{self.user}"
@@ -368,8 +368,8 @@ class SSHEnvironment(BaseEnvironment):
                     stdin=subprocess.DEVNULL,
                 )
             except (OSError, subprocess.SubprocessError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 self.control_socket.unlink()
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)

@@ -6,6 +6,10 @@ as its first argument and uses its state (queues, app reference) to coordinate
 with the TUI.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import queue
 import time as _time
 
@@ -114,12 +118,12 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         try:
             cli._clear_secret_input_buffer()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     elif hasattr(cli, "_app") and cli._app:
         try:
             cli._app.current_buffer.reset()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
@@ -164,12 +168,12 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
         try:
             cli._clear_secret_input_buffer()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     elif hasattr(cli, "_app") and cli._app:
         try:
             cli._app.current_buffer.reset()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
     cprint(f"\n{_DIM}  ⏱ Timeout — secret capture cancelled{_RST}")

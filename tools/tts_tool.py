@@ -89,7 +89,7 @@ def _import_edge_tts():
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("tts.edge", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as e:
         raise ImportError(str(e)) from e
     import edge_tts
@@ -110,7 +110,7 @@ def _import_elevenlabs():
     except ImportError:
         # lazy_deps module itself missing — fall through to the raw import
         # so older code paths still get a clean ImportError.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as e:  # FeatureUnavailable or any unexpected error
         raise ImportError(str(e)) from e
     from elevenlabs.client import ElevenLabs
@@ -133,7 +133,7 @@ def _import_mistral_client():
         from tools.lazy_deps import ensure
         ensure("tts.mistral", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as e:  # FeatureUnavailable or any unexpected error
         raise ImportError(str(e)) from e
     from mistralai.client import Mistral
@@ -746,7 +746,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             try:
                 child.terminate()
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         parent.terminate()
     except psutil.NoSuchProcess:
         return
@@ -757,7 +757,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=2)
         return
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         parent = psutil.Process(proc.pid)
@@ -765,7 +765,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
             try:
                 child.kill()
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         parent.kill()
     except psutil.NoSuchProcess:
         return
@@ -1943,7 +1943,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         try:
             os.remove(wav_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return output_path
 
@@ -2207,7 +2207,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
             try:
                 os.remove(wav_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             # No ffmpeg — keep WAV and return that path
             os.rename(wav_path, output_path)
@@ -2890,7 +2890,7 @@ def stream_tts_to_speaker(
                     try:
                         os.unlink(tmp_path)
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
         while not stop_event.is_set():
             # Read next delta from queue
@@ -2954,7 +2954,7 @@ def stream_tts_to_speaker(
                 output_stream.stop()
                 output_stream.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         tts_done_event.set()
 
 

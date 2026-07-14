@@ -19,6 +19,10 @@ that don't set it are unaffected — exactly the same shape as ``gateway.proxy_u
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Optional
 
 
@@ -41,7 +45,7 @@ def relay_url() -> Optional[str]:
         if url:
             return url.rstrip("/")
     except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -142,7 +146,7 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
             gateway_id = gateway_id or str(cfg.get("relay_id", "") or "").strip()
             secret = secret or str(cfg.get("relay_secret", "") or "").strip()
         except Exception:  # noqa: BLE001 - config absence/parse must never crash registration
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return (gateway_id or None, secret or None)
 
 
@@ -344,7 +348,7 @@ def relay_relevance_policy(platform: Optional[str] = None) -> Optional[dict]:
         elif isinstance(frc, str) and frc.strip():
             free_response = [c.strip() for c in frc.split(",") if c.strip()]
     except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # allow_other_bots ← {PLATFORM}_ALLOW_BOTS in {"mentions","all"} (same gate as
     # the gateway's own authz_mixin DISCORD_ALLOW_BOTS bypass).
@@ -425,7 +429,7 @@ def _post_provision(
         try:
             detail = (json.loads(exc.read().decode()) or {}).get("error", "")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise RuntimeError(
             f"connector returned HTTP {exc.code}" + (f": {detail}" if detail else "")
         ) from exc

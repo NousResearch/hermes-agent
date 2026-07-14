@@ -102,11 +102,11 @@ def _release_singleton_lock(handle) -> None:
         from gateway.status import _release_file_lock
         _release_file_lock(handle)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         handle.close()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 class GatewayKanbanWatchersMixin:
@@ -1058,7 +1058,7 @@ class GatewayKanbanWatchersMixin:
                     try:
                         conn.close()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
             """Run one dispatch_once per board. Returns (slug, result) pairs.
@@ -1109,7 +1109,7 @@ class GatewayKanbanWatchersMixin:
                         try:
                             conn.close()
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
             return False
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs

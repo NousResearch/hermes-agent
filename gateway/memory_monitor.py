@@ -68,7 +68,7 @@ def _get_rss_mb() -> Optional[int]:
         # Linux / other unices: KB
         return int(maxrss / 1024)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fallback: psutil (Windows, or unusual unix without resource).
     try:
@@ -208,7 +208,7 @@ def stop_memory_monitoring(timeout: float = 2.0) -> None:
         try:
             log_memory_usage(prefix="shutdown")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         _stop_event.set()
         thread = _monitor_thread
@@ -219,7 +219,7 @@ def stop_memory_monitoring(timeout: float = 2.0) -> None:
     try:
         thread.join(timeout=timeout)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     logger.info("[MEMORY] Periodic memory monitoring stopped")
 

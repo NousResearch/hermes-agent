@@ -407,7 +407,7 @@ def build_session_context_prompt(
             if entry and entry.pii_safe:
                 _is_pii_safe = True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     redact_pii = redact_pii and _is_pii_safe
     lines = [
         "## Current Session Context",
@@ -1501,7 +1501,7 @@ class SessionStore:
             try:
                 origin_json = json.dumps(source.to_dict())
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             recorder(
                 session_id,
                 source=source.platform.value,
@@ -1765,7 +1765,7 @@ class SessionStore:
             try:
                 return self._db.session_count() > 1
             except Exception:
-                pass  # fall through to heuristic
+                logger.debug("Suppressed exception", exc_info=True)  # fall through to heuristic
         # Fallback: check if sessions.json was loaded with existing data.
         # This covers the rare case where the DB is unavailable.
         with self._lock:

@@ -282,7 +282,7 @@ def _do_upload(
     except Exception:
         # lazy-install unavailable/declined — fall through to the import,
         # which surfaces the install hint below if the package is missing.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from huggingface_hub import HfApi
     except ImportError:

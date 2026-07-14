@@ -322,7 +322,7 @@ def save_url_image(
                 try:
                     path.unlink()
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise ValueError(
                     f"Image at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
                 )
@@ -332,7 +332,7 @@ def save_url_image(
         try:
             path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise ValueError(f"Image at {url} returned 0 bytes; refusing to cache.")
 
     return path

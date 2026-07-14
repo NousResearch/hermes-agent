@@ -16,6 +16,10 @@ an already-installed, already-authenticated ``op`` and never downloads one.
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import subprocess
 from pathlib import Path
@@ -413,7 +417,7 @@ def _op_version(binary: Path) -> str:
         if res.returncode == 0:
             return (res.stdout or res.stderr).strip().splitlines()[0]
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return "version unknown"
 
 

@@ -21,6 +21,10 @@ call time, when main.py is fully loaded) so this module never imports
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import subprocess
 
@@ -99,7 +103,7 @@ def _prompt_auth_credentials_choice(title: str) -> str:
             print()
             return ("use", "reauth", "cancel")[idx]
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print(title)
     for i, label in enumerate(choices, 1):
@@ -323,7 +327,7 @@ def _model_flow_nous(config, current_model="", args=None):
                 _refreshed = load_config() or {}
                 prompt_enable_tool_gateway(_refreshed)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -393,7 +397,7 @@ def _model_flow_nous(config, current_model="", args=None):
         except Exception:
             # Runtime inference has its own paid-entitlement recovery path; do
             # not block model selection if this opportunistic refresh fails.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Resolve portal URL early — needed both for upgrade links and for the
     # freeRecommendedModels endpoint below.
@@ -403,7 +407,7 @@ def _model_flow_nous(config, current_model="", args=None):
         if _nous_state:
             _nous_portal_url = _nous_state.get("portal_base_url", "")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # For free users: partition models into selectable/unavailable based on
     # whether they are free per the Portal-reported pricing.  First augment
@@ -568,7 +572,7 @@ def _model_flow_openai_codex(config, current_model=""):
         if _codex_status.get("logged_in"):
             _codex_token = _codex_status.get("api_key")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if not _codex_token:
         try:
             from hermes_cli.auth import resolve_codex_runtime_credentials
@@ -576,7 +580,7 @@ def _model_flow_openai_codex(config, current_model=""):
             _codex_creds = resolve_codex_runtime_credentials()
             _codex_token = _codex_creds.get("api_key")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
 
@@ -664,7 +668,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         creds = resolve_xai_oauth_runtime_credentials()
         base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
     selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
@@ -705,7 +709,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         models = fetch_api_models(creds["api_key"], creds["base_url"])
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if not models:
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
@@ -1645,7 +1649,7 @@ def _model_flow_copilot(config, current_model=""):
                     print(f"  ✗ {msg}")
                     return
             except ImportError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             save_env_value("COPILOT_GITHUB_TOKEN", new_key)
             print("  Token saved.")
             print()
@@ -1812,7 +1816,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         catalog_creds = resolve_api_key_provider_credentials("copilot")
         catalog_api_key = catalog_creds.get("api_key", "")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     catalog = fetch_github_model_catalog(catalog_api_key)
     normalized_current_model = (
@@ -2641,7 +2645,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             if str(_m.get("provider") or "").strip().lower() == provider_id:
                 current_base = str(_m.get("base_url") or "").strip()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     effective_base = current_base or pconfig.inference_base_url
 
     if provider_id == "zai":
@@ -2721,7 +2725,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
                 mdev_models = list_agentic_models(provider_id)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if mdev_models:
                 seen = {m.lower() for m in mdev_models}
                 model_list = list(mdev_models)
@@ -2746,7 +2750,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
             mdev_models = list_agentic_models(provider_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if mdev_models:
             # Merge models.dev with curated list so newly added models
@@ -2863,7 +2867,7 @@ def _model_flow_anthropic(config, current_model=""):
         if cc_creds and is_claude_code_token_valid(cc_creds):
             cc_available = True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Stale-OAuth guard: if the only existing cred is an expired OAuth token
     # (no valid cc_creds to fall back on), treat it as missing so the re-auth

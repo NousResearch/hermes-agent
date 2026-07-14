@@ -319,7 +319,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
             for var in source.protected_env_vars(cfg):
                 protected.setdefault(var, source.name)
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Apply phase — sequential, first-wins, fully attributed.
     claimed: Dict[str, str] = {}  # var → source name that won it

@@ -635,7 +635,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         if default_skills.resolve() != active_dir:
             candidates.append(("default", default_skills))
     except (OSError, RuntimeError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # All named profiles (~/.hermes/profiles/*/skills)
     profiles_root = root / "profiles"
@@ -652,7 +652,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
                     continue
                 candidates.append((entry.name, pskills))
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     for profile_name, skills_dir in candidates:
         if not skills_dir.is_dir():
@@ -840,7 +840,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             _parsed = yaml.safe_load(content[3:_fm_end.start() + 3])
             _desc = str(_parsed.get("description", ""))[:120]
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     result = {
         "success": True,
@@ -901,7 +901,7 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _parsed = yaml.safe_load(content[3:_fm_end.start() + 3])
             _desc = str(_parsed.get("description", ""))[:120]
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return {
         "success": True,
@@ -981,7 +981,7 @@ def _patch_skill(
             from tools.fuzzy_match import format_no_match_hint
             err_msg += format_no_match_hint(match_error, match_count, old_string, content)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return {
             "success": False,
             "error": err_msg,
@@ -1391,7 +1391,7 @@ def skill_manage(
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
         # Only mark a skill as agent-created when the background self-improvement
@@ -1413,7 +1413,7 @@ def skill_manage(
                 if not result.get("_archived"):
                     forget(name)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return json.dumps(result, ensure_ascii=False)
 

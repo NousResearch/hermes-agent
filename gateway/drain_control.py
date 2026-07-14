@@ -106,7 +106,7 @@ def current_instantiation_epoch() -> str:
             .strip()
         )
     except OSError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
     pid1_start = ""
     try:
@@ -119,7 +119,7 @@ def current_instantiation_epoch() -> str:
         tail = stat.rsplit(")", 1)[1].split()
         pid1_start = tail[19]
     except (OSError, IndexError):
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
     if not boot_id and not pid1_start:
         return ""

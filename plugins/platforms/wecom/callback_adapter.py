@@ -137,7 +137,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             logger.error("[WecomCallback] Port %d already in use", self._port)
             return False
         except (ConnectionRefusedError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
@@ -180,7 +180,7 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             try:
                 await self._poll_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._poll_task = None
         await self._cleanup()
         self._mark_disconnected()

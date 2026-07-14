@@ -201,7 +201,7 @@ class HonchoMemoryProvider(MemoryProvider):
             # Capture the whole ~/.honcho dir so sibling state travels with it.
             paths.append(str(global_cfg.parent))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return paths
 
     def __init__(self):
@@ -273,7 +273,7 @@ class HonchoMemoryProvider(MemoryProvider):
             try:
                 existing = json.loads(config_path.read_text())
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         existing.update(values)
         from utils import atomic_json_write
         atomic_json_write(config_path, existing, mode=0o600)
@@ -1420,7 +1420,7 @@ class HonchoMemoryProvider(MemoryProvider):
             try:
                 self._manager.flush_all()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

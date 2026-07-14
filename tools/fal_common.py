@@ -27,6 +27,10 @@ issue #26241 for details.
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Union
+
+import logging
+logger = logging.getLogger(__name__)
+
 from urllib.parse import urlencode
 
 
@@ -45,7 +49,7 @@ def import_fal_client() -> Any:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("image.fal", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
         raise ImportError(str(exc)) from exc
     import fal_client  # type: ignore  # noqa: WPS433 — intentionally lazy

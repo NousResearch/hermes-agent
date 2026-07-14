@@ -75,7 +75,7 @@ async def _exec_request(client, method, uri, paths=None, queries=None, body=None
             body_json = json.loads(raw.content)
             data = body_json.get("data", {})
         except (json.JSONDecodeError, AttributeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if not data:
         resp_data = getattr(response, "data", None)
         if isinstance(resp_data, dict):
@@ -988,7 +988,7 @@ def _resolve_model_and_runtime() -> Tuple[str, dict]:
             from hermes_cli.models import get_default_model_for_provider
             model = get_default_model_for_provider(runtime_kwargs["provider"])
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return model, runtime_kwargs
 

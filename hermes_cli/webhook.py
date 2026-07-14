@@ -10,6 +10,10 @@ Subscriptions persist to ~/.hermes/webhook_subscriptions.json and are
 hot-reloaded by the webhook adapter without a gateway restart.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import re
@@ -76,7 +80,7 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 

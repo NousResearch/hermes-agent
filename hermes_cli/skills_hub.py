@@ -10,6 +10,10 @@ All logic lives in shared do_* functions. The CLI entry point and slash command
 handler are thin wrappers that parse args and delegate.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import re
 import shutil
@@ -770,7 +774,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                     "or via[/] [bold]hermes cron add[/][dim].[/]\n"
                 )
     except Exception:  # pragma: no cover - blueprint detection is best-effort
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
@@ -778,7 +782,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     else:
         c.print("[dim]Skill will be available in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
@@ -1136,7 +1140,7 @@ def do_uninstall(name: str, console: Optional[Console] = None,
                 from agent.prompt_builder import clear_skills_system_prompt_cache
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             c.print("[dim]Change will take effect in your next session.[/]")
             c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
@@ -1183,7 +1187,7 @@ def do_reset(name: str, restore: bool = False,
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     else:
         c.print("[dim]Change will take effect in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
@@ -1323,7 +1327,7 @@ def do_opt_out(remove: bool = False,
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def do_opt_in(sync: bool = False,
@@ -1353,7 +1357,7 @@ def do_opt_in(sync: bool = False,
                 from agent.prompt_builder import clear_skills_system_prompt_cache
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     c.print()
 
 
@@ -1396,7 +1400,7 @@ def do_repair_official(name: str, restore: bool = False,
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
@@ -1469,7 +1473,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
             try:
                 fm = yaml.safe_load(skill_md[3:match.start() + 3]) or {}
             except yaml.YAMLError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     name = fm.get("name", path.name)
     description = fm.get("description", "")
@@ -1820,13 +1824,13 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 try:
                     page = int(args[i + 1])
                 except ValueError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 i += 2
             elif args[i] == "--size" and i + 1 < len(args):
                 try:
                     page_size = int(args[i + 1])
                 except ValueError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 i += 2
             elif args[i] == "--source" and i + 1 < len(args):
                 source = args[i + 1]
@@ -1852,7 +1856,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                 try:
                     limit = int(args[i + 1])
                 except ValueError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 i += 2
             elif args[i] == "--json":
                 as_json = True

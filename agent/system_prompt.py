@@ -24,6 +24,10 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 from typing import Any, Dict, List, Optional
 
@@ -360,7 +364,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
         except Exception:
             # Coding-context probing must never block prompt build.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
@@ -377,7 +381,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(_probe_line)
         except Exception:
             # Probe failure must never block prompt build.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Active-profile hint — names the Hermes profile the agent is running
     # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
@@ -427,7 +431,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if _entry and _entry.platform_hint:
                 _default_hint = _entry.platform_hint
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     _effective_hint = _resolve_platform_hint(agent, platform_key, _default_hint)
     if platform_key == "tui" and _effective_hint:
@@ -475,7 +479,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if _ext_mem_block:
                 volatile_parts.append(_ext_mem_block)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()

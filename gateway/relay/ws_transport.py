@@ -352,20 +352,20 @@ class WebSocketRelayTransport:
             try:
                 await self._supervisor
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._supervisor = None
         if self._reader is not None:
             self._reader.cancel()
             try:
                 await self._reader
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._reader = None
         if self._ws is not None:
             try:
                 await self._ws.close()
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._ws = None
         # Fail any in-flight outbound waiters so callers don't hang.
         for fut in self._pending.values():

@@ -353,7 +353,7 @@ def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("PRAGMA checkpoint_fullfsync=1")
     except sqlite3.OperationalError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def apply_wal_with_fallback(
@@ -389,7 +389,7 @@ def apply_wal_with_fallback(
             _apply_macos_checkpoint_barrier(conn)
             return "wal"
     except sqlite3.OperationalError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         conn.execute("PRAGMA journal_mode=WAL")
@@ -559,7 +559,7 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             msg = str(exc).lower()
             if "no such table" in msg or "no such column" in msg:
                 return None
@@ -1046,7 +1046,7 @@ class SessionDB:
                     if self._conn is not None:
                         self._conn.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 report = repair_state_db_schema(self.db_path)
                 if not report.get("repaired"):
                     raise
@@ -1131,7 +1131,7 @@ class SessionDB:
             try:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
             except sqlite3.OperationalError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     @staticmethod
     def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
@@ -1241,7 +1241,7 @@ class SessionDB:
                         try:
                             self._conn.rollback()
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         raise
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
@@ -1297,7 +1297,7 @@ class SessionDB:
                         result[2], result[1],
                     )
         except Exception:
-            pass  # Best effort — never fatal.
+            logger.debug("Suppressed exception", exc_info=True)  # Best effort — never fatal.
 
     def _try_optimize_fts(self) -> None:
         """Best-effort FTS5 segment merge. Never raises.
@@ -1313,7 +1313,7 @@ class SessionDB:
         try:
             self.optimize_fts()
         except Exception:
-            pass  # Best effort — never fatal.
+            logger.debug("Suppressed exception", exc_info=True)  # Best effort — never fatal.
 
     def close(self):
         """Close the database connection.
@@ -1326,7 +1326,7 @@ class SessionDB:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 self._conn.close()
                 self._conn = None
 
@@ -1473,7 +1473,7 @@ class SessionDB:
                 "UPDATE messages SET active = 1 WHERE active IS NULL"
             )
         except sqlite3.OperationalError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         fts5_available = self._sqlite_supports_fts5(cursor)
         fts_migrations_complete = True
@@ -1614,7 +1614,7 @@ class SessionDB:
                         "                WHERE ch.parent_session_id = sessions.id)"
                     )
                 except sqlite3.OperationalError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if current_version < 18:
                 # v18: gateway metadata consolidation (#9006). Backfill
                 # display_name / origin_json / expiry_finalized from
@@ -1671,7 +1671,7 @@ class SessionDB:
                                  + COALESCE(reasoning_tokens, 0) > 0"""
                     )
                 except sqlite3.OperationalError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1685,7 +1685,7 @@ class SessionDB:
                 "ON sessions(title) WHERE title IS NOT NULL"
             )
         except sqlite3.OperationalError:
-            pass  # Index already exists
+            logger.debug("Suppressed exception", exc_info=True)  # Index already exists
 
         if fts5_available:
             # FTS5 setup. Run the DDL even when the virtual table exists so
@@ -5019,7 +5019,7 @@ class SessionDB:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
                     except sqlite3.OperationalError:
                         # Trigram query failed at runtime — fall through to LIKE.
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
                         _trigram_succeeded = True
@@ -5853,16 +5853,16 @@ class SessionDB:
             try:
                 p.unlink(missing_ok=True)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # request_dump files use session_id as a prefix component
         try:
             for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
                 try:
                     p.unlink(missing_ok=True)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def delete_session(
         self,
@@ -6728,7 +6728,7 @@ class SessionDB:
                     )
             except sqlite3.OperationalError:
                 # telegram_dm_topic_mode absent — binding prune still stands.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         self._execute_write(_do)
         return deleted["count"]
@@ -6983,7 +6983,7 @@ class SessionDB:
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._conn.execute("VACUUM")
         return optimized
 
@@ -7025,7 +7025,7 @@ class SessionDB:
                         result["skipped"] = True
                         return result
                 except (TypeError, ValueError):
-                    pass  # corrupt meta; treat as no prior run
+                    logger.debug("Suppressed exception", exc_info=True)  # corrupt meta; treat as no prior run
 
             pruned = self.prune_sessions(
                 older_than_days=retention_days,

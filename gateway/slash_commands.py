@@ -186,19 +186,19 @@ class GatewaySlashCommandsMixin:
                 reason="session_reset",
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             from tools.env_passthrough import clear_env_passthrough
             clear_env_passthrough()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             from tools.credential_files import clear_credential_files
             clear_credential_files()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Reset the session
         new_entry = await self.async_session_store.reset_session(session_key)
@@ -236,7 +236,7 @@ class GatewaySlashCommandsMixin:
                 new_session_id=new_entry.session_id if new_entry else None,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Emit session:end hook (session is ending)
         await self.hooks.emit("session:end", {
@@ -286,7 +286,7 @@ class GatewaySlashCommandsMixin:
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif not _title_note:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = t("gateway.reset.title_empty_untitled")
@@ -316,7 +316,7 @@ class GatewaySlashCommandsMixin:
                 new_session_id=_new_sid,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Append a random tip to the reset message
         try:
@@ -1337,7 +1337,7 @@ class GatewaySlashCommandsMixin:
                 if len(sorted_cmds) > 10:
                     lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return _telegramize_command_mentions(
             "\n".join(lines),
             getattr(getattr(event, "source", None), "platform", None),
@@ -1368,7 +1368,7 @@ class GatewaySlashCommandsMixin:
                     desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
                     entries.append(f"`{cmd}` — {desc}")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if not entries:
             return t("gateway.commands.none")
@@ -1438,7 +1438,7 @@ class GatewaySlashCommandsMixin:
                 from hermes_cli.models import clear_provider_models_cache
                 clear_provider_models_cache()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Read current model/provider from config
         current_model = ""
@@ -1463,7 +1463,7 @@ class GatewaySlashCommandsMixin:
                 except Exception:
                     custom_provs = cfg.get("custom_providers")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Check for session override
         source = event.source
@@ -1692,7 +1692,7 @@ class GatewaySlashCommandsMixin:
                                 if _sw_raw is not None:
                                     _sw_config_ctx = int(_sw_raw)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         ctx = resolve_display_context_length(
                             result.new_model,
                             result.target_provider,
@@ -1756,7 +1756,7 @@ class GatewaySlashCommandsMixin:
                         lines.append(f"  `{p['api_url']}`")
                     lines.append("")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             lines.append(t("gateway.model.usage_switch_model"))
             lines.append(t("gateway.model.usage_switch_provider"))
@@ -1946,7 +1946,7 @@ class GatewaySlashCommandsMixin:
                     if _sw2_raw is not None:
                         _sw2_config_ctx = int(_sw2_raw)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,
@@ -2555,7 +2555,7 @@ class GatewaySlashCommandsMixin:
                 if isinstance(cp_cfg, bool):
                     cp_cfg = {"enabled": cp_cfg}
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if not cp_cfg.get("enabled", False):
             return t("gateway.rollback.not_enabled")
@@ -3482,7 +3482,7 @@ class GatewaySlashCommandsMixin:
                     thread_id=source.thread_id,
                 )
             except Exception:
-                pass  # Session might already exist, ignore errors
+                logger.debug("Suppressed exception", exc_info=True)  # Session might already exist, ignore errors
 
         title_arg = event.get_command_args().strip()
         if title_arg:
@@ -3844,13 +3844,13 @@ class GatewaySlashCommandsMixin:
                     codex_message_items=msg.get("codex_message_items"),
                 )
             except Exception:
-                pass  # Best-effort copy
+                logger.debug("Suppressed exception", exc_info=True)  # Best-effort copy
 
         # Set title
         try:
             await self._session_db.set_session_title(new_session_id, branch_title)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Switch the session store entry to the new session
         new_entry = await self.async_session_store.switch_session(session_key, new_session_id)

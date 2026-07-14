@@ -279,7 +279,7 @@ class GatewayStreamConsumer:
             if inspect.isawaitable(result):
                 await result
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _edit_message(
         self,
@@ -307,7 +307,7 @@ class GatewayStreamConsumer:
                 ):
                     kwargs["metadata"] = self.metadata
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return await self.adapter.edit_message(**kwargs)
 
     def has_delivered_text(self, text: str) -> bool:
@@ -875,7 +875,7 @@ class GatewayStreamConsumer:
                         )
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Only confirm final delivery if the best-effort send above
             # actually succeeded OR if the final response was already
             # confirmed before we were cancelled.  Previously this
@@ -1052,7 +1052,7 @@ class GatewayStreamConsumer:
                         if result.success:
                             self._last_sent_text = clean_text
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 self._already_sent = True
                 self._final_response_sent = True
                 self._final_content_delivered = True
@@ -1391,7 +1391,7 @@ class GatewayStreamConsumer:
             if getattr(result, "success", False):
                 self._last_sent_text = prefix
         except Exception:
-            pass  # best-effort — don't let this block the fallback path
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort — don't let this block the fallback path
 
     async def _send_commentary(self, text: str) -> bool:
         """Send a completed interim assistant commentary message."""

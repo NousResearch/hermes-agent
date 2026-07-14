@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover - platform-specific fallback
     try:
         import msvcrt
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 STATE_ACTIVE = "active"
@@ -112,13 +112,13 @@ def _usage_file_lock():
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except (OSError, IOError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         elif msvcrt:
             try:
                 fd.seek(0)
                 msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
             except (OSError, IOError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         fd.close()
 
 
@@ -301,7 +301,7 @@ def _write_suppressed_names(names: Set[str]) -> None:
             try:
                 os.unlink(tmp)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
     except Exception as e:
         logger.debug("Failed to write curator suppression list: %s", e, exc_info=True)
@@ -535,7 +535,7 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
     except Exception as e:
         logger.debug("Failed to write %s: %s", path, e, exc_info=True)

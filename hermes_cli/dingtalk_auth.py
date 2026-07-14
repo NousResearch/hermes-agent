@@ -159,7 +159,7 @@ def _ensure_qrcode_installed() -> bool:
         import qrcode  # noqa: F401
         return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     import subprocess
 
@@ -171,7 +171,7 @@ def _ensure_qrcode_installed() -> bool:
             import qrcode  # noqa: F401,F811
             return True
     except (subprocess.SubprocessError, ImportError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 

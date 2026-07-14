@@ -42,10 +42,10 @@ def _get_anthropic_sdk():
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("provider.anthropic", prompt=False)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception:
             # FeatureUnavailable — fall through to ImportError handling below
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -368,7 +368,7 @@ def _detect_claude_code_version() -> str:
                 if version and version[0].isdigit():
                     return version
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
@@ -1189,7 +1189,7 @@ def _write_claude_code_credentials(
             try:
                 _tmp_cred.unlink(missing_ok=True)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
     except (OSError, IOError) as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
@@ -1452,7 +1452,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             webbrowser.open(auth_url)
             print("  (Browser opened automatically)")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     print()
     print("After authorizing, you'll see a code. Paste it below.")

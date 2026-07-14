@@ -24,6 +24,10 @@ Usage:
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import platform
 import re
@@ -155,7 +159,7 @@ def detect_rocm() -> dict | None:
                     best["all_gpus"] = cards
                 return best
         except json.JSONDecodeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Fall back to text parsing
     out = _run(["rocm-smi", "--showproductname", "--showmeminfo", "vram"])
     if not out.strip():
@@ -183,7 +187,7 @@ def detect_apple_silicon() -> dict | None:
     try:
         mem_bytes = int(_run(["sysctl", "-n", "hw.memsize"]).strip() or 0)
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     ram_gb = round(mem_bytes / (1024**3), 1) if mem_bytes else 0.0
 
     # Detect chip variant ("Pro", "Max", "Ultra") — affects performance even at same gen

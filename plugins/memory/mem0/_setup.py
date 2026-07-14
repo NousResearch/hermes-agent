@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import getpass
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import shutil
@@ -217,7 +221,7 @@ def _save_mem0_json(hermes_home: str, data: dict) -> None:
         try:
             existing = json.loads(config_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     existing.update(data)
     config_path.write_text(json.dumps(existing, indent=2) + "\n")
 
@@ -241,7 +245,7 @@ def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> No
         try:
             existing_config = json.loads(config_path.read_text())
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     provider_config = dict(existing_config)
     env_writes: dict[str, str] = {}
@@ -362,7 +366,7 @@ def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> 
         try:
             existing_config = json.loads(config_path.read_text())
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     provider_config = dict(existing_config)
 
@@ -536,7 +540,7 @@ def _ensure_pgvector(host: str = "localhost", port: int = 5432) -> dict | None:
                     print("  ✓ PostgreSQL container restarted")
                     return None
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         answer = input("  Start pgvector via Docker? [Y/n]: ").strip().lower()
         if answer in ("", "y", "yes"):
@@ -936,9 +940,9 @@ def _check_min_dep_version() -> None:
             print(f"\n  ⚠ mem0ai {installed_ver} installed but >={req_str} required.")
             print(f"  Run: uv pip install --python {sys.executable} 'mem0ai>={req_str}'")
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def post_setup(hermes_home: str, config: dict) -> None:

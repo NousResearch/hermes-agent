@@ -635,7 +635,7 @@ def _pid_alive(pid: int) -> bool:
 
         return bool(_pid_exists(int(pid)))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Last-resort fallback if gateway.status is unavailable: psutil directly.
     try:
         import psutil  # type: ignore
@@ -686,7 +686,7 @@ def _goal_judge_max_tokens() -> int:
         if value > 0:
             return value
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return DEFAULT_JUDGE_MAX_TOKENS
 
 
@@ -1661,7 +1661,7 @@ def run_kanban_goal_loop(
             try:
                 log(msg)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     max_turns = int(max_turns or DEFAULT_MAX_TURNS)
     if max_turns < 1:

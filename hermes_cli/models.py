@@ -8,6 +8,10 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import re
 import urllib.parse
@@ -184,7 +188,7 @@ def _xai_curated_models() -> list[str]:
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
 
 
@@ -883,7 +887,7 @@ def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
             fh.write("\n")
         os.replace(tmp, path)
     except OSError as exc:
-        import logging
+        import logging as _logging
         logging.getLogger(__name__).debug(
             "nous recommended-models disk cache write failed: %s", exc
         )
@@ -1107,7 +1111,7 @@ try:
         CANONICAL_PROVIDERS.append(ProviderEntry(_pp.name, _label, _desc))
         _canonical_slugs.add(_pp.name)
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
@@ -1579,7 +1583,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
         if creds:
             return (creds.get("api_key", ""), creds.get("base_url", ""))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ("", _DEFAULT_NOUS_INFERENCE_BASE)
 
 
@@ -1712,7 +1716,7 @@ def list_available_providers() -> list[dict[str, str]]:
                 status = get_auth_status(pid)
                 has_creds = bool(status.get("logged_in") or status.get("configured"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         result.append({
             "id": pid,
             "label": label,
@@ -1773,7 +1777,7 @@ def _get_model_config_dict() -> dict[str, Any]:
         if isinstance(model_cfg, dict):
             return model_cfg
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return {}
 
 
@@ -2189,7 +2193,7 @@ def _resolve_copilot_catalog_api_key() -> str:
         if api_key:
             return api_key
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from hermes_cli.auth import read_credential_pool
@@ -2214,7 +2218,7 @@ def _resolve_copilot_catalog_api_key() -> str:
             if api_token:
                 return api_token
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return ""
 
@@ -2325,7 +2329,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if live:
                 return live
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "nous":
@@ -2338,7 +2342,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 if live:
                     return live
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Live failed (or no creds). Fall back to the docs-hosted manifest
         # — NOT the in-repo _PROVIDER_MODELS["nous"] snapshot — so newly
         # added Portal models still surface without a Hermes release.
@@ -2357,7 +2361,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 if live:
                     return live
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if normalized == "anthropic":
         model_cfg = _get_model_config_dict()
         cfg_provider = normalize_provider(str(model_cfg.get("provider", "") or ""))
@@ -2430,7 +2434,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                         return curated or live
                     return live
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     if normalized == "gmi":
         try:
             from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -2443,7 +2447,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 if live:
                     return live
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -2470,7 +2474,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if ids is not None:
                 return ids
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # ── Profile-based generic live fetch (all simple api-key providers) ──
     # Handles any provider registered in providers/ with auth_type="api_key".
@@ -2528,7 +2532,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if _p.fallback_models:
                 return list(_p.fallback_models)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
@@ -2594,7 +2598,7 @@ def _credential_fingerprint(provider: str) -> str:
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # OAuth / external-file mtimes that change on re-auth
     try:
@@ -2606,9 +2610,9 @@ def _credential_fingerprint(provider: str) -> str:
             except FileNotFoundError:
                 parts.append(f"{rel}@missing")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # External well-known credential file locations
     for path in (
@@ -2623,7 +2627,7 @@ def _credential_fingerprint(provider: str) -> str:
         except FileNotFoundError:
             parts.append(f"{path}@missing")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b for cache-key fingerprinting only — not for credential storage.
@@ -2657,7 +2661,7 @@ def _save_provider_models_cache(data: dict) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def cached_provider_model_ids(
@@ -2733,7 +2737,7 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
             del cache[normalized]
             _save_provider_models_cache(cache)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _fetch_anthropic_models(
@@ -2809,7 +2813,7 @@ def _fetch_anthropic_models(
             m,                    # alphabetical within tier
         ))
     except Exception as e:
-        import logging
+        import logging as _logging
         logging.getLogger(__name__).debug("Failed to fetch Anthropic models: %s", e)
         return None
 
@@ -3019,7 +3023,7 @@ def _lmstudio_fetch_raw_models(
         )
         return None
     except Exception as exc:
-        import logging
+        import logging as _logging
         logging.getLogger(__name__).debug(
             "LM Studio probe at %s failed: %s", server_root, exc,
         )
@@ -3929,7 +3933,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
                 return None  # stale
         return data
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -3941,7 +3945,7 @@ def _save_ollama_cloud_cache(models: list[str]) -> None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def fetch_ollama_cloud_models(
@@ -3984,7 +3988,7 @@ def fetch_ollama_cloud_models(
         from agent.models_dev import list_agentic_models
         mdev_models = list_agentic_models("ollama-cloud")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
     if live_models or mdev_models:
@@ -4486,7 +4490,7 @@ def validate_requested_model(
                 ),
             }
         except Exception:
-            pass  # Fall through to generic warning
+            logger.debug("Suppressed exception", exc_info=True)  # Fall through to generic warning
 
     # Static-catalog fallback: when the /models probe was unreachable,
     # validate against the curated list from provider_model_ids() — same

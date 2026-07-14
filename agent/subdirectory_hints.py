@@ -145,7 +145,7 @@ class SubdirectoryHintTracker:
                     break  # filesystem root
                 p = parent
         except (OSError, ValueError, RuntimeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
@@ -246,7 +246,7 @@ class SubdirectoryHintTracker:
                         rel_path = str(hint_path.relative_to(Path.home()))
                         rel_path = "~/" + rel_path
                     except (ValueError, RuntimeError):
-                        pass  # keep absolute
+                        logger.debug("Suppressed exception", exc_info=True)  # keep absolute
                 found_hints.append((rel_path, content))
                 # First match wins per directory (like startup loading)
                 break

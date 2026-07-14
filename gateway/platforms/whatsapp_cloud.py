@@ -545,7 +545,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if ids:
                     last_message_id = ids[0].get("id")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Remember (chat_id, wamid) -> text so that when the user replies to
         # one of our messages, _build_message_event_from_cloud can resolve the
@@ -701,7 +701,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if ids:
                 last_message_id = ids[0].get("id")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return SendResult(success=True, message_id=last_message_id)
 
     @staticmethod
@@ -1200,7 +1200,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     try:
                         os.unlink(opus_path)
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 return result
             # Will deliver as MP3 attachment, not voice bubble.
             # Warn-once is logged inside _convert_to_opus.

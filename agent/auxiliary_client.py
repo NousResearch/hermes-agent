@@ -454,7 +454,7 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
         if _p and _p.default_aux_model:
             return _p.default_aux_model
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
 
 
@@ -738,7 +738,7 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
         if isinstance(acct_id, str) and acct_id:
             headers["ChatGPT-Account-ID"] = acct_id
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return headers
 
 
@@ -1094,7 +1094,7 @@ class _CodexCompletionsAdapter:
             except Exception:
                 # Interrupt state is a best-effort UX hook; never make it a
                 # new failure mode for auxiliary calls.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         try:
             if total_timeout:
@@ -1136,7 +1136,7 @@ class _CodexCompletionsAdapter:
                     try:
                         close_fn()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
@@ -1563,13 +1563,13 @@ def _maybe_wrap_anthropic(
         if _safe_isinstance(client_obj, GeminiNativeClient):
             return client_obj
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if _safe_isinstance(client_obj, CopilotACPClient):
             return client_obj
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Explicit non-anthropic api_mode wins over URL heuristics.
     if api_mode and api_mode != "anthropic_messages":
@@ -1845,7 +1845,7 @@ def _read_codex_access_token() -> Optional[str]:
                 logger.debug("Codex access token expired (exp=%s), skipping", exp)
                 return None
         except Exception:
-            pass  # Non-JWT token or decode error — use as-is
+            logger.debug("Suppressed exception", exc_info=True)  # Non-JWT token or decode error — use as-is
 
         return access_token.strip()
     except Exception as exc:
@@ -1880,7 +1880,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if not is_provider_explicitly_configured("anthropic"):
                     continue
             except ImportError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return _try_anthropic()
 
         pool_present, entry = _select_pool_entry(provider_id)
@@ -1916,7 +1916,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                     if _ph_aux and _ph_aux.default_headers:
                         extra["default_headers"] = dict(_ph_aux.default_headers)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             _merged_aux = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_aux:
                 extra["default_headers"] = _merged_aux
@@ -1956,7 +1956,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 if _ph_aux2 and _ph_aux2.default_headers:
                     extra["default_headers"] = dict(_ph_aux2.default_headers)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _merged_aux2 = _apply_user_default_headers(extra.get("default_headers"))
         if _merged_aux2:
             extra["default_headers"] = _merged_aux2
@@ -2021,7 +2021,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             _mark_provider_unhealthy("nous", ttl=_remaining)
             return None, None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
@@ -2157,7 +2157,7 @@ def _read_main_model() -> str:
             if isinstance(default, str) and default.strip():
                 return default.strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -2182,7 +2182,7 @@ def _read_main_provider() -> str:
             if isinstance(provider, str) and provider.strip():
                 return provider.strip().lower()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -2211,7 +2211,7 @@ def _read_main_api_key() -> str:
             if isinstance(key, str) and key.strip():
                 return key.strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -2232,7 +2232,7 @@ def _read_main_base_url() -> str:
             if isinstance(base, str) and base.strip():
                 return base.strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -2685,7 +2685,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
                 if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
                     base_url = cfg_base_url
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     from agent.anthropic_adapter import _is_oauth_token
     is_oauth = _is_oauth_token(token)
@@ -2971,7 +2971,7 @@ def _is_timeout_error(exc: Exception) -> bool:
         if isinstance(exc, APITimeoutError):
             return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if "Timeout" in type(exc).__name__:
         return True
     return "timed out" in str(exc).lower()
@@ -2990,7 +2990,7 @@ def _is_connection_error(exc: Exception) -> bool:
         if isinstance(exc, (APIConnectionError, APITimeoutError)):
             return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # urllib3 / httpx / httpcore connection errors
     err_type = type(exc).__name__
     if any(kw in err_type for kw in ("Connection", "Timeout", "DNS", "SSL")):
@@ -3253,7 +3253,7 @@ def _evict_cached_clients(provider: str) -> None:
                     if callable(close_fn):
                         close_fn()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             _client_cache.pop(key, None)
 
 
@@ -3360,7 +3360,7 @@ def _recoverable_pool_provider(
                     if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)):
                         return rt_provider
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -4356,13 +4356,13 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         if isinstance(sync_client, GeminiNativeClient):
             return AsyncGeminiNativeClient(sync_client), model
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
             return sync_client, model
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -4394,7 +4394,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
                 if _ph_async and _ph_async.default_headers:
                     async_kwargs["default_headers"] = dict(_ph_async.default_headers)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
@@ -4716,7 +4716,7 @@ def resolve_provider_client(
                     if _ph_custom and _ph_custom.default_headers:
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             _merged_custom = _apply_user_default_headers(extra.get("default_headers"))
             if _merged_custom:
                 extra["default_headers"] = _merged_custom
@@ -4851,7 +4851,7 @@ def resolve_provider_client(
                 provider)
             return None, None
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # ── Azure Foundry (delegates to runtime resolver for auth_mode-aware routing) ─
     #
@@ -4975,7 +4975,7 @@ def resolve_provider_client(
                 if _ph_main and _ph_main.default_headers:
                     headers.update(_ph_main.default_headers)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _merged_main = _apply_user_default_headers(headers)
         if _merged_main:
             headers = _merged_main
@@ -4996,7 +4996,7 @@ def resolve_provider_client(
                         final_model)
                     client = CodexAuxiliaryClient(client, final_model)
             except ImportError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Honor api_mode for any API-key provider (e.g. direct OpenAI with
         # codex-family models).  The copilot-specific wrapping above handles
@@ -5624,7 +5624,7 @@ def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[
                 if callable(close_fn):
                     close_fn()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _client_cache[cache_key] = (client, default_model, bound_loop)
 
 
@@ -5654,7 +5654,7 @@ def _refresh_nous_auxiliary_client(
             import asyncio as _aio
             current_loop = _aio.get_event_loop()
         except RuntimeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         client, final_model = _to_async_client(sync_client, final_model or "", is_vision=is_vision)
     else:
         client = sync_client
@@ -5703,7 +5703,7 @@ def neuter_async_httpx_del() -> None:
         from openai._base_client import AsyncHttpxClientWrapper
         AsyncHttpxClientWrapper.__del__ = lambda self: None  # type: ignore[assignment]
     except (ImportError, AttributeError):
-        pass  # Graceful degradation if the SDK changes its internals
+        logger.debug("Suppressed exception", exc_info=True)  # Graceful degradation if the SDK changes its internals
 
 
 def _force_close_async_httpx(client: Any) -> None:
@@ -5723,7 +5723,7 @@ def _force_close_async_httpx(client: Any) -> None:
         if inner is not None and not getattr(inner, "is_closed", True):
             inner._state = ClientState.CLOSED
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def shutdown_cached_clients() -> None:
@@ -5749,7 +5749,7 @@ def shutdown_cached_clients() -> None:
                 if close_fn and not inspect.iscoroutinefunction(close_fn):
                     close_fn()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _client_cache.clear()
 
 
@@ -5833,7 +5833,7 @@ def _get_cached_client(
             import asyncio as _aio
             current_loop = _aio.get_event_loop()
         except RuntimeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     runtime = _normalize_main_runtime(main_runtime)
     cache_key = _client_cache_key(
         provider,
@@ -6104,7 +6104,7 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
                 break
     except Exception:
         # Plugin discovery failure must not break aux task config reads.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return task_config
 
@@ -6119,7 +6119,7 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
         try:
             return float(raw)
         except (ValueError, TypeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return default
 
 

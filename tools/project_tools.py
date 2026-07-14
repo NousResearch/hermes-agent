@@ -12,6 +12,10 @@ toolsets, so no CLI/messaging/cron schema carries them. The GUI also wires
 session's cwd and the sidebar follows the move; the DB write is the durable part.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 from typing import Callable, Optional
@@ -45,7 +49,7 @@ def _apply_workspace(task_id: Optional[str], path: Optional[str], name: str) -> 
         try:
             cb(task_id, path, name)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _resolve(conn, token: str):

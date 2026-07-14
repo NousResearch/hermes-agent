@@ -303,7 +303,7 @@ class LSPClient:
                 if text:
                     logger.debug("[%s] stderr: %s", self.server_id, text[:1000])
         except (asyncio.CancelledError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _reader_loop(self) -> None:
         if self._proc is None or self._proc.stdout is None:
@@ -326,7 +326,7 @@ class LSPClient:
         except LSPProtocolError as e:
             logger.warning("[%s] protocol error in reader loop: %s", self.server_id, e)
         except (asyncio.CancelledError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         finally:
             # Wake up any pending requests so they can fail fast.
             for fut in list(self._pending.values()):
@@ -422,11 +422,11 @@ class LSPClient:
                 try:
                     await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
                 except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 try:
                     await self._send_notification("exit", None)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         finally:
             self._state = "stopped"
             await self._cleanup_process()
@@ -437,13 +437,13 @@ class LSPClient:
             try:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if self._stderr_task is not None and not self._stderr_task.done():
             self._stderr_task.cancel()
             try:
                 await self._stderr_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         proc = self._proc
         self._proc = None
         if proc is None:
@@ -458,9 +458,9 @@ class LSPClient:
                         proc.kill()
                         await proc.wait()
                     except ProcessLookupError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             except ProcessLookupError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # ------------------------------------------------------------------
     # request / notification plumbing
@@ -517,7 +517,7 @@ class LSPClient:
             self._proc.stdin.write(encode_message(make_response(req_id, result)))
             await self._proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _send_error_response(self, req_id: Any, code: int, message: str) -> None:
         if self._proc is None or self._proc.stdin is None or self._proc.stdin.is_closing():
@@ -526,7 +526,7 @@ class LSPClient:
             self._proc.stdin.write(encode_message(make_error_response(req_id, code, message)))
             await self._proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _dispatch_response(self, req_id: int, msg: dict) -> None:
         fut = self._pending.get(req_id)
@@ -835,7 +835,7 @@ class LSPClient:
                 try:
                     await t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # If we got a fresh push for our version, we're done.
             current_v = self._published_version.get(abs_path)

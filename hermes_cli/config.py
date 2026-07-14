@@ -149,7 +149,7 @@ def _warn_config_parse_failure(
         sys.stderr.write(f"⚠️  hermes config: {msg}\n")
         sys.stderr.flush()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -434,7 +434,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
         if method:
             return method
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 2. Legacy home-scoped stamp — back-compat. Ignore a ``docker`` value
     #    when we are not actually containerised: that is the signature of a
@@ -450,7 +450,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
         if method and not (method == "docker" and not _running_in_container()):
             return method
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     managed = get_managed_system()
     if managed:
@@ -468,7 +468,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
             if content.startswith("gitdir:"):
                 return "git"
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return "pip"
 
 
@@ -500,7 +500,7 @@ def stamp_install_method(method: str, project_root: Optional[Path] = None) -> No
         root.mkdir(parents=True, exist_ok=True)
         (root / ".install_method").write_text(method + "\n", encoding="utf-8")
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def is_uv_tool_install() -> bool:
@@ -812,7 +812,7 @@ def _chown_to_hermes_uid(path) -> None:
         # OSError covers EPERM (not running as root) and ENOENT (race),
         # both of which are non-fatal — the dir is still created and
         # the entrypoint's startup chown -R will fix it on next restart.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _secure_dir(path):
@@ -843,7 +843,7 @@ def _secure_dir(path):
     try:
         os.chmod(path, mode)
     except (OSError, NotImplementedError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     _chown_to_hermes_uid(path)
 
 
@@ -868,7 +868,7 @@ def _is_container() -> bool:
         if "docker" in cgroup_content or "lxc" in cgroup_content or "kubepods" in cgroup_content:
             return True
     except (OSError, IOError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 
@@ -887,7 +887,7 @@ def _secure_file(path):
         if os.path.exists(str(path)):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _ensure_default_soul_md(home: Path) -> None:
@@ -4640,7 +4640,7 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
         # A malformed SKILL.md, unreadable external skill dir, or similar
         # should never break `hermes update`.  Skill-config prompting is a
         # post-migration nicety, not a blocker.
-        import logging
+        import logging as _logging
         logging.getLogger(__name__).debug(
             "discover_all_skill_config_vars failed: %s", e
         )
@@ -5510,7 +5510,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if fixes and not quiet:
             print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
     except Exception:
-        pass  # best-effort; don't block migration on sanitize failure
+        logger.debug("Suppressed exception", exc_info=True)  # best-effort; don't block migration on sanitize failure
 
     # Check config version
     current_ver, latest_ver = check_config_version()
@@ -5564,7 +5564,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if not quiet:
                     print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     if current_ver < 12:
@@ -5643,7 +5643,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     if not quiet:
                         print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
     # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
@@ -7483,7 +7483,7 @@ def sanitize_env_file() -> int:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
     _secure_file(env_path)
     invalidate_env_cache()
@@ -7507,7 +7507,7 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
         value.encode("ascii")
         return value  # all ASCII — nothing to do
     except UnicodeEncodeError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Build a readable list of the offending characters
     bad_chars: list[str] = []
@@ -7608,7 +7608,7 @@ def save_env_value(key: str, value: str):
         try:
             original_mode = stat.S_IMODE(env_path.stat().st_mode)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         with os.fdopen(fd, 'w', **write_kw) as f:
             f.writelines(lines)
@@ -7621,14 +7621,14 @@ def save_env_value(key: str, value: str):
             try:
                 os.chmod(env_path, original_mode)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             _secure_file(env_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
     os.environ[key] = value
@@ -7679,7 +7679,7 @@ def remove_env_value(key: str) -> bool:
         try:
             original_mode = stat.S_IMODE(env_path.stat().st_mode)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             with os.fdopen(fd, 'w', **write_kw) as f:
                 f.writelines(new_lines)
@@ -7693,14 +7693,14 @@ def remove_env_value(key: str) -> bool:
                 try:
                     os.chmod(env_path, original_mode)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             else:
                 _secure_file(env_path)
         except BaseException:
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
 
     os.environ.pop(key, None)
@@ -7949,7 +7949,7 @@ def show_config():
                 Colors.YELLOW,
             ))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     
     # Display
     print()
@@ -8063,7 +8063,7 @@ def show_config():
                 display_val = str(value) if value else color("(not set)", Colors.DIM)
                 print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print()
     print(color("─" * 60, Colors.DIM))
@@ -8409,7 +8409,7 @@ def _inject_profile_env_vars() -> None:
                     "advanced": True,
                 }
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
@@ -8506,7 +8506,7 @@ def _inject_platform_plugin_env_vars() -> None:
                     "category": meta.get("category") or "messaging",
                 }
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # Eagerly inject so that platform plugin env vars show up in the setup wizard.

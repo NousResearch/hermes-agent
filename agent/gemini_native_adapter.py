@@ -898,7 +898,7 @@ class GeminiNativeClient:
         try:
             self._http.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def __enter__(self):
         return self

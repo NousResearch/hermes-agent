@@ -13,6 +13,10 @@ with zero model-tool schema cost.
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import functools
 import sys
 
@@ -332,4 +336,4 @@ def _sync_board_default_workdir(proj, board_slug: str) -> None:
             return
         kb.write_board_metadata(slug, default_workdir=proj.primary_path)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)

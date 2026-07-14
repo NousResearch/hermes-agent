@@ -349,7 +349,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 try:
                     await asyncio.to_thread(self._stream_client.close)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             self._stream_task.cancel()
             try:
@@ -650,7 +650,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 try:
                     self._session_webhooks.pop(next(iter(self._session_webhooks)))
                 except StopIteration:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             self._session_webhooks[chat_id] = (
                 session_webhook,
                 session_webhook_expired_time,

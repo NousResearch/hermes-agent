@@ -624,7 +624,7 @@ class EmailAdapter(BasePlatformAdapter):
             try:
                 await self._poll_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._poll_task = None
         logger.info("[Email] Disconnected.")
 
@@ -740,7 +740,7 @@ class EmailAdapter(BasePlatformAdapter):
                 try:
                     imap.logout()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results

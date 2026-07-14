@@ -61,11 +61,11 @@ def _listener_pids_on_port(port: int) -> list:
             try:
                 pids.append(int(line))
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if pids:
             return pids
     except FileNotFoundError:
-        pass  # lsof not installed — fall through to ss
+        logger.debug("Suppressed exception", exc_info=True)  # lsof not installed — fall through to ss
     # Fallback: ss (iproute2, present on virtually every modern Linux).
     try:
         result = subprocess.run(
@@ -75,7 +75,7 @@ def _listener_pids_on_port(port: int) -> list:
         for m in re.finditer(r"pid=(\d+)", result.stdout):
             pids.append(int(m.group(1)))
     except FileNotFoundError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return pids
 
 
@@ -103,7 +103,7 @@ def _kill_port_process(port: int) -> None:
                                 creationflags=windows_hide_flags(),
                             )
                         except subprocess.SubprocessError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
         else:
             # POSIX: only ever signal a process LISTENING on the port. A client
             # whose connection happens to involve this port number (a browser
@@ -112,9 +112,9 @@ def _kill_port_process(port: int) -> None:
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError, OSError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
@@ -175,14 +175,14 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
         try:
             pid_file.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return
     if _bridge_pid_is_ours(pid, session_path, recorded_start):
         try:
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     else:
         from gateway.status import _pid_exists
         if _pid_exists(pid):
@@ -194,7 +194,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     try:
         pid_file.unlink()
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
@@ -210,7 +210,7 @@ def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
         text = str(pid) if start is None else "{}\n{}".format(pid, start)
         (session_path / "bridge.pid").write_text(text)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -247,14 +247,14 @@ def _terminate_bridge_process(proc, *, force: bool = False) -> None:
                 try:
                     child.kill()
                 except psutil.NoSuchProcess:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             parent.kill()
         else:
             for child in children:
                 try:
                     child.terminate()
                 except psutil.NoSuchProcess:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             parent.terminate()
     except psutil.NoSuchProcess:
         return
@@ -559,7 +559,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         try:
                             _dep_stamp.write_text(_pkg_hash)
                         except OSError:
-                            pass  # Stamp is an optimization; install still succeeded
+                            logger.debug("Suppressed exception", exc_info=True)  # Stamp is an optimization; install still succeeded
                 except Exception as e:
                     print(f"[{self.name}] Failed to install dependencies: {e}")
                     return False
@@ -604,7 +604,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
-                pass  # Bridge not running, start a new one
+                logger.debug("Suppressed exception", exc_info=True)  # Bridge not running, start a new one
             
             # Kill any orphaned bridge from a previous gateway run
             _kill_stale_bridge_by_pidfile(self._session_path)
@@ -744,7 +744,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 self._bridge_log_fh.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._bridge_log_fh = None
 
     async def _check_managed_bridge_exit(self) -> Optional[str]:
@@ -807,7 +807,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             (self._session_path / "bridge.pid").unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Cancel the poll task explicitly
         if self._poll_task and not self._poll_task.done():
@@ -815,7 +815,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 await self._poll_task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._poll_task = None
 
         # Close the persistent HTTP session
@@ -1202,7 +1202,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             ):
                 pass
         except Exception:
-            pass  # Ignore typing indicator failures
+            logger.debug("Suppressed exception", exc_info=True)  # Ignore typing indicator failures
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a WhatsApp chat."""

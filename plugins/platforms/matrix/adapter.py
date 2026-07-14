@@ -561,7 +561,7 @@ def _write_matrix_recovery_key_output_file(recovery_key: str) -> Optional[Path]:
         try:
             os.close(fd)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
     return path
 
@@ -1130,7 +1130,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: deleted stale device %s from server", client.device_id
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 await olm.share_keys()
             except Exception as exc:
@@ -1541,7 +1541,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         invite_join_tasks = list(self._invite_join_tasks.values())
         for task in invite_join_tasks:
@@ -1570,7 +1570,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 await self._client.api.session.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._client = None
 
         logger.info("Matrix: disconnected")
@@ -1704,7 +1704,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 await self._client.set_typing(RoomID(chat_id), timeout=30000)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     async def stop_typing(self, chat_id: str) -> None:
         """Clear the typing indicator."""
@@ -1712,7 +1712,7 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 await self._client.set_typing(RoomID(chat_id), timeout=0)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
     async def edit_message(
@@ -3061,7 +3061,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     await self._client.leave_room(RoomID(room_id))
                     logger.info("Matrix: declined dead invite to %s", room_id)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             return False
 
     def _schedule_invite_join(
@@ -3776,7 +3776,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if members is not None:
                     return len(members)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Tier 2: API fallback (direct server query) when the cache is empty.
         client = getattr(self, "_client", None)
@@ -3786,7 +3786,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if getattr(resp, "members", None) is not None:
                     return len(resp.members)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return None
 
@@ -3962,7 +3962,7 @@ class MatrixAdapter(BasePlatformAdapter):
             elif isinstance(resp, dict):
                 dm_data = resp
         except Exception:
-            pass  # m.direct doesn't exist yet — start fresh
+            logger.debug("Suppressed exception", exc_info=True)  # m.direct doesn't exist yet — start fresh
 
         rooms_for_user = dm_data.get(inviter, [])
         if not isinstance(rooms_for_user, list):
@@ -4165,7 +4165,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 if member and getattr(member, "displayname", None):
                     return member.displayname
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Strip the @...:server format to just the localpart.
         if user_id.startswith("@") and ":" in user_id:
             return user_id[1:].split(":")[0]
@@ -4204,7 +4204,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 html = html.replace("<p>", "").replace("</p>", "")
             return _sanitize_matrix_html(html)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
 
@@ -4421,7 +4421,7 @@ async def _standalone_send(
             payload["format"] = "org.matrix.custom.html"
             payload["formatted_body"] = html
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             async with session.put(url, headers=headers, json=payload) as resp:

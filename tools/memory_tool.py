@@ -44,7 +44,7 @@ except ImportError:
     try:
         import msvcrt
     except ImportError:
-        pass
+        logging.debug("Suppressed exception", exc_info=True)
 
 logger = logging.getLogger(__name__)
 
@@ -268,13 +268,13 @@ class MemoryStore:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_UN)
                 except (OSError, IOError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif msvcrt:
                 try:
                     fd.seek(0)
                     msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
                 except (OSError, IOError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             fd.close()
 
     @staticmethod
@@ -782,7 +782,7 @@ class MemoryStore:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}") from e
@@ -810,7 +810,7 @@ def load_on_disk_store() -> "MemoryStore":
         memory_char_limit = int(mem_cfg.get("memory_char_limit", memory_char_limit))
         user_char_limit = int(mem_cfg.get("user_char_limit", user_char_limit))
     except Exception:
-        pass  # config optional — fall back to defaults rather than break /memory
+        logger.debug("Suppressed exception", exc_info=True)  # config optional — fall back to defaults rather than break /memory
 
     store = MemoryStore(
         memory_char_limit=memory_char_limit,

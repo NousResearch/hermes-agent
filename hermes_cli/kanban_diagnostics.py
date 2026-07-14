@@ -30,6 +30,10 @@ Design goals:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any, Callable, Iterable, Optional
 import json
 import time
@@ -139,7 +143,7 @@ def _task_field(task, name, default=None):
         if hasattr(task, "keys") and name in task.keys():
             return task[name]
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if isinstance(task, dict):
         return task.get(name, default)
     return getattr(task, name, default)

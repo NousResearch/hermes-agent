@@ -25,6 +25,10 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import re
 import difflib
@@ -1597,7 +1601,7 @@ class ShellFileOperations(FileOperations):
                 from tools.fuzzy_match import format_no_match_hint
                 err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return PatchResult(error=err_msg)
 
         # ── Line-ending preservation ──────────────────────────────────
@@ -1973,7 +1977,7 @@ class ShellFileOperations(FileOperations):
         try:
             svc.snapshot_baseline(path)
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _maybe_lsp_diagnostics(
         self,
@@ -2334,7 +2338,7 @@ class ShellFileOperations(FileOperations):
                         try:
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
             return SearchResult(
                 counts=counts,
                 total_count=sum(counts.values()),
@@ -2460,7 +2464,7 @@ class ShellFileOperations(FileOperations):
                         try:
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
             return SearchResult(
                 counts=counts,
                 total_count=sum(counts.values()),

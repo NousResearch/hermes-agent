@@ -169,7 +169,7 @@ def discover_cron_schedulers() -> List[Tuple[str, str, bool]]:
                     meta = yaml.safe_load(f) or {}
                 desc = meta.get("description", "")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Quick availability check — try loading and calling is_available()
         available = True
@@ -253,7 +253,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
                         try:
                             spec.loader.exec_module(parent_mod)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
         # User-installed plugins need their synthetic parent registered the
         # same way, or relative imports inside the plugin cannot resolve.
@@ -328,7 +328,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
             try:
                 return attr()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return None
 

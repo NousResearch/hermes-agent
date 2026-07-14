@@ -40,7 +40,7 @@ def _consume_abandoned_task(task: asyncio.Task) -> None:
     try:
         task.exception()
     except asyncio.CancelledError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception:
         logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
 
@@ -881,7 +881,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
@@ -1203,7 +1203,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if isinstance(error, (NetworkError, TimedOut)):
                 return True
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return isinstance(error, OSError)
 
     @staticmethod
@@ -1704,7 +1704,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 from gateway import rich_sent_store
                 rich_sent_store.record(str(chat_id), str(message_id), content)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return SendResult(
             success=True,
             message_id=str(message_id) if message_id is not None else None,
@@ -1792,7 +1792,7 @@ class TelegramAdapter(BasePlatformAdapter):
             from gateway import rich_sent_store
             rich_sent_store.record(str(chat_id), str(message_id), content)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -2099,7 +2099,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name,
                     )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         await self._drain_polling_connections()
 
@@ -2495,7 +2495,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.name,
                         )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             await asyncio.sleep(RETRY_DELAY)
             await self._drain_polling_connections()
@@ -2976,7 +2976,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 await self._set_status_indicator(online=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.
@@ -3499,7 +3499,7 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 await self._polling_heartbeat_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._polling_heartbeat_task = None
 
         # Mark the bot "Offline" in its short description while the bot's HTTP
@@ -3510,7 +3510,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await self._set_status_indicator(online=False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         await self._cancel_pending_delivery_tasks()
 
@@ -3603,7 +3603,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             try:
                                 await self.send_typing(chat_id, metadata=metadata)
                             except Exception:
-                                pass  # Typing failures are non-fatal
+                                logger.debug("Suppressed exception", exc_info=True)  # Typing failures are non-fatal
                     return rich_result
 
             # Format and split message if needed
@@ -3850,7 +3850,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 try:
                     await self.send_typing(chat_id, metadata=metadata)
                 except Exception:
-                    pass  # Typing failures are non-fatal
+                    logger.debug("Suppressed exception", exc_info=True)  # Typing failures are non-fatal
 
             return SendResult(
                 success=True,
@@ -5123,7 +5123,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_markup=None,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             await query.answer(
                 text="Switch failed." if switch_failed else "Model switched!"
             )
@@ -5204,7 +5204,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_markup=None,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             await query.answer(
                 text="Switch failed." if switch_failed else "Model switched!"
             )
@@ -5307,7 +5307,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             await query.answer(text="⚠️ This prompt expired — please /retry.")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             await query.edit_message_text(
                 text=(
@@ -5318,7 +5318,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_markup=None,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
@@ -5402,7 +5402,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_markup=None,
                     )
                 except Exception:
-                    pass  # non-fatal if edit fails
+                    logger.debug("Suppressed exception", exc_info=True)  # non-fatal if edit fails
 
                 # Resolve the approval — unblocks the agent thread
                 try:
@@ -5465,7 +5465,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_markup=None,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 # Resolve via the module-level primitive.  The runner stored
                 # a handler keyed by session_key; we run it on the event
@@ -5579,7 +5579,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             reply_markup=None,
                         )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     return
 
                 # Numeric choice → resolve immediately with the chosen text
@@ -5625,7 +5625,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             reply_markup=None,
                         )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     logger.info(
                         "Telegram clarify button resolved (id=%s, choice=%r, user=%s)",
                         clarify_id, resolved_text, user_display,
@@ -5665,7 +5665,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_markup=None,
             )
         except Exception:
-            pass  # non-fatal if edit fails
+            logger.debug("Suppressed exception", exc_info=True)  # non-fatal if edit fails
         # Write the response file
         try:
             from hermes_constants import get_hermes_home
@@ -5791,7 +5791,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Per-email one-shot: strip keyboard so the action can't fire twice.
                 await query.edit_message_text(text=appended, reply_markup=None)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _missing_media_path_error(self, label: str, path: str) -> str:
         """Build an actionable file-not-found error for gateway MEDIA delivery.
@@ -6027,7 +6027,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         try:
                             fh.seek(0)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
                 await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_media_group,
@@ -6058,7 +6058,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         fh.close()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
     async def send_image_file(
         self,
@@ -8031,7 +8031,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     except UnicodeDecodeError:
                         # Binary file — agent has the cached path and can use
                         # terminal/read_file against it. No inline injection.
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
@@ -8607,7 +8607,7 @@ def _resolve_notifications_mode() -> str:
             if _raw not in {None, ""}:
                 mode = str(_raw).strip().lower()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     mode = mode or "important"
     if mode not in {"all", "important"}:
         logger.warning(

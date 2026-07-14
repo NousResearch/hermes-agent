@@ -6,6 +6,10 @@ Handles: hermes honcho setup | status | sessions | map | peer
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 from pathlib import Path
@@ -266,7 +270,7 @@ def _read_config() -> dict:
         try:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return {}
 
 
@@ -507,7 +511,7 @@ def _ensure_sdk_installed() -> bool:
         import honcho  # noqa: F401
         return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print("  honcho-ai is not installed.")
     answer = _prompt("Install it now? (honcho-ai>=2.0.1)", default="y")
@@ -876,7 +880,7 @@ def cmd_setup(args) -> None:
             if val >= 0:
                 hermes_host["contextTokens"] = val
         except (ValueError, TypeError):
-            pass  # keep current
+            logger.debug("Suppressed exception", exc_info=True)  # keep current
 
     # --- 7b. Dialectic cadence ---
     current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "2")

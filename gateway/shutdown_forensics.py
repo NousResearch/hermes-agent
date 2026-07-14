@@ -18,6 +18,10 @@ the async helper, never in the synchronous probe.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import signal
 import subprocess
@@ -53,7 +57,7 @@ def _read_proc_field(pid: int, key: str) -> Optional[str]:
                 if line.startswith(key + ":"):
                     return line.split(":", 1)[1].strip()
     except (FileNotFoundError, PermissionError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -89,7 +93,7 @@ def _proc_summary(pid: int) -> Dict[str, Any]:
         try:
             summary["ppid"] = int(ppid)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     uid = _read_proc_field(pid, "Uid")
     if uid is not None:
         # "real effective saved fs"
@@ -147,7 +151,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     try:
         ctx["loadavg_1m"] = os.getloadavg()[0]
     except (OSError, AttributeError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # /proc/self/status TracerPid: nonzero means a debugger / strace is
     # attached.  Useful when "phantom SIGKILL" turns out to be a manual
@@ -158,7 +162,7 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
             ctx["tracer_pid"] = int(tracer) if tracer.isdigit() else tracer
             ctx["tracer"] = _proc_summary(int(tracer)) if tracer.isdigit() else None
     except (TypeError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Race-detection hint: did somebody recently start a sibling gateway
     # with --replace?  We can't see the new process directly here, but if
@@ -180,16 +184,16 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
                         or f"'target_pid': {pid}" in raw
                     )
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             planned_stop_path = Path(hermes_home_str) / ".gateway-planned-stop.json"
             if planned_stop_path.exists():
                 try:
                     raw = planned_stop_path.read_text(encoding="utf-8")
                     ctx["planned_stop_marker"] = raw[:300]
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
     except Exception:  # noqa: BLE001 — never raise from a signal handler
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return ctx
 
@@ -266,14 +270,14 @@ def spawn_async_diagnostic(
         try:
             os.close(fd)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
     finally:
         # Subprocess inherited the fd; we can drop our handle.
         try:
             os.close(fd)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return proc.pid
 
@@ -356,7 +360,7 @@ def check_systemd_timing_alignment(drain_timeout: float) -> Optional[Dict[str, A
                     if unit_name:
                         break
     except (OSError, FileNotFoundError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if not unit_name:
         return None
 

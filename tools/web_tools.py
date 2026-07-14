@@ -443,7 +443,7 @@ def _get_extract_char_limit() -> int:
             # beyond a generous guard so a typo can't blow up context.
             return max(2000, min(value, 500_000))
     except (TypeError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return DEFAULT_EXTRACT_CHAR_LIMIT
 
 

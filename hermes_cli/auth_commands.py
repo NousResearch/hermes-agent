@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import math
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 import time
 from types import SimpleNamespace
@@ -192,7 +196,7 @@ def auth_add_command(args) -> None:
             for src in list(suppressed.get(provider, []) or []):
                 unsuppress_credential_source(provider, src)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
@@ -549,7 +553,7 @@ def _interactive_auth() -> None:
                 print("  Identity: (could not resolve — boto3 STS call failed)")
             print()
     except ImportError:
-        pass  # boto3 or bedrock_adapter not available
+        logger.debug("Suppressed exception", exc_info=True)  # boto3 or bedrock_adapter not available
 
     # Show Azure Foundry Entra ID status
     try:
@@ -597,7 +601,7 @@ def _interactive_auth() -> None:
                             print(f"  Hint: {_hint}")
                 print()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     print()
 
     # Main menu

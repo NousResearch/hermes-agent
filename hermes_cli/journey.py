@@ -11,6 +11,10 @@ layout, and the (ported-from-desktop) palette all live in
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import shutil
 import sys
 import time
@@ -308,7 +312,7 @@ def _open_in_editor(initial: str, *, suffix: str) -> Optional[str]:
         try:
             os.unlink(path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def register_cli(parent: argparse.ArgumentParser) -> None:

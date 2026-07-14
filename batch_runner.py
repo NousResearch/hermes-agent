@@ -29,7 +29,8 @@ except ModuleNotFoundError:
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+    import logging as _logging
+    _logging.debug("Suppressed exception", exc_info=True)
 
 import json
 import logging
@@ -295,7 +296,7 @@ def _process_single_prompt(
                             "metadata": {"batch_num": batch_num, "timestamp": datetime.now().isoformat()},
                         }
             except FileNotFoundError:
-                pass  # Docker CLI not installed — skip check (e.g., Modal backend)
+                logger.debug("Suppressed exception", exc_info=True)  # Docker CLI not installed — skip check (e.g., Modal backend)
             except Exception as img_err:
                 if config.get("verbose"):
                     print(f"   Prompt {prompt_index}: Docker image check failed: {img_err}", flush=True)

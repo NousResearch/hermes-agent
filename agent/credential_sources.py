@@ -46,6 +46,10 @@ No more per-source if/elif chain in ``auth_remove_command``.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -167,7 +171,7 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
                 for line in env_path.read_text(errors="replace").splitlines()
             )
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     shell_exported = env_in_process and not env_in_dotenv
 
     cleared = remove_env_value(env_var)

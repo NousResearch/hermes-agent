@@ -66,7 +66,7 @@ def _secure_file(path: Path) -> None:
     try:
         os.chmod(path, 0o600)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _ensure_dir() -> None:
@@ -108,7 +108,7 @@ def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 

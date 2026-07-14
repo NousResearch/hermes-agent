@@ -197,7 +197,7 @@ class FalImageGenProvider(ImageGenProvider):
                 model_id, _meta = _it._resolve_fal_model()
                 response["model"] = model_id
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return response
 
 

@@ -16,6 +16,10 @@ Exit code conventions:
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import shutil
 import subprocess
@@ -135,7 +139,7 @@ def _drive_health_report(
         try:
             proc.stdin.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -168,7 +172,7 @@ def _drive_health_report(
                 if isinstance(parsed, dict) and "schema_version" in parsed:
                     return parsed
             except (ValueError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     raise RuntimeError(
         "health_report response carried neither structuredContent nor a parseable "
@@ -254,7 +258,7 @@ def run_doctor(
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
         except (AttributeError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if driver_cmd is None:
         try:
             from hermes_cli.tools_config import _cua_driver_cmd

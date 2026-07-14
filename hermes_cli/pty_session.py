@@ -9,6 +9,10 @@ docs/superpowers/specs/2026-06-20-pty-keepalive-reattach-design.md.
 from __future__ import annotations
 
 import asyncio
+
+import logging
+logger = logging.getLogger(__name__)
+
 import time
 from typing import Optional
 
@@ -65,7 +69,7 @@ class PtySession:
                     try:
                         await ws.close(code=WS_CLOSE_PROCESS_EXITED)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 return
             if not chunk:                            # idle tick
                 await asyncio.sleep(0)
@@ -76,7 +80,7 @@ class PtySession:
                 try:
                     await ws.send_bytes(chunk)
                 except Exception:
-                    pass                             # detached mid-send; keep buffering
+                    logger.debug("Suppressed exception", exc_info=True)                             # detached mid-send; keep buffering
 
     async def attach(self, ws) -> None:
         old = self._ws
@@ -84,7 +88,7 @@ class PtySession:
             try:
                 await old.close(code=WS_CLOSE_SUPERSEDED)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._ws = ws
         self.attached = True
         self.last_detached_at = None
@@ -110,13 +114,13 @@ class PtySession:
             try:
                 await self._drain_task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             # bridge.close() joins the child — blocking; keep it off the
             # event loop (#53227).
             await asyncio.to_thread(self.bridge.close)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 from typing import Callable, Dict, Tuple
@@ -133,7 +137,7 @@ async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) 
         try:
             await registry.reap_idle()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 class PtySessionRegistry:

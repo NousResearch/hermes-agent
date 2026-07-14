@@ -172,7 +172,7 @@ def _emit_terminal_post_tool_call(
             middleware_trace=list(middleware_trace or []),
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _cancelled_tool_result(reason: str = "user interrupt") -> str:
@@ -259,7 +259,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
     try:
         agent._tool_search_scope_cache = (cache_key, names)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return names
 
 
@@ -413,7 +413,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             ),
                         }, ensure_ascii=False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -501,7 +501,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
                         agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # Checkpoint before destructive terminal commands
             if function_name == "terminal" and agent._checkpoint_mgr.enabled:
@@ -513,7 +513,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             cwd, f"before terminal: {cmd[:60]}"
                         )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
 
@@ -580,7 +580,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             try:
                 _ra()._set_interrupt(True, _worker_tid)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Set the activity callback on THIS worker thread so
         # _wait_for_process (terminal commands) can fire heartbeats.
         # The callback is thread-local; the main thread's callback
@@ -589,7 +589,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             from tools.environments.base import set_activity_callback
             set_activity_callback(agent._touch_activity)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Approval/sudo callbacks (thread-local) and the agent turn's
         # ContextVars are propagated by propagate_context_to_thread() at the
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
@@ -610,7 +610,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 try:
                     agent.interrupt("keyboard interrupt")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 result = _emit_cancelled_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -646,7 +646,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             try:
                 _ra()._set_interrupt(False, _worker_tid)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # Start spinner for CLI mode (skip when TUI handles tool progress)
     spinner = None
@@ -767,7 +767,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             try:
                                 _ra()._set_interrupt(True, tid)
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                         break
 
                     # Check for interrupt — the per-thread interrupt signal
@@ -1085,7 +1085,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                             "Use tool_search to find tools you can call."
                         )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -1115,7 +1115,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
@@ -1157,7 +1157,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 from tools.environments.base import set_activity_callback
                 set_activity_callback(agent._touch_activity)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if not _execution_blocked and agent.tool_progress_callback:
             try:
@@ -1184,7 +1184,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         work_dir, f"before {function_name}"
                     )
             except Exception:
-                pass  # never block tool execution
+                logger.debug("Suppressed exception", exc_info=True)  # never block tool execution
 
         # Checkpoint before destructive terminal commands
         if not _execution_blocked and function_name == "terminal" and agent._checkpoint_mgr.enabled:
@@ -1196,7 +1196,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         cwd, f"before terminal: {cmd[:60]}"
                     )
             except Exception:
-                pass  # never block tool execution
+                logger.debug("Suppressed exception", exc_info=True)  # never block tool execution
 
         tool_start_time = time.time()
 
@@ -1500,7 +1500,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 try:
                     agent.interrupt("keyboard interrupt")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
@@ -1540,7 +1540,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 try:
                     agent.interrupt("keyboard interrupt")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
             except Exception as tool_error:
                 function_result = f"Error executing tool '{function_name}': {tool_error}"

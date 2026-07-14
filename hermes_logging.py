@@ -27,10 +27,13 @@ Session context:
     that thread will include ``[session_id]`` for filtering/correlation.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import atexit
 import copy
 import io
-import logging
 import os
 import queue
 import sys
@@ -115,7 +118,7 @@ def _safe_stderr():  # type: ignore[return]
             wrapped.close = lambda: None  # type: ignore[assignment]
             return wrapped
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Best-effort: if wrapping fails, return the original stream.
     return stream
 
@@ -452,7 +455,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             try:
                 os.chmod(self.baseFilename, 0o660)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _record_stream_stat(self) -> None:
         """Snapshot dev/ino of ``baseFilename`` so we can detect external rotation."""
@@ -479,7 +482,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
                 if self.stream is not None:
                     self.stream.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self.stream = None  # type: ignore[assignment]
             try:
                 self.stream = self._open()
@@ -487,7 +490,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             except Exception:
                 # Couldn't reopen — leave stream=None; next emit will
                 # bail rather than write to a stale inode.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return
         except OSError:
             return  # transient — try again on the next emit
@@ -503,13 +506,13 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
                 if self.stream is not None:
                     self.stream.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self.stream = None  # type: ignore[assignment]
             try:
                 self.stream = self._open()
                 self._stat_dev, self._stat_ino = st.st_dev, st.st_ino
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def emit(self, record: logging.LogRecord) -> None:
         # Cheap-ish stat-per-record check; the kernel caches inode metadata
@@ -600,7 +603,7 @@ def _stop_queue_listener_locked() -> None:
         try:
             listener.stop()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _stop_queue_listener() -> None:
@@ -684,7 +687,7 @@ def drain_log_queue(timeout: float = 1.0) -> None:
         try:
             listener.stop()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     t = threading.Thread(target=_drain, name="hermes-log-drain", daemon=True)
     t.start()
@@ -713,7 +716,7 @@ def _reset_queued_handlers() -> None:
             try:
                 h.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _queued_file_handlers.clear()
         _log_queue = None
 
@@ -776,7 +779,7 @@ def _read_logging_config():
                 from hermes_cli import managed_scope
                 cfg = managed_scope.apply_managed_overlay(cfg)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             log_cfg = cfg.get("logging", {})
             if isinstance(log_cfg, dict):
                 return (
@@ -785,5 +788,5 @@ def _read_logging_config():
                     log_cfg.get("backup_count"),
                 )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return (None, None, None)

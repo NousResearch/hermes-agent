@@ -31,6 +31,10 @@ EXPERIMENTAL: the relay auth scheme may change without a deprecation cycle until
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import socket
 import sys
@@ -134,7 +138,7 @@ def _post_enroll(
         try:
             detail = (json.loads(exc.read().decode()) or {}).get("error", "")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if exc.code == 401:
             raise RuntimeError(
                 "Connector rejected the caller identity (401). Your Nous Portal "

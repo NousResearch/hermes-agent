@@ -536,7 +536,7 @@ def _extract_text(response: Any) -> str:
                         parts.append(txt)
             return "".join(parts)
     except (AttributeError, IndexError, TypeError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 

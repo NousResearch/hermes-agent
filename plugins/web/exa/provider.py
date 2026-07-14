@@ -65,7 +65,7 @@ def _get_exa_client() -> Any:
 
         _lazy_ensure("search.exa", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as exc:  # noqa: BLE001 — lazy_deps surfaces install hints
         raise ImportError(str(exc)) from exc
 

@@ -11,6 +11,10 @@ Provides subcommands for:
 - hermes cron          - Manage cron jobs
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 
@@ -79,7 +83,7 @@ def _ensure_utf8():
             setattr(sys, stream_name, new_stream)
             repaired = True
         except (AttributeError, OSError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Only nudge child processes toward UTF-8 when we actually detected a
     # non-UTF-8 locale. On a healthy UTF-8 host children inherit UTF-8 from the

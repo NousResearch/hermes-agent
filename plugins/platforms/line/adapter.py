@@ -828,13 +828,13 @@ class LineAdapter(BasePlatformAdapter):
             try:
                 await self._site.stop()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._site = None
         if self._runner is not None:
             try:
                 await self._runner.cleanup()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._runner = None
         self._app = None
 
@@ -843,7 +843,7 @@ class LineAdapter(BasePlatformAdapter):
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._media_temp_paths.clear()
         self._media_tokens.clear()
 
@@ -852,7 +852,7 @@ class LineAdapter(BasePlatformAdapter):
                 from gateway.status import release_scoped_lock
                 release_scoped_lock("line", self._lock_key)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._lock_key = None
 
     # ------------------------------------------------------------------
@@ -1044,13 +1044,13 @@ class LineAdapter(BasePlatformAdapter):
             try:
                 await self._client.reply(reply_token, [_text_message(self.delivered_text)])
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         elif entry.state is State.PENDING:
             # Still working — re-issue the wait notice.
             try:
                 await self._client.reply(reply_token, [_text_message(self.pending_text)])
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
         if not self._client or not message_id:
@@ -1221,7 +1221,7 @@ class LineAdapter(BasePlatformAdapter):
                 try:
                     await post_task
                 except (asyncio.CancelledError, Exception):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""
@@ -1247,7 +1247,7 @@ class LineAdapter(BasePlatformAdapter):
                     try:
                         os.unlink(path)
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
         resolved = str(Path(file_path).resolve())
         token = secrets.token_urlsafe(32)
@@ -1408,7 +1408,7 @@ class LineAdapter(BasePlatformAdapter):
                 try:
                     os.unlink(tmp.name)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
 
         video_token = self._register_media(str(path.resolve()))
@@ -1520,7 +1520,7 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         try:
             seeded["port"] = int(os.environ["LINE_PORT"])
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if os.getenv("LINE_HOST"):
         seeded["host"] = os.environ["LINE_HOST"]
     if os.getenv("LINE_PUBLIC_URL"):

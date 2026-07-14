@@ -818,7 +818,7 @@ def _collect_gateway_skill_entries(
                 desc = desc[:desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     plugin_pairs = _clamp_command_names(plugin_pairs, reserved_names)
     reserved_names.update(n for n, _ in plugin_pairs)
@@ -832,7 +832,7 @@ def _collect_gateway_skill_entries(
         from agent.skill_utils import get_disabled_skill_names
         _platform_disabled = get_disabled_skill_names(platform=platform)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     skill_triples: list[tuple[str, str, str]] = []
     try:
@@ -873,7 +873,7 @@ def _collect_gateway_skill_entries(
                 desc = desc[:desc_limit - 3] + "..."
             skill_triples.append((name, desc, cmd_key))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Clamp names; cmd_key is passed through as extra payload so it survives
     # any clamp-induced renames.
@@ -1002,7 +1002,7 @@ def discord_skill_commands_by_category(
         from agent.skill_utils import get_disabled_skill_names
         _platform_disabled = get_disabled_skill_names(platform="discord")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Collect raw skill data --------------------------------------------------
     categories: dict[str, list[tuple[str, str, str]]] = {}
@@ -1033,7 +1033,7 @@ def discord_skill_commands_by_category(
                 except Exception:
                     continue
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         skill_cmds = get_skill_commands()
 
         for cmd_key in sorted(skill_cmds):
@@ -1115,7 +1115,7 @@ def discord_skill_commands_by_category(
             else:
                 uncategorized.append((discord_name, desc, cmd_key))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return categories, uncategorized, hidden
 
@@ -1782,7 +1782,7 @@ class SlashCommandCompleter(Completer):
                         display_meta=s.get("description", "") or s.get("source", ""),
                     )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     @staticmethod
     def _tools_completions(sub_text: str, sub_lower: str):
@@ -1938,7 +1938,7 @@ class SlashCommandCompleter(Completer):
                         display_meta=meta,
                     )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -2054,7 +2054,7 @@ class SlashCommandCompleter(Completer):
                         display_meta=f"🔌 {short_desc}",
                     )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

@@ -424,7 +424,7 @@ def _check_yuanbao():
         if get_session_env("HERMES_SESSION_PLATFORM", "") == "yuanbao":
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _get_active_adapter() is not None
 
 
@@ -454,7 +454,7 @@ async def _handle_yb_send_dm(args, **kw):
             if chat_id.startswith("group:"):
                 group_code = chat_id.split(":", 1)[1]
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Parse media_files: list of {{"path": str, "is_voice": bool}} → List[Tuple[str, bool]]
     raw_media = args.get("media_files") or []

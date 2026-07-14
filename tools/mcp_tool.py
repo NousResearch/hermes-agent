@@ -189,7 +189,7 @@ def _write_stderr_log_header(server_name: str) -> None:
         fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
         fh.flush()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
@@ -1954,7 +1954,7 @@ class MCPServerTask:
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
         if self._shutdown_event.is_set():
             return "shutdown"
@@ -1998,7 +1998,7 @@ class MCPServerTask:
                     try:
                         await t
                     except (asyncio.CancelledError, Exception):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         if self._shutdown_event.is_set():
             return "shutdown"
         self._reconnect_event.clear()
@@ -2127,7 +2127,7 @@ class MCPServerTask:
                         except (AttributeError, ProcessLookupError, OSError):
                             # AttributeError: Windows (os.getpgid is POSIX-only)
                             # ProcessLookupError: child raced and already exited
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     with _lock:
                         for _pid in new_pids:
                             _stdio_pids[_pid] = self.name
@@ -2916,7 +2916,7 @@ class MCPServerTask:
                 try:
                     await self._task
                 except asyncio.CancelledError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         if self._pending_refresh_tasks:
             for task in list(self._pending_refresh_tasks):
                 task.cancel()
@@ -2957,7 +2957,7 @@ class MCPServerTask:
                     try:
                         await task
                     except (asyncio.CancelledError, Exception):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3152,23 +3152,23 @@ def _get_auth_error_types() -> tuple:
         from mcp.client.auth import OAuthFlowError, OAuthTokenError
         types.extend([OAuthFlowError, OAuthTokenError])
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         # Older MCP SDK variants exported this
         from mcp.client.auth import UnauthorizedError  # type: ignore
         types.append(UnauthorizedError)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from tools.mcp_oauth import OAuthNonInteractiveError
         types.append(OAuthNonInteractiveError)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         import httpx
         types.append(httpx.HTTPStatusError)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     _AUTH_ERROR_TYPES = tuple(types)
     return _AUTH_ERROR_TYPES
 
@@ -3188,7 +3188,7 @@ def _is_auth_error(exc: BaseException) -> bool:
         if isinstance(exc, httpx.HTTPStatusError):
             return getattr(exc.response, "status_code", None) == 401
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return True
 
 
@@ -3487,14 +3487,14 @@ def _snapshot_child_pids() -> set:
         with open(children_path, encoding="utf-8") as f:
             return {int(p) for p in f.read().split() if p.strip()}
     except (FileNotFoundError, OSError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fallback: psutil
     try:
         import psutil
         return {c.pid for c in psutil.Process(my_pid).children()}
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return set()
 
@@ -3768,7 +3768,7 @@ def _load_mcp_config() -> Dict[str, dict]:
             from hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         safe_servers: Dict[str, dict] = {}
         for name, cfg in _filter_suspicious_mcp_servers(servers).items():
             interpolated = _interpolate_env_vars(cfg)
@@ -5564,7 +5564,7 @@ def _kill_orphaned_mcp_children(
         try:
             os.kill(pid, sig)
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Phase 1: SIGTERM (graceful)
     for pid, server_name in pids.items():
@@ -5619,7 +5619,7 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         try:
             loop.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # After closing the loop, any stdio subprocesses that survived the
         # graceful shutdown are now orphaned — include active PIDs too
         # since the loop is gone and no session can still be in flight.

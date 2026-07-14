@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 from pathlib import Path
 from typing import Optional
 
@@ -123,13 +127,13 @@ def is_write_denied(path: str) -> bool:
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
                 return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
             if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
                 return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     safe_roots = get_safe_write_roots()
     if safe_roots:
@@ -377,7 +381,7 @@ def _resolve_active_profile_name() -> str:
         if len(parts) >= 1:
             return parts[0]
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return "default"
 
 

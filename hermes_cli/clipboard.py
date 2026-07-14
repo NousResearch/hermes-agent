@@ -84,7 +84,7 @@ def _macos_pngpaste(dest: Path) -> bool:
         if r.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
             return True
     except FileNotFoundError:
-        pass  # pngpaste not installed
+        logger.debug("Suppressed exception", exc_info=True)  # pngpaste not installed
     except Exception as e:
         logger.debug("pngpaste failed: %s", e)
     return False
@@ -341,7 +341,7 @@ def _wayland_has_image() -> bool:
     except FileNotFoundError:
         logger.debug("wl-paste not installed — Wayland clipboard unavailable")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 
@@ -406,7 +406,7 @@ def _convert_to_png(path: Path) -> bool:
         img.save(path, "PNG")
         return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as e:
         logger.debug("Pillow BMP→PNG conversion failed: %s", e)
 
@@ -457,9 +457,9 @@ def _xclip_has_image() -> bool:
         )
         return r.returncode == 0 and "image/png" in r.stdout
     except FileNotFoundError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 

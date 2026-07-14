@@ -226,7 +226,7 @@ def _can_open_browser() -> bool:
         if os.uname().sysname == "Darwin":
             return True
     except AttributeError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Linux/other posix: need DISPLAY or WAYLAND_DISPLAY
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return True
@@ -277,7 +277,7 @@ def _write_json(path: Path, data: dict) -> None:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -342,7 +342,7 @@ class HermesTokenStorage:
                     implied_expiry = file_mtime + int(data["expires_in"])
                     data["expires_in"] = int(max(implied_expiry - time.time(), 0))
                 except (TypeError, ValueError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         try:
             return OAuthToken.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
@@ -365,7 +365,7 @@ class HermesTokenStorage:
             except (TypeError, ValueError):
                 # Mock tokens or unusual shapes: skip the expires_at write
                 # rather than fail persistence.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
@@ -426,7 +426,7 @@ class HermesTokenStorage:
             try:
                 snap[p.name] = p.read_bytes()
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return snap
 
     def restore(self, snapshot: dict[str, bytes]) -> None:

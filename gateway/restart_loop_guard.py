@@ -64,7 +64,7 @@ def _save_boots(boots: List[float]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"boots": boots}), encoding="utf-8")
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def record_restart_interrupted_boot(
@@ -116,7 +116,7 @@ def clear() -> None:
     try:
         _state_path().unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def check_and_record(

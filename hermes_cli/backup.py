@@ -603,7 +603,7 @@ def run_import(args) -> None:
                         try:
                             os.chmod(target, 0o600)
                         except OSError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     restored += 1
                     restored_external += 1
                 except (PermissionError, OSError) as exc:
@@ -1206,7 +1206,7 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
         try:
             out_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
 
     return out_path

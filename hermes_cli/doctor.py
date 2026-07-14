@@ -4,6 +4,10 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 import subprocess
@@ -481,7 +485,7 @@ def _build_apikey_providers_list() -> list:
             _hc = getattr(_pp, "supports_health_check", True)
             _static.append((_label, _key_vars, _models_url, _base_var, _hc))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _static
 
 
@@ -723,7 +727,7 @@ def run_doctor(args):
                 try:
                     os.chmod(str(env_path), 0o600)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 check_ok(f"Created empty {_DHH}/.env")
                 check_info("Run 'hermes setup' to configure API keys")
                 fixed_count += 1
@@ -915,7 +919,7 @@ def run_doctor(args):
                             issues,
                         )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         except Exception as e:
             check_warn("Could not validate model/provider config", f"({e})")
@@ -962,7 +966,7 @@ def run_doctor(args):
             else:
                 check_ok(f"Config version up to date (v{current_ver})")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
@@ -1000,7 +1004,7 @@ def run_doctor(args):
                 else:
                     issues.append("Stale root-level provider/base_url in config.yaml — run 'hermes doctor --fix'")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Detect stale HERMES_MAX_ITERATIONS ghost in .env shadowing
         # agent.max_turns in config.yaml (issue #17534). The setup wizard
@@ -1057,7 +1061,7 @@ def run_doctor(args):
                         "run 'hermes doctor --fix'"
                     )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Validate config structure (catches malformed custom_providers, etc.)
         try:
@@ -1075,7 +1079,7 @@ def run_doctor(args):
                         check_info(hint_line)
                     issues.append(ci.message)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     _section("xAI Model Retirement (May 15, 2026)")
 
@@ -1156,7 +1160,7 @@ def run_doctor(args):
             if xai_oauth_status.get("error"):
                 check_info(xai_oauth_status["error"])
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     _section("Directory Structure")
     hermes_home = HERMES_HOME
@@ -1352,7 +1356,7 @@ def run_doctor(args):
             elif wal_size > 10 * 1024 * 1024:  # 10 MB
                 check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
@@ -1604,7 +1608,7 @@ def run_doctor(args):
             except Exception:
                 # If browser_tool can't even import, that's a separate bug
                 # surfaced elsewhere; don't crash doctor.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             else:
                 # Only warn about Chromium if the installed engine actually
                 # requires it: Camofox, CDP override, a cloud provider, or
@@ -1739,7 +1743,7 @@ def run_doctor(args):
                         f"{'vulnerability' if moderate == 1 else 'vulnerabilities'})",
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
@@ -2259,10 +2263,10 @@ def run_doctor(args):
                 from hermes_cli import managed_scope
                 _raw_cfg = managed_scope.apply_managed_overlay(_raw_cfg)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not _active_memory_provider:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
@@ -2386,11 +2390,11 @@ def run_doctor(args):
                             if _m and not profile_exists(_m.group(1)):
                                 check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print()
     remaining_issues = issues + manual_issues

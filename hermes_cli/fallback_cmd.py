@@ -19,6 +19,10 @@ Storage: ``fallback_providers`` in ``~/.hermes/config.yaml`` (top-level, list of
 from __future__ import annotations
 
 import copy
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
@@ -97,7 +101,7 @@ def _restore_auth_active_provider(value: Any) -> None:
         # Best-effort — if auth.json can't be restored, the user's primary
         # provider may have been deactivated by the picker.  They can re-run
         # `hermes model` to fix it.  Don't fail the fallback add.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

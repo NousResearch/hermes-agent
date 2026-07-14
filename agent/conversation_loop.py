@@ -91,7 +91,7 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
             try:
                 parts.append(str(value))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     text = " ".join(parts).lower()
     if "image" not in text or "dimension" not in text or "max allowed size" not in text:
         return None
@@ -563,7 +563,7 @@ def run_conversation(
                 if persist_user_message is None:
                     persist_user_message = _decoded_message
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
@@ -731,7 +731,7 @@ def run_conversation(
                             blocks.append({"type": "text", "text": marker})
                             _sm["content"] = blocks
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     _injected = True
                     logger.debug(
                         "Pre-API-call steer drain: injected into tool msg at index %d",
@@ -999,7 +999,7 @@ def run_conversation(
             try:
                 agent.iteration_budget.refund()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             break
 
         # Pre-API pressure check. The turn-prologue preflight only saw the
@@ -1166,9 +1166,9 @@ def run_conversation(
                             "error": _nous_msg,
                         }
                 except ImportError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 except Exception:
-                    pass  # Never let rate guard break the agent loop
+                    logger.debug("Suppressed exception", exc_info=True)  # Never let rate guard break the agent loop
 
             try:
                 agent._reset_stream_delivery_tracking()
@@ -1275,7 +1275,7 @@ def run_conversation(
                             request=_request_payload,
                         )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
@@ -1537,7 +1537,7 @@ def run_conversation(
                             try:
                                 _resp_error_code = int(_code_raw)
                             except (TypeError, ValueError):
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
 
                     # Build a human-readable failure hint from the error code
                     # and response time, instead of always assuming rate limiting.
@@ -2212,7 +2212,7 @@ def run_conversation(
                         try:
                             agent.session_estimated_cost_usd += float(_moa_ref_cost)
                         except (TypeError, ValueError):  # pragma: no cover - defensive
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     agent.session_cost_status = cost_result.status
                     agent.session_cost_source = cost_result.source
 
@@ -2244,7 +2244,7 @@ def run_conversation(
                                 try:
                                     _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
                                 except (TypeError, ValueError):  # pragma: no cover
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                             agent._session_db.update_token_counts(
                                 agent.session_id,
                                 input_tokens=canonical_usage.input_tokens,
@@ -2310,7 +2310,7 @@ def run_conversation(
                         from agent.nous_rate_guard import clear_nous_rate_limit
                         clear_nous_rate_limit()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 agent._touch_activity(f"API call #{api_call_count} completed")
                 break  # Success, exit retry loop
 
@@ -2533,7 +2533,7 @@ def run_conversation(
                                     getattr(api_error, "message", None) or
                                     str(api_error))
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 _err_status = getattr(api_error, "status_code", None)
                 _IMAGE_REJECTION_PHRASES = (
                     "only 'text' content type is supported",
@@ -2741,7 +2741,7 @@ def run_conversation(
                         try:
                             agent._anthropic_client.close()
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         agent._rebuild_anthropic_client()
                         agent._vprint(
                             f"{agent.log_prefix}🔕 OAuth subscription doesn't support "
@@ -2792,7 +2792,7 @@ def run_conversation(
                         if _body is not None:
                             _body_text = str(_body)[:200]
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
                     if _body_text:
                         print(f"{agent.log_prefix}   Response: {_body_text}")
@@ -3347,7 +3347,7 @@ def run_conversation(
                                 "cross-session breaker."
                             )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     if _genuine_nous_rate_limit:
                         # Re-enter the loop exactly once so the
                         # top-of-loop Nous guard handles fallback or
@@ -4178,7 +4178,7 @@ def run_conversation(
                                 # windows while still rejecting pathological values. (#26293)
                                 _retry_after = min(float(_ra_raw), 600)
                             except (TypeError, ValueError):
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
@@ -4365,7 +4365,7 @@ def run_conversation(
                         assistant_tool_call_count=len(_assistant_tool_calls),
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:
@@ -4389,12 +4389,12 @@ def run_conversation(
                     try:
                         agent.tool_progress_callback("_thinking", first_line)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 elif _think_text:
                     try:
                         agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
@@ -4755,7 +4755,7 @@ def run_conversation(
                     try:
                         agent.stream_delta_callback(None)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
@@ -4779,7 +4779,7 @@ def run_conversation(
                                 agent.stream_delta_callback(final_response)
                                 agent.stream_delta_callback(None)
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                     break
 
                 # Reset per-turn retry counters after successful tool

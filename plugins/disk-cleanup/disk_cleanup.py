@@ -73,7 +73,7 @@ def is_safe_path(path: Path) -> bool:
         path.resolve().relative_to(hermes_home)
         return True
     except (ValueError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Allow /tmp/hermes-* explicitly
     parts = path.parts
     if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
@@ -94,7 +94,7 @@ def _log(message: str) -> None:
             f.write(f"[{ts}] {message}\n")
     except OSError:
         # Never let the audit log break the agent loop.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ def load_tracked() -> List[Dict[str, Any]]:
                 _log("WARN: tracked.json corrupted — restored from .bak")
                 return data
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _log("WARN: tracked.json corrupted, no backup — starting fresh")
         return []
 
@@ -392,7 +392,7 @@ def quick() -> Dict[str, Any]:
                     empty_removed += 1
                     _log(f"DELETED: {dirpath} (empty dir)")
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             continue
 
         sweep_stack.append((dirpath, True))
@@ -405,7 +405,7 @@ def quick() -> Dict[str, Any]:
                 ):
                     sweep_stack.append((child, False))
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     save_tracked(new_tracked)
     _log(
@@ -578,7 +578,7 @@ def guess_category(path: Path) -> Optional[str]:
             return "temp"
     except ValueError:
         # Path isn't under HERMES_HOME (e.g. /tmp/hermes-*) — fall through.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     name = path.name
     if name.startswith(_TEST_PATTERNS):

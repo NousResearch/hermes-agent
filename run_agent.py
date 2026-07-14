@@ -29,14 +29,15 @@ except ModuleNotFoundError:
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+    import logging as _logging
+    _logging.debug("Suppressed exception", exc_info=True)
 
 import asyncio
+import logging
 import base64
 import copy
 import hashlib
 import json
-import logging
 logger = logging.getLogger(__name__)
 import os
 import re
@@ -812,7 +813,7 @@ class AIAgent:
             fn = self._print_fn or print
             fn(*args, **kwargs)
         except (OSError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _vprint(self, *args, force: bool = False, **kwargs):
         """Verbose print — suppressed when actively streaming tokens.
@@ -887,7 +888,7 @@ class AIAgent:
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if self.status_callback:
             try:
                 self.status_callback("lifecycle", message)
@@ -904,7 +905,7 @@ class AIAgent:
         try:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if self.status_callback:
             try:
                 self.status_callback("warn", message)
@@ -961,7 +962,7 @@ class AIAgent:
             buf.append(("status", message))
         except Exception:
             # Never break the retry loop on a buffer hiccup.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _buffer_vprint(self, message: str) -> None:
         """Buffer a vprint(force=True) retry/fallback line."""
@@ -972,7 +973,7 @@ class AIAgent:
                 self._retry_status_buffer = buf
             buf.append(("vprint", message))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _clear_status_buffer(self) -> None:
         """Drop buffered retry messages — call on successful recovery."""
@@ -981,7 +982,7 @@ class AIAgent:
             if buf:
                 buf.clear()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _emit_pending_fallback_notice(self) -> None:
         """Surface the one-shot fallback-switch notice on successful recovery.
@@ -1004,7 +1005,7 @@ class AIAgent:
                 self._emit_status(notice)
         except Exception:
             # Never break the conversation loop on a notice hiccup.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
@@ -1032,9 +1033,9 @@ class AIAgent:
                     else:
                         self._vprint(f"{self.log_prefix}{msg}", force=True)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _disable_codex_reasoning_replay(
         self,
@@ -1408,7 +1409,7 @@ class AIAgent:
             except Exception:
                 # Fall back to the generic GPT-5 rule if Copilot-specific
                 # logic is unavailable for any reason.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return AIAgent._model_requires_responses_api(model)
 
     def _max_tokens_param(self, value: int) -> dict:
@@ -2344,7 +2345,7 @@ class AIAgent:
                     max_sequence=max_sequence,
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             from dataclasses import asdict, is_dataclass
             if is_dataclass(value):
@@ -2356,7 +2357,7 @@ class AIAgent:
                     max_sequence=max_sequence,
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if isinstance(value, SimpleNamespace):
             return cls._hook_jsonable(
                 vars(value),
@@ -2380,7 +2381,7 @@ class AIAgent:
                     max_sequence=max_sequence,
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return str(value)[:max_string]
 
     @classmethod
@@ -2501,7 +2502,7 @@ class AIAgent:
                 request=self._api_request_payload_for_hook(api_kwargs),
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _dump_api_request_debug(
         self,
@@ -2621,7 +2622,7 @@ class AIAgent:
                         )
                         return
                 except Exception:
-                    pass  # corrupted existing file — allow the overwrite
+                    logger.debug("Suppressed exception", exc_info=True)  # corrupted existing file — allow the overwrite
 
             entry = {
                 "session_id": self.session_id,
@@ -2714,7 +2715,7 @@ class AIAgent:
                 try:
                     _set_interrupt(True, _wtid)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -2749,7 +2750,7 @@ class AIAgent:
                 try:
                     _set_interrupt(False, _wtid)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         # A hard interrupt supersedes any pending /steer — the steer was
         # meant for the agent's next tool-call iteration, which will no
         # longer happen. Drop it instead of surprising the user with a
@@ -2878,7 +2879,7 @@ class AIAgent:
             if isinstance(_display, dict) and "file_mutation_verifier" in _display:
                 return bool(_display.get("file_mutation_verifier"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True  # safe default: verifier on
 
     # Bare absolute / home / Windows-drive file paths in a footer line.
@@ -2975,7 +2976,7 @@ class AIAgent:
             if isinstance(_display, dict) and "turn_completion_explainer" in _display:
                 return bool(_display.get("turn_completion_explainer"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True  # safe default: explainer on
 
     @staticmethod
@@ -3096,7 +3097,7 @@ class AIAgent:
                 # already swallows exceptions internally; this outer guard
                 # covers import-time failures (kanban_tools unavailable,
                 # etc.) on niche deployment surfaces.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _capture_rate_limits(self, http_response: Any) -> None:
         """Parse x-ratelimit-* headers from an HTTP response and cache the state.
@@ -3115,7 +3116,7 @@ class AIAgent:
             if state is not None:
                 self._rate_limit_state = state
         except Exception:
-            pass  # Never let header parsing break the agent loop
+            logger.debug("Suppressed exception", exc_info=True)  # Never let header parsing break the agent loop
 
     def get_rate_limit_state(self):
         """Return the last captured RateLimitState, or None."""
@@ -3292,7 +3293,7 @@ class AIAgent:
             else:
                 logger.debug("OpenRouter response cache %s", status.upper())
         except Exception:
-            pass  # Never let header parsing break the agent loop
+            logger.debug("Suppressed exception", exc_info=True)  # Never let header parsing break the agent loop
 
     def get_activity_summary(self) -> dict:
         """Return a snapshot of the agent's current activity for diagnostics.
@@ -3328,7 +3329,7 @@ class AIAgent:
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
@@ -3337,7 +3338,7 @@ class AIAgent:
                     messages or [],
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def commit_memory_session(self, messages: list = None) -> None:
         """Trigger end-of-session extraction without tearing providers down.
@@ -3348,7 +3349,7 @@ class AIAgent:
             try:
                 self._memory_manager.on_session_end(messages or [])
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Notify context engine of session end too — same lifecycle moment as
         # the memory manager's on_session_end. Without this, engines that
         # accumulate per-session state (DAGs, summaries) leak that state from
@@ -3362,7 +3363,7 @@ class AIAgent:
                     messages or [],
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _sync_external_memory_for_turn(
         self,
@@ -3423,7 +3424,7 @@ class AIAgent:
                 session_id=self.session_id or "",
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
@@ -3459,9 +3460,9 @@ class AIAgent:
                     try:
                         child.close()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Close the OpenAI/httpx client to release sockets immediately.
         try:
@@ -3470,7 +3471,7 @@ class AIAgent:
                 self._close_openai_client(client, reason="cache_evict", shared=True)
                 self.client = None
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def close(self) -> None:
         """Release all resources held by this agent instance.
@@ -3492,19 +3493,19 @@ class AIAgent:
             from tools.process_registry import process_registry
             process_registry.kill_all(task_id=task_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # 2. Clean terminal sandbox environments
         try:
             cleanup_vm(task_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # 3. Clean browser daemon sessions
         try:
             cleanup_browser(task_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # 4. Close active child agents
         try:
@@ -3515,9 +3516,9 @@ class AIAgent:
                 try:
                     child.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # 5. Close the OpenAI/httpx client
         try:
@@ -3526,7 +3527,7 @@ class AIAgent:
                 self._close_openai_client(client, reason="agent_close", shared=True)
                 self.client = None
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
@@ -3537,7 +3538,7 @@ class AIAgent:
         try:
             self._session_messages = []
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # 7. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
@@ -3553,7 +3554,7 @@ class AIAgent:
                 if session_db and session_id:
                     session_db.end_session(session_id, "agent_close")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
@@ -4401,7 +4402,7 @@ class AIAgent:
         try:
             self._anthropic_client.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             self._anthropic_client = build_anthropic_client(
@@ -4456,7 +4457,7 @@ class AIAgent:
                 if _ph2 and _ph2.default_headers:
                     _ph_headers = dict(_ph2.default_headers)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if _ph_headers:
                 self._client_kwargs["default_headers"] = _ph_headers
             else:
@@ -4523,7 +4524,7 @@ class AIAgent:
             try:
                 self._anthropic_client.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             self._anthropic_api_key = runtime_key
             self._anthropic_base_url = runtime_base
@@ -4632,7 +4633,7 @@ class AIAgent:
                         try:
                             cb(think_tail)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     self._record_streamed_assistant_text(think_tail)
         # Flush any benign partial-tag tail held by the context scrubber so it
         # reaches the UI before we clear state for the next model call.  If
@@ -4646,7 +4647,7 @@ class AIAgent:
                     try:
                         cb(tail)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
 
@@ -4738,7 +4739,7 @@ class AIAgent:
                 cb(text)
                 delivered = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if delivered:
             self._record_streamed_assistant_text(text)
 
@@ -4749,7 +4750,7 @@ class AIAgent:
             try:
                 cb(text)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
@@ -4764,7 +4765,7 @@ class AIAgent:
             try:
                 cb(tool_name)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _has_stream_consumers(self) -> bool:
         """Return True if any streaming consumer is registered."""
@@ -4855,7 +4856,7 @@ class AIAgent:
             try:
                 os.unlink(tmp.name)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
         path = Path(tmp.name)
         return str(path), path
@@ -4897,7 +4898,7 @@ class AIAgent:
                 try:
                     cleanup_path.unlink()
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         if not description:
             description = "Image analysis failed."
@@ -4949,7 +4950,7 @@ class AIAgent:
             if profile is not None:
                 return getattr(profile, "supports_vision_tool_messages", True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True  # default: assume compatible
 
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:

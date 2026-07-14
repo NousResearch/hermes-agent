@@ -282,7 +282,7 @@ async def run_server(
             except NotImplementedError:
                 # Windows / restricted environments — Ctrl+C will still
                 # raise KeyboardInterrupt and unwind us.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     try:
         await stop_event.wait()

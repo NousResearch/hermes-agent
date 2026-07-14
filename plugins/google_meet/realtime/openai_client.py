@@ -14,6 +14,10 @@ is missing.
 from __future__ import annotations
 
 import base64
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import time
 import uuid
@@ -108,7 +112,7 @@ class RealtimeSession:
             try:
                 self._ws.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._ws = None
 
     # ── speaking ──────────────────────────────────────────────────────────

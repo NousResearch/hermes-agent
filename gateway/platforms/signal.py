@@ -184,7 +184,7 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[Tuple[bytes, str]]:
                 try:
                     os.unlink(p)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
     except subprocess.TimeoutExpired:
         logger.warning("Signal: AAC→M4A remux timed out (>10s)")
         return None
@@ -391,14 +391,14 @@ class SignalAdapter(BasePlatformAdapter):
             try:
                 await self._sse_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if self._health_monitor_task:
             self._health_monitor_task.cancel()
             try:
                 await self._health_monitor_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Cancel all typing tasks
         for task in self._typing_tasks.values():
@@ -520,7 +520,7 @@ class SignalAdapter(BasePlatformAdapter):
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._sse_response = None
 
     # ------------------------------------------------------------------
@@ -1513,7 +1513,7 @@ class SignalAdapter(BasePlatformAdapter):
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Send an explicit stop-typing RPC so the recipient's device drops the
         # indicator immediately instead of waiting for Signal's ~5s built-in
@@ -1535,7 +1535,7 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception:
             # Best-effort: any RPC failure (or recipient-resolution failure)
             # must not prevent backoff cleanup.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         self._typing_failures.pop(chat_id, None)
         self._typing_skip_until.pop(chat_id, None)

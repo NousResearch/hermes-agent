@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any
 
 
@@ -150,7 +154,7 @@ class SelfHostedBackend(Mem0Backend):
         try:
             self._client.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 class OSSBackend(Mem0Backend):
@@ -219,7 +223,7 @@ class OSSBackend(Mem0Backend):
                 finally:
                     client.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         elif provider == "pgvector":
             try:
                 import psycopg2
@@ -250,7 +254,7 @@ class OSSBackend(Mem0Backend):
                 finally:
                     conn.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = False) -> list[dict]:
         response = self._memory.search(query, filters=filters, top_k=top_k)
@@ -285,7 +289,7 @@ class OSSBackend(Mem0Backend):
                 try:
                     telemetry.posthog.shutdown()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(self._memory, "close"):
                 self._memory.close()
             vs = getattr(self._memory, "vector_store", None)
@@ -295,4 +299,4 @@ class OSSBackend(Mem0Backend):
             if client and hasattr(client, "close"):
                 client.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)

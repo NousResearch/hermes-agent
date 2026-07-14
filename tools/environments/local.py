@@ -166,7 +166,7 @@ def _build_provider_env_blocklist() -> frozenset:
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from hermes_cli.config import OPTIONAL_ENV_VARS
@@ -177,7 +177,7 @@ def _build_provider_env_blocklist() -> frozenset:
             elif category == "setting" and metadata.get("password"):
                 blocked.add(name)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     blocked.update({
         "OPENAI_BASE_URL",
@@ -330,7 +330,7 @@ def _inject_context_hermes_home(env: dict) -> None:
         if value:
             env["HERMES_HOME"] = value
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _inject_session_context_env(env: dict) -> None:
@@ -1227,7 +1227,7 @@ class LocalEnvironment(BaseEnvironment):
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
             except ProcessLookupError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
@@ -1256,14 +1256,14 @@ class LocalEnvironment(BaseEnvironment):
                 try:
                     proc.poll()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if not _group_alive(pgid):
                     return True
                 time.sleep(0.05)
             try:
                 proc.poll()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return not _group_alive(pgid)
 
         try:
@@ -1277,7 +1277,7 @@ class LocalEnvironment(BaseEnvironment):
                 try:
                     proc.wait(timeout=2.0)
                 except (subprocess.TimeoutExpired, OSError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             else:
                 try:
                     pgid = os.getpgid(proc.pid)
@@ -1306,12 +1306,12 @@ class LocalEnvironment(BaseEnvironment):
                 try:
                     proc.wait(timeout=0.2)
                 except (subprocess.TimeoutExpired, OSError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 proc.kill()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _update_cwd(self, result: dict):
         """Read CWD from temp file (local-only, no round-trip needed).
@@ -1336,7 +1336,7 @@ class LocalEnvironment(BaseEnvironment):
             if cwd_path and os.path.isdir(cwd_path):
                 self.cwd = cwd_path
         except (OSError, FileNotFoundError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Still strip the marker from output so it's not visible
         self._extract_cwd_from_output(result)
@@ -1371,7 +1371,7 @@ class LocalEnvironment(BaseEnvironment):
             try:
                 os.unlink(f)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Remove any orphaned atomic-write temp snapshots (snap.tmp.<bashpid>)
         # a failed/interrupted mv could have left behind (#38249).
         try:
@@ -1380,6 +1380,6 @@ class LocalEnvironment(BaseEnvironment):
                 try:
                     os.unlink(tmp)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)

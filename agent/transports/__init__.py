@@ -6,6 +6,10 @@ Usage:
     result = transport.normalize_response(raw_response)
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from agent.transports.types import (
     NormalizedResponse,
     ToolCall,
@@ -53,16 +57,16 @@ def _discover_transports() -> None:
     try:
         import agent.transports.anthropic  # noqa: F401
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         import agent.transports.codex  # noqa: F401
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         import agent.transports.chat_completions  # noqa: F401
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         import agent.transports.bedrock  # noqa: F401
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)

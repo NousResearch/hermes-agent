@@ -135,7 +135,7 @@ class IRCAdapter(BasePlatformAdapter):
                 if entry and entry.max_message_length:
                     max_msg = entry.max_message_length
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self.max_message_length = int(max_msg or 450)
 
         # Runtime state
@@ -227,26 +227,26 @@ class IRCAdapter(BasePlatformAdapter):
                 from gateway.status import release_scoped_lock
                 release_scoped_lock("irc", self._lock_key)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._mark_disconnected()
         if self._writer and not self._writer.is_closing():
             try:
                 await self._send_raw("QUIT :Hermes Agent shutting down")
                 await asyncio.sleep(0.5)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if self._recv_task and not self._recv_task.done():
             self._recv_task.cancel()
             try:
                 await self._recv_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         self._reader = None
         self._writer = None
@@ -676,7 +676,7 @@ def _env_enablement() -> dict | None:
         try:
             seed["port"] = int(port)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     nickname = os.getenv("IRC_NICKNAME", "").strip()
     if nickname:
         seed["nickname"] = nickname
@@ -910,7 +910,7 @@ async def _standalone_send(
         try:
             await asyncio.wait_for(reader.read(1024), timeout=2.0)
         except asyncio.TimeoutError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return {"success": True, "message_id": str(int(time.time() * 1000))}
     except asyncio.CancelledError:
@@ -923,7 +923,7 @@ async def _standalone_send(
             writer.close()
             await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
         except (asyncio.TimeoutError, Exception):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def register(ctx):

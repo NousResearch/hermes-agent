@@ -300,7 +300,7 @@ def save_url_video(
                 try:
                     path.unlink()
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise ValueError(
                     f"Video at {url} exceeds {max_bytes // (1024 * 1024)}MB cap; refusing to cache."
                 )
@@ -310,7 +310,7 @@ def save_url_video(
         try:
             path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise ValueError(f"Video at {url} was empty (0 bytes).")
 
     return path

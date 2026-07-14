@@ -1409,7 +1409,7 @@ def execute_code(
                         oldest = tail_buf.popleft()
                         tail_collected -= len(oldest)
             except (ValueError, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Transfer final tail to output list
             tail_chunks.extend(tail_buf)
 
@@ -1454,11 +1454,11 @@ def execute_code(
                 try:
                     touch_activity_if_due(_activity_state, "execute_code running")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             try:
                 proc.wait(timeout=min(poll_interval, max(0.0, deadline - now)))
             except subprocess.TimeoutExpired:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             poll_interval = min(0.2, poll_interval * 1.5)
 
         # Wait for readers to finish draining
@@ -1572,7 +1572,7 @@ def execute_code(
             if sock_path:
                 os.unlink(sock_path)
         except OSError:
-            pass  # already cleaned up or never created
+            logger.debug("Suppressed exception", exc_info=True)  # already cleaned up or never created
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -1585,13 +1585,13 @@ def _kill_process_group(proc, escalate: bool = False):
             try:
                 child.terminate()
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             parent.terminate()
         except psutil.NoSuchProcess:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     except psutil.NoSuchProcess:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except (PermissionError, OSError) as e:
         logger.debug("Could not terminate process tree: %s", e, exc_info=True)
         try:
@@ -1610,13 +1610,13 @@ def _kill_process_group(proc, escalate: bool = False):
                     try:
                         child.kill()
                     except psutil.NoSuchProcess:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 try:
                     parent.kill()
                 except psutil.NoSuchProcess:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except (PermissionError, OSError) as e:
                 logger.debug("Could not kill process tree: %s", e, exc_info=True)
                 try:

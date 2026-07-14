@@ -99,7 +99,7 @@ def _load_pending() -> list[dict]:
                 if isinstance(e, dict) and "url" in e and "expire_at" in e
             ]
     except (OSError, ValueError, json.JSONDecodeError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return []
 
 
@@ -113,7 +113,7 @@ def _save_pending(entries: list[dict]) -> None:
     except OSError:
         # Non-fatal — worst case the user has to run ``hermes debug delete``
         # manually.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _record_pending(urls: list[str], delay_seconds: int = _AUTO_DELETE_SECONDS) -> None:
@@ -169,7 +169,7 @@ def _sweep_expired_pastes(now: Optional[float] = None) -> tuple[int, int]:
         except Exception:
             # Network hiccup, 404 (already gone), etc. — drop the entry
             # after a grace period; don't retry forever.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Retain failed deletes for up to 24h past expiration, then give up.
         if expire_at + 86400 > current:
@@ -188,7 +188,7 @@ def _best_effort_sweep_expired_pastes() -> None:
     try:
         _sweep_expired_pastes()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +540,7 @@ def _capture_dump() -> str:
     try:
         run_dump(_FakeArgs())
     except SystemExit:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     finally:
         sys.stdout = old_stdout
 
@@ -986,7 +986,7 @@ def run_debug(args):
     try:
         _sweep_expired_pastes()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     subcmd = getattr(args, "debug_command", None)
     if subcmd == "share":

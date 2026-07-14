@@ -26,8 +26,11 @@ Usage:
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
 
-import json
+
 import logging
+logger = logging.getLogger(__name__)
+
+import json
 import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -373,7 +376,7 @@ class MiniSWERunner:
                             if tool_content.strip().startswith(("{", "[")):
                                 tool_content = json.loads(tool_content)
                         except (json.JSONDecodeError, AttributeError):
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         
                         tool_response = "<tool_response>\n"
                         tool_response += json.dumps({

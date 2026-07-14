@@ -332,7 +332,7 @@ def _write_private_json(path: Path, data: Any) -> None:
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
     try:
@@ -349,13 +349,13 @@ def _write_private_json(path: Path, data: Any) -> None:
         try:
             os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     finally:
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _ensure_deps() -> None:
@@ -375,7 +375,7 @@ def install_deps() -> bool:
         print("Dependencies already installed.")
         return True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print("Installing Google Chat OAuth dependencies...")
     try:

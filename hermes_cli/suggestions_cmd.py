@@ -59,7 +59,7 @@ def _resolve_origin() -> Optional[Dict[str, Any]]:
                 "thread_id": get_session_env("HERMES_SESSION_THREAD_ID") or None,
             }
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 

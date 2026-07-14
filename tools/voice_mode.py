@@ -205,7 +205,7 @@ def detect_audio_environment() -> dict:
                         "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav"
                     )
     except (FileNotFoundError, PermissionError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Check audio libraries
     try:
@@ -425,13 +425,13 @@ class TermuxAudioRecorder:
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return None
         if os.path.getsize(path) <= 0:
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return None
         logger.info("Termux voice recording stopped: %s", path)
         return path
@@ -445,12 +445,12 @@ class TermuxAudioRecorder:
         try:
             self._stop_termux_recording()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if path and os.path.isfile(path):
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         logger.info("Termux voice recording cancelled")
 
     def shutdown(self) -> None:
@@ -645,7 +645,7 @@ class AudioRecorder:
                 try:
                     stream.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             raise RuntimeError(
                 f"Failed to open audio input stream: {e}. "
                 "Check that a microphone is connected and accessible."
@@ -711,7 +711,7 @@ class AudioRecorder:
                 stream.stop()
                 stream.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         t = threading.Thread(target=_do_close, daemon=True)
         t.start()
@@ -960,7 +960,7 @@ def _transcribe_wav_in_chunks(
                 if os.path.isfile(chunk_path):
                     os.unlink(chunk_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:
@@ -1005,7 +1005,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
                 try:
                     os.unlink(chunk_path)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
 
     return chunk_paths
@@ -1031,13 +1031,13 @@ def stop_playback() -> None:
             proc.terminate()
             logger.info("Audio playback interrupted")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Also stop sounddevice playback if active
     try:
         sd, _ = _import_audio()
         sd.stop()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def play_audio_file(file_path: str) -> bool:
@@ -1078,7 +1078,7 @@ def play_audio_file(file_path: str) -> bool:
             sd.stop()
             return True
         except (ImportError, OSError):
-            pass  # audio libs not available, fall through to system players
+            logger.debug("Suppressed exception", exc_info=True)  # audio libs not available, fall through to system players
         except Exception as e:
             logger.debug("sounddevice playback failed: %s", e)
 
@@ -1211,7 +1211,7 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
                     os.unlink(entry.path)
                     deleted += 1
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)

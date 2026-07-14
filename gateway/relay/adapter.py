@@ -273,7 +273,7 @@ class RelayAdapter(BasePlatformAdapter):
             if user_id:
                 self._dm_user_by_chat[str(chat)] = str(user_id)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Ensure the outbound metadata carries the discriminator the connector's
@@ -421,7 +421,7 @@ class RelayAdapter(BasePlatformAdapter):
             try:
                 await self._revocation_monitor
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._revocation_monitor = None
         if self._transport is not None:
             # Phase 5 §5.3: emit going_idle as part of the gateway's EXISTING

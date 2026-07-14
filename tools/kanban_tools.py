@@ -280,7 +280,7 @@ def heartbeat_current_worker_from_env() -> bool:
             try:
                 conn.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return True
     except Exception:
         logger.debug("auto-heartbeat: bridge failed", exc_info=True)
@@ -524,7 +524,7 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             metadata = json.loads(meta_json)
         except json.JSONDecodeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     created_cards = args.get("created_cards")
     artifacts = args.get("artifacts")
     if created_cards is not None:
@@ -1002,7 +1002,7 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     except Exception:
         # If config can't load we still default to True — this is the
         # user-friendly behaviour that mirrors the pre-gate implementation.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     platform = ""
     chat_id = ""

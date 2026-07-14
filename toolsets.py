@@ -23,6 +23,10 @@ Usage:
     all_tools = resolve_toolset("full_stack")
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import List, Dict, Any, Set, Optional
 
 
@@ -746,10 +750,10 @@ def resolve_toolset(name: str, visited: Set[str] = None, *, include_registry: bo
                             if e.toolset == platform_name
                         )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     return list(plugin_tools)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return []
 

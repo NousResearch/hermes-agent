@@ -211,7 +211,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         lines.append("]")
         parts.extend(lines)
     except Exception:
-        pass  # Non-critical — skill still loads without config injection
+        logger.debug("Suppressed exception", exc_info=True)  # Non-critical — skill still loads without config injection
 
 
 def _build_skill_message(
@@ -383,7 +383,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 except Exception:
                     continue
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _skill_commands
 
 
@@ -517,7 +517,7 @@ def build_skill_invocation_message(
         from tools.skill_usage import bump_use
         bump_use(skill_name)
     except Exception:
-        pass  # Non-critical — skill invocation proceeds regardless
+        logger.debug("Suppressed exception", exc_info=True)  # Non-critical — skill invocation proceeds regardless
 
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
@@ -625,7 +625,7 @@ def build_stacked_skill_invocation_message(
             from tools.skill_usage import bump_use
             bump_use(skill_name)
         except Exception:
-            pass  # Non-critical
+            logger.debug("Suppressed exception", exc_info=True)  # Non-critical
 
         # NOTE: must start with "[Loaded as part of the " — that prefix is
         # the bundle block marker the memory-scaffolding extractor cuts on.
@@ -712,7 +712,7 @@ def build_preloaded_skills_prompt(
             from tools.skill_usage import bump_use
             bump_use(skill_name)
         except Exception:
-            pass  # Non-critical
+            logger.debug("Suppressed exception", exc_info=True)  # Non-critical
 
         activation_note = (
             f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '

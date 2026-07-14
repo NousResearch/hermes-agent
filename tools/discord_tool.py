@@ -126,7 +126,7 @@ def _discord_request(
         except DiscordAPIError as too_large:
             error_body = too_large.body
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise DiscordAPIError(e.code, error_body) from e
 
 
@@ -203,7 +203,7 @@ def _load_caps_from_disk(token: str) -> Optional[Dict[str, Any]]:
         if isinstance(caps, dict) and "has_members_intent" in caps:
             return caps
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 

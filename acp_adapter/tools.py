@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -195,7 +199,7 @@ def _json_loads_maybe(value: Optional[str]) -> Any:
     try:
         return json.loads(value)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Some Hermes tools append a human hint after a JSON payload, e.g.
     # ``{...}\n\n[Hint: Results truncated...]``. Keep the structured rendering path
@@ -1005,7 +1009,7 @@ def _build_tool_complete_content(
                 if diff_content:
                     return diff_content
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     polished_content = _build_polished_completion_content(tool_name, result, function_args)
     if polished_content:

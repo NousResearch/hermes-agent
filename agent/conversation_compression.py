@@ -389,7 +389,7 @@ def replay_compression_warning(agent: Any) -> None:
         try:
             agent.status_callback("lifecycle", msg)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def conversation_history_after_compression(agent: Any, messages: list) -> Optional[list]:
@@ -686,7 +686,7 @@ def compress_context(
                         "after it finishes."
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
@@ -715,7 +715,7 @@ def compress_context(
         try:
             agent._memory_manager.on_pre_compress(messages)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
@@ -862,7 +862,7 @@ def compress_context(
                     try:
                         agent._flush_messages_to_session_db(messages)
                     except Exception:
-                        pass  # best-effort — don't block compression on a flush error
+                        logger.debug("Suppressed exception", exc_info=True)  # best-effort — don't block compression on a flush error
                     # Propagate title to the new session with auto-numbering
                     old_title = agent._session_db.get_session_title(agent.session_id)
                     agent._session_db.end_session(agent.session_id, "compression")
@@ -890,7 +890,7 @@ def compress_context(
 
                         set_session_context(agent.session_id)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     agent._session_db_created = False
                     try:
                         agent._session_db.create_session(
@@ -925,13 +925,13 @@ def compress_context(
                             from hermes_logging import set_session_context
                             set_session_context(agent.session_id)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         # Re-open the parent: it was ended above, but we're
                         # continuing on it, so it must not stay closed.
                         try:
                             agent._session_db.reopen_session(old_session_id)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         old_session_id = None  # no rotation happened
                         # The parent row already exists in state.db, so mark the
                         # session as created — _ensure_db_session would otherwise
@@ -1093,7 +1093,7 @@ def compress_context(
             from tools.file_tools import reset_file_dedup
             reset_file_dedup(task_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         logger.info(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
@@ -1168,14 +1168,14 @@ def _compress_context_via_codex_app_server(
     try:
         agent._emit_status(COMPACTION_STATUS)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     result = codex_session.compact_thread()
     if getattr(result, "should_retire", False):
         try:
             codex_session.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         agent._codex_session = None
 
     if getattr(result, "interrupted", False) or getattr(result, "error", None):
@@ -1184,7 +1184,7 @@ def _compress_context_via_codex_app_server(
                 f"⚠ Codex app-server compaction failed: {result.error}"
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         existing_prompt = getattr(agent, "_cached_system_prompt", None)
         if not existing_prompt:
             existing_prompt = agent._build_system_prompt(system_message)
@@ -1216,7 +1216,7 @@ def _compress_context_via_codex_app_server(
 
         reset_file_dedup(task_id)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s",
@@ -1362,7 +1362,7 @@ def try_shrink_image_parts_in_messages(
                 try:
                     Path(tmp.name).unlink(missing_ok=True)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if not resized:
                 # Resize returned nothing — Pillow couldn't help.
                 return None, True

@@ -8,6 +8,10 @@ sticker image on every send. Descriptions are concise (1-2 sentences).
 Cache location: ~/.hermes/sticker_cache.json
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import tempfile
@@ -52,7 +56,7 @@ def _save_cache(cache: dict) -> None:
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 

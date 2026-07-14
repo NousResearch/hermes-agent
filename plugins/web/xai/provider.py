@@ -157,7 +157,7 @@ class XAIWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
         except Exception:  # noqa: BLE001 — interrupt module is best-effort
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()

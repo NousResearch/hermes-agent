@@ -121,7 +121,7 @@ def _scan_content(path: str, content: str) -> List[Tuple[str, str]]:
                 if path_check(path or ""):
                     hits.append((entry["ruleName"], entry["reminder"]))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Path-check rules don't also pattern-match content; move on.
             continue
         # path_filter: rule is skipped when the path filter returns False
@@ -250,7 +250,7 @@ def _on_transform_tool_result(
         if isinstance(parsed, dict) and "error" in parsed and len(parsed) <= 2:
             return None
     except (ValueError, TypeError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return result + "\n\n" + _format_warning_block(findings)
 
 

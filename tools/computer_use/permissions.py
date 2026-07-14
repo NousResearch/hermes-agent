@@ -24,6 +24,10 @@ the macOS permission detail into one payload for the desktop card, the
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import shutil
 import subprocess
@@ -147,7 +151,7 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
     try:
         out["version"] = (_run(binary, "--version", timeout=5).stdout or "").strip() or None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     doctor = _doctor(binary)
     if doctor is not None:

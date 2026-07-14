@@ -20,6 +20,10 @@ selected via the `cron.provider` config key (empty = built-in).
 from __future__ import annotations
 
 import threading
+
+import logging
+logger = logging.getLogger(__name__)
+
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -128,7 +132,7 @@ def resolve_cron_scheduler() -> "CronScheduler":
         from hermes_cli.config import cfg_get, load_config
         name = (cfg_get(load_config(), "cron", "provider", default="") or "").strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not name or name in ("builtin", "in-process", "inprocess"):
         return InProcessCronScheduler()

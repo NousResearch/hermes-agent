@@ -59,7 +59,7 @@ def _resolve_download_timeout() -> float:
         try:
             return float(env_val)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli.config import cfg_get, load_config
         cfg = load_config()
@@ -67,7 +67,7 @@ def _resolve_download_timeout() -> float:
         if val is not None:
             return float(val)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return 30.0
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
@@ -143,7 +143,7 @@ def _resolve_vision_cpu_workers() -> int:
             if parsed >= 1:
                 return parsed
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli.config import cfg_get, load_config
         cfg = load_config()
@@ -153,7 +153,7 @@ def _resolve_vision_cpu_workers() -> int:
             if parsed >= 1:
                 return parsed
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _detect_host_cpus()
 
 
@@ -268,7 +268,7 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
         cairosvg.svg2png(url=str(svg_path), write_to=str(out_path))
         return out_path.exists() and out_path.stat().st_size > 0
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # 2) svglib + reportlab
     try:
         from svglib.svglib import svg2rlg  # type: ignore
@@ -278,7 +278,7 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
             renderPM.drawToFile(drawing, str(out_path), fmt="PNG")
             return out_path.exists() and out_path.stat().st_size > 0
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # 3) system rasterizers
     import shutil as _shutil
     import subprocess as _subprocess
@@ -630,7 +630,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                 if max(_quick_img.size) > max_dimension:
                     needs_resize_for_dims = True
         except Exception:
-            pass  # can't check; Pillow path below will handle or skip
+            logger.debug("Suppressed exception", exc_info=True)  # can't check; Pillow path below will handle or skip
 
     if not needs_resize_for_bytes and not needs_resize_for_dims:
         # Small enough — just encode directly.
@@ -821,7 +821,7 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         if profile is not None and profile.supports_vision:
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
@@ -997,7 +997,7 @@ async def _vision_analyze_native(
                 try:
                     temp_image_path.unlink()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             temp_image_path = normalized_path
             should_cleanup = True
             image_size_bytes = temp_image_path.stat().st_size
@@ -1057,7 +1057,7 @@ async def _vision_analyze_native(
                 if temp_image_path.exists():
                     temp_image_path.unlink()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 async def vision_analyze_tool(
@@ -1166,7 +1166,7 @@ async def vision_analyze_tool(
                 try:
                     temp_image_path.unlink()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             temp_image_path = normalized_path
             should_cleanup = True
 
@@ -1238,7 +1238,7 @@ async def vision_analyze_tool(
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         call_kwargs = {
             "task": "vision",
             "messages": messages,
@@ -1504,7 +1504,7 @@ async def _handle_vision_analyze(args: Dict[str, Any], **kw: Any) -> str:
         if _vmodel:
             model = str(_vmodel).strip() or None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if not model:
         model = os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return await vision_analyze_tool(image_url, full_prompt, model, task_id=task_id)
@@ -1741,7 +1741,7 @@ async def video_analyze_tool(
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         call_kwargs = {
             "task": "vision",
@@ -1880,7 +1880,7 @@ def _handle_video_analyze(args: Dict[str, Any], **kw: Any) -> Awaitable[str]:
         if _vmodel:
             model = str(_vmodel).strip() or None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if not model:
         model = os.getenv("AUXILIARY_VIDEO_MODEL", "").strip() or os.getenv("AUXILIARY_VISION_MODEL", "").strip() or None
     return video_analyze_tool(video_url, full_prompt, model)

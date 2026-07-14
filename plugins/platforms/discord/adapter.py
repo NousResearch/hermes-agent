@@ -416,7 +416,7 @@ class VoiceReceiver:
         try:
             self._vc._connection.remove_socket_listener(self._on_packet)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         with self._lock:
             self._buffers.clear()
             self._last_packet_time.clear()
@@ -642,7 +642,7 @@ class VoiceReceiver:
                 logger.info("Auto-mapped ssrc=%d -> user=%d (sole allowed member)", ssrc, uid)
                 return uid
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return 0
 
     def check_silence(self) -> list:
@@ -712,7 +712,7 @@ class VoiceReceiver:
             try:
                 os.unlink(pcm_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:
@@ -1104,7 +1104,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     try:
                         await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
                     except asyncio.TimeoutError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
                 if adapter_self._dedup.is_duplicate(str(message.id)):
@@ -1285,7 +1285,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 await self._bot_task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._bot_task = None
 
     def _start_liveness_probe(self) -> None:
@@ -1371,7 +1371,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 await self._liveness_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._liveness_task = None
 
     async def cancel_background_tasks(self) -> None:
@@ -1430,7 +1430,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 if parsed > 0:
                     budget = parsed
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Stay strictly below the budget so the gateway's outer wait_for can't
         # pre-empt our own straggler cancellation. Reserve ~20% (min 0.5s) of
         # headroom, and never let the floor push us back up to/over the budget
@@ -1470,7 +1470,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 await self._post_connect_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         self._running = False
         self._client = None
@@ -1489,7 +1489,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             directory.mkdir(parents=True, exist_ok=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return directory / _DISCORD_COMMAND_SYNC_STATE_FILENAME
 
     def _read_command_sync_state(self) -> dict:
@@ -2584,7 +2584,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     try:
                         await aiohttp_session.close()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
     async def play_tts(
         self,
@@ -2842,7 +2842,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     try:
                         os.unlink(p)
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
     def voice_mixer_active(self, guild_id: int) -> bool:
         """True when a continuous mixer is installed for this guild."""
@@ -2913,7 +2913,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if vc.is_playing():
                         vc.stop()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 await vc.disconnect()
             task = self._voice_timeout_tasks.pop(guild_id, None)
             if task:
@@ -3040,21 +3040,21 @@ class DiscordAdapter(BasePlatformAdapter):
                 if _mode_getter(str(text_ch_id)) == "off":
                     return
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         await self.leave_voice_channel(guild_id)
         # Notify the runner so it can clean up voice_mode state
         if self._on_voice_disconnect and text_ch_id:
             try:
                 self._on_voice_disconnect(str(text_ch_id))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if text_ch_id and self._client:
             ch = self._client.get_channel(text_ch_id)
             if ch:
                 try:
                     await ch.send("Left voice channel (inactivity timeout).")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     def is_in_voice_channel(self, guild_id: int) -> bool:
         """Check if the bot is connected to a voice channel in this guild."""
@@ -3157,7 +3157,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         if vc and vc.is_connected():
                             vc._connection.send_packet(b'\xf8\xff\xfe')
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 completed = receiver.check_silence()
                 # Voice inputs always originate from a specific guild
@@ -3178,7 +3178,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     self._reset_voice_timeout(guild_id)
                     await self._process_voice_input(guild_id, user_id, pcm_data)
         except asyncio.CancelledError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception as e:
             logger.error("Voice listen loop error: %s", e, exc_info=True)
 
@@ -3215,7 +3215,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 os.unlink(wav_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _discord_channel_ids_allowed(self, channel_ids: set[str]) -> bool:
         """True when *channel_ids* intersect ``DISCORD_ALLOWED_CHANNELS``."""
@@ -3866,7 +3866,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         continue
                     await asyncio.sleep(12)
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             finally:
                 self._typing_tasks.pop(chat_id, None)
 
@@ -3880,7 +3880,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 await task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""
@@ -4033,7 +4033,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 getattr(interaction, "guild_id", None),
             )
         except Exception:
-            pass  # logging must never block command dispatch
+            logger.debug("Suppressed exception", exc_info=True)  # logging must never block command dispatch
 
         # Auth gate — must run before defer() so an ephemeral rejection can
         # be delivered on the still-unresponded interaction.
@@ -4264,7 +4264,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             config_overrides = _resolve_config_gates()
 
@@ -4289,7 +4289,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     # Silently skip commands that fail registration (e.g.
                     # name conflict with a subcommand group).
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             logger.debug(
                 "Discord auto-registered %d commands from COMMAND_REGISTRY",
@@ -4324,7 +4324,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 except Exception:
                     # Silently skip commands that fail registration (e.g.
                     # name conflict with a subcommand group).
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception as e:
             logger.warning(
                 "Discord auto-register from plugin commands failed: %s", e
@@ -4427,7 +4427,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 existing_names = {cmd.name for cmd in tree.get_commands()}
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # Populate the instance-level entries/lookup so the
             # autocomplete + handler callbacks below always read the
@@ -4985,7 +4985,7 @@ class DiscordAdapter(BasePlatformAdapter):
             try:
                 return int(configured)
             except (ValueError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         raw = os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT", "50")
         try:
             return int(raw)
@@ -5041,7 +5041,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if _cached_id and int(_cached_id) < int(before.id):
                 _after_obj = discord.Object(id=int(_cached_id))
         except (ValueError, TypeError):
-            pass  # Malformed cache entry — fall back to cold-start scan
+            logger.debug("Suppressed exception", exc_info=True)  # Malformed cache entry — fall back to cold-start scan
 
         is_thread_channel = isinstance(channel, discord.Thread)
         has_unverified = False
@@ -5356,7 +5356,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 try:
                     setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 return thread
             except Exception as direct_error:
                 last_direct_error = direct_error
@@ -5372,7 +5372,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     try:
                         setattr(thread, "_hermes_auto_thread_initial_name", thread_name)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     return thread
                 except Exception as fallback_error:
                     last_fallback_error = fallback_error
@@ -6452,7 +6452,7 @@ class DiscordAdapter(BasePlatformAdapter):
                                 else:
                                     pending_text_injection = injection
                             except UnicodeDecodeError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                         # NOTE: for the untyped-attachment path we deliberately
                         # do NOT inject a path string here. ``gateway/run.py``
                         # already detects DOCUMENT-typed events with
@@ -6683,7 +6683,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Only reached if cancel landed before the pop — the shielded
             # handle_message is unaffected either way.  Let the task exit
             # cleanly so the finally block cleans up.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -6772,7 +6772,7 @@ def _component_check_auth(
             if store.is_approved("discord", uid):
                 return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return False
 
@@ -6977,7 +6977,7 @@ def _define_discord_view_classes() -> None:
                         embed.set_footer(text="⏱ Prompt expired — no action taken")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
-                    pass  # message deleted or too old to edit
+                    logger.debug("Suppressed exception", exc_info=True)  # message deleted or too old to edit
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.
@@ -7092,7 +7092,7 @@ def _define_discord_view_classes() -> None:
                         embed.set_footer(text="⏱ Prompt expired — no action taken")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     class UpdatePromptView(discord.ui.View):
         """Interactive Yes/No buttons for ``hermes update`` prompts.
@@ -7188,7 +7188,7 @@ def _define_discord_view_classes() -> None:
                         embed.set_footer(text="⏱ Prompt expired — no action taken")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     class ModelPickerView(discord.ui.View):
         """Interactive select-menu view for model switching.
@@ -7517,7 +7517,7 @@ def _define_discord_view_classes() -> None:
                     )
                     await msg.edit(embed=embed, view=self)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
 
     class ClarifyChoiceView(discord.ui.View):
@@ -7660,7 +7660,7 @@ def _define_discord_view_classes() -> None:
                 try:
                     await interaction.response.defer()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # Resolve via the gateway clarify primitive — same mechanism as
             # Telegram. Look up the canonical choice text from the entry so
@@ -7737,7 +7737,7 @@ def _define_discord_view_classes() -> None:
                 try:
                     await interaction.response.defer()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         async def on_timeout(self):
             self.resolved = True
@@ -7753,7 +7753,7 @@ def _define_discord_view_classes() -> None:
                         embed.set_footer(text="⏱ Prompt expired — no action taken")
                     await msg.edit(embed=embed, view=self)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 
@@ -7945,7 +7945,7 @@ async def _standalone_send(
                 from gateway.channel_directory import lookup_channel_type
                 _channel_type = lookup_channel_type("discord", chat_id)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             if _channel_type == "forum":
                 is_forum = True

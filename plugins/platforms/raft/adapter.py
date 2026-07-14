@@ -496,7 +496,7 @@ class RaftAdapter(BasePlatformAdapter):
                 )
                 return False
             except (ConnectionRefusedError, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()

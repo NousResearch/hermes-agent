@@ -9,6 +9,10 @@ back into the minimal shape Hermes expects from an OpenAI client.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import queue
 import re
@@ -91,7 +95,7 @@ def _resolve_home_dir() -> str:
         if resolved:
             return resolved
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Last resort: /tmp (writable on any POSIX system). Avoids crashing the
     # subprocess with no HOME; callers can set HERMES_HOME explicitly if they
@@ -435,7 +439,7 @@ class CopilotACPClient:
             try:
                 proc.kill()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _create_chat_completion(
         self,

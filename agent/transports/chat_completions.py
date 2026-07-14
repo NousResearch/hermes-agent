@@ -9,6 +9,10 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any, Dict
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -684,7 +688,7 @@ class ChatCompletionsTransport(ProviderTransport):
                         try:
                             extra = extra.model_dump()
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     tc_provider_data["extra_content"] = extra
                 tool_calls.append(
                     ToolCall(

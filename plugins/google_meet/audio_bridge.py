@@ -20,6 +20,10 @@ Windows: not supported in v2.
 from __future__ import annotations
 
 import platform
+
+import logging
+logger = logging.getLogger(__name__)
+
 import subprocess
 from typing import Optional
 
@@ -90,7 +94,7 @@ class AudioBridge:
                     )
                 except Exception:
                     # Best-effort teardown — never raise from here.
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             self._module_ids = []
         self._torn_down = True
 

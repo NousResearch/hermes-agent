@@ -308,7 +308,7 @@ class MattermostAdapter(BasePlatformAdapter):
             try:
                 await self._ws_task
             except (asyncio.CancelledError, Exception):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()

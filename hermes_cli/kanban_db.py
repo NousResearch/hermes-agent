@@ -434,7 +434,7 @@ def get_current_board() -> str:
             if normed and board_exists(normed):
                 return normed
         except ValueError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
@@ -443,7 +443,7 @@ def get_current_board() -> str:
             if normed and board_exists(normed):
                 return normed
         except ValueError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     try:
         f = current_board_path()
         if f.exists():
@@ -454,9 +454,9 @@ def get_current_board() -> str:
                     if normed and board_exists(normed):
                         return normed
                 except ValueError:
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
     except OSError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     return DEFAULT_BOARD
 
 
@@ -482,7 +482,7 @@ def clear_current_board() -> None:
     try:
         current_board_path().unlink()
     except FileNotFoundError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 def board_dir(board: Optional[str] = None) -> Path:
@@ -661,7 +661,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 raw["slug"] = slug
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -1492,7 +1492,7 @@ def _dispatch_tick_lock(db_path: Path):
 
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             except (OSError, AttributeError):
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             finally:
                 handle.close()
 
@@ -1617,7 +1617,7 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
         try:
             shutil.copy2(sidecar, sidecar_backup)
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     return candidate
 
 
@@ -1817,7 +1817,7 @@ def connect_closing(
         try:
             conn.close()
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
 
 def init_db(
@@ -2229,7 +2229,7 @@ def _rebuild_drifted_tables(conn: sqlite3.Connection) -> None:
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -2269,7 +2269,7 @@ def _check_file_length_invariant(conn: sqlite3.Connection) -> None:
     except sqlite3.DatabaseError:
         raise
     except Exception:
-        pass  # I/O errors during check are non-fatal; let normal ops continue
+        _log.debug("Suppressed exception", exc_info=True)  # I/O errors during check are non-fatal; let normal ops continue
 
 
 # SQLite's own busy_timeout uses a near-deterministic backoff, so concurrent
@@ -2326,7 +2326,7 @@ def write_txn(conn: sqlite3.Connection):
             # SQLite has already auto-rolled-back the transaction (typical
             # under EIO, lock contention, or corruption). Nothing to undo;
             # do not let this secondary failure shadow the real one.
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         raise
     else:
         try:
@@ -2337,7 +2337,7 @@ def write_txn(conn: sqlite3.Connection):
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.OperationalError:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             raise
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
@@ -3070,7 +3070,7 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
         if p.is_file():
             p.unlink()
     except OSError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     return att
 
 
@@ -4279,11 +4279,11 @@ def _persist_scratch_completion_artifacts(
             try:
                 copied.unlink(missing_ok=True)
             except OSError:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
         try:
             attachment_dir.rmdir()
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     for item in raw_artifacts:
         artifact = str(item).strip() if isinstance(item, str) else ""
@@ -4332,7 +4332,7 @@ def _persist_scratch_completion_artifacts(
                 try:
                     dest.unlink(missing_ok=True)
                 except OSError:
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
             _discard_copies()
             if isinstance(exc, ArtifactPreservationError):
                 raise
@@ -4404,7 +4404,7 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
         try:
             roots.append((Path(override).expanduser().resolve(strict=False), None))
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     try:
         home = kanban_home()
     except OSError:
@@ -4413,7 +4413,7 @@ def _managed_scratch_path_info(p: Path) -> tuple[bool, Optional[str]]:
         try:
             roots.append(((home / "kanban" / "workspaces").resolve(strict=False), DEFAULT_BOARD))
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         try:
             boards_parent = (home / "kanban" / "boards").resolve(strict=False)
         except OSError:
@@ -4539,7 +4539,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         # proceed (#33774).
         _try_cleanup_parent_workspaces(conn, task_id)
     except Exception:
-        pass  # best-effort — never block completion
+        _log.debug("Suppressed exception", exc_info=True)  # best-effort — never block completion
 
 
 def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4579,7 +4579,7 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 shutil.rmtree(wp, ignore_errors=True)
                 _log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
-        pass  # best-effort
+        _log.debug("Suppressed exception", exc_info=True)  # best-effort
 
 
 def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
@@ -4605,7 +4605,7 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
             )
             _log.debug("Killed stale tmux session: %s", session)
     except Exception:
-        pass  # best-effort — never block completion
+        _log.debug("Suppressed exception", exc_info=True)  # best-effort — never block completion
 
 
 # ---------------------------------------------------------------------------
@@ -4663,7 +4663,7 @@ def _mark_scratch_tip_shown() -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch(exist_ok=True)
     except OSError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 def _maybe_emit_scratch_tip(
@@ -4690,7 +4690,7 @@ def _maybe_emit_scratch_tip(
             )
     except Exception:
         # Best-effort — never block the spawn loop over a help message.
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     finally:
         _mark_scratch_tip_shown()
 
@@ -6045,7 +6045,7 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     return ("unknown", None)
 
 
@@ -6068,7 +6068,7 @@ def reap_worker_zombies() -> "list[int]":
                 _record_worker_exit(pid, status)
                 reaped.append(pid)
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     return reaped
 
 
@@ -6115,7 +6115,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
             # proc entry gone → already reaped; treat as dead.
             # PermissionError shouldn't happen for our own children but
             # be defensive.
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     elif sys.platform == "darwin":
         try:
             proc = subprocess.run(
@@ -6132,7 +6132,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
                 return False
         except (OSError, subprocess.SubprocessError, TimeoutError):
             # If the secondary probe fails, keep the kill(0) answer.
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     return True
 
 
@@ -6362,7 +6362,7 @@ def enforce_max_runtime(
             try:
                 kill(pid, signal.SIGTERM)
             except (ProcessLookupError, OSError):
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             # Short polling wait — no time.sleep on the write txn.
             for _ in range(10):
                 if not _pid_alive(pid):
@@ -6375,7 +6375,7 @@ def enforce_max_runtime(
                     kill(pid, _sigkill)
                     killed = True
                 except (ProcessLookupError, OSError):
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
 
         with write_txn(conn):
             cur = conn.execute(
@@ -7707,7 +7707,7 @@ def _rotate_worker_log(
             if oldest.exists():
                 oldest.unlink()
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         for generation in range(backup_count - 1, 0, -1):
             src = _rotated_log_path(log_path, generation)
             if not src.exists():
@@ -7715,10 +7715,10 @@ def _rotate_worker_log(
             try:
                 src.rename(_rotated_log_path(log_path, generation + 1))
             except OSError:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
         log_path.rename(_rotated_log_path(log_path, 1))
     except OSError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 def _module_hermes_argv() -> list[str]:
@@ -7947,7 +7947,7 @@ def _default_spawn(
         # _apply_profile_override() via HERMES_PROFILE (set below).
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -8127,7 +8127,7 @@ def run_daemon(
                 try:
                     signal.signal(sig, _handle)
                 except (ValueError, OSError):
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
 
     while not stop_event.is_set():
         try:
@@ -8141,7 +8141,7 @@ def run_daemon(
                 try:
                     on_tick(res)
                 except Exception:
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
         except Exception:
             # Don't let any single tick kill the daemon.
             import traceback
@@ -8278,7 +8278,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                     meta_str = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
                     lines.append(f"_metadata_: `{_cap(meta_str)}`")
                 except Exception:
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
             lines.append("")
 
     # Parents: prefer the most-recent 'completed' run's summary + metadata,
@@ -8334,7 +8334,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                     meta_str = json.dumps(run.metadata, ensure_ascii=False, sort_keys=True)
                     body_lines.append(f"_metadata_: `{_cap(meta_str)}`")
                 except Exception:
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
             lines.extend(body_lines)
             lines.append("")
 
@@ -8459,7 +8459,7 @@ def _to_epoch(val) -> Optional[int]:
     try:
         return int(s)
     except ValueError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
         from datetime import datetime
@@ -8827,7 +8827,7 @@ def list_profiles_on_disk() -> list[str]:
                 if (entry / "config.yaml").is_file():
                     names.add(entry.name)
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     return sorted(names)
 

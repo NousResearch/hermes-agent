@@ -328,7 +328,7 @@ class SessionManager:
                 try:
                     session_cwd = json.loads(mc).get("cwd", ".")
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if normalized_cwd and _normalize_cwd_for_compare(session_cwd) != normalized_cwd:
                 continue
             results.append({
@@ -530,7 +530,7 @@ class SessionManager:
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
             except (json.JSONDecodeError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         model = row.get("model") or None
 

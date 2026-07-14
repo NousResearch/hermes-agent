@@ -822,7 +822,7 @@ async def _submit_xai_video_payload(
             try:
                 detail = exc.response.text[:500]
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return error_response(
                 error=f"xAI submit failed ({exc.response.status_code}): {detail or exc}",
                 error_type="api_error",

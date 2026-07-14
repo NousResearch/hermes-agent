@@ -36,6 +36,10 @@ needs to replace the import + call site:
     platform = get_session_env("HERMES_SESSION_PLATFORM", "")
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from contextvars import ContextVar
 from typing import Any
 
@@ -210,7 +214,7 @@ def set_session_vars(
 
         set_session_cwd(cwd)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return tokens
 
 
@@ -250,7 +254,7 @@ def clear_session_vars(tokens: list) -> None:
 
         clear_session_cwd()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def reset_session_vars() -> None:
@@ -298,7 +302,7 @@ def reset_session_vars() -> None:
 
         clear_session_cwd()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def get_session_env(name: str, default: str = "") -> str:

@@ -236,7 +236,7 @@ def _format_prefetch_context(static_facts: list, dynamic_facts: list, search_res
                 try:
                     prefix_bits.append(f"[{round(float(similarity) * 100)}%]")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             prefix = " ".join(prefix_bits)
             lines.append(f"- {prefix} {memory}".strip())
         if lines:
@@ -273,9 +273,9 @@ class _SupermemoryClient:
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("memory.supermemory", prompt=False)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         from supermemory import Supermemory
 
@@ -946,7 +946,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     try:
                         entry["similarity"] = round(float(item["similarity"]) * 100)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 formatted.append(entry)
             resp: dict[str, Any] = {"results": formatted, "count": len(formatted)}
             if tag:

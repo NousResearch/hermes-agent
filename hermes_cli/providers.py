@@ -774,6 +774,6 @@ def resolve_provider_full(
                 source="models.dev",
             )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None

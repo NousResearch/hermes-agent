@@ -10,6 +10,10 @@ Key quirks for the chat_completions subset:
   - GitHub Models reasoning extra_body (model-catalog gated)
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any
 
 from providers import register_provider
@@ -43,7 +47,7 @@ class CopilotProfile(ProviderProfile):
                 elif supported_efforts:
                     extra_body["reasoning"] = {"effort": "medium"}
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return extra_body, {}
 
 

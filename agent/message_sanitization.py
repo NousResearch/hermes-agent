@@ -218,7 +218,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             )
         return reserialised
     except (json.JSONDecodeError, TypeError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Attempt common JSON repairs
     fixed = raw_stripped
@@ -252,7 +252,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         )
         return fixed
     except json.JSONDecodeError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Repair pass 4: escape unescaped control chars inside JSON strings,
     # then retry. Catches cases where strict=False alone fails because
@@ -267,7 +267,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
             )
             return escaped
     except (json.JSONDecodeError, TypeError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Last resort: replace with empty object so the API request doesn't
     # crash the entire session.

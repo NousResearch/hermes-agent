@@ -17,6 +17,10 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import queue
 import subprocess
@@ -186,7 +190,7 @@ class CodexAppServerClient:
             if self._proc.stdin and not self._proc.stdin.closed:
                 self._proc.stdin.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             self._proc.terminate()
             self._proc.wait(timeout=timeout)
@@ -195,7 +199,7 @@ class CodexAppServerClient:
                 self._proc.kill()
                 self._proc.wait(timeout=1.0)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def __enter__(self) -> "CodexAppServerClient":
         return self
@@ -340,7 +344,7 @@ class CodexAppServerClient:
                 try:
                     pending.queue.put_nowait(msg)
                 except queue.Full:  # pragma: no cover - defensive
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             return
         # Server-initiated request (has id + method)
         if "id" in msg and "method" in msg:
@@ -365,7 +369,7 @@ class CodexAppServerClient:
                     if len(self._stderr_lines) > 500:
                         self._stderr_lines = self._stderr_lines[-500:]
         except Exception:  # pragma: no cover
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def parse_codex_version(output: str) -> Optional[tuple[int, int, int]]:

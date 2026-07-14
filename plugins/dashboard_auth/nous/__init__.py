@@ -471,7 +471,7 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
                     f"aud={self._client_id!r}]"
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise ProviderError(
                 f"access token verification failed: {exc}{details}"
             ) from exc

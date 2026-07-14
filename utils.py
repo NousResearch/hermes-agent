@@ -68,7 +68,7 @@ def _restore_file_owner(path: Path, owner: "tuple[int, int] | None") -> None:
     try:
         os.chown(path, owner[0], owner[1])
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _restore_file_mode(path: Path, mode: "int | None") -> None:
@@ -85,7 +85,7 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
     try:
         os.chmod(path, mode)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
@@ -126,12 +126,12 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
         try:
             shutil.copystat(tmp_str, real_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             with open(real_path, "rb") as f:
                 os.fsync(f.fileno())
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         os.unlink(tmp_str)
     return real_path
 
@@ -195,7 +195,7 @@ def atomic_json_write(
             try:
                 os.chmod(real_path_obj, mode)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             _restore_file_mode(real_path_obj, original_mode)
     except BaseException:
@@ -204,7 +204,7 @@ def atomic_json_write(
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -289,7 +289,7 @@ def atomic_yaml_write(
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 
@@ -356,7 +356,7 @@ def atomic_roundtrip_yaml_update(
         try:
             os.unlink(tmp_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         raise
 
 

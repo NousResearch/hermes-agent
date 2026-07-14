@@ -69,12 +69,12 @@ def _resolve_timezone_name() -> str:
                 from hermes_cli import managed_scope
                 cfg = managed_scope.apply_managed_overlay(cfg)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
                 return tz_cfg.strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return ""
 

@@ -129,7 +129,7 @@ def _safe_close(response: httpx.Response) -> None:
     try:
         response.close()
     except Exception:  # noqa: BLE001
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def read_error_body_or_default(

@@ -4,6 +4,10 @@ Status command for hermes CLI.
 Shows the status of all Hermes Agent components.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
@@ -92,7 +96,7 @@ def _effective_provider_label() -> str:
             if isinstance(model_cfg, dict):
                 config_base_url = (model_cfg.get("base_url") or "").strip()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if config_base_url or get_env_value("OPENAI_BASE_URL"):
             effective = "custom"
 
@@ -481,7 +485,7 @@ def show_status(args):
             label = entry.label
             print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # =========================================================================
     # Gateway Status
@@ -613,7 +617,7 @@ def show_status(args):
             # This is informational, not necessarily bad
             print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     print()
     print(color("─" * 60, Colors.DIM))

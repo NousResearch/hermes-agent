@@ -56,7 +56,7 @@ def _ensure_parallel_sdk_installed() -> None:
 
         _lazy_ensure("search.parallel", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as exc:  # noqa: BLE001 — surface install hint as ImportError
         raise ImportError(str(exc)) from exc
 

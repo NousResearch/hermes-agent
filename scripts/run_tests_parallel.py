@@ -40,6 +40,10 @@ Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import subprocess
@@ -201,7 +205,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
                 timeout=10,
             )  # windows-footgun: ok
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     else:
         # POSIX: kill the captured pgid. Local-import signal so the
         # SIGKILL attribute is never referenced on Windows.
@@ -210,13 +214,13 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
                 import signal as _signal
                 os.killpg(pgid, _signal.SIGKILL)  # windows-footgun: ok
             except (ProcessLookupError, PermissionError, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # Belt-and-suspenders: ensure subprocess.communicate() sees the exit.
     try:
         proc.kill()
     except (ProcessLookupError, OSError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _run_one_file(
@@ -432,7 +436,7 @@ def _print_progress(
         if len(msg) > cols:
             msg = msg[: cols - 1] + "…"
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     print(msg, flush=True)
 
 

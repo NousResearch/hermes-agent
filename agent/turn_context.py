@@ -162,7 +162,7 @@ def build_turn_context(
             api_mode=getattr(agent, "api_mode", "") or "",
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Tag log records on this thread with the session ID for ``hermes logs``.
     set_session_context(agent.session_id)
@@ -248,7 +248,7 @@ def build_turn_context(
                     "connection."
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Replay compression warning through status_callback for gateway platforms.
     if agent._compression_warning:
         agent._replay_compression_warning()
@@ -331,7 +331,7 @@ def build_turn_context(
             if kind:
                 reaction_callback(kind)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)
@@ -553,7 +553,7 @@ def build_turn_context(
             _turn_msg = original_user_message if isinstance(original_user_message, str) else ""
             agent._memory_manager.on_turn_start(agent._user_turn_count, _turn_msg)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # External memory provider: prefetch once before the tool loop.
     ext_prefetch_cache = ""
@@ -562,7 +562,7 @@ def build_turn_context(
             _query = original_user_message if isinstance(original_user_message, str) else ""
             ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return TurnContext(
         user_message=user_message,

@@ -519,7 +519,7 @@ def _handle_send(args):
                 ):
                     result["mirrored"] = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
@@ -828,7 +828,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             if entry and entry.max_message_length > 0:
                 _MAX_LENGTHS[platform] = entry.max_message_length
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -1384,7 +1384,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                     from plugins.platforms.telegram.adapter import _strip_mdv2
                                     media_kwargs["caption"] = _strip_mdv2(media_kwargs["caption"])
                                 except Exception:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                             if ext in _IMAGE_EXTS and not force_document:
                                 last_msg = await bot.send_photo(
                                     chat_id=int_chat_id, photo=f, **media_kwargs
@@ -1719,7 +1719,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         try:
             await adapter.disconnect()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):

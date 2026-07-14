@@ -661,7 +661,7 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     try:
         root_span.set_trace_io(input=trace_input)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     _debug(f"started trace {trace_id} for {task_key}")
     return TraceState(trace_id=trace_id, root_ctx=root_ctx, root_span=root_span)
@@ -763,7 +763,7 @@ def _finish_trace(task_key: str, *, output: Any = None) -> None:
         try:
             client.flush()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _assistant_has_tool_calls(message: Any) -> bool:
@@ -1015,7 +1015,7 @@ def on_post_llm_call(*, task_id: str = "", session_id: str = "", provider: str =
                 if _cost.amount_usd is not None:
                     cost_details["total"] = float(_cost.amount_usd)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     else:
         usage_details, cost_details = {}, {}
 

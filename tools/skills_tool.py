@@ -131,7 +131,7 @@ def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
                     except OSError:
                         continue
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         sig.append((str(d), m))
     return (tuple(sig), frozenset(disabled), platform)
 
@@ -573,7 +573,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     for skills_dir in dirs_to_check:
         try:
             rel_path = skill_path.relative_to(skills_dir)
@@ -889,7 +889,7 @@ def _serve_plugin_skill(
     try:
         parsed_frontmatter, _ = _parse_frontmatter(content)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not skill_matches_platform(parsed_frontmatter):
         return json.dumps(
@@ -1237,7 +1237,7 @@ def skill_view(
         try:
             _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         for _td in _trusted_dirs:
             try:
                 skill_md.resolve().relative_to(_td)
@@ -1746,7 +1746,7 @@ def _skill_view_with_bump(args, **kw):
                 # Curator's stale timer keys off last_used_at (see agent/curator.py).
                 bump_use(str(resolved))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return result
 
 

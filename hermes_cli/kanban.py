@@ -15,6 +15,10 @@ Exposes the full Kanban command surface documented in the design spec
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import contextlib
 import json
 import os
@@ -1222,7 +1226,7 @@ def _parse_duration(val) -> Optional[int]:
     try:
         return int(s)
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Suffixed form.
     units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
     if s and s[-1] in units:
@@ -2357,7 +2361,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             try:
                 Path(pidfile).unlink()
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     print("(dispatcher stopped)")
     return 0
 
@@ -2834,7 +2838,7 @@ def run_slash(rest: str) -> str:
         try:
             kanban_command(args)
         except SystemExit:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
 

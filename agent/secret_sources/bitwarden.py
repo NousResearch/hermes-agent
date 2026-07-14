@@ -191,7 +191,7 @@ def _platform_asset_name() -> str:
             if "musl" in (res.stdout + res.stderr).lower():
                 libc = "musl"
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return f"bws-{arch}-unknown-linux-{libc}-{_BWS_VERSION}.zip"
 
     raise RuntimeError(

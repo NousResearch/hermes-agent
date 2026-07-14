@@ -7,6 +7,10 @@ resolution).  Import ``PLATFORMS`` from here instead of maintaining
 duplicate dicts in each module.
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from collections import OrderedDict
 from typing import NamedTuple
 
@@ -60,7 +64,7 @@ def platform_label(key: str, default: str = "") -> str:
         if entry:
             return f"{entry.emoji}  {entry.label}" if entry.emoji else entry.label
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return default
 
 
@@ -80,5 +84,5 @@ def get_all_platforms() -> "OrderedDict[str, PlatformInfo]":
                     default_toolset=f"hermes-{entry.name}",
                 )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return merged

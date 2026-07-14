@@ -25,6 +25,10 @@ actually host a node.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import secrets
 import time
 from pathlib import Path
@@ -68,7 +72,7 @@ class NodeServer:
                     self._token = tok
                     return tok
             except (OSError, json.JSONDecodeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         tok = secrets.token_hex(16)  # 32 hex chars
         self.token_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.token_path.with_suffix(".json.tmp")
@@ -82,7 +86,7 @@ class NodeServer:
             tmp.chmod(0o600)
         except (OSError, NotImplementedError):
             # Best-effort on non-POSIX filesystems; mode is set on POSIX.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         tmp.replace(self.token_path)
         self._token = tok
         return tok

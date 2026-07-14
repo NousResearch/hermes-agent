@@ -12,6 +12,10 @@ Wires ``hermes meet <subcommand>``:
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import sys
 from pathlib import Path
@@ -296,7 +300,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
                 out = _sp.check_output(["system_profiler", "SPAudioDataType"], text=True)
                 have_bh = "BlackHole" in out
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             have_ffmpeg = bool(_shutil.which("ffmpeg"))
             needs = []
             if not have_bh:
@@ -357,7 +361,7 @@ def _cmd_auth() -> int:
             try:
                 input("press Enter after you've signed in ... ")
             except EOFError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             context.storage_state(path=str(path))
             browser.close()
     except Exception as e:

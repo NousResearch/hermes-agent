@@ -80,4 +80,4 @@ def install_loop_noise_filter(loop: asyncio.AbstractEventLoop) -> None:
     try:
         loop._hermes_noise_filter_installed = True  # type: ignore[attr-defined]
     except (AttributeError, TypeError):  # pragma: no cover - exotic loop impls
-        pass
+        _log.debug("Suppressed exception", exc_info=True)

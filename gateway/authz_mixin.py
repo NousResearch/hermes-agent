@@ -18,6 +18,10 @@ import time -> no import cycle. The lazy import preserves the exact logger name
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Optional
 
 from gateway.config import Platform
@@ -421,7 +425,7 @@ class GatewayAuthorizationMixin:
                     if entry.allow_all_env:
                         platform_allow_all_map[source.platform] = entry.allow_all_env
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")

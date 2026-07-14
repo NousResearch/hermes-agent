@@ -1553,7 +1553,7 @@ def run_curator_review(
                 try:
                     on_summary(f"curator: snapshot created ({snap.name})")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception as e:
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
         counts = apply_automatic_transitions(now=start)
@@ -1633,7 +1633,7 @@ def run_curator_review(
                 try:
                     on_summary(f"curator: {final_summary}")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             return
 
         llm_meta: Dict[str, Any] = {}
@@ -1740,7 +1740,7 @@ def run_curator_review(
             try:
                 on_summary(f"curator: {final_summary}")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     if synchronous:
         _llm_pass()
@@ -1987,7 +1987,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             try:
                 review_agent.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return result_meta
 
 

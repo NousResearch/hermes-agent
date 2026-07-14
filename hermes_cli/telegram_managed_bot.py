@@ -8,6 +8,10 @@ service; the raw Telegram token is saved locally after one-time retrieval.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import re
 import secrets
 import sys
@@ -260,7 +264,7 @@ def poll_for_setup_result(
             if result:
                 return result
         except (httpx.HTTPError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         time.sleep(interval)
     return None
 
@@ -332,7 +336,7 @@ def auto_setup_telegram_bot_result(
                 sys.stdout.flush()
                 return result
         except (httpx.HTTPError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         time.sleep(POLL_INTERVAL)
 
     sys.stdout.write("\r  ✗ Timed out waiting for bot creation.                    \n")

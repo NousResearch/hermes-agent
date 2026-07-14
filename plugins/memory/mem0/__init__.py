@@ -104,7 +104,7 @@ def _load_config() -> dict:
             config.update({k: v for k, v in file_cfg.items()
                            if v is not None and v != ""})
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return config
 
@@ -242,7 +242,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 existing = json.loads(config_path.read_text())
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         existing.update(values)
         from utils import atomic_json_write
         atomic_json_write(config_path, existing, mode=0o600)
@@ -273,9 +273,9 @@ class Mem0MemoryProvider(MemoryProvider):
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("memory.mem0", prompt=False)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             if self._mode == "oss":
                 from ._backend import OSSBackend
@@ -613,7 +613,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._backend.close()
                 self._backend = None
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

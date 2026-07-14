@@ -86,7 +86,7 @@ def _ensure_modal_sdk() -> None:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("terminal.modal", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as e:
         raise ImportError(str(e)) from e
 
@@ -471,7 +471,7 @@ class ModalEnvironment(BaseEnvironment):
         try:
             self._worker.run_coroutine(self._sandbox.terminate.aio(), timeout=15)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         finally:
             self._worker.stop()
             self._sandbox = None

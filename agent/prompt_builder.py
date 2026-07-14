@@ -1100,7 +1100,7 @@ def build_environment_hints() -> str:
         try:
             host_lines.append(f"Current working directory: {resolve_agent_cwd()}")
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if sys.platform == "win32" and not is_wsl():
             host_lines.append(
@@ -1861,7 +1861,7 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         try:
             rel = str(hermes_md_path.relative_to(cwd_path))
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         content = _scan_context_content(content, rel)
         result = f"## {rel}\n\n{content}"
         return _truncate_content(

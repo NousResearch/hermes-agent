@@ -1465,7 +1465,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         modal_state = _get_modal_backend_state(cc.get("modal_mode"))
 
@@ -1551,7 +1551,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             if process_registry.has_active_processes(task_id):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Phase 1: collect stale entries and remove them from tracking dicts while
     # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
@@ -1581,7 +1581,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
             from tools.file_tools import clear_file_ops_cache
             clear_file_ops_cache(task_id)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             if hasattr(env, 'cleanup'):
@@ -1635,7 +1635,7 @@ def _stop_cleanup_thread():
         try:
             _cleanup_thread.join(timeout=5)
         except (SystemExit, KeyboardInterrupt):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def get_active_env(task_id: str):
@@ -1729,7 +1729,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         from tools.file_tools import clear_file_ops_cache
         clear_file_ops_cache(task_id)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if env is None:
         return
@@ -2357,7 +2357,7 @@ def terminal_tool(
         try:
             env.cwd_owner = session_key
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if background:
             # Spawn a tracked background process via the process registry.
@@ -2703,7 +2703,7 @@ def terminal_tool(
                         output = hook_result
                         break
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             
             # Truncate output if too long, keeping both head and tail
             from tools.tool_output_limits import get_max_bytes

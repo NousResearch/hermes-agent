@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
 from collections import defaultdict
 from pathlib import Path
 import tempfile
@@ -22,7 +24,7 @@ def _source_tree_is_writable() -> bool:
         try:
             probe.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return False
     return True
 

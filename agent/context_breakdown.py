@@ -9,6 +9,10 @@ with compression thresholds — not exact tokenizer counts.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -74,7 +78,7 @@ def _memory_blocks(agent: Any) -> Tuple[str, str]:
         if getattr(agent, "_user_profile_enabled", True):
             user_block = store.format_for_system_prompt("user") or ""
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return memory_block, user_block
 
 

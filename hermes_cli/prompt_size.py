@@ -14,6 +14,10 @@ calls ``build_system_prompt_parts`` / inspects ``agent.tools`` offline.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -93,7 +97,7 @@ def compute_prompt_breakdown(platform: str = "cli") -> Dict[str, Any]:
             if getattr(agent, "_user_profile_enabled", True):
                 user_block = store.format_for_system_prompt("user") or ""
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Tool-schema JSON — the other half of the fixed per-call payload.
     tools = getattr(agent, "tools", None) or []

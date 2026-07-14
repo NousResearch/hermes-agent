@@ -583,7 +583,7 @@ def classify_api_error(
                             if isinstance(_inner_err, dict):
                                 _metadata_msg = str(_inner_err.get("message") or "").lower()
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         if not _body_msg:
             _body_msg = str(body.get("message") or "").lower()
     # Combine all message sources for pattern matching
@@ -1479,7 +1479,7 @@ def _extract_error_body(error: Exception) -> dict:
                 if isinstance(json_body, dict):
                     return json_body
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         cause = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if cause is None or cause is current:
             break

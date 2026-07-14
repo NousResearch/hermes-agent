@@ -19,6 +19,10 @@ attribute lookup per write.
 from __future__ import annotations
 
 import contextlib
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import sys
 import threading
@@ -144,4 +148,4 @@ def thread_scoped_silence() -> Iterator[None]:
         try:
             sink.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)

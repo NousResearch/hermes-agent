@@ -113,7 +113,7 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
                 if tok.startswith(("/", "~")):
                     paths.add(tok)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
     if isinstance(result, str) and len(result) < 4096:
         for match in _TERMINAL_PATH_REGEX.findall(result):

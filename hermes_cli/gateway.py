@@ -133,9 +133,9 @@ def _get_service_pids() -> set:
                         if pid > 0:
                             pids.add(pid)
                     except (ValueError, subprocess.TimeoutExpired):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # --- launchd (macOS) ---
     if is_macos():
@@ -163,9 +163,9 @@ def _get_service_pids() -> set:
                                 if pid > 0:
                                     pids.add(pid)
                             except ValueError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return pids
 
@@ -186,7 +186,7 @@ def _get_parent_pid(pid: int) -> int | None:
 
         return psutil.Process(pid).ppid() or None
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception:
         return None
     # Fallback: shell out to ps (POSIX only).  Git Bash installs ``ps.exe`` on
@@ -467,7 +467,7 @@ def _scan_gateway_pids(
                         try:
                             _append_unique_pid(pids, int(pid_str), exclude_pids)
                         except ValueError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     current_cmd = ""
         else:
             # Try /proc first (works in Docker without procps installed),
@@ -494,7 +494,7 @@ def _scan_gateway_pids(
                             continue
                     _found_via_proc = True
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             if not _found_via_proc:
                 result = subprocess.run(
@@ -605,7 +605,7 @@ def find_gateway_pids(
 
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     for pid in _get_service_pids():
         _append_unique_pid(pids, pid, _exclude)
     try:
@@ -691,7 +691,7 @@ def _capture_gateway_argv(pid: int) -> list[str] | None:
         if not looks_like_gateway_command_line(" ".join(argv)):
             return None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return argv
 
 
@@ -1320,7 +1320,7 @@ def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot
                     service_scope="s6",
                 )
         except Exception:
-            pass  # Fall through to the legacy label on any detection error.
+            logger.debug("Suppressed exception", exc_info=True)  # Fall through to the legacy label on any detection error.
         return GatewayRuntimeSnapshot(
             manager="docker (foreground)",
             gateway_pids=gateway_pids,
@@ -1410,7 +1410,7 @@ def _print_other_profiles_gateway_status() -> None:
         for proc in other_processes:
             print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _gateway_list() -> None:
@@ -1448,7 +1448,7 @@ def _gateway_list() -> None:
                 if pid:
                     parts.append(f"PID {pid}")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             parts.append("not running")
         print(" — ".join(parts))
@@ -1475,7 +1475,7 @@ def kill_gateway_processes(
             killed += 1
         except ProcessLookupError:
             # Process already gone
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
 
@@ -1522,7 +1522,7 @@ def _reap_unsupervised_gateway_orphans() -> bool:
         try:
             write_planned_stop_marker(pid)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -1545,7 +1545,7 @@ def _reap_unsupervised_gateway_orphans() -> bool:
         try:
             os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return reaped
 
@@ -1578,12 +1578,12 @@ def stop_profile_gateway() -> bool:
 
         write_planned_stop_marker(pid)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        pass  # Already gone
+        logger.debug("Suppressed exception", exc_info=True)  # Already gone
     except PermissionError:
         print(f"⚠ Permission denied to kill PID {pid}")
         return False
@@ -1727,7 +1727,7 @@ def _profile_suffix() -> str:
         if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
             return parts[0]
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
@@ -1761,7 +1761,7 @@ def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None
         if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
             return f"--profile {parts[0]}"
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -2195,7 +2195,7 @@ def remove_legacy_hermes_units(
         try:
             _run_systemctl(["daemon-reload"], system=False, check=False, timeout=30)
         except RuntimeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # System-scope removal (needs root)
     if system_units:
@@ -2222,7 +2222,7 @@ def remove_legacy_hermes_units(
             try:
                 _run_systemctl(["daemon-reload"], system=True, check=False, timeout=30)
             except RuntimeError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     print()
     if remaining:
@@ -2680,7 +2680,7 @@ def _stable_service_working_dir() -> str:
         if home and Path(home).is_dir():
             return str(Path(home).resolve())
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return str(PROJECT_ROOT)
 
 
@@ -3270,7 +3270,7 @@ def systemd_stop(system: bool = False):
         if pid is not None:
             write_planned_stop_marker(pid)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         _run_systemctl(
             ["stop", get_service_name()], system=system, check=True, timeout=90
@@ -3555,7 +3555,7 @@ def _launchd_domain() -> str:
         _resolved_launchd_domain = gui_domain
         return gui_domain
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 2. Probe user/<uid> — in Background/SSH sessions this is the working domain.
     try:
@@ -3568,7 +3568,7 @@ def _launchd_domain() -> str:
         _resolved_launchd_domain = user_domain
         return user_domain
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 3. Neither domain has the service loaded — use managername as heuristic.
     #    Aqua → gui/<uid>, anything else (Background, loginwindow) → user/<uid>.
@@ -3583,7 +3583,7 @@ def _launchd_domain() -> str:
             _resolved_launchd_domain = gui_domain
             return gui_domain
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 4. Default to user/<uid> (matches the pre-probing behavior for
     #    Background/SSH sessions and is the recommended domain on macOS 26+).
@@ -3691,7 +3691,7 @@ def _append_launchd_reload_log(message: str) -> None:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(f"[{stamp}] {message}\n")
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _launchctl_label_registered(label: str) -> bool:
@@ -3781,7 +3781,7 @@ def _write_launchd_unsupported_marker() -> None:
             encoding="utf-8",
         )
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _clear_launchd_unsupported_marker() -> None:
@@ -3789,7 +3789,7 @@ def _clear_launchd_unsupported_marker() -> None:
     try:
         _launchd_unsupported_marker_path().unlink(missing_ok=True)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _launchd_unsupported_marker_exists() -> bool:
@@ -4043,7 +4043,7 @@ def refresh_launchd_plist_if_needed() -> bool:
         try:
             reload_log_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Retry until launchctl LISTS the label (not merely a zero bootstrap
         # exit) or the drain window elapses. The failure happens while the old
         # gateway is still draining (default agent.restart_drain_timeout=180s),
@@ -4245,7 +4245,7 @@ def launchd_stop():
         if pid is not None:
             write_planned_stop_marker(pid)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # bootout unloads the service definition so KeepAlive doesn't respawn
     # the process.  A plain `kill SIGTERM` only signals the process — launchd
     # immediately restarts it because KeepAlive is unconditionally true.
@@ -4741,7 +4741,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         except (OSError, ValueError):
             # SetConsoleCtrlHandler not available (rare on Windows) —
             # best-effort, proceed either way.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Python's signal module only hooks SIGINT/SIGBREAK. To also
         # absorb CTRL_CLOSE_EVENT / CTRL_LOGOFF_EVENT and any other
         # console control signals Windows may broadcast to the console
@@ -4761,7 +4761,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             # our disposition, once as our last word.
             kernel32.SetConsoleCtrlHandler(None, 1)
         except (OSError, AttributeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Refresh the systemd unit definition on every boot so that restart
     # settings (RestartSec, StartLimitIntervalSec, etc.) stay current even
@@ -4775,7 +4775,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
         try:
             refresh_systemd_unit_if_needed(system=False)
         except Exception:
-            pass  # best-effort; don't block gateway startup
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort; don't block gateway startup
 
     from gateway.run import start_gateway
 
@@ -4827,7 +4827,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
             with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
                 f.write(_json.dumps(line, default=str) + "\n")
         except Exception:
-            pass  # never let the diagnostic itself crash the gateway
+            logger.debug("Suppressed exception", exc_info=True)  # never let the diagnostic itself crash the gateway
 
     _exit_diag(
         "gateway.start",
@@ -5484,7 +5484,7 @@ def _is_service_running() -> bool:
                 if result.stdout.strip() == "active":
                     return True
             except (RuntimeError, subprocess.TimeoutExpired):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if system_unit_exists:
             try:
@@ -5498,7 +5498,7 @@ def _is_service_running() -> bool:
                 if result.stdout.strip() == "active":
                     return True
             except (RuntimeError, subprocess.TimeoutExpired):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         return False
     elif is_macos() and get_launchd_plist_path().exists():
@@ -6808,13 +6808,13 @@ def _gateway_command_inner(args):
                     systemd_stop(system=system)
                     service_available = True
                 except subprocess.CalledProcessError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif is_macos() and get_launchd_plist_path().exists():
                 try:
                     launchd_stop()
                     service_available = True
                 except subprocess.CalledProcessError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif is_windows():
                 from hermes_cli import gateway_windows
 
@@ -6823,7 +6823,7 @@ def _gateway_command_inner(args):
                         gateway_windows.stop()
                         service_available = True
                     except (subprocess.CalledProcessError, RuntimeError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
@@ -6841,13 +6841,13 @@ def _gateway_command_inner(args):
                     systemd_stop(system=system)
                     service_available = True
                 except subprocess.CalledProcessError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif is_macos() and get_launchd_plist_path().exists():
                 try:
                     launchd_stop()
                     service_available = True
                 except subprocess.CalledProcessError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif is_windows():
                 from hermes_cli import gateway_windows
 
@@ -6856,7 +6856,7 @@ def _gateway_command_inner(args):
                         gateway_windows.stop()
                         service_available = True
                     except (subprocess.CalledProcessError, RuntimeError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
             if not service_available:
                 # No systemd/launchd/schtasks service — use profile-scoped PID file
@@ -6905,13 +6905,13 @@ def _gateway_command_inner(args):
                     systemd_stop(system=system)
                     service_stopped = True
                 except subprocess.CalledProcessError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif is_macos() and get_launchd_plist_path().exists():
                 try:
                     launchd_stop()
                     service_stopped = True
                 except subprocess.CalledProcessError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif is_windows():
                 from hermes_cli import gateway_windows
 
@@ -6920,7 +6920,7 @@ def _gateway_command_inner(args):
                         gateway_windows.stop()
                         service_stopped = True
                     except (subprocess.CalledProcessError, RuntimeError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_stopped else 0)
             if total:
@@ -6959,14 +6959,14 @@ def _gateway_command_inner(args):
                 systemd_restart(system=system)
                 service_available = True
             except subprocess.CalledProcessError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         elif is_macos() and get_launchd_plist_path().exists():
             service_configured = True
             try:
                 launchd_restart()
                 service_available = True
             except subprocess.CalledProcessError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         elif is_windows():
             from hermes_cli import gateway_windows
 
@@ -6982,7 +6982,7 @@ def _gateway_command_inner(args):
                 gateway_windows.restart()
                 return
             except (subprocess.CalledProcessError, RuntimeError, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue

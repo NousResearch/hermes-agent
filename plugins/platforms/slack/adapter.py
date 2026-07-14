@@ -523,7 +523,7 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except Exception:  # pragma: no cover - defensive logging
                 logger.debug(
                     "[Slack] Socket Mode task failed while stopping", exc_info=True
@@ -885,7 +885,7 @@ class SlackAdapter(BasePlatformAdapter):
                     team_key or "this workspace",
                 )
         except Exception:  # pragma: no cover - diagnostics must never break connect
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _warn_if_not_bot_token(self, auth_response, team_name: str) -> None:
         """Warn when the configured token authenticates as a human, not a bot.
@@ -949,7 +949,7 @@ class SlackAdapter(BasePlatformAdapter):
                     user_id,
                 )
         except Exception:  # pragma: no cover - diagnostics must never break connect
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -1022,7 +1022,7 @@ class SlackAdapter(BasePlatformAdapter):
                 try:
                     await watchdog_task
                 except asyncio.CancelledError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 except Exception:  # pragma: no cover - defensive logging
                     logger.debug(
                         "[Slack] Prior watchdog task failed while stopping",
@@ -1223,7 +1223,7 @@ class SlackAdapter(BasePlatformAdapter):
                         try:
                             await ack()
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                 return _wrapped
 
             for _action_id, _cb, _plugin_name in _plugin_handlers:
@@ -1324,7 +1324,7 @@ class SlackAdapter(BasePlatformAdapter):
             try:
                 await watchdog_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except Exception:  # pragma: no cover - defensive logging
                 # Watchdog may have lost the cancellation race and exited with
                 # an unrelated exception. Log and continue so handler cleanup
@@ -1625,7 +1625,7 @@ class SlackAdapter(BasePlatformAdapter):
                     team_name,
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _resolve_thread_ts(
         self,
@@ -2643,7 +2643,7 @@ class SlackAdapter(BasePlatformAdapter):
                 ):
                     original_text = "/" + original_text[1:]
             except Exception:  # pragma: no cover - defensive
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         text = original_text
 
@@ -3126,7 +3126,7 @@ class SlackAdapter(BasePlatformAdapter):
                             else:
                                 text = injection
                         except UnicodeDecodeError:
-                            pass  # Binary content, skip injection
+                            logger.debug("Suppressed exception", exc_info=True)  # Binary content, skip injection
 
                 except Exception as e:  # pragma: no cover - defensive logging
                     detail = self._describe_slack_download_failure(e, file_obj=f)

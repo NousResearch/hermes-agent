@@ -29,8 +29,11 @@ shape with no mode parameter, no summary LLM path, and explicit scroll
 support.
 """
 
-import json
+
 import logging
+logger = logging.getLogger(__name__)
+
+import json
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -392,7 +395,7 @@ def _scroll(
                         try:
                             session_meta = db.get_session(owning) or session_meta
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         session_id = owning
                 except Exception as e:
                     logging.debug("rebind get_messages_around failed: %s", e, exc_info=True)

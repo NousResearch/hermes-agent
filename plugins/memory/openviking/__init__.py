@@ -204,7 +204,7 @@ def _atexit_commit_sessions():
     try:
         provider.on_session_end([])
     except Exception:
-        pass  # best-effort at shutdown time
+        logger.debug("Suppressed exception", exc_info=True)  # best-effort at shutdown time
 
 
 atexit.register(_atexit_commit_sessions)

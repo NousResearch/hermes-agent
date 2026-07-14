@@ -19,6 +19,10 @@ config yet, or a tool crashed).
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import sys
@@ -49,7 +53,7 @@ def _normalize_ruff(entries: list[dict]) -> list[dict]:
         try:
             filename = os.path.relpath(filename)
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         line = (e.get("location") or {}).get("row", 0)
         out.append(
             {

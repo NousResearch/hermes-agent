@@ -30,6 +30,10 @@ sort it out.  Python doesn't get that luxury.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 
 __all__ = ["configure_windows_stdio", "is_windows"]
@@ -63,7 +67,7 @@ def _flip_console_code_page_to_utf8() -> None:
     except Exception:
         # ctypes import, missing kernel32, or non-Windows — any failure here
         # is non-fatal.  We've still reconfigured Python's own streams below.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _reconfigure_stream(stream, *, encoding: str = "utf-8", errors: str = "replace") -> None:
@@ -79,7 +83,7 @@ def _reconfigure_stream(stream, *, encoding: str = "utf-8", errors: str = "repla
             return
         reconfigure(encoding=encoding, errors=errors)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def configure_windows_stdio() -> bool:

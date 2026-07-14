@@ -354,7 +354,7 @@ def _main() -> int:
         from hermes_cli.env_loader import load_hermes_dotenv
         load_hermes_dotenv()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     usage = (
         "Usage: python -m gateway.platforms.feishu_comment_rules <command> [args]\n"

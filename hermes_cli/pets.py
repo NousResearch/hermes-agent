@@ -11,6 +11,10 @@ demand via :func:`register_cli`.
 from __future__ import annotations
 
 import argparse
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 
 
@@ -235,7 +239,7 @@ def _cmd_show(args) -> int:
             if getattr(args, "once", False) and loops >= len(states):
                 break
     except KeyboardInterrupt:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     finally:
         out.write("\x1b[?25h")  # show cursor
         out.write("\x1b[0m\n")

@@ -13,6 +13,10 @@ can surface a toast. Callers pass an already path-hardened ``cwd``.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import re
 import shutil
@@ -452,7 +456,7 @@ def review_create_pr(cwd: str) -> dict:
     try:
         _review_push(cwd)
     except RuntimeError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     created, out = _gh(cwd, ["pr", "create", "--fill"])
     if not created:
         raise RuntimeError("gh pr create failed (is gh installed and authenticated?)")

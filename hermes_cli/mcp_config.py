@@ -243,7 +243,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
         from hermes_cli.env_loader import load_hermes_dotenv
         load_hermes_dotenv()
     except Exception:  # pragma: no cover — defensive
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _interpolate_env_vars(config)
 
 
@@ -330,13 +330,13 @@ def _probe_single_server(
                         result = await server.session.list_prompts()
                         details["prompts"] = len(result.prompts)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 if resources_enabled and _advertises("resources"):
                     try:
                         result = await server.session.list_resources()
                         details["resources"] = len(result.resources)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         finally:
             await server.shutdown()
 
@@ -618,7 +618,7 @@ def cmd_mcp_remove(args):
         get_manager().remove(name)
         _success("Cleaned up OAuth tokens")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────

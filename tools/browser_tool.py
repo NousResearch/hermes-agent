@@ -187,7 +187,7 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
                 if os.path.isdir(bin_dir):
                     dirs.append(bin_dir)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return tuple(dirs)
 
 
@@ -310,7 +310,7 @@ def _needs_chromium_sandbox_bypass() -> bool:
             if f.read().strip() == "1":
                 return True
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 
@@ -335,7 +335,7 @@ def _unlink_command_output_files(*paths: str) -> None:
         try:
             os.unlink(path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _format_browser_timeout_error(
@@ -1128,7 +1128,7 @@ def _run_chrome_fallback_command(
                 try:
                     os.unlink(pth)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         return {"success": False, "error": f"Chrome fallback '{cmd}' failed"}
 
     try:
@@ -1146,7 +1146,7 @@ def _run_chrome_fallback_command(
         try:
             _run_tmp("close", [])
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Clean up socket directory
         import shutil as _shutil
         _shutil.rmtree(task_socket_dir, ignore_errors=True)
@@ -1223,7 +1223,7 @@ def _url_is_private(url: str) -> bool:
                 or ip in ipaddress.ip_network("100.64.0.0/10")
             )
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Hostname — must resolve to confirm it's private (bare "localhost"
         # resolves to 127.0.0.1 via /etc/hosts).  Short-circuit on obvious
         # names to avoid a DNS hop.
@@ -1742,7 +1742,7 @@ def _reap_orphaned_browser_sessions():
                         daemon_pid, session_name)
             reaped += 1
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Clean up the socket directory
         shutil.rmtree(socket_dir, ignore_errors=True)
@@ -2222,7 +2222,7 @@ def _find_agent_browser(*, validate: bool = True) -> str:
                     _agent_browser_resolved = True
                     return recheck
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     _agent_browser_resolved = True
     raise FileNotFoundError(
@@ -2485,7 +2485,7 @@ def _run_browser_command(
                 try:
                     os.unlink(p)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # Log stderr for diagnostics — use warning level on failure so it's visible
             if stderr and stderr.strip():
@@ -3584,7 +3584,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                     try:
                         parsed = json.loads(raw_result)
                     except (json.JSONDecodeError, ValueError):
-                        pass  # keep as string
+                        logger.debug("Suppressed exception", exc_info=True)  # keep as string
                 # Post-eval page-URL recheck: if this (or a prior) eval
                 # navigated the page to a private address, withhold the result.
                 if _eval_ssrf_guard_active(effective_task_id):
@@ -3619,7 +3619,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 err,
             )
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_eval: supervisor path errored (%s), falling back", exc)
 
@@ -3667,7 +3667,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         try:
             parsed = json.loads(raw_result)
         except (json.JSONDecodeError, ValueError):
-            pass  # keep as string
+            logger.debug("Suppressed exception", exc_info=True)  # keep as string
 
     response = {
         "success": True,
@@ -3731,7 +3731,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             try:
                 parsed = json.loads(raw_result)
             except (json.JSONDecodeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if _eval_ssrf_guard_active(task_id or "default"):
             _blocked_url = _camofox_current_page_private_url(tab_id, user_id)
@@ -4120,7 +4120,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             if _vtemp is not None:
                 vision_temperature = float(_vtemp)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         call_kwargs = {
             "task": "vision",
@@ -4375,7 +4375,7 @@ def cleanup_all_browsers() -> None:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
         SUPERVISOR_REGISTRY.stop_all()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved

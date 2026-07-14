@@ -974,7 +974,7 @@ def _read_manifest_info(d: Path, prefix: str):
             version = manifest.get("version", "")
             description = manifest.get("description", "")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     key = f"{prefix}/{d.name}" if prefix else name
     return name, version, description, key
 
@@ -1193,7 +1193,7 @@ def _discover_context_engines() -> list[tuple[str, str]]:
                 engines.append((name, desc))
                 seen.add(name)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_context_engine
@@ -1202,7 +1202,7 @@ def _discover_context_engines() -> list[tuple[str, str]]:
         if plugin_engine and getattr(plugin_engine, "name", None) and plugin_engine.name not in seen:
             engines.append((plugin_engine.name, "installed plugin"))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return engines
 
@@ -1441,7 +1441,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                     max_x - 1, curses.A_DIM,
                 )
             except curses.error:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # Build display rows
             # Row layout:
@@ -1474,7 +1474,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                             sattr |= curses.color_pair(2)
                         stdscr.addnstr(y, 0, "  General Plugins", max_x - 1, sattr)
                     except curses.error:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     y += 1
 
                 plugin_start = scroll_offset
@@ -1493,7 +1493,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                     try:
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
                     except curses.error:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     y += 1
 
             # --- Separator ---
@@ -1508,7 +1508,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                         sattr |= curses.color_pair(2)
                     stdscr.addnstr(y, 0, "  Provider Plugins", max_x - 1, sattr)
                 except curses.error:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 y += 1
 
                 for ci, (cat_name, cat_current, _cat_fn) in enumerate(categories):
@@ -1525,7 +1525,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected,
                     try:
                         stdscr.addnstr(y, 0, line, max_x - 1, attr)
                     except curses.error:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     y += 1
 
             stdscr.refresh()
@@ -1727,7 +1727,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected,
                 if 0 <= ci < len(categories):
                     categories[ci][2]()  # call the configure function
         except (ValueError, KeyboardInterrupt, EOFError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     print()
 
@@ -1747,7 +1747,7 @@ def dashboard_install_plugin(
                 "Insecure URL scheme; prefer https:// or git@ for production installs.",
             )
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         target, installed_manifest, installed_name = _install_plugin_core(
@@ -1806,7 +1806,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
                         return entry.toolset
                 break
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fallback: read provides_tools from manifest on disk and query registry
     try:
@@ -1822,7 +1822,7 @@ def _get_plugin_toolset_key(name: str) -> Optional[str]:
                     if entry and entry.toolset:
                         return entry.toolset
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None
 

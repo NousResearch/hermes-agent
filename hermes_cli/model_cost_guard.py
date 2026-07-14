@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+import logging
+logger = logging.getLogger(__name__)
+
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -80,7 +84,7 @@ def expensive_model_warning(
                 get_model_info(provider, model)
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if input_cost is None and output_cost is None:
         try:
             from agent.usage_pricing import get_pricing_entry

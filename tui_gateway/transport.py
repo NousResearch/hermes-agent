@@ -205,7 +205,7 @@ class TeeTransport:
             try:
                 sec.write(obj)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return ok
 
     def close(self) -> None:
@@ -216,4 +216,4 @@ class TeeTransport:
                 try:
                     sec.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)

@@ -514,7 +514,7 @@ class _AsyncBridge:
                 try:
                     self._loop.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         self._thread = threading.Thread(target=_run, daemon=True, name="cua-driver-loop")
         self._thread.start()
@@ -777,7 +777,7 @@ class _CuaDriverSession:
                 loop.call_soon_threadsafe(event.set)
             except RuntimeError:
                 # Loop closed — nothing to signal.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         result = await self._session.call_tool(name, args)
@@ -984,7 +984,7 @@ class _CuaDriverSession:
                 try:
                     os.remove(shot_file)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()

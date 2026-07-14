@@ -176,7 +176,7 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
             try:
                 _backend.stop()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _backend = None
     _session_auto_approve = False
     _always_allow = set()
@@ -806,7 +806,7 @@ def _route_capture_through_aux_vision(
             try:
                 _os.unlink(str(temp_image_path))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     analysis_text = ""
     if isinstance(result_json, str):

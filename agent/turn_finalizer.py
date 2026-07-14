@@ -24,6 +24,10 @@ from __future__ import annotations
 
 import os
 
+import logging
+logger = logging.getLogger(__name__)
+
+
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
@@ -137,7 +141,7 @@ def finalize_turn(
                     try:
                         _conn.close()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             except Exception:
                 logger.warning(
                     "Failed to record budget-exhausted failure for task %s",
@@ -507,7 +511,7 @@ def finalize_turn(
                 review_skills=_should_review_skills,
             )
         except Exception:
-            pass  # Background review is best-effort
+            logger.debug("Suppressed exception", exc_info=True)  # Background review is best-effort
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

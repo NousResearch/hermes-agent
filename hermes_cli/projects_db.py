@@ -24,6 +24,10 @@ The schema is intentionally small and additive: column additions go through
 from __future__ import annotations
 
 import contextlib
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import re
 import secrets
@@ -195,7 +199,7 @@ def connect_closing(db_path: Optional[Path] = None):
         try:
             conn.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 # TEXT columns added to `projects` after v1; re-applied idempotently on every

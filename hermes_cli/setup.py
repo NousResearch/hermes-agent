@@ -480,7 +480,7 @@ def _print_setup_summary(config: dict, hermes_home):
                 except Exception:
                     continue
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if _img_backend:
             tool_status.append((f"Image Generation ({_img_backend})", True, None))
         else:
@@ -567,7 +567,7 @@ def _print_setup_summary(config: dict, hermes_home):
         if _spotify_state.get("access_token") or _spotify_state.get("refresh_token"):
             tool_status.append(("Spotify (PKCE OAuth)", True, None))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
@@ -695,7 +695,7 @@ def _prompt_container_resources(config: dict):
     try:
         terminal["container_cpu"] = float(cpu_str)
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Memory
     current_mem = terminal.get("container_memory", 5120)
@@ -703,7 +703,7 @@ def _prompt_container_resources(config: dict):
     try:
         terminal["container_memory"] = int(mem_str)
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Disk
     current_disk = terminal.get("container_disk", 51200)
@@ -711,7 +711,7 @@ def _prompt_container_resources(config: dict):
     try:
         terminal["container_disk"] = int(disk_str)
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # Tool categories and provider config are now in tools_config.py (shared
@@ -1547,7 +1547,7 @@ def setup_agent_settings(config: dict):
         if 0.5 <= threshold <= 0.95:
             config["compression"]["threshold"] = threshold
     except ValueError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print_success(
         f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
@@ -1602,14 +1602,14 @@ def setup_agent_settings(config: dict):
             if idle_val > 0:
                 config["session_reset"]["idle_minutes"] = idle_val
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
         try:
             hour_val = int(hour_str)
             if 0 <= hour_val <= 23:
                 config["session_reset"]["at_hour"] = hour_val
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         print_success(
             f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min idle or daily at {config['session_reset'].get('at_hour', 4)}:00"
         )
@@ -1621,7 +1621,7 @@ def setup_agent_settings(config: dict):
             if idle_val > 0:
                 config["session_reset"]["idle_minutes"] = idle_val
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         print_success(
             f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min of inactivity"
         )
@@ -1633,7 +1633,7 @@ def setup_agent_settings(config: dict):
             if 0 <= hour_val <= 23:
                 config["session_reset"]["at_hour"] = hour_val
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         print_success(
             f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00"
         )
@@ -1673,7 +1673,7 @@ def _setup_telegram_auto_result():
     try:
         profile_name = _profile_name_from_hermes_home(Path(get_hermes_home()))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return auto_setup_telegram_bot_result(profile_name=profile_name)
 
@@ -2219,7 +2219,7 @@ def _model_section_has_credentials(config: dict) -> bool:
         if get_active_provider():
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
@@ -2686,7 +2686,7 @@ def _run_portal_one_shot(config: dict) -> None:
             config.clear()
             config.update(_refreshed)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print()
     print_success("Portal setup complete.")

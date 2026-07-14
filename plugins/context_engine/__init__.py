@@ -58,7 +58,7 @@ def discover_context_engines() -> List[Tuple[str, str, bool]]:
                     meta = yaml.safe_load(f) or {}
                 desc = meta.get("description", "")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Quick availability check — try loading and calling is_available()
         available = True
@@ -134,7 +134,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
                         try:
                             spec.loader.exec_module(parent_mod)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
         # Now load the engine module
         spec = importlib.util.spec_from_file_location(
@@ -191,7 +191,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:
             try:
                 return attr()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return None
 
@@ -240,7 +240,7 @@ class _EngineCollector:
                 )
                 return
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             from hermes_cli.plugins import get_plugin_manager

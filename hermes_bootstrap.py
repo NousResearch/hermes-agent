@@ -50,6 +50,10 @@ against double-reconfigure.
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -105,7 +109,7 @@ def apply_windows_utf8_bootstrap() -> bool:
         except (OSError, ValueError):
             # Already closed, or someone replaced it with something
             # non-reconfigurable.  Non-fatal.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # stdin is reconfigured separately with errors="replace" too — input
     # from a legacy pipe shouldn't crash the process.
@@ -116,7 +120,7 @@ def apply_windows_utf8_bootstrap() -> bool:
             try:
                 reconfigure(encoding="utf-8", errors="replace")
             except (OSError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     _bootstrap_applied = True
     return True
@@ -180,7 +184,7 @@ def activate_durable_lazy_target() -> None:
     except Exception:
         # Bootstrap must never crash an entry point. If activation fails the
         # backend simply reports itself unavailable, exactly as before.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # Apply on import — entry points just need ``import hermes_bootstrap``

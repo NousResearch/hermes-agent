@@ -274,7 +274,7 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
                     return f"{prefix}: {message}"
                 return f"{prefix}: {json.dumps(payload, ensure_ascii=False)}"
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         text = response.text.strip()
         if text:

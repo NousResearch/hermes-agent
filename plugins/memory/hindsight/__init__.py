@@ -146,7 +146,7 @@ def _ensure_cloud_client_dependency() -> None:
         from tools.lazy_deps import ensure as _lazy_ensure
         _lazy_ensure("memory.hindsight", prompt=False)
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception as exc:
         raise ImportError(str(exc)) from exc
 
@@ -362,7 +362,7 @@ def _load_config() -> dict:
         try:
             return json.loads(profile_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Legacy shared path (backward compat)
     legacy_path = Path.home() / ".hindsight" / "config.json"
@@ -370,7 +370,7 @@ def _load_config() -> dict:
         try:
             return json.loads(legacy_path.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
@@ -748,7 +748,7 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 existing = json.loads(config_path.read_text())
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         existing.update(values)
         from utils import atomic_json_write
         atomic_json_write(config_path, existing, mode=0o600)
@@ -946,7 +946,7 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 materialized_config = json.loads(config_path.read_text(encoding="utf-8"))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             llm_api_key = env_writes.get("HINDSIGHT_LLM_API_KEY", "")
             if not llm_api_key:
@@ -1023,7 +1023,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     from tools.lazy_deps import ensure as _lazy_ensure
                     _lazy_ensure("memory.hindsight", prompt=False)
                 except ImportError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 except Exception as _e:
                     raise ImportError(str(_e)) from _e
                 from hindsight import HindsightEmbedded
@@ -1238,7 +1238,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 else:
                     logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
         except Exception:
-            pass  # packaging not available or other issue — proceed anyway
+            logger.debug("Suppressed exception", exc_info=True)  # packaging not available or other issue — proceed anyway
 
         self._config = _load_config()
         self._platform = str(kwargs.get("platform") or "").strip()
@@ -1358,7 +1358,7 @@ class HindsightMemoryProvider(MemoryProvider):
             from importlib.metadata import version as pkg_version
             _client_version = pkg_version("hindsight-client")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
                      self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, _client_version)
         if self._bank_id_template:
@@ -1395,7 +1395,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 try:
                     print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 self._mode = "disabled"
                 return
 
@@ -1915,7 +1915,7 @@ class HindsightMemoryProvider(MemoryProvider):
             try:
                 self._retain_queue.put(_WRITER_SENTINEL)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             writer.join(timeout=10.0)
             if writer.is_alive():
                 logger.warning(
@@ -1940,15 +1940,15 @@ class HindsightMemoryProvider(MemoryProvider):
                         try:
                             self._client._client = None
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     try:
                         self._client.close()
                     except RuntimeError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 else:
                     self._run_sync(self._client.aclose())
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._client = None
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every

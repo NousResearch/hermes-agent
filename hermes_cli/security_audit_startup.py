@@ -72,7 +72,7 @@ def _iter_sshd_config_lines() -> list[str]:
         if d.is_dir():
             paths.extend(sorted(d.glob("*.conf")))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     for p in paths:
         try:
             for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -123,7 +123,7 @@ def _in_container() -> bool:
         if any(tok in cgroup for tok in ("docker", "containerd", "kubepods", "libpod")):
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return False
 
 
@@ -215,7 +215,7 @@ def _network_listener_without_auth(config: Optional[dict]) -> list[str]:
                     "execution. Set a strong API_SERVER_KEY."
                 )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return findings
 
@@ -245,11 +245,11 @@ def run_security_audit(
         if r:
             findings.append(r)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         findings.extend(_network_listener_without_auth(config))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return findings
 
 

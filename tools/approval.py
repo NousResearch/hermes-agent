@@ -1801,7 +1801,7 @@ def prompt_dangerous_approval(command: str, description: str,
         # prompt_toolkit not installed, or detection failed -- fall through
         # to the legacy input() path (safe in non-TUI contexts: scripts,
         # tests, sshd, etc.).
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
@@ -2745,7 +2745,7 @@ def check_all_command_guards(command: str, env_type: str,
                         if _sec.get("tirith_enabled", True):
                             _cron_fail_open = _sec.get("tirith_fail_open", True)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     if not _cron_fail_open:
                         return {
                             "approved": False,
@@ -2784,7 +2784,7 @@ def check_all_command_guards(command: str, env_type: str,
             if _tirith_enabled:
                 _tirith_fail_open = _sec.get("tirith_fail_open", True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if not _tirith_fail_open:
             tirith_result = {
                 "action": "warn",

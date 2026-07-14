@@ -1830,7 +1830,7 @@ class ExtractContentMiddleware(InboundMiddleware):
                         face_data = json.loads(raw_data)
                         face_name = (face_data.get("name") or "").strip()
                     except (json.JSONDecodeError, TypeError, AttributeError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 parts.append(f"[emoji: {face_name}]" if face_name else "[emoji]")
             elif elem_type:
                 # Unknown element type — include type as placeholder
@@ -1923,7 +1923,7 @@ class ExtractContentMiddleware(InboundMiddleware):
                         if link and isinstance(link, str):
                             urls.append(link)
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         return urls
 
     @staticmethod
@@ -2457,7 +2457,7 @@ class ForwardedRecordsParseMiddleware(InboundMiddleware):
                 ctx.chat_id, WS_HEARTBEAT_RUNNING,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # -- Record rendering helpers -----------------------------------------
 
@@ -3443,7 +3443,7 @@ class ConnectionManager:
                     logger.debug("[%s] Already connected, skipping connect()", adapter.name)
                     return True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Acquire platform-scoped lock to prevent duplicate connections
         if not adapter._acquire_platform_lock(
@@ -3519,7 +3519,7 @@ class ConnectionManager:
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._heartbeat_task = None
 
         if self._recv_task:
@@ -3527,7 +3527,7 @@ class ConnectionManager:
             try:
                 await self._recv_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._recv_task = None
 
         # Fail any pending ACK futures
@@ -3673,7 +3673,7 @@ class ConnectionManager:
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat send failed: %s", adapter.name, exc)
         except asyncio.CancelledError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # -- Receive loop ------------------------------------------------------
 
@@ -3686,7 +3686,7 @@ class ConnectionManager:
                     continue
                 await self._handle_frame(bytes(raw))
         except asyncio.CancelledError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except websockets.exceptions.ConnectionClosed as close_exc:  # type: ignore[union-attr]
             close_code = getattr(close_exc, 'code', None)
             logger.warning(
@@ -3815,14 +3815,14 @@ class ConnectionManager:
                 if from_account:
                     return f"{from_account}:{group_code}"
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Protobuf: try decode_inbound_push for sender info
         try:
             push = decode_inbound_push(raw_data)
             if push:
                 return f"{push.get('from_account', '')}:{push.get('group_code', '')}"
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Fallback: unique key (no aggregation)
         return f"__unknown_{id(raw_data)}"
 
@@ -4024,7 +4024,7 @@ class ConnectionManager:
                     self._adapter.name, WS_CLOSE_TIMEOUT_S,
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 class MediaSendHandler(ABC):
     """Abstract base class for media send strategies.
@@ -4535,7 +4535,7 @@ class HeartbeatManager:
                 try:
                     await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             self._reply_heartbeat_tasks.pop(chat_id, None)
             self._reply_hb_last_active.pop(chat_id, None)
 
@@ -4547,12 +4547,12 @@ class HeartbeatManager:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if send_finish:
             try:
                 await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     async def close(self) -> None:
         """Cancel all reply heartbeat tasks."""
@@ -4594,7 +4594,7 @@ class SlowResponseNotifier:
             )
             await self._sender.send_text_chunk(chat_id, SLOW_RESPONSE_MESSAGE)
         except asyncio.CancelledError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception as exc:
             logger.debug("[%s] Slow-response notifier failed: %s", self._adapter.name, exc)
 
@@ -4706,7 +4706,7 @@ class MessageSender:
             try:
                 await self._on_send_finish(chat_id)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return SendResult(success=True)
 
     async def send_media(
@@ -5371,7 +5371,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         try:
             await self._outbound.start_typing(chat_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the RUNNING heartbeat loop without sending FINISH immediately.
@@ -5382,7 +5382,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         try:
             await self._outbound.stop_typing(chat_id, send_finish=False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _process_message_background(self, event, session_key: str) -> None:
         """Wrap base class processing with a slow-response notifier."""

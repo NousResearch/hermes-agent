@@ -15,6 +15,10 @@ Commands:
   area       - Get bounding box and area info for a named place
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 import argparse
 import json
 import math
@@ -939,7 +943,7 @@ def cmd_timezone(args):
                         utc_offset = f"{utc_offset}:{os_:02d}"
             timezone_src = "timeapi.io"
     except (RuntimeError, KeyError, TypeError):
-        pass  # API may be down; continue to fallback
+        logger.debug("Suppressed exception", exc_info=True)  # API may be down; continue to fallback
 
     # --- Strategy 2: longitude-based UTC offset approximation ---
     if not timezone_str:

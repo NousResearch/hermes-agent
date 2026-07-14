@@ -83,7 +83,7 @@ def _load_firecrawl_cls() -> type:
 
             _lazy_ensure("search.firecrawl", prompt=False)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception as exc:  # noqa: BLE001 — surface install hint
             raise ImportError(str(exc)) from exc
         from firecrawl import Firecrawl as _cls  # noqa: WPS433 — deliberately lazy
@@ -294,13 +294,13 @@ def _to_plain_object(value: Any) -> Any:
         try:
             return value.model_dump()
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if hasattr(value, "__dict__"):
         try:
             return {k: v for k, v in value.__dict__.items() if not k.startswith("_")}
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return value
 

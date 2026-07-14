@@ -323,7 +323,7 @@ def _looks_like_error_output(content: Any) -> bool:
                 if status in {"error", "failed", "failure", "timeout"}:
                     return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return (
@@ -458,7 +458,7 @@ def _get_child_timeout() -> Optional[float]:
         try:
             parsed = float(env_val)
         except (TypeError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         else:
             return None if parsed <= 0 else max(30.0, parsed)
     return DEFAULT_CHILD_TIMEOUT
@@ -797,7 +797,7 @@ def _emit_parent_console(parent_agent, line: str) -> None:
             printer(line)
             return
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     print(line)
 
 
@@ -1507,7 +1507,7 @@ def _dump_subagent_timeout_diagnostic(
             try:
                 _w(f"  loaded tools:      {sorted(tool_names)}")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _w("")
 
         _w("## Prompt / schema sizes")
@@ -1854,11 +1854,11 @@ def _run_single_child(
                             f"(iteration {child_iter}/{child_max})"
                         )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 touch(desc)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
@@ -1962,7 +1962,7 @@ def _run_single_child(
                 elif hasattr(child, "_interrupt_requested"):
                     child._interrupt_requested = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
@@ -1982,7 +1982,7 @@ def _run_single_child(
                 _summary = child.get_activity_summary()
                 child_api_calls = int(_summary.get("api_call_count", 0) or 0)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if is_timeout and child_api_calls == 0:
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
@@ -2015,7 +2015,7 @@ def _run_single_child(
                         summary="",
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             if is_timeout:
                 if child_api_calls == 0:
@@ -2256,7 +2256,7 @@ def _run_single_child(
             try:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if child_progress_cb:
             try:
@@ -2707,7 +2707,7 @@ def delegate_task(
                         ),
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         # Fire subagent_stop hooks once per child, serialised on the parent thread.
         # This keeps Python-plugin and shell-hook callbacks off of the worker threads
@@ -2733,7 +2733,7 @@ def delegate_task(
                 if child_cost:
                     _children_cost_total += float(child_cost)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if _invoke_hook is None:
                 continue
             try:
@@ -2860,7 +2860,7 @@ def delegate_task(
                     else:
                         parent_agent._active_children.remove(_c)
                 except ValueError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         def _batch_runner():
             return _execute_and_aggregate()
@@ -2873,7 +2873,7 @@ def delegate_task(
                     elif hasattr(_c, "_interrupt_requested"):
                         _c._interrupt_requested = True
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         _goals = [t["goal"] for t in task_list]
         dispatch = dispatch_async_delegation_batch(
@@ -3181,7 +3181,7 @@ def _load_config() -> dict:
             if isinstance(cfg, dict):
                 return cfg
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         from cli import CLI_CONFIG
 

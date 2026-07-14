@@ -328,7 +328,7 @@ class FileSyncManager:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except (OSError, IOError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             lock_fd.close()
 
     def _sync_back_impl(self) -> None:

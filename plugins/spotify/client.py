@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse
 
@@ -332,7 +336,7 @@ def _extract_spotify_error_detail(response: httpx.Response, *, fallback: str) ->
             elif isinstance(error_obj, str):
                 detail = error_obj
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return detail.strip()
 
 

@@ -223,7 +223,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             cwd=str(repo_dir),
         )
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        logger.debug("Suppressed exception", exc_info=True)  # Offline or timeout — use stale refs, that's fine
 
     if is_shallow:
         # No history to count across the shallow boundary. `origin/main` may not
@@ -247,7 +247,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -325,7 +325,7 @@ def check_for_updates() -> Optional[int]:
         if detect_install_method(get_project_root()) == "docker":
             return None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Read cache — invalidate if the embedded rev OR installed version has
     # changed since the last check. The version guard matters for pip installs:
@@ -343,7 +343,7 @@ def check_for_updates() -> Optional[int]:
             ):
                 return cached.get("behind")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
@@ -364,7 +364,7 @@ def check_for_updates() -> Optional[int]:
             json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return behind
 
@@ -423,7 +423,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             if baked:
                 return {"upstream": baked, "local": baked, "ahead": 0}
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
 
     upstream = _git_short_hash(repo_dir, "origin/main")
@@ -437,7 +437,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             if baked:
                 return {"upstream": baked, "local": baked, "ahead": 0}
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
 
     ahead = 0
@@ -853,7 +853,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 f"[dim {dim}](terminal/file ops/MCP run inside codex)[/]"
             )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Show active profile name when not 'default'
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -861,7 +861,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         if _profile_name and _profile_name != "default":
             right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
     except Exception:
-        pass  # Never break the banner over a profiles.py bug
+        logger.debug("Suppressed exception", exc_info=True)  # Never break the banner over a profiles.py bug
 
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
@@ -886,7 +886,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
                 right_lines.append(line)
     except Exception:
-        pass  # Never break the banner over an update check
+        logger.debug("Suppressed exception", exc_info=True)  # Never break the banner over an update check
 
     # Unsupported install-method warning — pip/PyPI and Homebrew are no
     # longer an officially supported distribution method (see
@@ -907,7 +907,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                 f"[bold yellow]⚠ {format_unsupported_install_warning(_install_method)}[/]"
             )
     except Exception:
-        pass  # Never break the banner over the install-method check
+        logger.debug("Suppressed exception", exc_info=True)  # Never break the banner over the install-method check
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)

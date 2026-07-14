@@ -476,7 +476,7 @@ try:
             if _alias not in PROVIDER_REGISTRY:
                 PROVIDER_REGISTRY[_alias] = PROVIDER_REGISTRY[_pp.name]
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 
 # =============================================================================
@@ -580,7 +580,7 @@ def _resolve_api_key_provider_secret(
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return "", ""
 
     from hermes_cli.config import get_env_value_prefer_dotenv
@@ -604,7 +604,7 @@ def _resolve_api_key_provider_secret(
                 if has_usable_secret(key):
                     return key, f"credential_pool:{provider_id}"
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return "", ""
 
@@ -858,7 +858,7 @@ def _format_nous_entitlement_auth_error(error: AuthError) -> str:
         if message:
             return message
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return f"{error} Check credits or billing in Nous Portal, then retry."
 
 
@@ -971,7 +971,7 @@ def _load_global_auth_store() -> Dict[str, Any]:
                 if global_path.resolve(strict=False) == real_root.resolve(strict=False):
                     return {}
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     try:
         return _load_auth_store(global_path)
     except Exception:
@@ -1050,13 +1050,13 @@ def _file_lock(
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                 except (OSError, IOError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif msvcrt:
                 try:
                     lock_file.seek(0)
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
                 except (OSError, IOError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
 
 @contextmanager
@@ -1091,7 +1091,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
             import shutil
             shutil.copy2(auth_file, corrupt_path)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         logger.warning(
             "auth: failed to parse %s (%s) — starting with empty store. "
             "Corrupt file preserved at %s",
@@ -1165,12 +1165,12 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
             if tmp_path.exists():
                 tmp_path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Restrict file permissions to owner only
     try:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return auth_file
 
 
@@ -1505,7 +1505,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
         if active and active == normalized:
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 2. Check config.yaml model.provider
     try:
@@ -1517,7 +1517,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             if cfg_provider == normalized:
                 return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # 3. Check provider-specific env vars
     # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
@@ -1556,7 +1556,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
             ):
                 return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return False
 
@@ -1710,7 +1710,7 @@ def resolve_provider(
                 if _alias not in _PROVIDER_ALIASES:
                     _PROVIDER_ALIASES[_alias] = _pp.name
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     normalized = _PROVIDER_ALIASES.get(normalized, normalized)
 
     if normalized == "openrouter":
@@ -1836,7 +1836,7 @@ def resolve_provider(
         if has_aws_credentials():
             return "bedrock"
     except ImportError:
-        pass  # boto3 not installed — skip Bedrock auto-detection
+        logger.debug("Suppressed exception", exc_info=True)  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -2131,7 +2131,7 @@ def _nous_jwt_expires_at(token: Any, fallback_expires_at: Any = None) -> Optiona
         try:
             return datetime.fromtimestamp(float(exp), tz=timezone.utc).isoformat()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return fallback_expires_at if isinstance(fallback_expires_at, str) else None
 
 
@@ -2269,7 +2269,7 @@ def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
             if tmp_path.exists():
                 tmp_path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return auth_path
 
 
@@ -2933,7 +2933,7 @@ def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
         try:
             webbrowser.open(SPOTIFY_DASHBOARD_URL)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     try:
         raw = input("Spotify Client ID: ").strip()
@@ -3504,7 +3504,7 @@ def refresh_codex_oauth_pure(
                     if isinstance(err_desc, str) and err_desc.strip():
                         message = f"Codex token refresh failed: {err_desc.strip()}"
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if code in {"invalid_grant", "invalid_token", "invalid_request"}:
             relogin_required = True
         if code == "refresh_token_reused":
@@ -4501,7 +4501,7 @@ def _default_verify() -> bool | ssl.SSLContext:
             import certifi
             return ssl.create_default_context(cafile=certifi.where())
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return True
 
 
@@ -4812,7 +4812,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
                     if tmp.exists():
                         tmp.unlink()
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         _oauth_trace(
             "nous_shared_store_written",
             path=str(path),
@@ -4860,7 +4860,7 @@ def _clear_shared_nous_state(reason: str) -> None:
             try:
                 path.unlink()
             except FileNotFoundError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _oauth_trace("nous_shared_store_cleared", reason=reason)
     except Exception as exc:
         logger.debug("Failed to clear shared Nous auth store: %s", exc)
@@ -6190,7 +6190,7 @@ def get_codex_auth_status() -> Dict[str, Any]:
                     "reset_at": rate_limit.get("reset_at"),
                 }
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fall back to legacy provider state
     try:
@@ -6236,7 +6236,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
                         "api_key": api_key,
                     }
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         creds = resolve_xai_oauth_runtime_credentials()
@@ -6871,7 +6871,7 @@ def _prompt_model_selection(
             return _confirmed_selection(custom) if custom else None
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fallback: numbered list
     print(menu_title)
@@ -6972,7 +6972,7 @@ def _login_openai_codex(
             else:
                 print("Existing Codex credentials are expired. Starting fresh login...")
         except AuthError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Check for existing Codex CLI tokens we can import
     if not force_new_login:
@@ -7040,7 +7040,7 @@ def _login_xai_oauth(
                     print(f"  Config updated: {config_path} (model.provider=xai-oauth)")
                     return
         except AuthError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     print()
     print("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
@@ -7969,7 +7969,7 @@ def _nous_device_code_login(
             try:
                 on_verification(verification_url, user_code)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
         print(f"Waiting for approval (polling every {effective_interval}s)...")
@@ -8111,11 +8111,11 @@ def step_up_nous_billing_scope(
     try:
         _write_shared_nous_state(auth_state)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         _sync_nous_pool_from_auth_store()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     granted = auth_state.get("scope")
     return isinstance(granted, str) and NOUS_BILLING_MANAGE_SCOPE in granted.split()

@@ -347,7 +347,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if isinstance(data, list):
                 return [wh for wh in data if wh.get("url") == url]
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return []
 
     async def _register_webhook(self) -> bool:
@@ -475,7 +475,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                             self._guid_cache.popitem(last=False)
                     return guid
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
 
     async def _create_chat_for_handle(
@@ -705,7 +705,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def stop_typing(self, chat_id: str) -> None:
         if not self._private_api_enabled or not self._helper_connected or not self.client:
@@ -718,7 +718,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # ------------------------------------------------------------------
     # Read receipts
@@ -736,7 +736,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
                 return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return False
 
     # ------------------------------------------------------------------
@@ -775,7 +775,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if participants:
                     info["participants"] = participants
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return info
 
     def format_message(self, content: str) -> str:

@@ -182,7 +182,7 @@ def convert_to_trajectory_format(agent, messages: List[Dict[str, Any]], user_que
                         if tool_content.strip().startswith(("{", "[")):
                             tool_content = json.loads(tool_content)
                     except (json.JSONDecodeError, AttributeError):
-                        pass  # Keep as string if not valid JSON
+                        logger.debug("Suppressed exception", exc_info=True)  # Keep as string if not valid JSON
                     
                     tool_index = len(tool_responses)
                     tool_name = (
@@ -995,7 +995,7 @@ def try_recover_primary_transport(
                     agent.client, reason="primary_recovery", shared=True,
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Rebuild from primary snapshot
         rt = agent._primary_runtime
@@ -1583,7 +1583,7 @@ def anthropic_prompt_cache_policy(
                     _agg_base_url = _rt.get("base_url") or ""
                     _agg_api_mode = _rt.get("api_mode") or ""
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 return anthropic_prompt_cache_policy(
                     agent,
                     provider=_agg_provider,
@@ -2013,7 +2013,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             try:
                 setattr(agent, _name, _value)
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         raise
 
     # ── Re-evaluate prompt caching ──
@@ -2221,7 +2221,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return result
 
     tool_start_time = time.monotonic()
@@ -2243,7 +2243,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return result
 
     if function_name == "todo":
@@ -2558,7 +2558,7 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 try:
                     fn.name = _EMPTY_NAME_SENTINEL
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             elif isinstance(tc, dict):
                 tc["function"] = {"name": _EMPTY_NAME_SENTINEL, "arguments": "{}"}
 
@@ -3032,14 +3032,14 @@ def cleanup_dead_connections(agent) -> bool:
                 if data == b"":
                     dead_count += 1
             except BlockingIOError:
-                pass  # No data available — socket is healthy
+                logger.debug("Suppressed exception", exc_info=True)  # No data available — socket is healthy
             except OSError:
                 dead_count += 1
             finally:
                 try:
                     sock.setblocking(True)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         if dead_count > 0:
             _ra().logger.warning(
                 "Found %d dead connection(s) in client pool — rebuilding client",
@@ -3078,7 +3078,7 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             try:
                 context["reset_at"] = time.time() + float(retry_after)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None)
@@ -3088,7 +3088,7 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
             try:
                 context["reset_at"] = time.time() + float(retry_after)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
@@ -3243,7 +3243,7 @@ def force_close_tcp_sockets(client: Any) -> int:
                 sock.shutdown(_socket.SHUT_RDWR)
             except OSError:
                 # Already shut down / not connected / FD invalid — all benign.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
             shutdown_count += 1
     except Exception as exc:

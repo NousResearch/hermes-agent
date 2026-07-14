@@ -59,8 +59,10 @@ Usage:
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
-    pass
+    import logging as _logging
+    _logging.debug("Suppressed exception", exc_info=True)
 
+import logging
 import os
 import sys
 
@@ -86,7 +88,7 @@ def _set_process_title() -> None:
         setproctitle.setproctitle("hermes")
         return
     except ImportError:
-        pass
+        logging.debug("Suppressed exception", exc_info=True)
 
     # Strategy 2/3: platform-specific ctypes fallback
     import ctypes
@@ -102,7 +104,7 @@ def _set_process_title() -> None:
             libc.pthread_setname_np(b"hermes")
         # Windows: the .exe name is already ``hermes.exe`` — nothing to do.
     except Exception:
-        pass
+        logging.debug("Suppressed exception", exc_info=True)
 
 
 # Cheap, dependency-free read of `display.interface` from config.yaml for the
@@ -201,7 +203,7 @@ def _suppress_mouse_residue_early() -> None:
             b"\x1b[?1006l\x1b[?1005l\x1b[?1015l\x1b[?1016l\x1b[?2029l",
         )
     except OSError:
-        pass
+        logging.debug("Suppressed exception", exc_info=True)
 
 
 _suppress_mouse_residue_early()
@@ -495,7 +497,7 @@ def _apply_profile_override() -> None:
                     profile_name = name
                     consume = 0  # don't strip anything from argv
         except (UnicodeDecodeError, OSError):
-            pass  # corrupted file, skip
+            logging.debug("Suppressed exception", exc_info=True)  # corrupted file, skip
 
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
@@ -562,7 +564,7 @@ try:
             from hermes_cli import managed_scope
             _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
         except Exception:
-            pass
+            logging.debug("Suppressed exception", exc_info=True)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -575,7 +577,7 @@ try:
         del _early_cfg_raw
     del _cfg_path
 except Exception:
-    pass  # best-effort — redaction stays at default (enabled) on config errors
+    logging.debug("Suppressed exception", exc_info=True)  # best-effort — redaction stays at default (enabled) on config errors
 
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
@@ -593,7 +595,7 @@ try:
         )
     )
 except Exception:
-    pass  # best-effort — don't crash the CLI if logging setup fails
+    logging.debug("Suppressed exception", exc_info=True)  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
 # We already determined whether to force IPv4 from the raw yaml read above —
@@ -604,9 +606,8 @@ if _FORCE_IPV4_EARLY:
 
         _apply_ipv4(force=True)
     except Exception:
-        pass  # best-effort — don't crash if hermes_constants not importable yet
+        logging.debug("Suppressed exception", exc_info=True)  # best-effort — don't crash if hermes_constants not importable yet
 
-import logging
 import threading
 import time as _time
 from datetime import datetime
@@ -692,7 +693,7 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
                 if rel:
                     common_dir = (git_dir / rel).resolve()
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         head_file = git_dir / "HEAD"
         head = head_file.read_text(encoding="utf-8", errors="replace").strip()
         if head.startswith("ref:"):
@@ -753,7 +754,7 @@ def _mark_termux_bundled_skills_synced() -> None:
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(_termux_bundled_skills_fingerprint() + "\n", encoding="utf-8")
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _sync_bundled_skills_for_startup() -> bool:
@@ -853,7 +854,7 @@ def _has_any_provider_configured() -> bool:
                 if key.strip() in provider_env_vars and val:
                     return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
     try:
@@ -864,7 +865,7 @@ def _has_any_provider_configured() -> bool:
             if status.get("logged_in"):
                 return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Check for Nous Portal OAuth credentials
     auth_file = get_hermes_home() / "auth.json"
@@ -879,7 +880,7 @@ def _has_any_provider_configured() -> bool:
                 if status.get("logged_in"):
                     return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Check config.yaml — if model is a dict with an explicit provider set,
     # the user has gone through setup (fresh installs have model as a plain
@@ -908,7 +909,7 @@ def _has_any_provider_configured() -> bool:
             ):
                 return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     return False
 
@@ -985,7 +986,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     try:
                         stdscr.addstr(0, 0, "Terminal too small")
                     except curses.error:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     stdscr.refresh()
                     stdscr.getch()
                     return
@@ -1004,7 +1005,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 try:
                     stdscr.addnstr(0, 0, header, max_x - 1, header_attr)
                 except curses.error:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 # Column header line
                 fixed_cols = 3 + 12 + 6 + 18 + 6
@@ -1016,7 +1017,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     )
                     stdscr.addnstr(1, 0, col_header, max_x - 1, dim_attr)
                 except curses.error:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 # Compute visible area
                 visible_rows = max_y - 4  # header + col header + blank + footer
@@ -1028,7 +1029,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                         msg = "  No sessions match the filter."
                         stdscr.addnstr(3, 0, msg, max_x - 1, curses.A_DIM)
                     except curses.error:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 else:
                     if cursor >= len(filtered):
                         cursor = len(filtered) - 1
@@ -1058,7 +1059,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                         try:
                             stdscr.addnstr(y, 0, row, max_x - 1, attr)
                         except curses.error:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
                 # Footer
                 footer_y = max_y - 1
@@ -1077,7 +1078,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                         curses.color_pair(4) if curses.has_colors() else curses.A_DIM,
                     )
                 except curses.error:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 stdscr.refresh()
                 key = stdscr.getch()
@@ -1124,7 +1125,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         return result_holder[0]
 
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fallback: numbered list (Windows without curses, etc.)
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
@@ -1164,13 +1165,13 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
         sessions = db.search_sessions(source=source, limit=1)
         return sessions[0]["id"] if sessions else None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     finally:
         if db is not None:
             try:
                 db.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -1316,12 +1317,12 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
             try:
                 resolved_id = db.get_compression_tip(resolved_id) or resolved_id
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         db.close()
         return resolved_id
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -1749,7 +1750,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 if ensure_dependency("node"):
                     path = shutil.which("node")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)
@@ -2140,12 +2141,12 @@ def _launch_tui(
         try:
             os.unlink(active_session_file)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if wt_info:
             try:
                 _cleanup_worktree(wt_info)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update` so
     # the user sees update output directly and gets the new version.
@@ -2180,7 +2181,7 @@ def _pin_kanban_board_env() -> None:
 
         os.environ["HERMES_KANBAN_BOARD"] = get_current_board()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _sync_bundled_skills_quietly() -> None:
@@ -2200,7 +2201,7 @@ def _sync_bundled_skills_quietly() -> None:
 
         sync_skills(quiet=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _resolve_use_tui(args) -> bool:
@@ -2305,7 +2306,7 @@ def cmd_chat(args):
                 os.chdir(_saved_cwd)
                 print(f"↪ restored workspace dir: {_saved_cwd}")
         except Exception:
-            pass  # never let cwd-restore break a resume
+            logger.debug("Suppressed exception", exc_info=True)  # never let cwd-restore break a resume
 
     # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
@@ -2328,7 +2329,7 @@ def cmd_chat(args):
             sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
             sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -2371,13 +2372,13 @@ def cmd_chat(args):
 
             prefetch_update_check()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:
         _sync_bundled_skills_for_startup()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -2678,7 +2679,7 @@ def cmd_whatsapp(args):
             env=with_hermes_node_path(),
         )
     except KeyboardInterrupt:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
@@ -2767,7 +2768,7 @@ def cmd_model(args):
             clear_provider_models_cache()
             print("  Cleared model picker cache.")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     select_provider_and_model(args=args)
 
 
@@ -3277,7 +3278,7 @@ def _all_aux_tasks() -> list[tuple[str, str, str]]:
     except Exception:
         # Plugin discovery failure must not break the aux config UI.
         # Built-in tasks remain available.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return tasks
 
 
@@ -3625,7 +3626,7 @@ def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
             print()
             return idx
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Fallback: numbered list
     print(title)
@@ -3990,7 +3991,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             return "none"
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     print("Select reasoning effort:")
     for i, effort in enumerate(ordered, 1):
@@ -4428,7 +4429,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
         elif behind == 0:
             print("Up to date")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def cmd_version(args):
@@ -4489,7 +4490,7 @@ def _clear_bytecode_cache(root: Path) -> int:
                 shutil.rmtree(dirpath)
                 removed += 1
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             dirnames.clear()  # nothing left to recurse into
     return removed
 
@@ -4610,7 +4611,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
                 prompt_path.unlink(missing_ok=True)
                 return answer if answer else default
             except (OSError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         _time.sleep(0.5)
 
     # Timeout — clean up and use default
@@ -4813,7 +4814,7 @@ def _nixos_build_env() -> dict[str, str] | None:
             if python3_path and Path(python3_path).exists():
                 return {**os.environ, "PYTHON": python3_path}
     except Exception:
-        pass  # nix-shell not available — caller will get None
+        logger.debug("Suppressed exception", exc_info=True)  # nix-shell not available — caller will get None
 
     return None
 def _run_npm_install_deterministic(
@@ -5041,7 +5042,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
                 for chunk in iter(lambda: f.read(65536), b""):
                     h.update(chunk)
         except (OSError, IOError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         h.update(b"\0")
 
 
@@ -5242,7 +5243,7 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
             except OSError:
                 # Locked/permission-denied entry is out of our hands; let the
                 # build report its own error rather than masking it.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # Drop the half-written unpacked dir too: an interrupted prior pack leaves
     # a partial tree that poisons the rename even after the zip is fixed.
@@ -5255,7 +5256,7 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
                 shutil.rmtree(unpacked, ignore_errors=True)
                 removed.append(unpacked)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     return removed
 
@@ -5348,7 +5349,7 @@ def _redownload_electron_dist(
     try:
         (electron_dir / "path.txt").unlink()
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     dl_env = with_hermes_node_path(env)
     if mirror:
@@ -5438,7 +5439,7 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
                 except Exception:
                     continue
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return stopped
 
 
@@ -5634,7 +5635,7 @@ def cmd_gui(args: argparse.Namespace):
         from hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     from hermes_constants import find_node_executable, with_hermes_node_path
 
@@ -5927,7 +5928,7 @@ def _find_stale_dashboard_pids(
                         try:
                             dashboard_pids.append(int(pid_str))
                         except ValueError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
@@ -6049,7 +6050,7 @@ def _print_curator_recent_run_notice() -> None:
             state["last_run_summary_shown_at"] = last_run_at
             curator.save_state(state)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return
 
     # Format the timestamp as "Xh ago" for readability.
@@ -6068,7 +6069,7 @@ def _print_curator_recent_run_notice() -> None:
         state["last_run_summary_shown_at"] = last_run_at
         curator.save_state(state)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _format_time_ago(iso_ts: str) -> str:
@@ -6128,7 +6129,7 @@ def _kill_stale_dashboard_processes(
             try:
                 parsed.add(int(part))
             except (ValueError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if parsed:
             exclude = parsed
 
@@ -6426,7 +6427,7 @@ def _update_via_zip(args):
         if not result["copied"] and not result.get("updated"):
             print("  ✓ Skills are up to date")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Seed the model-catalog disk cache from the freshly-unpacked checkout
     # (same rationale as the git-pull path in _cmd_update_impl). Non-fatal.
@@ -6711,7 +6712,7 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -6772,7 +6773,7 @@ def _count_commits_between(git_cmd: list[str], cwd: Path, base: str, head: str) 
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return -1
 
 
@@ -6790,7 +6791,7 @@ def _mark_skip_upstream_prompt():
 
         (get_hermes_home() / SKIP_UPSTREAM_PROMPT_FILE).touch()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
@@ -6951,7 +6952,7 @@ def _invalidate_update_cache():
             if cache_file.exists():
                 cache_file.unlink()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _load_installable_optional_extras(group: str = "all") -> list[str]:
@@ -7009,7 +7010,7 @@ def _clear_update_incomplete_marker() -> None:
     try:
         _update_marker_path().unlink()
     except FileNotFoundError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except OSError as exc:
         logger.debug("Could not clear update-incomplete marker: %s", exc)
 
@@ -7063,7 +7064,7 @@ def _recover_from_interrupted_install() -> None:
             if _time.time() - lock_path.stat().st_mtime > 3600:
                 lock_path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return
     except OSError as exc:
         # Couldn't create the lock (read-only fs, perms). Proceed unlocked —
@@ -7114,10 +7115,10 @@ def _recover_from_interrupted_install() -> None:
                             try:
                                 lock_path.unlink()
                             except OSError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                             return
                 except Exception:
-                    pass  # psutil is best-effort; fall through to install
+                    logger.debug("Suppressed exception", exc_info=True)  # psutil is best-effort; fall through to install
 
     saved_stdout_fd = None
     saved_sys_stdout = sys.stdout
@@ -7186,11 +7187,11 @@ def _recover_from_interrupted_install() -> None:
                 os.dup2(saved_stdout_fd, 1)
                 os.close(saved_stdout_fd)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             lock_path.unlink()
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _run_install_with_heartbeat(
@@ -7351,7 +7352,7 @@ def _detect_concurrent_hermes_instances(
                 except Exception:
                     continue
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     matches: list[tuple[int, str]] = []
     try:
@@ -7550,7 +7551,7 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
             if not original.exists() and quarantined.exists():
                 quarantined.rename(original)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _run_quarantined_install(
@@ -7605,9 +7606,9 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
             try:
                 stale.unlink()
             except OSError:
-                pass  # still locked or in use — try again next run
+                logger.debug("Suppressed exception", exc_info=True)  # still locked or in use — try again next run
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _refresh_active_lazy_features() -> None:
@@ -8121,7 +8122,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         if result.returncode != 0:
             return None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # After pip install, check managed path first, then PATH
     return resolve_uv() or shutil.which("uv")
 
@@ -8218,7 +8219,7 @@ class _UpdateOutputStream:
                 self._log.write(data)
             except Exception:
                 # Log errors should never abort the update.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if self._original_broken:
             return len(data) if isinstance(data, (str, bytes)) else 0
@@ -8236,7 +8237,7 @@ class _UpdateOutputStream:
             try:
                 self._log.flush()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if self._original_broken:
             return
         try:
@@ -8309,7 +8310,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
         except (ValueError, OSError):
             # Called from a non-main thread — not fatal.  The update still
             # runs, just without hangup protection.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # (2) Mirror output to update.log and wrap stdio for broken-pipe
     # tolerance.  Any failure here is non-fatal; we just skip the wrap.
@@ -8362,7 +8363,7 @@ def _log_only_write(text: str) -> None:
         log_file.write(text if text.endswith("\n") else text + "\n")
         log_file.flush()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _run_logged_subprocess(cmd, *, cwd=None, env=None):
@@ -8394,18 +8395,18 @@ def _finalize_update_output(state):
         try:
             sys.stdout = state.get("prev_stdout", sys.stdout)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             sys.stderr = state.get("prev_stderr", sys.stderr)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     log_file = state.get("log_file")
     if log_file is not None:
         try:
             log_file.flush()
             log_file.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _resolve_update_branch(args) -> str:
@@ -8835,7 +8836,7 @@ def _wait_for_windows_update_gateway_exit(
             if _pid_exists(pid):
                 survivors.add(pid)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return survivors
 
 
@@ -8952,7 +8953,7 @@ def _detect_venv_python_processes(
         for anc in psutil.Process().parents():
             skip.add(int(anc.pid))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     matches: list[tuple[int, str, str]] = []
     try:
@@ -9132,7 +9133,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
             terminate_pid(int(pid), force=True)
             force_killed.append(int(pid))
         except (ProcessLookupError, PermissionError, OSError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")
@@ -9308,7 +9309,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         print(f"→ Discarded npm lockfile churn ({len(dirty)} file(s))")
     except Exception:
         # Never let lockfile cleanup block an update.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def cmd_update(args):
@@ -10044,7 +10045,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             importlib.reload(_hc)
         except Exception:
-            pass  # non-fatal — worst case a lazy import fails gracefully
+            logger.debug("Suppressed exception", exc_info=True)  # non-fatal — worst case a lazy import fails gracefully
 
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
@@ -10110,7 +10111,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     except Exception as pe:
                         print(f"  {p.name}: error ({pe})")
         except Exception:
-            pass  # profiles module not available or no profiles
+            logger.debug("Suppressed exception", exc_info=True)  # profiles module not available or no profiles
 
         # Backfill per-profile .env files for profiles created before the
         # .env-seeding fix (#44792). Copies the default install's .env so
@@ -10126,7 +10127,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     f"(copied from default): {', '.join(backfilled)}"
                 )
         except Exception:
-            pass  # profiles module not available or no profiles
+            logger.debug("Suppressed exception", exc_info=True)  # profiles module not available or no profiles
 
         # Sync Honcho host blocks to all profiles
         try:
@@ -10136,7 +10137,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if synced:
                 print(f"\n-> Honcho: synced {synced} profile(s)")
         except Exception:
-            pass  # honcho plugin not installed or not configured
+            logger.debug("Suppressed exception", exc_info=True)  # honcho plugin not installed or not configured
 
         # Check for config migrations
         print()
@@ -10362,7 +10363,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             try:
                 _exit_code_path.write_text("0")
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -10405,7 +10406,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         if _verify.stdout.strip() == "active":
                             return True
                     except (FileNotFoundError, subprocess.TimeoutExpired):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     if _time.monotonic() >= deadline:
                         return False
                     _time.sleep(0.5)
@@ -10457,7 +10458,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 total += float(part[: -len(_suf)]) * _mult
                                 matched = True
                             except ValueError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                             break
                 return total if matched else default
 
@@ -10540,7 +10541,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _cfg_agent = load_config().get("agent") or {}
                 _cfg_drain = _cfg_agent.get("restart_drain_timeout")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 _drain_budget = (
                     float(_cfg_drain)
@@ -10563,7 +10564,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 for scope, scope_cmd in [
                     ("user", ["systemctl", "--user"]),
@@ -10835,7 +10836,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                     f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}"
                                 )
                     except FileNotFoundError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     except subprocess.TimeoutExpired as exc:
                         # Don't swallow this silently — a wedged systemctl
                         # call here used to make the whole restart phase
@@ -10871,7 +10872,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 stderr = (getattr(e, "stderr", "") or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # --- Manual (non-service) gateways ---
             # Kill any remaining gateway processes not managed by a service.
@@ -10910,7 +10911,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     try:
                         os.kill(pid, _signal.SIGTERM)
                     except (ProcessLookupError, PermissionError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 # Wait for the old process to fully exit before the watcher
                 # spawns the new gateway.  Telegram holds the previous
                 # getUpdates long-poll session open on its servers for up to
@@ -10936,7 +10937,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     os.kill(pid, _signal.SIGTERM)
                     killed_pids.add(pid)
                 except (ProcessLookupError, PermissionError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             if restarted_services or killed_pids:
                 print()
@@ -10993,7 +10994,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # used to crash the entire update path.
                             _terminate_pid(pid, force=True)
                         except (ProcessLookupError, PermissionError, OSError):
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     # Give the OS a beat to reap the processes so the
                     # watchers see them exit and respawn.
                     _time.sleep(1.5)
@@ -11274,7 +11275,7 @@ def cmd_profile(args):
                     if clone_honcho_for_profile(name):
                         print(f"Honcho config cloned (peer: {name})")
                 except Exception:
-                    pass  # Honcho plugin not installed or not configured
+                    logger.debug("Suppressed exception", exc_info=True)  # Honcho plugin not installed or not configured
 
             # Seed bundled skills for fresh profiles only. Clone operations
             # already copied the source profile's skills, including any
@@ -11769,7 +11770,7 @@ def _render_distribution_plan(plan) -> None:
                                 already = True
                                 break
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             status = "✓ set" if already else ("needs setting" if er.required else "—")
             line = f"    • {er.name} ({tag}, {status})"
             if er.description:
@@ -11811,7 +11812,7 @@ def _report_dashboard_status() -> int:
                             .strip()
                         )
         except (OSError, ValueError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if cmdline:
             print(f"    PID {pid}: {cmdline}")
         else:
@@ -12035,7 +12036,7 @@ def cmd_dashboard(args):
                     import webbrowser
                     webbrowser.open(url)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             sys.exit(0)
 
         print(
@@ -12094,7 +12095,7 @@ def cmd_dashboard(args):
         from hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         import fastapi  # noqa: F401
@@ -12814,7 +12815,7 @@ def main():
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
     # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
@@ -12822,7 +12823,7 @@ def main():
     try:
         _cleanup_quarantined_exes()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Self-heal a venv left half-built by an interrupted ``hermes update``
     # (Ctrl-C, terminal close, WSL OOM mid-install). Skip when the user is
@@ -12838,7 +12839,7 @@ def main():
         if "update" not in sys.argv[1:]:
             _recover_from_interrupted_install()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if _try_termux_fast_tui_launch():
         return
@@ -13443,7 +13444,7 @@ def main():
                         env=_cua_driver_env(),
                     ).stdout.strip()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if version:
                     print(f"cua-driver: installed at {path} ({version})")
                 else:

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -362,7 +366,7 @@ class MicrosoftGraphClient:
                 try:
                     return max(0.0, float(retry_after))
                 except ValueError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         return min(8.0, 0.5 * (2 ** attempt))
 
     @staticmethod

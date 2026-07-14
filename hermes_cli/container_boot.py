@@ -248,7 +248,7 @@ def _read_container_argv() -> tuple[str, ...]:
         if any("main-wrapper.sh" in part for part in argv):
             return argv
     except OSError:
-        pass
+        log.debug("Suppressed exception", exc_info=True)
 
     # Slow path: s6-overlay v3 — PID 1 is s6-svscan; find the
     # rc.init-launched process whose argv contains main-wrapper.sh.
@@ -269,7 +269,7 @@ def _read_container_argv() -> tuple[str, ...]:
             if any("main-wrapper.sh" in part for part in argv):
                 return argv
     except OSError:
-        pass
+        log.debug("Suppressed exception", exc_info=True)
 
     return ()
 

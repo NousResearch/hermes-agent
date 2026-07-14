@@ -5,6 +5,10 @@ Provides a curses multi-select with keyboard navigation, plus a
 text-based numbered fallback for terminals without curses support.
 """
 import sys
+
+import logging
+logger = logging.getLogger(__name__)
+
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Set
 
@@ -260,7 +264,7 @@ def flush_stdin() -> None:
         import termios
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # Normalized menu actions returned by ``read_menu_key``.  Using sentinels keeps
@@ -458,7 +462,7 @@ def _run_curses_menu(
                     try:
                         stdscr.addnstr(items_start, 0, "  No matches", max_x - 1, curses.A_DIM)
                     except curses.error:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 for draw_i, filtered_pos in enumerate(
                     range(scroll_offset, min(len(filtered), scroll_offset + visible_rows))
@@ -565,7 +569,7 @@ def curses_checklist(
                 max_x - 1, curses.A_DIM,
             )
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return 3
 
     def _draw_row(stdscr, y, i, is_cursor, max_x):
@@ -581,7 +585,7 @@ def curses_checklist(
         try:
             stdscr.addnstr(y, 0, line, max_x - 1, attr)
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _draw_footer(stdscr, max_y, max_x):
         import curses
@@ -595,7 +599,7 @@ def curses_checklist(
                     sattr |= curses.color_pair(3)
                 stdscr.addnstr(max_y - 1, sx, status_text, max_x - sx - 1, sattr)
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _on_action(action, cursor):
         if action == NAV_TOGGLE:
@@ -675,7 +679,7 @@ def curses_radiolist(
             stdscr.addnstr(row, 0, hint, max_x - 1, curses.A_DIM)
             row += 1
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # One blank row between the hint and the item list.
         return row + 1
 
@@ -692,7 +696,7 @@ def curses_radiolist(
         try:
             stdscr.addnstr(y, 0, line, max_x - 1, attr)
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _on_action(action, cursor):
         if action in (NAV_SELECT, NAV_TOGGLE):
@@ -773,7 +777,7 @@ def curses_single_select(
                 hint = "  ↑↓ navigate  ENTER confirm  ESC/q cancel"
             stdscr.addnstr(1, 0, hint, max_x - 1, curses.A_DIM)
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return 3
 
     def _draw_row(stdscr, y, i, is_cursor, max_x):
@@ -788,7 +792,7 @@ def curses_single_select(
         try:
             stdscr.addnstr(y, 0, line, max_x - 1, attr)
         except curses.error:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _on_action(action, cursor):
         if action == NAV_SELECT:
@@ -833,7 +837,7 @@ def _numbered_single_fallback(
         if idx == cancel_idx:
             return None
     except (ValueError, KeyboardInterrupt, EOFError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 

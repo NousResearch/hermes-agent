@@ -308,7 +308,7 @@ def _run_reference(
             cost_status = cost.status
             cost_source = cost.source
         except Exception:  # pragma: no cover - defensive
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         _output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(
             usage,
@@ -561,7 +561,7 @@ def _extract_text(response: Any) -> str:
         if text:
             return text
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         message = response.choices[0].message
         if isinstance(message, dict):

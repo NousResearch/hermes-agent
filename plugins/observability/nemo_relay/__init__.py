@@ -823,12 +823,12 @@ def _jsonable(value: Any) -> Any:
         if hasattr(value, "model_dump"):
             return _jsonable(value.model_dump(mode="json"))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         if hasattr(value, "__dict__"):
             return _jsonable(vars(value))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         return json.loads(json.dumps(value, default=str))
     except Exception:

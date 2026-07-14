@@ -42,7 +42,7 @@ def _notify_provider_jobs_changed_safe() -> None:
         from cron.scheduler import _notify_provider_jobs_changed
         _notify_provider_jobs_changed()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +411,7 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
             if isinstance(model_cfg, dict):
                 provider_name = model_cfg.get("provider") or None
         except Exception:
-            pass  # Best-effort; provider stays None
+            logger.debug("Suppressed exception", exc_info=True)  # Best-effort; provider stays None
     return (provider_name, model_name)
 
 
@@ -652,7 +652,7 @@ def _execute_job_now(job: Dict[str, Any]) -> Dict[str, Any]:
         try:
             mark_job_run(job_id, False, str(e))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return {"claimed": True, "success": False, "error": str(e)}
 
 

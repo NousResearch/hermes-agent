@@ -1337,7 +1337,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     try:
         ws_client.start()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1350,11 +1350,11 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         try:
             loop.stop()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             loop.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         adapter._ws_thread_loop = None
 
 
@@ -1867,7 +1867,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             setattr(self._ws_client, "_auto_reconnect", False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         finally:
             self._ws_client = None
 
@@ -2991,7 +2991,7 @@ class FeishuAdapter(BasePlatformAdapter):
             try:
                 synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)

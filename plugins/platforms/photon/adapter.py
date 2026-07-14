@@ -474,24 +474,24 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     await task
                 except asyncio.CancelledError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         if self._inbound_task is not None:
             self._inbound_task.cancel()
             try:
                 await self._inbound_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._inbound_task = None
         await self._stop_sidecar()
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._http_client = None
         self._mark_disconnected()
 
@@ -893,7 +893,7 @@ class PhotonAdapter(BasePlatformAdapter):
             try:
                 os.kill(pid, signal.SIGTERM)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         deadline = time.time() + 3.0
         while time.time() < deadline and any(self._pid_alive(p) for p in stale):
             await asyncio.sleep(0.1)
@@ -902,7 +902,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — unreachable on win32 (early return above)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         # Give the OS a beat to release the listening socket.
         await asyncio.sleep(0.2)
         if foreign:
@@ -1047,7 +1047,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     proc.stdin.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Polite shutdown first.
             if self._http_client is not None:
                 try:
@@ -1057,7 +1057,7 @@ class PhotonAdapter(BasePlatformAdapter):
                         timeout=2.0,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             try:
                 proc.wait(timeout=3.0)
             except subprocess.TimeoutExpired:

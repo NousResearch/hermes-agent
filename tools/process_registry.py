@@ -230,7 +230,7 @@ class ProcessRegistry:
         try:
             sink(session, chunk)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan new output for watch patterns and queue notifications.
@@ -609,7 +609,7 @@ class ProcessRegistry:
                 try:
                     os.kill(pid, signal.SIGTERM)
                 except (OSError, ProcessLookupError, PermissionError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             return
 
         import psutil
@@ -621,7 +621,7 @@ class ProcessRegistry:
             try:
                 os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError, PermissionError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return
 
         # Snapshot the whole tree (children before parent) and SIGTERM each.
@@ -635,9 +635,9 @@ class ProcessRegistry:
             try:
                 proc.terminate()
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except (psutil.AccessDenied, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Escalate to SIGKILL for anything that ignored SIGTERM within the
         # grace window — a daemon stalled in its signal handler would otherwise
@@ -667,9 +667,9 @@ class ProcessRegistry:
                     "%.1fs grace)", proc.pid, grace,
                 )
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except (psutil.AccessDenied, OSError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # ----- Spawn -----
 
@@ -816,11 +816,11 @@ class ProcessRegistry:
                 else:
                     proc.kill()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 proc.wait(timeout=5)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
 
         return session
@@ -1135,7 +1135,7 @@ class ProcessRegistry:
         try:
             self._refresh_detached_session(session)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if session.exited:
             return False
         # Watch-pattern process: the trigger is a pattern match, not exit.
@@ -1273,12 +1273,12 @@ class ProcessRegistry:
                     if chunk:
                         drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                 except (BlockingIOError, OSError, ValueError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 finally:
                     try:
                         fcntl.fcntl(fd, fcntl.F_SETFL, flags)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             except Exception as e:
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
 

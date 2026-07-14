@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+
+import logging
+logger = logging.getLogger(__name__)
+
 import sys
 from pathlib import Path
 
@@ -88,7 +92,7 @@ def format_secret_source_suffix(env_var: str) -> str:
         if registered is not None and registered.label:
             return f" (from {registered.label})"
     except Exception:  # noqa: BLE001 — label lookup must never raise
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return f" (from {source})"
 
 
@@ -126,7 +130,7 @@ def _sanitize_loaded_credentials() -> None:
             value.encode("ascii")
             continue
         except UnicodeEncodeError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         cleaned = value.encode("ascii", errors="ignore").decode("ascii")
         os.environ[key] = cleaned
         if key in _WARNED_KEYS:
@@ -211,10 +215,10 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
                 try:
                     os.unlink(tmp)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 raise
     except Exception:
-        pass  # best-effort — don't block gateway startup
+        logger.debug("Suppressed exception", exc_info=True)  # best-effort — don't block gateway startup
 
 
 def load_hermes_dotenv(

@@ -25,6 +25,10 @@ so this client never needs to know the namespace convention.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import random
 import sys
@@ -151,7 +155,7 @@ def _register_self_hosted_client(
                 or ""
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if exc.code == 401:
             raise RuntimeError(
                 "Nous Portal rejected the access token (401). "
@@ -372,7 +376,7 @@ def cmd_dashboard_register(args) -> None:
             wrote_portal_url = True
         except Exception:
             # Non-fatal: the client_id is the load-bearing value.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Persist the dashboard public URL derived from the OAuth redirect URI.
     #
@@ -415,7 +419,7 @@ def cmd_dashboard_register(args) -> None:
                 wrote_public_url = True
             except Exception:
                 # Non-fatal: the client_id is the load-bearing value.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # 4. Hint.
     _print_post_register_hint(

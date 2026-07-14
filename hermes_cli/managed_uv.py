@@ -235,7 +235,7 @@ def _install_uv_posix(env: dict[str, str]) -> None:
         try:
             os.unlink(installer_path)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _install_uv_windows(env: dict[str, str]) -> None:

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import datetime
+
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import uuid
@@ -65,7 +69,7 @@ def get_env_value(name: str, default=None):
         if value is not None:
             return value
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return os.environ.get(name, default)
 
 
@@ -250,7 +254,7 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
                 "base_url": base_url or "https://api.x.ai/v1",
             }
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not force_refresh:
         try:
@@ -266,7 +270,7 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
                     "base_url": base_url or "https://api.x.ai/v1",
                 }
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     api_key = str(get_env_value("XAI_API_KEY") or "").strip()
     base_url = str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")

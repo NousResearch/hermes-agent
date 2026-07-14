@@ -112,7 +112,7 @@ def _log_signal(signum: int, frame) -> None:
                 f.write(f"\n--- thread {th.name} (id={tid}) ---\n")
                 f.write("".join(traceback.format_stack(sys._current_frames().get(tid))))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     print(f"[gateway-signal] {name}", file=sys.stderr, flush=True)
 
     import threading as _threading
@@ -140,7 +140,7 @@ def _log_signal(signum: int, frame) -> None:
 
         _shutdown_sessions()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         sys.exit(0)
@@ -200,7 +200,7 @@ def _log_exit(reason: str) -> None:
                 f"· reason={reason} ===\n"
             )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 

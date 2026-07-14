@@ -648,7 +648,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
                     body["warning"] = message
             except Exception:
                 # Probe failure must never block the create itself.
-                pass
+                log.debug("Suppressed exception", exc_info=True)
         return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -2388,7 +2388,7 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
             except HTTPException:
                 raise
             except Exception:
-                pass  # fail open if the lookup itself errors
+                log.debug("Suppressed exception", exc_info=True)  # fail open if the lookup itself errors
         kanban_section["orchestrator_profile"] = name
 
     if payload.default_assignee is not None:
@@ -2403,7 +2403,7 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
             except HTTPException:
                 raise
             except Exception:
-                pass
+                log.debug("Suppressed exception", exc_info=True)
         kanban_section["default_assignee"] = name
 
     if payload.auto_decompose is not None:
@@ -2496,4 +2496,4 @@ async def stream_events(ws: WebSocket):
         try:
             await ws.close()
         except Exception:
-            pass
+            log.debug("Suppressed exception", exc_info=True)

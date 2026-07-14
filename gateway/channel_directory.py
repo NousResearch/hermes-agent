@@ -159,7 +159,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             ):
                 platforms[entry.name] = await asyncio.to_thread(_build_from_sessions, entry.name)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Overlay user-maintained friendly names before persisting.
     _apply_channel_aliases(platforms)
@@ -311,7 +311,7 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
                     if isinstance(parsed, dict):
                         origin = parsed
                 except (TypeError, ValueError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if not origin:
                 origin = {
                     "chat_id": row.get("chat_id"),

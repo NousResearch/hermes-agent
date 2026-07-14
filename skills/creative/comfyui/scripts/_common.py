@@ -15,6 +15,10 @@ Stdlib-only by design (with optional `requests` upgrade if installed). Python 3.
 from __future__ import annotations
 
 import json
+
+import logging
+logger = logging.getLogger(__name__)
+
 import os
 import random
 import re
@@ -517,7 +521,7 @@ if HAS_REQUESTS:
                             del headers[key]
             except Exception:
                 # Defensive: never let header stripping break a redirect.
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _http_once(

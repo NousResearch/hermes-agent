@@ -310,7 +310,7 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                         base_url="",
                     )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return merged
 
 
@@ -439,7 +439,7 @@ def resolve_persist_behavior(is_global: bool, is_session: bool) -> bool:
         if isinstance(model_cfg, dict):
             return bool(model_cfg.get("persist_switch_by_default", True))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return True
 
 
@@ -498,7 +498,7 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
                     try:
                         nums.append(float(num_buf.rstrip(".")))
                     except ValueError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     num_buf = ""
                 else:
                     num_buf += ch
@@ -507,7 +507,7 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
                     try:
                         nums.append(float(num_buf.rstrip(".")))
                     except ValueError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     num_buf = ""
                 state = "between"
             else:
@@ -515,7 +515,7 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
                     try:
                         nums.append(float(num_buf.rstrip(".")))
                     except ValueError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     num_buf = ""
                 state = "in_suffix"
                 suffix_buf += ch
@@ -538,7 +538,7 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
         try:
             nums.append(float(num_buf.rstrip(".")))
         except ValueError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     suffix = suffix_buf.lower().strip("-_.")
     suffix = suffix.strip()
@@ -609,7 +609,7 @@ def resolve_alias(
                 if m.lower() not in seen:
                     catalog.append(m)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # For aggregators, models are vendor/model-name format
     aggregator = is_aggregator(current_provider)
@@ -714,7 +714,7 @@ def resolve_display_context_length(
         if ctx:
             return int(ctx)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if model_info is not None and model_info.context_window:
         return int(model_info.context_window)
     return None
@@ -881,7 +881,7 @@ def switch_model(
                     for _ci in _cfg_issues[:3]:
                         _switch_err += f"\n  • {_ci.message}"
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return ModelSwitchResult(
                 success=False,
                 is_global=is_global,
@@ -1243,7 +1243,7 @@ def switch_model(
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
@@ -1409,7 +1409,7 @@ def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False)
         if pool.has_credentials():
             return pool.has_available()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return raw_pool_present
 
 
@@ -1539,7 +1539,7 @@ def list_authenticated_providers(
         try:
             clear_provider_models_cache()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
     results: List[dict] = []
@@ -1729,7 +1729,7 @@ def list_authenticated_providers(
                         hermes_id, raw_pool_present=True
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if not has_creds:
             continue
 
@@ -1905,7 +1905,7 @@ def list_authenticated_providers(
                 # Portal recommendation fetch failed — fall back to the
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)
@@ -1961,13 +1961,13 @@ def list_authenticated_providers(
                 if _cp_store and _cp.slug in _cp_providers_store:
                     _cp_has_creds = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if not _cp_has_creds:
             try:
                 if _credential_pool_is_usable(_cp.slug):
                     _cp_has_creds = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Special case: aws_sdk auth (bedrock) — no API key env vars,
         # credentials come from the boto3 credential chain (env vars,
@@ -2099,7 +2099,7 @@ def list_authenticated_providers(
                     if live_models:
                         models_list = live_models
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             results.append({
                 "slug": ep_name,
@@ -2152,7 +2152,7 @@ def list_authenticated_providers(
                 if _live_models:
                     _models = _live_models
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         results.append({
             "slug": "custom",
             "name": "Custom endpoint",
@@ -2377,7 +2377,7 @@ def list_authenticated_providers(
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             results.append({
                 "slug": slug,
                 "name": grp["name"],

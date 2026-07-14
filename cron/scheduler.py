@@ -965,7 +965,7 @@ def _plugin_cron_env_var(platform_name: str) -> str:
         if entry and entry.cron_deliver_env_var:
             return entry.cron_deliver_env_var
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -1049,7 +1049,7 @@ def _iter_home_target_platforms():
             if entry.cron_deliver_env_var and entry.name not in _HOME_TARGET_ENV_VARS:
                 yield entry.name
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def cron_delivery_targets() -> list[dict]:
@@ -1150,7 +1150,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 else:
                     chat_id = resolved
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return {
             "platform": platform_name,
@@ -1447,7 +1447,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         user_cfg = load_config()
         wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if wrap_response:
         task_name = job.get("name", job["id"])
@@ -2548,7 +2548,7 @@ def run_job(
                 try:
                     os.chdir(_prior_cwd)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -2883,7 +2883,7 @@ def run_job(
                     from hermes_cli import managed_scope
                     _cfg = managed_scope.apply_managed_overlay(_cfg)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 _cfg = _expand_env_vars(_cfg)
                 # Coerce null/missing to {} so a falsy default never
                 # clobbers an already-resolved env value with ``None``.
@@ -2920,7 +2920,7 @@ def run_job(
             if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
                 apply_ipv4_preference(force=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Reasoning config from config.yaml (raw value — a YAML boolean False
         # means thinking disabled, see parse_reasoning_effort)
@@ -3229,7 +3229,7 @@ def run_job(
                             _act = agent.get_activity_summary()
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
                         break
@@ -3246,7 +3246,7 @@ def run_job(
                 try:
                     _activity = agent.get_activity_summary()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             _last_desc = _activity.get("last_activity_desc", "unknown")
             _secs_ago = _activity.get("seconds_since_activity", 0)
             _cur_tool = _activity.get("current_tool")
@@ -3696,7 +3696,7 @@ def tick(
                 if _cfg_par is not None:
                     _max_workers = int(_cfg_par) or None
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if verbose:
             logger.info(
@@ -3840,7 +3840,7 @@ def tick(
                     if _exc is not None:
                         logger.error("Cron job future failed in async mode: %s", _exc, exc_info=(type(_exc), _exc, _exc.__traceback__))
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if _remaining[0] <= 0:
                     _sweep_mcp_orphans()
 
@@ -3856,12 +3856,12 @@ def tick(
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except (OSError, IOError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         elif msvcrt:
             try:
                 msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
             except (OSError, IOError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         lock_fd.close()
 
 

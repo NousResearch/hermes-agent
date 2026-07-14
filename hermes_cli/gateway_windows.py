@@ -28,6 +28,10 @@ Design notes
 from __future__ import annotations
 
 import ctypes
+
+import logging
+logger = logging.getLogger(__name__)
+
 import locale
 import os
 import re
@@ -106,7 +110,7 @@ def _preserve_hermes_home_path(path: str | Path) -> str:
             rel = os.path.relpath(str(resolved_candidate), str(resolved_home))
             return str(home / rel)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return str(candidate)
 
 
@@ -370,7 +374,7 @@ def _stable_gateway_working_dir(project_root: Path) -> str:
             if home_path.is_dir():
                 return str(home_path)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return str(project_root)
 
 
@@ -676,7 +680,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         try:
             xml_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if delete_detail and "cannot find" not in delete_detail.lower():
         last_err = f"{last_err.strip()} (delete detail: {delete_detail})"
     return (False, f"schtasks /Create failed (code {last_code}): {last_err.strip()}")
@@ -696,7 +700,7 @@ def _install_startup_entry(script_path: Path) -> Path:
         if legacy_entry.exists():
             legacy_entry.unlink()
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return entry
 
 
@@ -1228,7 +1232,7 @@ def uninstall() -> None:
             path.unlink()
             print(f"✓ Removed {label}: {path}")
         except FileNotFoundError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if is_task_registered() and not scheduled_task_removed:
         print(f"⚠ Scheduled Task still registered: {task_name}")
@@ -1378,7 +1382,7 @@ def _print_deep_probes() -> None:
                     age_seconds = int((now - updated_dt).total_seconds())
                     age_str = f" (updated {age_seconds}s ago)"
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             ok = gateway_state == "running"
             print(f"  [5] {_mark(ok):4s}  gateway_state.json state={gateway_state!r}{age_str}")
         except Exception as exc:
@@ -1516,7 +1520,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
     except Exception:
         # Best-effort: if the marker can't be written, we have no choice
         # but to fall through to a hard kill.  Caller decides escalation.
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     deadline = time.monotonic() + max(drain_timeout, 1.0)
     while time.monotonic() < deadline:
@@ -1577,7 +1581,7 @@ def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[int]:
             if pid > 0 and pid not in pids:
                 pids.append(pid)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return pids
 
 

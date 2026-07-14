@@ -305,7 +305,7 @@ class CodexAppServerSession:
             try:
                 self._client.close()
             except Exception:  # pragma: no cover - best-effort cleanup
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._client = None
         self._thread_id = None
 

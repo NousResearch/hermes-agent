@@ -86,7 +86,7 @@ def _config_refresh_lock(path: Path):
 
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             fh.close()
 
 # In-memory expiry cache keyed by (config path, host) → (expires_at, access).

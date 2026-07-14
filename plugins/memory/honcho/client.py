@@ -68,7 +68,7 @@ def resolve_active_host() -> str:
         profile = get_active_profile_name()
         return profile_host_key(profile)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return HOST
 
 
@@ -130,7 +130,7 @@ def _parse_context_tokens(host_val, root_val) -> int | None:
             try:
                 return int(val)
             except (ValueError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -141,7 +141,7 @@ def _parse_int_config(host_val, root_val, default: int) -> int:
             try:
                 return int(val)
             except (ValueError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return default
 
 
@@ -180,7 +180,7 @@ def _parse_dialectic_depth(host_val, root_val) -> int:
             try:
                 return max(1, min(int(val), 3))
             except (ValueError, TypeError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return 1
 
 
@@ -633,7 +633,7 @@ class HonchoClientConfig:
             if root.returncode == 0:
                 return Path(root.stdout.strip()).name
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
 
     # Honcho enforces a 100-char limit on session IDs. Long gateway session keys
@@ -820,11 +820,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             _lazy_ensure("memory.honcho", prompt=False)
         except ImportError:
             # lazy_deps module missing — fall through to the raw import below.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception:
             # FeatureUnavailable or unexpected error. Don't crash here; let the
             # actual import attempt produce the canonical error message.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         try:
             from honcho import Honcho
@@ -854,7 +854,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                             honcho_cfg.get("request_timeout"),
                         )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Fall back to the default so an unconfigured install cannot hang
         # indefinitely on a stalled Honcho request.

@@ -643,7 +643,7 @@ def _run_review_in_thread(
     try:
         _set_approval_callback(_bg_review_auto_deny)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     review_agent = None
     review_messages: List[Dict] = []
@@ -825,7 +825,7 @@ def _run_review_in_thread(
 
                 _reset_background_review_read_marks()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             try:
                 # Routed to a different model -> replay a digest (cache is cold
@@ -859,11 +859,11 @@ def _run_review_in_thread(
             try:
                 review_agent.shutdown_memory_provider()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 review_agent.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             review_agent = None
 
         # Scan the review agent's messages for successful tool actions
@@ -908,7 +908,7 @@ def _run_review_in_thread(
                         f"💾 Self-improvement review: {summary}"
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
@@ -925,19 +925,19 @@ def _run_review_in_thread(
                     try:
                         review_agent.shutdown_memory_provider()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     try:
                         review_agent.close()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Clear the approval callback on this bg-review thread so a
         # recycled thread-id doesn't inherit a stale reference.
         try:
             _set_approval_callback(None)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def spawn_background_review_thread(

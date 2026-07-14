@@ -13,6 +13,10 @@ Usage::
     hermes-acp
 """
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 # IMPORTANT: hermes_bootstrap must be the very first import — UTF-8 stdio
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
@@ -22,7 +26,7 @@ except ModuleNotFoundError:
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 else:
     # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch directory from
     # shadowing Hermes's own modules — ``hermes acp`` can be started from any
@@ -31,7 +35,6 @@ else:
 
 import argparse
 import asyncio
-import logging
 import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home

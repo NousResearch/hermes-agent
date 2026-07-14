@@ -251,20 +251,20 @@ class SimplexAdapter(BasePlatformAdapter):
             try:
                 await self._ws_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if self._health_task:
             self._health_task.cancel()
             try:
                 await self._health_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if self._ws:
             try:
                 await self._ws.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._ws = None
 
         # Cancel pending text-batch flush timers

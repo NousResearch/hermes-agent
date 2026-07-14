@@ -1479,33 +1479,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _content_is_pipe_table_primary(self, content: str) -> bool:
-        """True when pipe tables are the only rich construct in *content*.
-
-        Used downstream to decide rendering strategy *after* the
-        ``rich_messages`` config gate has already approved rich delivery.
-        MarkdownV2 has no table syntax — the legacy path rewrites them into
-        bullet lists — so callers may choose native table rendering when the
-        opt-in is active.  Task lists, ``<details>``, and block math indicate
-        composite rich content and return ``False``.
-        """
-        if not content or not any(
-            _TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()
-        ):
-            return False
-        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
-            return False
-        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
-            return False
-        if "$$" in content:
-            return False
-        return True
-
-    def _rich_delivery_enabled(self, content: str) -> bool:
-        """Whether rich delivery is allowed for this payload."""
-        return bool(
-            getattr(self, "_rich_messages_enabled", True)
-        )
+    def _rich_delivery_enabled(self) -> bool:
+        """Whether rich delivery is allowed (``rich_messages`` opt-in)."""
+        return bool(getattr(self, "_rich_messages_enabled", True))
 
     def _rich_eligible(self, content: str) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.
@@ -1517,7 +1493,7 @@ class TelegramAdapter(BasePlatformAdapter):
         FINAL edit should still upgrade to rich when the content warrants it.
         """
         return bool(
-            self._rich_delivery_enabled(content)
+            self._rich_delivery_enabled()
             and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()

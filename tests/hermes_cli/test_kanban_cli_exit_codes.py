@@ -7,8 +7,8 @@ import subprocess
 import sys
 
 
-def test_missing_board_json_command_exits_nonzero(tmp_path):
-    """A missing --board must fail the shell command, not just print stderr."""
+def test_nonexistent_board_json_command_exits_nonzero(tmp_path):
+    """A nonexistent board must fail the shell command, not just print stderr."""
     env = os.environ.copy()
     env["HERMES_HOME"] = str(tmp_path)
 
@@ -31,6 +31,5 @@ def test_missing_board_json_command_exits_nonzero(tmp_path):
         check=False,
     )
 
-    assert result.returncode != 0
-    assert result.stdout == ""
+    assert result.returncode == 1
     assert "kanban: board 'definitely-missing-board' does not exist" in result.stderr

@@ -9,6 +9,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
    or:     python tests/test_delegate.py
 """
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import threading
@@ -16,6 +17,8 @@ import time
 import types
 import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
@@ -1937,6 +1940,223 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+
+def _write_delegation_marker(home, marker):
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"delegation:\n  profile_marker: {marker}\n",
+        encoding="utf-8",
+    )
+
+
+def _current_delegate_scope():
+    from hermes_constants import get_hermes_home
+    from tools import delegate_tool
+    from tools.computer_use.desktop_bridge import current_desktop_bridge_scope
+
+    bridge_scope = current_desktop_bridge_scope()
+    return {
+        "bridge_principal": (bridge_scope.provider, bridge_scope.principal),
+        "config_marker": delegate_tool._load_config().get("profile_marker"),
+        "home": str(get_hermes_home()),
+    }
+
+
+def test_single_child_executor_inherits_remote_profile_and_desktop_bridge_caller(
+    monkeypatch, tmp_path
+):
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.computer_use.desktop_bridge import (
+        reset_desktop_bridge_caller,
+        set_desktop_bridge_caller,
+    )
+    from tools.delegate_tool import _run_single_child
+
+    launch_home = tmp_path / "launch"
+    remote_home = tmp_path / "remote-profile"
+    _write_delegation_marker(launch_home, "launch")
+    _write_delegation_marker(remote_home, "remote")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    observed = {}
+    child = MagicMock()
+    child._credential_pool = None
+
+    def run_conversation(**_kwargs):
+        observed.update(_current_delegate_scope())
+        return {
+            "api_calls": 1,
+            "completed": True,
+            "final_response": "done",
+            "messages": [],
+        }
+
+    child.run_conversation.side_effect = run_conversation
+    parent = _make_mock_parent()
+    parent._current_task_id = None
+
+    home_token = set_hermes_home_override(remote_home)
+    caller_token = set_desktop_bridge_caller(("oauth", "desktop-alice"))
+    try:
+        result = _run_single_child(0, "inspect remote profile", child, parent)
+    finally:
+        reset_desktop_bridge_caller(caller_token)
+        reset_hermes_home_override(home_token)
+
+    assert result["status"] == "completed"
+    assert observed == {
+        "bridge_principal": ("oauth", "desktop-alice"),
+        "config_marker": "remote",
+        "home": str(remote_home),
+    }
+
+
+def test_batch_delegate_workers_concurrently_inherit_remote_profile_and_bridge_caller(
+    monkeypatch, tmp_path
+):
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools import delegate_tool
+    from tools.computer_use.desktop_bridge import (
+        reset_desktop_bridge_caller,
+        set_desktop_bridge_caller,
+    )
+
+    launch_home = tmp_path / "launch"
+    remote_home = tmp_path / "remote-profile"
+    _write_delegation_marker(launch_home, "launch")
+    _write_delegation_marker(remote_home, "remote")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    barrier = threading.Barrier(2)
+    observed = []
+    observed_lock = threading.Lock()
+
+    def run_child(task_index, **_kwargs):
+        scope = _current_delegate_scope()
+        barrier.wait(timeout=5)
+        with observed_lock:
+            observed.append((task_index, scope))
+        return {
+            "_child_role": "leaf",
+            "api_calls": 1,
+            "duration_seconds": 0,
+            "status": "completed",
+            "summary": f"done-{task_index}",
+            "task_index": task_index,
+        }
+
+    def build_child(**_kwargs):
+        child = MagicMock()
+        child._delegate_role = "leaf"
+        return child
+
+    parent = _make_mock_parent()
+    creds = {
+        "api_key": None,
+        "api_mode": None,
+        "args": None,
+        "base_url": None,
+        "command": None,
+        "model": None,
+        "provider": None,
+    }
+
+    home_token = set_hermes_home_override(remote_home)
+    caller_token = set_desktop_bridge_caller(("oauth", "desktop-alice"))
+    try:
+        with (
+            patch.object(delegate_tool, "_build_child_agent", side_effect=build_child),
+            patch.object(
+                delegate_tool,
+                "_resolve_delegation_credentials",
+                return_value=creds,
+            ),
+            patch.object(delegate_tool, "_run_single_child", side_effect=run_child),
+        ):
+            result = json.loads(
+                delegate_tool.delegate_task(
+                    tasks=[{"goal": "one"}, {"goal": "two"}],
+                    parent_agent=parent,
+                )
+            )
+    finally:
+        reset_desktop_bridge_caller(caller_token)
+        reset_hermes_home_override(home_token)
+
+    assert [entry["status"] for entry in result["results"]] == [
+        "completed",
+        "completed",
+    ]
+    expected_scope = {
+        "bridge_principal": ("oauth", "desktop-alice"),
+        "config_marker": "remote",
+        "home": str(remote_home),
+    }
+    assert sorted(observed) == [(0, expected_scope), (1, expected_scope)]
+
+
+def test_delegate_context_snapshot_cleans_reused_worker_after_exception(
+    monkeypatch, tmp_path
+):
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.computer_use.desktop_bridge import (
+        current_desktop_bridge_scope,
+        reset_desktop_bridge_caller,
+        set_desktop_bridge_caller,
+    )
+    from tools.delegate_tool import _submit_with_context
+
+    launch_home = tmp_path / "launch"
+    remote_home = tmp_path / "remote-profile"
+    poisoned_home = tmp_path / "poisoned"
+    _write_delegation_marker(launch_home, "launch")
+    _write_delegation_marker(remote_home, "remote")
+    _write_delegation_marker(poisoned_home, "poisoned")
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    def poison_context():
+        assert _current_delegate_scope()["home"] == str(remote_home)
+        set_hermes_home_override(poisoned_home)
+        set_desktop_bridge_caller(("oauth", "poisoned-caller"))
+        raise RuntimeError("worker failed")
+
+    def inspect_unwrapped_worker():
+        try:
+            principal = current_desktop_bridge_scope().principal
+        except RuntimeError:
+            principal = None
+        return str(get_hermes_home()), principal
+
+    home_token = set_hermes_home_override(remote_home)
+    caller_token = set_desktop_bridge_caller(("oauth", "desktop-alice"))
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with pytest.raises(RuntimeError, match="worker failed"):
+                _submit_with_context(executor, poison_context).result(timeout=5)
+
+            assert _current_delegate_scope()["home"] == str(remote_home)
+            assert current_desktop_bridge_scope().principal == "desktop-alice"
+
+            worker_home, worker_principal = executor.submit(
+                inspect_unwrapped_worker
+            ).result(timeout=5)
+    finally:
+        reset_desktop_bridge_caller(caller_token)
+        reset_hermes_home_override(home_token)
+
+    assert worker_home == str(launch_home)
+    assert worker_principal is None
 
 
 class TestDelegateHeartbeat(unittest.TestCase):

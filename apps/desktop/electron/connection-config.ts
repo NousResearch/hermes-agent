@@ -79,20 +79,22 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
-function buildComputerUseBridgeWsUrl(baseUrl, token) {
+function buildComputerUseBridgeWsUrl(baseUrl, token, profile = null) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
   const prefix = parsed.pathname.replace(/\/+$/, '')
 
-  return `${wsScheme}://${parsed.host}${prefix}/api/tools/computer-use/desktop-bridge/ws?token=${encodeURIComponent(token)}`
+  const profileParam = connectionScopeKey(profile) ? `&profile=${encodeURIComponent(connectionScopeKey(profile))}` : ''
+  return `${wsScheme}://${parsed.host}${prefix}/api/tools/computer-use/desktop-bridge/ws?token=${encodeURIComponent(token)}${profileParam}`
 }
 
-function buildComputerUseBridgeWsUrlWithTicket(baseUrl, ticket) {
+function buildComputerUseBridgeWsUrlWithTicket(baseUrl, ticket, profile = null) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
   const prefix = parsed.pathname.replace(/\/+$/, '')
 
-  return `${wsScheme}://${parsed.host}${prefix}/api/tools/computer-use/desktop-bridge/ws?ticket=${encodeURIComponent(ticket)}`
+  const profileParam = connectionScopeKey(profile) ? `&profile=${encodeURIComponent(connectionScopeKey(profile))}` : ''
+  return `${wsScheme}://${parsed.host}${prefix}/api/tools/computer-use/desktop-bridge/ws?ticket=${encodeURIComponent(ticket)}${profileParam}`
 }
 
 /**

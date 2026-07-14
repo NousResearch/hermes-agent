@@ -1763,6 +1763,96 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     assert kwargs["fallback_model"] == []
 
 
+def test_background_worker_keeps_parent_profile_and_bridge_context_without_leaks(
+    monkeypatch, tmp_path
+):
+    from hermes_cli import profiles
+    from hermes_constants import get_hermes_home, get_hermes_home_override
+    from tools.computer_use import desktop_bridge
+
+    default_home = tmp_path / "default"
+    profiles_root = default_home / "profiles"
+    profile_home = profiles_root / "work"
+    default_home.mkdir()
+    profile_home.mkdir(parents=True)
+    (default_home / "config.yaml").write_text("max_turns: 99\n", encoding="utf-8")
+    (profile_home / "config.yaml").write_text("max_turns: 7\n", encoding="utf-8")
+
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+
+    observed = {}
+    cleanup_done = threading.Event()
+    real_home_reset = server.reset_hermes_home_override
+    real_bridge_reset = desktop_bridge.reset_desktop_bridge_caller
+
+    def tracked_bridge_reset(token):
+        real_bridge_reset(token)
+        observed["bridge_after_reset"] = desktop_bridge._CALLER_SCOPE.get()
+
+    def tracked_home_reset(token):
+        real_home_reset(token)
+        observed["home_after_reset"] = get_hermes_home_override()
+        observed["bridge_when_home_reset"] = desktop_bridge._CALLER_SCOPE.get()
+        cleanup_done.set()
+
+    monkeypatch.setattr(desktop_bridge, "reset_desktop_bridge_caller", tracked_bridge_reset)
+    monkeypatch.setattr(server, "reset_hermes_home_override", tracked_home_reset)
+
+    class BackgroundAgent:
+        def __init__(self, **kwargs):
+            observed["home"] = get_hermes_home()
+            observed["max_iterations"] = kwargs["max_iterations"]
+            observed["scope"] = desktop_bridge.current_desktop_bridge_scope()
+
+        def run_conversation(self, **_kwargs):
+            raise RuntimeError("background exploded")
+
+    monkeypatch.setattr("run_agent.AIAgent", BackgroundAgent)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    sid = "background-profile"
+    parent_agent = types.SimpleNamespace(
+        _fallback_chain=[],
+        _session_db=object(),
+        api_mode="chat_completions",
+        base_url="https://example.invalid",
+        enabled_toolsets=["file"],
+        model="test/model",
+        provider="test",
+        reasoning_config={"enabled": False},
+        service_tier="auto",
+    )
+    server._sessions[sid] = {
+        "agent": parent_agent,
+        "authenticated_principal": ("stub", "alice"),
+        "cwd": str(tmp_path),
+        "profile": "work",
+        "profile_home": str(profile_home),
+        "running": False,
+        "session_key": "20260713_010101_background",
+        "source": "desktop",
+    }
+
+    try:
+        response = server._methods["prompt.background"](
+            "background",
+            {"session_id": sid, "text": "keep my profile"},
+        )
+        assert "error" not in response
+        assert cleanup_done.wait(2), "background context cleanup did not finish"
+        assert observed["home"] == profile_home
+        assert observed["max_iterations"] == 7
+        assert observed["scope"] == desktop_bridge.DesktopBridgeScope(
+            "stub", "alice", "work"
+        )
+        assert observed["bridge_after_reset"] is None
+        assert observed["home_after_reset"] is None
+        assert observed["bridge_when_home_reset"] is None
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
     monkeypatch.setenv("HERMES_MODEL", "sonnet")
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)

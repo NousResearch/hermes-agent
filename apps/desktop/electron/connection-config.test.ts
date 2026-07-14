@@ -227,12 +227,16 @@ test('buildComputerUseBridgeWsUrl targets the Desktop bridge reverse channel', (
     buildComputerUseBridgeWsUrl('https://gw.example.com/hermes', 'a/b c'),
     'wss://gw.example.com/hermes/api/tools/computer-use/desktop-bridge/ws?token=a%2Fb%20c'
   )
+  assert.equal(
+    buildComputerUseBridgeWsUrl('https://gw.example.com/hermes', 'token', 'work'),
+    'wss://gw.example.com/hermes/api/tools/computer-use/desktop-bridge/ws?token=token&profile=work'
+  )
 })
 
 test('buildComputerUseBridgeWsUrlWithTicket uses OAuth ticket auth', () => {
   assert.equal(
-    buildComputerUseBridgeWsUrlWithTicket('http://127.0.0.1:9119', 'ticket+1'),
-    'ws://127.0.0.1:9119/api/tools/computer-use/desktop-bridge/ws?ticket=ticket%2B1'
+    buildComputerUseBridgeWsUrlWithTicket('http://127.0.0.1:9119', 'ticket+1', 'research'),
+    'ws://127.0.0.1:9119/api/tools/computer-use/desktop-bridge/ws?ticket=ticket%2B1&profile=research'
   )
 })
 

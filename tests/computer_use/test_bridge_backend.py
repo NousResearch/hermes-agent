@@ -21,6 +21,7 @@ from tools.computer_use.bridge import (
     make_bridge_handler,
     run_bridge_server,
 )
+from tools.computer_use.tool import configured_computer_use_backend
 
 
 def test_capture_payload_round_trips_elements_and_image_metadata():
@@ -163,11 +164,48 @@ def test_http_bridge_backend_rejects_bad_token(capture_server):
         backend.start()
 
 
-def test_bridge_backend_configured_accepts_env(monkeypatch):
-    monkeypatch.setenv("HERMES_COMPUTER_USE_BRIDGE_URL", "http://127.0.0.1:8765")
+def test_bridge_backend_configured_uses_config_url_and_env_secret(monkeypatch):
+    monkeypatch.setattr(
+        "tools.computer_use.bridge.bridge_url_from_config",
+        lambda: "http://127.0.0.1:8765",
+    )
     monkeypatch.setenv("HERMES_COMPUTER_USE_BRIDGE_TOKEN", "secret")
 
     assert bridge_backend_configured() is True
+
+
+def test_bridge_behavioral_env_vars_are_ignored(monkeypatch):
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BRIDGE_URL", "http://attacker.invalid")
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BRIDGE_TIMEOUT", "999")
+    monkeypatch.setenv("HERMES_COMPUTER_USE_BRIDGE_TOKEN", "secret")
+    monkeypatch.setattr(
+        "tools.computer_use.bridge._load_config_value",
+        lambda _key: None,
+    )
+
+    assert bridge_backend_configured() is False
+    backend = HttpComputerUseBridgeBackend(
+        url="http://127.0.0.1:8765", token="secret"
+    )
+    assert backend.timeout == 30
+
+
+def test_bridge_backend_mode_and_timeout_come_from_config(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {
+            "computer_use": {
+                "backend": "bridge",
+                "bridge_timeout_seconds": 12.5,
+            }
+        },
+    )
+
+    assert configured_computer_use_backend() == "bridge"
+    backend = HttpComputerUseBridgeBackend(
+        url="http://127.0.0.1:8765", token="secret"
+    )
+    assert backend.timeout == 12.5
 
 
 def test_bridge_handler_requires_auth_and_dispatches_fake_backend():

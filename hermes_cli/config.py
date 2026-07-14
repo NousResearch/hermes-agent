@@ -3241,6 +3241,15 @@ DEFAULT_CONFIG = {
 
     # Computer Use (cua-driver) toolset settings.
     "computer_use": {
+        # Backend selection: "cua" (local cua-driver, default) or "bridge"
+        # (authenticated manual HTTP bridge). Hermes Desktop's managed reverse
+        # bridge is selected automatically only for its exact authenticated
+        # principal/profile scope; it is not a global backend mode.
+        "backend": "cua",
+        # Manual HTTP bridge URL, normally a loopback SSH/VPN tunnel endpoint.
+        "bridge_url": "",
+        # Per-request timeout for manual bridge status/actions.
+        "bridge_timeout_seconds": 30,
         # cua-driver ships with anonymous usage telemetry (PostHog) ENABLED
         # by default upstream. Hermes disables it for our users unless they
         # explicitly opt in here. When false (default), Hermes sets

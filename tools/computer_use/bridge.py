@@ -11,10 +11,11 @@ Typical shape for a safe remote Desktop setup:
        hermes computer-use bridge --host 127.0.0.1 --port 8765
 2. Remote backend host:
      ssh -N -L 18765:127.0.0.1:8765 mac-host
-     HERMES_COMPUTER_USE_BACKEND=bridge \
-     HERMES_COMPUTER_USE_BRIDGE_URL=http://127.0.0.1:18765 \
      HERMES_COMPUTER_USE_BRIDGE_TOKEN=... \
        hermes serve ...
+
+   with ``computer_use.backend: bridge`` and ``computer_use.bridge_url`` in
+   that backend profile's config.yaml.
 
 The bridge is an authenticated actuator surface. Do not bind it to a public
 interface without a tunnel/VPN and an explicit token.
@@ -101,27 +102,31 @@ def _load_config_value(key: str) -> Optional[str]:
         return None
 
 
-def bridge_url_from_env_or_config() -> str:
+def bridge_url_from_config() -> str:
     return (
-        os.environ.get("HERMES_COMPUTER_USE_BRIDGE_URL")
-        or _load_config_value("bridge_url")
+        _load_config_value("bridge_url")
         or _load_config_value("remote_bridge_url")
         or ""
     ).strip().rstrip("/")
 
 
-def bridge_token_from_env_or_config() -> str:
-    return (
-        os.environ.get("HERMES_COMPUTER_USE_BRIDGE_TOKEN")
-        or _load_config_value("bridge_token")
-        or _load_config_value("remote_bridge_token")
-        or ""
-    ).strip()
+def bridge_token_from_env() -> str:
+    """Read the manual bridge bearer secret from the secrets environment."""
+    return os.environ.get("HERMES_COMPUTER_USE_BRIDGE_TOKEN", "").strip()
+
+
+def bridge_timeout_from_config() -> float:
+    raw = _load_config_value("bridge_timeout_seconds") or "30"
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 30.0
+    return value if value > 0 else 30.0
 
 
 def bridge_backend_configured() -> bool:
     """True when enough config exists for the remote bridge backend to appear."""
-    return bool(bridge_url_from_env_or_config() and bridge_token_from_env_or_config())
+    return bool(bridge_url_from_config() and bridge_token_from_env())
 
 
 def _element_to_payload(element: UIElement) -> Dict[str, Any]:
@@ -224,7 +229,7 @@ def bridge_computer_use_status(
     """Return the local desktop status exposed by a configured bridge.
 
     Used by Desktop's `/api/tools/computer-use/status` endpoint when the
-    backend is configured with `HERMES_COMPUTER_USE_BACKEND=bridge`, so the UI
+    backend is configured with `computer_use.backend: bridge`, so the UI
     reports the Mac/local actuator readiness rather than the remote server's
     local `cua-driver` state.
     """
@@ -237,8 +242,8 @@ def bridge_computer_use_status(
         raise RuntimeError("bridge returned invalid status payload")
     except Exception as exc:
         configured = bool(
-            (url or bridge_url_from_env_or_config())
-            and (token if token is not None else bridge_token_from_env_or_config())
+            (url or bridge_url_from_config())
+            and (token if token is not None else bridge_token_from_env())
         )
         return {
             "platform": "bridge",
@@ -271,15 +276,13 @@ class HttpComputerUseBridgeBackend(ComputerUseBackend):
         token: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> None:
-        self.url = (url or bridge_url_from_env_or_config()).strip().rstrip("/")
-        self.token = token if token is not None else bridge_token_from_env_or_config()
+        self.url = (url or bridge_url_from_config()).strip().rstrip("/")
+        self.token = token if token is not None else bridge_token_from_env()
         self.timeout = float(
-            timeout
-            if timeout is not None
-            else os.environ.get("HERMES_COMPUTER_USE_BRIDGE_TIMEOUT", "30")
+            timeout if timeout is not None else bridge_timeout_from_config()
         )
         if not self.url:
-            raise RuntimeError("HERMES_COMPUTER_USE_BRIDGE_URL is required")
+            raise RuntimeError("computer_use.bridge_url is required in config.yaml")
         if not self.token:
             raise RuntimeError("HERMES_COMPUTER_USE_BRIDGE_TOKEN is required")
 
@@ -450,7 +453,7 @@ def _make_local_backend() -> ComputerUseBackend:
     """Create the local actuator backend used by the bridge server.
 
     Do not call tools.computer_use.tool._get_backend() here: the bridge server
-    may itself be launched with HERMES_COMPUTER_USE_BACKEND=bridge in its
+    may itself be launched with computer_use.backend=bridge in its
     environment, which would recurse. The server side must always control the
     local machine directly.
     """

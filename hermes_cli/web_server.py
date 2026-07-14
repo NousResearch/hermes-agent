@@ -631,6 +631,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Modal sandbox mode",
         "options": ["sandbox", "function"],
     },
+    "computer_use.backend": {
+        "type": "select",
+        "description": "Computer Use execution backend",
+        "options": ["cua", "bridge"],
+    },
     "tts.provider": {
         "type": "select",
         "description": "Text-to-speech provider",
@@ -13741,32 +13746,88 @@ async def run_toolset_post_setup(
 # ---------------------------------------------------------------------------
 
 
+def _request_authenticated_principal(request: Request) -> Tuple[str, str]:
+    """Return only identity attached by auth middleware or a verified token."""
+    session = getattr(request.state, "session", None)
+    if session is not None:
+        return str(session.provider), str(session.user_id)
+    token_principal = getattr(request.state, "token_principal", None)
+    if token_principal is not None:
+        return str(token_principal.provider), str(token_principal.principal)
+    if not getattr(request.app.state, "auth_required", False):
+        return "dashboard-token", "local-session"
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _authorized_computer_use_status_profile(
+    request: Request, profile: Optional[str]
+) -> Optional[str]:
+    """Pin public status reads to the backend launch profile."""
+    if not getattr(request.app.state, "auth_required", False):
+        return profile
+    if getattr(request.state, "session", None) is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return None
+
+    from hermes_cli import profiles as profiles_mod
+
+    requested_profile = profiles_mod.normalize_profile_name(requested)
+    launch_profile = profiles_mod.normalize_profile_name(_dashboard_launch_profile())
+    if requested_profile != launch_profile:
+        raise HTTPException(
+            status_code=403,
+            detail="Requested profile is not authorized for this session",
+        )
+    return None
+
+
 @app.get("/api/tools/computer-use/status")
-async def get_computer_use_status(profile: Optional[str] = None):
+async def get_computer_use_status(
+    request: Request, profile: Optional[str] = None
+):
     """Cross-platform Computer Use readiness for the desktop card.
 
     See ``tools.computer_use.permissions.computer_use_status`` for the payload
     shape. Read-only and fast (shells ``cua-driver doctor`` + macOS
     ``permissions status``).
     """
+    profile = _authorized_computer_use_status_profile(request, profile)
+
     from tools.computer_use.permissions import computer_use_status
+    from tools.computer_use.desktop_bridge import (
+        desktop_bridge_computer_use_status_async,
+        desktop_bridge_connected,
+        reset_desktop_bridge_caller,
+        set_desktop_bridge_caller,
+    )
+    from tools.computer_use.tool import configured_computer_use_backend
 
-    with _profile_scope(profile):
-        backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-        if backend_name in {"bridge", "http", "remote", "remote-bridge"}:
-            from tools.computer_use.bridge import bridge_computer_use_status
+    from hermes_cli.profiles import normalize_profile_name
 
-            return bridge_computer_use_status()
+    bridge_profile = normalize_profile_name(profile or _dashboard_launch_profile())
+    with _config_profile_scope(profile):
+        caller_token = set_desktop_bridge_caller(
+            _request_authenticated_principal(request),
+            profile=bridge_profile,
+        )
         try:
-            from tools.computer_use.desktop_bridge import (
-                desktop_bridge_computer_use_status_async,
-                desktop_bridge_connected,
-            )
-            if backend_name in {"desktop", "desktop-bridge", "desktop_bridge"} or desktop_bridge_connected():
+            backend_name = configured_computer_use_backend()
+            if backend_name in {"bridge", "http", "remote", "remote-bridge"}:
+                from tools.computer_use.bridge import bridge_computer_use_status
+
+                return bridge_computer_use_status()
+            if backend_name in {
+                "desktop",
+                "desktop-bridge",
+                "desktop_bridge",
+            } or desktop_bridge_connected():
                 return await desktop_bridge_computer_use_status_async()
-        except ImportError:
-            pass
-        return computer_use_status()
+            return computer_use_status()
+        finally:
+            reset_desktop_bridge_caller(caller_token)
 
 
 @app.post("/api/tools/computer-use/permissions/grant")
@@ -14354,6 +14415,81 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
+@dataclass(frozen=True)
+class _WsAuthContext:
+    reason: Optional[str]
+    credential: str
+    provider: str = ""
+    principal: str = ""
+
+    @property
+    def authenticated_principal(self) -> Optional[Tuple[str, str]]:
+        if self.reason is not None or not self.provider or not self.principal:
+            return None
+        return self.provider, self.principal
+
+
+def _ws_auth_context(ws: "WebSocket") -> _WsAuthContext:
+    """Authenticate one WS upgrade and retain its verified principal."""
+    auth_required = bool(getattr(app.state, "auth_required", False))
+    if auth_required:
+        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+        from hermes_cli.dashboard_auth.ws_tickets import (
+            TicketInvalid,
+            consume_internal_credential,
+            consume_ticket,
+        )
+
+        internal = ws.query_params.get("internal", "")
+        if internal:
+            try:
+                info = consume_internal_credential(internal)
+                return _WsAuthContext(
+                    None,
+                    "internal",
+                    str(info.get("provider") or ""),
+                    str(info.get("user_id") or ""),
+                )
+            except TicketInvalid as exc:
+                audit_log(
+                    AuditEvent.WS_TICKET_REJECTED,
+                    reason=f"internal: {exc}",
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return _WsAuthContext("internal_invalid", "internal")
+
+        ticket = ws.query_params.get("ticket", "")
+        if not ticket:
+            return _WsAuthContext("no_credential", "none")
+
+        try:
+            info = consume_ticket(ticket)
+            return _WsAuthContext(
+                None,
+                "ticket",
+                str(info.get("provider") or ""),
+                str(info.get("user_id") or ""),
+            )
+        except TicketInvalid as exc:
+            audit_log(
+                AuditEvent.WS_TICKET_REJECTED,
+                reason=str(exc),
+                ip=(ws.client.host if ws.client else ""),
+                path=ws.url.path,
+            )
+            return _WsAuthContext("ticket_invalid", "ticket")
+
+    token = ws.query_params.get("token", "")
+    if not token:
+        return _WsAuthContext("no_credential", "none")
+    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        return _WsAuthContext(
+            None, "token", "dashboard-token", "local-session"
+        )
+    return _WsAuthContext("token_mismatch", "token")
+
+
 def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
@@ -14386,56 +14522,8 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     Audit-logs the rejection so operators can debug "WS keeps closing"
     issues from the log.
     """
-    auth_required = bool(getattr(app.state, "auth_required", False))
-    if auth_required:
-        # Lazy import — keeps this function importable in test harnesses
-        # that don't bring in the dashboard_auth layer.
-        from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-        from hermes_cli.dashboard_auth.ws_tickets import (
-            TicketInvalid,
-            consume_internal_credential,
-            consume_ticket,
-        )
-
-        # Server-spawned children (PTY child → /api/ws, /api/pub) present the
-        # multi-use internal credential rather than a single-use ticket, so
-        # they survive reconnects and slow cold boots.
-        internal = ws.query_params.get("internal", "")
-        if internal:
-            try:
-                consume_internal_credential(internal)
-                return None, "internal"
-            except TicketInvalid as exc:
-                audit_log(
-                    AuditEvent.WS_TICKET_REJECTED,
-                    reason=f"internal: {exc}",
-                    ip=(ws.client.host if ws.client else ""),
-                    path=ws.url.path,
-                )
-                return "internal_invalid", "internal"
-
-        ticket = ws.query_params.get("ticket", "")
-        if not ticket:
-            return "no_credential", "none"
-
-        try:
-            consume_ticket(ticket)
-            return None, "ticket"
-        except TicketInvalid as exc:
-            audit_log(
-                AuditEvent.WS_TICKET_REJECTED,
-                reason=str(exc),
-                ip=(ws.client.host if ws.client else ""),
-                path=ws.url.path,
-            )
-            return "ticket_invalid", "ticket"
-
-    token = ws.query_params.get("token", "")
-    if not token:
-        return "no_credential", "none"
-    if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
-        return None, "token"
-    return "token_mismatch", "token"
+    auth = _ws_auth_context(ws)
+    return auth.reason, auth.credential
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
@@ -15525,7 +15613,8 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    auth = _ws_auth_context(ws)
+    if auth.reason is not None or auth.authenticated_principal is None:
         await ws.close(code=4401)
         return
 
@@ -15535,7 +15624,47 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    await handle_ws(
+        ws,
+        authenticated_principal=auth.authenticated_principal,
+        desktop_bridge_profile=_dashboard_launch_profile(),
+        allow_desktop_bridge_profile_override=auth.credential in {"token", "internal"},
+    )
+
+
+def _dashboard_launch_profile() -> str:
+    from hermes_cli.profiles import get_active_profile_name
+
+    return get_active_profile_name() or "default"
+
+
+def _desktop_bridge_profile_scope(ws: WebSocket) -> str:
+    """Normalize and syntactically validate the requested routing scope."""
+    requested = str(ws.query_params.get("profile", "") or "").strip()
+    if not requested or requested.lower() == "current":
+        return _dashboard_launch_profile()
+
+    from hermes_cli import profiles as profiles_mod
+
+    normalized = profiles_mod.normalize_profile_name(requested)
+    profiles_mod.validate_profile_name(normalized)
+    return normalized
+
+
+def _desktop_bridge_profile_is_authorized(
+    auth: _WsAuthContext, profile: str
+) -> bool:
+    """Authorize a bridge profile using only verified credential authority."""
+    if auth.credential in {"token", "internal"}:
+        return True
+    if auth.credential != "ticket" or auth.authenticated_principal is None:
+        return False
+
+    from hermes_cli import profiles as profiles_mod
+
+    return profiles_mod.normalize_profile_name(profile) == profiles_mod.normalize_profile_name(
+        _dashboard_launch_profile()
+    )
 
 
 @app.websocket("/api/tools/computer-use/desktop-bridge/ws")
@@ -15546,7 +15675,9 @@ async def computer_use_desktop_bridge_ws(ws: WebSocket) -> None:
     a local loopback bridge on the user's machine, without requiring the backend
     to dial the user's laptop or a manual SSH reverse tunnel.
     """
-    if not _ws_auth_ok(ws):
+    auth = _ws_auth_context(ws)
+    principal = auth.authenticated_principal
+    if auth.reason is not None or principal is None:
         await ws.close(code=4401)
         return
 
@@ -15556,7 +15687,29 @@ async def computer_use_desktop_bridge_ws(ws: WebSocket) -> None:
 
     from tools.computer_use.desktop_bridge import handle_desktop_bridge_ws
 
-    await handle_desktop_bridge_ws(ws)
+    try:
+        profile = _desktop_bridge_profile_scope(ws)
+    except Exception:
+        await ws.close(code=4400)
+        return
+
+    if not _desktop_bridge_profile_is_authorized(auth, profile):
+        await ws.close(code=4403)
+        return
+
+    try:
+        _resolve_profile_dir(profile)
+    except Exception:
+        await ws.close(code=4400)
+        return
+
+    provider, subject = principal
+    await handle_desktop_bridge_ws(
+        ws,
+        provider=provider,
+        principal=subject,
+        profile=profile,
+    )
 
 
 # ---------------------------------------------------------------------------

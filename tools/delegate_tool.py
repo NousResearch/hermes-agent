@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import contextvars
 import enum
 import json
 import logging
@@ -39,6 +40,19 @@ _RUNTIME_PROVIDER_CUSTOM = "custom"
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+
+def _submit_with_context(executor, target, /, *args, **kwargs):
+    """Submit one worker call with an isolated snapshot of caller ContextVars.
+
+    Delegation has its own executor ``initializer`` for thread-local subagent
+    approval policy, so the broader ``tools.thread_context`` wrapper would
+    overwrite that callback with the parent's interactive callback. Only the
+    ContextVars snapshot belongs here: ``Context.run`` restores the recycled
+    worker's previous context after success or failure.
+    """
+    ctx = contextvars.copy_context()
+    return executor.submit(ctx.run, target, *args, **kwargs)
 
 
 # Tools that children must never have access to
@@ -1924,7 +1938,9 @@ def _run_single_child(
                 stream_callback=_relay_child_text,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _child_future = _submit_with_context(
+            _timeout_executor, _run_with_thread_capture
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2538,7 +2554,8 @@ def delegate_task(
             with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
                 futures = {}
                 for i, t, child in children:
-                    future = executor.submit(
+                    future = _submit_with_context(
+                        executor,
                         _run_single_child,
                         task_index=i,
                         goal=t["goal"],

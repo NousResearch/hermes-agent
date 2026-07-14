@@ -5,14 +5,16 @@ The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
 loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
 
-These tests exercise the helper at the unit level (no actual WS upgrade)
-plus the ticket-mint endpoint under realistic gated-mode setup. We don't
-test the full WS upgrade because the starlette TestClient WS path has a
-pre-existing regression unrelated to dashboard-auth.
+These tests exercise the helper, ticket-mint endpoint, and focused authenticated
+gateway/Computer Use WebSocket paths under realistic gated-mode setup.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
+import queue
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -229,6 +231,15 @@ class TestWsAuthOkGated:
         ws = _fake_ws(query={"ticket": ticket})
         assert web_server._ws_auth_ok(ws) is True
 
+    def test_valid_ticket_propagates_verified_principal(self, gated_app):
+        ticket = mint_ticket(user_id="user-61507", provider="stub")
+        ws = _fake_ws(query={"ticket": ticket})
+
+        auth = web_server._ws_auth_context(ws)
+
+        assert auth.reason is None
+        assert auth.authenticated_principal == ("stub", "user-61507")
+
     def test_consumed_ticket_rejected(self, gated_app):
         ticket = mint_ticket(user_id="u1", provider="stub")
         ws_one = _fake_ws(query={"ticket": ticket})
@@ -301,6 +312,419 @@ class TestWsAuthOkGated:
         cred = internal_ws_credential()
         ws = _fake_ws(query={"internal": cred})
         assert web_server._ws_auth_ok(ws) is False
+
+
+def test_public_oauth_computer_use_status_rejects_foreign_profile_before_io(
+    gated_app, monkeypatch
+):
+    _logged_in(gated_app)
+    monkeypatch.setattr(web_server, "_dashboard_launch_profile", lambda: "default")
+
+    entered_scopes = []
+    config_reads = []
+
+    @contextmanager
+    def tracked_scope(profile):
+        entered_scopes.append(profile)
+        yield
+
+    monkeypatch.setattr(web_server, "_config_profile_scope", tracked_scope)
+    monkeypatch.setattr(
+        "tools.computer_use.tool.configured_computer_use_backend",
+        lambda: config_reads.append(True) or "bridge",
+    )
+
+    response = gated_app.get("/api/tools/computer-use/status?profile=work")
+
+    assert response.status_code == 403
+    assert entered_scopes == []
+    assert config_reads == []
+
+
+def test_public_oauth_computer_use_status_allows_launch_profile(gated_app, monkeypatch):
+    _logged_in(gated_app)
+    monkeypatch.setattr(web_server, "_dashboard_launch_profile", lambda: "default")
+
+    entered_scopes = []
+
+    @contextmanager
+    def tracked_scope(profile):
+        entered_scopes.append(profile)
+        yield
+
+    monkeypatch.setattr(web_server, "_config_profile_scope", tracked_scope)
+    monkeypatch.setattr(
+        "tools.computer_use.tool.configured_computer_use_backend",
+        lambda: "bridge",
+    )
+    monkeypatch.setattr(
+        "tools.computer_use.bridge.bridge_computer_use_status",
+        lambda: {"ready": True, "checks": [{"label": "launch-profile"}]},
+    )
+
+    response = gated_app.get("/api/tools/computer-use/status?profile=Default")
+
+    assert response.status_code == 200
+    assert response.json()["checks"] == [{"label": "launch-profile"}]
+    assert entered_scopes == [None]
+
+
+def test_operator_computer_use_status_keeps_cross_profile_compatibility(
+    loopback_app, monkeypatch
+):
+    entered_scopes = []
+
+    @contextmanager
+    def tracked_scope(profile):
+        entered_scopes.append(profile)
+        yield
+
+    monkeypatch.setattr(web_server, "_config_profile_scope", tracked_scope)
+    monkeypatch.setattr(
+        "tools.computer_use.tool.configured_computer_use_backend",
+        lambda: "bridge",
+    )
+    monkeypatch.setattr(
+        "tools.computer_use.bridge.bridge_computer_use_status",
+        lambda: {"ready": True, "checks": [{"label": "operator-profile"}]},
+    )
+
+    response = loopback_app.get(
+        "/api/tools/computer-use/status?profile=work",
+        headers={web_server._SESSION_HEADER_NAME: web_server._SESSION_TOKEN},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["checks"] == [{"label": "operator-profile"}]
+    assert entered_scopes == ["work"]
+
+
+def test_public_bridge_foreign_profile_denial_does_not_probe_existence(
+    gated_app, monkeypatch
+):
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setattr(web_server, "_ws_request_is_allowed", lambda _ws: True)
+    monkeypatch.setattr(web_server, "_dashboard_launch_profile", lambda: "default")
+    profile_probes = []
+    monkeypatch.setattr(
+        web_server,
+        "_resolve_profile_dir",
+        lambda profile: profile_probes.append(profile) or profile,
+    )
+
+    for profile in ("existing-foreign", "missing-foreign"):
+        ticket = mint_ticket(user_id="alice", provider="stub")
+        with pytest.raises(WebSocketDisconnect) as denied:
+            with gated_app.websocket_connect(
+                "/api/tools/computer-use/desktop-bridge/ws"
+                f"?ticket={ticket}&profile={profile}"
+            ) as ws:
+                ws.receive_json()
+        assert denied.value.code == 4403
+
+    assert profile_probes == []
+
+
+def test_public_bridge_ticket_is_pinned_to_launch_profile_without_live_session(
+    gated_app, monkeypatch
+):
+    monkeypatch.setattr(web_server, "_ws_request_is_allowed", lambda _ws: True)
+    monkeypatch.setattr(web_server, "_dashboard_launch_profile", lambda: "default")
+    resolved_profiles = []
+    monkeypatch.setattr(
+        web_server,
+        "_resolve_profile_dir",
+        lambda profile: resolved_profiles.append(profile) or profile,
+    )
+    handled = []
+
+    async def fake_handle(ws, **scope):
+        handled.append(scope)
+        await ws.accept()
+        await ws.send_json({"ok": True})
+        await ws.close()
+
+    monkeypatch.setattr(
+        "tools.computer_use.desktop_bridge.handle_desktop_bridge_ws", fake_handle
+    )
+
+    ticket = mint_ticket(user_id="alice", provider="stub")
+    with gated_app.websocket_connect(
+        f"/api/tools/computer-use/desktop-bridge/ws?ticket={ticket}"
+    ) as ws:
+        assert ws.receive_json() == {"ok": True}
+
+    assert handled == [
+        {"provider": "stub", "principal": "alice", "profile": "default"}
+    ]
+    assert resolved_profiles == ["default"]
+
+
+def test_operator_bridge_keeps_validated_cross_profile_scope(
+    loopback_app, monkeypatch
+):
+    monkeypatch.setattr(web_server, "_ws_request_is_allowed", lambda _ws: True)
+    resolved_profiles = []
+    monkeypatch.setattr(
+        web_server,
+        "_resolve_profile_dir",
+        lambda profile: resolved_profiles.append(profile) or profile,
+    )
+    handled = []
+
+    async def fake_handle(ws, **scope):
+        handled.append(scope)
+        await ws.accept()
+        await ws.send_json({"ok": True})
+        await ws.close()
+
+    monkeypatch.setattr(
+        "tools.computer_use.desktop_bridge.handle_desktop_bridge_ws", fake_handle
+    )
+
+    with loopback_app.websocket_connect(
+        "/api/tools/computer-use/desktop-bridge/ws"
+        f"?token={web_server._SESSION_TOKEN}&profile=Work"
+    ) as ws:
+        assert ws.receive_json() == {"ok": True}
+
+    assert resolved_profiles == ["work"]
+    assert handled == [
+        {
+            "provider": "dashboard-token",
+            "principal": "local-session",
+            "profile": "work",
+        }
+    ]
+
+
+def test_ticket_principal_and_session_profile_reach_only_their_bridge(
+    gated_app, monkeypatch, tmp_path
+):
+    """Verified ticket -> live session context -> exact bridge dispatch."""
+    from hermes_cli import profiles as profiles_mod
+    from tools.computer_use import tool as computer_use_tool
+    from tools.computer_use.desktop_bridge import _BROKER, DesktopBridgeScope
+    from tui_gateway import server as tui_server
+
+    profiles_root = tmp_path / "profiles"
+    default_home = tmp_path / "default"
+    default_home.mkdir()
+    (default_home / "config.yaml").write_text(
+        "computer_use:\n  backend: cua\n", encoding="utf-8"
+    )
+    profiles_root.mkdir()
+
+    monkeypatch.setattr(profiles_mod, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setattr(profiles_mod, "_get_profiles_root", lambda: profiles_root)
+    monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(tui_server, "_current_profile_name", lambda: "default")
+    monkeypatch.setattr(web_server, "_ws_request_is_allowed", lambda _ws: True)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(tui_server, "_schedule_agent_build", lambda _sid: None)
+    monkeypatch.setattr(tui_server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(
+        tui_server,
+        "_claim_active_session_slot",
+        lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr(tui_server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(tui_server, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(
+        tui_server, "_sync_agent_model_with_config", lambda _sid, _session: None
+    )
+    monkeypatch.setattr(
+        tui_server,
+        "_sync_session_key_after_compress",
+        lambda *_args, **_kwargs: None,
+    )
+
+    class LocalFallback:
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+        def is_available(self):
+            return True
+
+        def list_apps(self):
+            return [{"name": "gateway-local"}]
+
+    monkeypatch.setattr(
+        "tools.computer_use.cua_backend.CuaDriverBackend", LocalFallback
+    )
+
+    results: queue.Queue[tuple[str, dict]] = queue.Queue()
+
+    class ToolDispatchAgent:
+        api_mode = ""
+        base_url = ""
+        model = "test-model"
+        provider = "test"
+
+        def __init__(self, owner, session_key):
+            self.owner = owner
+            self.session_id = session_key
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, _message, **_kwargs):
+            payload = json.loads(
+                computer_use_tool.handle_computer_use({"action": "list_apps"})
+            )
+            results.put((self.owner, payload))
+            return {"final_response": "tool complete", "messages": []}
+
+    def receive_response(ws, request_id):
+        while True:
+            frame = ws.receive_json()
+            if frame.get("id") == request_id:
+                return frame
+
+    def create_session(ws, owner):
+        request_id = f"create-{owner}"
+        ws.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "session.create",
+                "params": {"source": "desktop"},
+            }
+        )
+        response = receive_response(ws, request_id)
+        sid = response["result"]["session_id"]
+        session = tui_server._sessions[sid]
+        session["agent"] = ToolDispatchAgent(owner, session["session_key"])
+        session["agent_ready"].set()
+        return sid
+
+    def submit_list_apps(ws, owner, sid):
+        request_id = f"prompt-{owner}"
+        ws.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "list apps"},
+            }
+        )
+        response = receive_response(ws, request_id)
+        assert response["result"]["status"] == "streaming"
+
+    def answer_bridge_list_apps(ws, owner):
+        status = ws.receive_json()
+        assert status["type"] == "status"
+        ws.send_json(
+            {"id": status["id"], "ok": True, "result": {"ready": True, "checks": []}}
+        )
+        call = ws.receive_json()
+        assert call["type"] == "computer-use"
+        assert call["method"] == "list_apps"
+        ws.send_json(
+            {
+                "id": call["id"],
+                "ok": True,
+                "result": {"apps": [{"name": f"{owner}-desktop"}]},
+            }
+        )
+
+    def wait_session_idle(sid):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if not tui_server._sessions[sid]["running"]:
+                return
+            time.sleep(0.01)
+        raise AssertionError(f"session {sid} did not become idle")
+
+    tui_server._sessions.clear()
+    computer_use_tool.reset_backend_for_tests()
+    alice_bridge_ticket = mint_ticket(user_id="alice", provider="stub")
+    bob_bridge_ticket = mint_ticket(user_id="bob", provider="stub")
+    alice_gateway_ticket = mint_ticket(user_id="alice", provider="stub")
+    bob_gateway_ticket = mint_ticket(user_id="bob", provider="stub")
+    mallory_gateway_ticket = mint_ticket(user_id="mallory", provider="stub")
+
+    try:
+        with gated_app.websocket_connect(
+            f"/api/ws?ticket={alice_gateway_ticket}"
+        ) as alice_gateway, gated_app.websocket_connect(
+            f"/api/ws?ticket={bob_gateway_ticket}"
+        ) as bob_gateway, gated_app.websocket_connect(
+            f"/api/ws?ticket={mallory_gateway_ticket}"
+        ) as mallory_gateway:
+            for gateway in (alice_gateway, bob_gateway, mallory_gateway):
+                assert gateway.receive_json()["params"]["type"] == "gateway.ready"
+
+            alice_sid = create_session(alice_gateway, "alice")
+            bob_sid = create_session(bob_gateway, "bob")
+            mallory_sid = create_session(mallory_gateway, "mallory")
+
+            with gated_app.websocket_connect(
+                "/api/tools/computer-use/desktop-bridge/ws"
+                f"?ticket={alice_bridge_ticket}"
+            ) as alice_bridge, gated_app.websocket_connect(
+                "/api/tools/computer-use/desktop-bridge/ws"
+                f"?ticket={bob_bridge_ticket}"
+            ) as bob_bridge:
+                submit_list_apps(alice_gateway, "alice", alice_sid)
+                answer_bridge_list_apps(alice_bridge, "alice")
+                assert results.get(timeout=2) == (
+                    "alice",
+                    {"apps": [{"name": "alice-desktop"}], "count": 1},
+                )
+
+                submit_list_apps(bob_gateway, "bob", bob_sid)
+                answer_bridge_list_apps(bob_bridge, "bob")
+                assert results.get(timeout=2) == (
+                    "bob",
+                    {"apps": [{"name": "bob-desktop"}], "count": 1},
+                )
+
+                submit_list_apps(mallory_gateway, "mallory", mallory_sid)
+                assert results.get(timeout=2) == (
+                    "mallory",
+                    {"apps": [{"name": "gateway-local"}], "count": 1},
+                )
+
+                # Generic session routing remains unchanged: Bob can address
+                # Alice's live id, but that foreign transport must clear only
+                # the Computer Use bridge scope. If either Desktop socket were
+                # selected this turn would block waiting for a bridge reply.
+                wait_session_idle(alice_sid)
+                submit_list_apps(bob_gateway, "bob-via-alice", alice_sid)
+                assert results.get(timeout=2) == (
+                    "alice",
+                    {"apps": [{"name": "gateway-local"}], "count": 1},
+                )
+
+                alice_bridge.close()
+                alice_scope = DesktopBridgeScope("stub", "alice", "default")
+                deadline = time.monotonic() + 2
+                while _BROKER.is_connected(alice_scope) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert _BROKER.is_connected(alice_scope) is False
+                assert _BROKER.is_connected(
+                    DesktopBridgeScope("stub", "bob", "default")
+                ) is True
+
+                wait_session_idle(bob_sid)
+                submit_list_apps(bob_gateway, "bob-again", bob_sid)
+                answer_bridge_list_apps(bob_bridge, "bob")
+                assert results.get(timeout=2) == (
+                    "bob",
+                    {"apps": [{"name": "bob-desktop"}], "count": 1},
+                )
+    finally:
+        computer_use_tool.reset_backend_for_tests()
+        for sid in list(tui_server._sessions):
+            tui_server._close_session_by_id(sid, end_reason="test_cleanup")
 
 
 class TestWsRequestIsAllowedGated:

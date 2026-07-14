@@ -89,13 +89,20 @@ export HERMES_COMPUTER_USE_BRIDGE_TOKEN="$(python -c 'import secrets; print(secr
 hermes computer-use bridge --host 127.0.0.1 --port 8765
 ```
 
-Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling and point the backend at it:
+Configure the non-secret behavior in that backend profile's `config.yaml`:
+
+```yaml
+computer_use:
+  backend: bridge
+  bridge_url: http://127.0.0.1:18765
+  bridge_timeout_seconds: 30
+```
+
+Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling, provide the bearer secret, and start the backend:
 
 ```bash
 # Remote backend host
 ssh -N -L 18765:127.0.0.1:8765 mac-host
-export HERMES_COMPUTER_USE_BACKEND=bridge
-export HERMES_COMPUTER_USE_BRIDGE_URL=http://127.0.0.1:18765
 export HERMES_COMPUTER_USE_BRIDGE_TOKEN="<same token>"
 hermes serve --host 0.0.0.0 --port 9119
 ```
@@ -322,10 +329,11 @@ Override the driver binary path (tests / CI / local builds):
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
 
-Swap the backend entirely (for testing):
+Swap the backend entirely (for testing) in `config.yaml`:
 
-```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
+```yaml
+computer_use:
+  backend: noop   # records calls, no side effects
 ```
 
 ### Telemetry

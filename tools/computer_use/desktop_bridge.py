@@ -15,6 +15,8 @@ behind NAT and avoids requiring manual SSH reverse tunnels.
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar, Token
+from dataclasses import dataclass, field
 import json
 import logging
 import threading
@@ -42,50 +44,150 @@ class _PendingCall:
         self.error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class DesktopBridgeScope:
+    """Trusted broker key for one authenticated principal and Hermes profile."""
+
+    provider: str
+    principal: str
+    profile: str
+
+    def validate(self) -> "DesktopBridgeScope":
+        if not self.provider or not self.principal or not self.profile:
+            raise RuntimeError(
+                "Desktop Computer Use bridge scope is incomplete; "
+                "authenticated principal and profile are required"
+            )
+        return self
+
+
+@dataclass
+class _BridgeConnection:
+    ws: Any
+    loop: asyncio.AbstractEventLoop
+    client_id: str
+    connected_at: float
+    pending: Dict[str, _PendingCall] = field(default_factory=dict)
+
+
+_CALLER_SCOPE: ContextVar[Optional[DesktopBridgeScope]] = ContextVar(
+    "desktop_bridge_caller_scope",
+    default=None,
+)
+
+
+def set_desktop_bridge_caller(
+    principal: Optional[Tuple[str, str]], *, profile: Optional[str] = None
+) -> Token:
+    """Bind one immutable, verified bridge scope for an agent execution."""
+    scope = None
+    if principal is not None:
+        provider, subject = principal
+        if profile is None:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile = get_active_profile_name() or "default"
+            except Exception:
+                profile = ""
+        scope = DesktopBridgeScope(
+            str(provider).strip(),
+            str(subject).strip(),
+            str(profile).strip(),
+        ).validate()
+    return _CALLER_SCOPE.set(scope)
+
+
+def reset_desktop_bridge_caller(token: Token) -> None:
+    _CALLER_SCOPE.reset(token)
+
+
+def current_desktop_bridge_scope() -> DesktopBridgeScope:
+    """Resolve the exact trusted caller scope for the current agent context."""
+    scope = _CALLER_SCOPE.get()
+    if scope is None:
+        raise RuntimeError(
+            "Desktop Computer Use bridge caller is not authenticated in this context"
+        )
+    return scope.validate()
+
+
 class DesktopBridgeBroker:
-    """Thread-safe request/response broker for one live Desktop bridge client."""
+    """Thread-safe, fail-closed broker for scoped Desktop bridge clients."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._ws: Any = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._client_id: Optional[str] = None
-        self._connected_at: Optional[float] = None
-        self._pending: Dict[str, _PendingCall] = {}
+        self._connections: Dict[DesktopBridgeScope, Dict[str, _BridgeConnection]] = {}
 
-    def is_connected(self) -> bool:
+    def _scope(self, scope: Optional[DesktopBridgeScope]) -> DesktopBridgeScope:
+        return (scope or current_desktop_bridge_scope()).validate()
+
+    def _matching_connection(
+        self, scope: Optional[DesktopBridgeScope]
+    ) -> Tuple[DesktopBridgeScope, _BridgeConnection]:
+        resolved = self._scope(scope)
         with self._lock:
-            return self._ws is not None and self._loop is not None
+            matches = list(self._connections.get(resolved, {}).values())
+        if not matches:
+            raise RuntimeError(
+                "Desktop Computer Use bridge is not connected for the "
+                "authenticated principal and profile"
+            )
+        if len(matches) != 1:
+            raise RuntimeError(
+                "Desktop Computer Use bridge scope is ambiguous; "
+                "close duplicate Desktop connections and retry"
+            )
+        return resolved, matches[0]
 
-    def connection_info(self) -> Dict[str, Any]:
+    def is_connected(self, scope: Optional[DesktopBridgeScope] = None) -> bool:
+        try:
+            self._matching_connection(scope)
+            return True
+        except RuntimeError:
+            return False
+
+    def connection_info(
+        self, scope: Optional[DesktopBridgeScope] = None
+    ) -> Dict[str, Any]:
+        try:
+            resolved, connection = self._matching_connection(scope)
+        except RuntimeError as exc:
+            with self._lock:
+                total = sum(len(items) for items in self._connections.values())
+            return {
+                "connected": False,
+                "connection_count": total,
+                "error": str(exc),
+            }
         with self._lock:
             return {
-                "connected": self._ws is not None and self._loop is not None,
-                "client_id": self._client_id,
-                "connected_at": self._connected_at,
-                "pending": len(self._pending),
+                "connected": True,
+                "client_id": connection.client_id,
+                "connected_at": connection.connected_at,
+                "pending": len(connection.pending),
+                "profile": resolved.profile,
             }
 
-    async def handle_ws(self, ws: Any) -> None:
+    async def handle_ws(self, ws: Any, scope: DesktopBridgeScope) -> None:
         """Accept and service a Desktop bridge WebSocket until it disconnects."""
+        scope = self._scope(scope)
         await ws.accept()
-        loop = asyncio.get_running_loop()
-        client_id = uuid.uuid4().hex
+        connection = _BridgeConnection(
+            ws=ws,
+            loop=asyncio.get_running_loop(),
+            client_id=uuid.uuid4().hex,
+            connected_at=time.time(),
+        )
 
         with self._lock:
-            previous = self._ws
-            self._ws = ws
-            self._loop = loop
-            self._client_id = client_id
-            self._connected_at = time.time()
+            self._connections.setdefault(scope, {})[connection.client_id] = connection
 
-        if previous is not None and previous is not ws:
-            try:
-                await previous.close(code=4000, reason="replaced by newer Desktop bridge")
-            except Exception:
-                pass
-
-        _log.info("desktop computer_use bridge connected client=%s", client_id)
+        _log.info(
+            "desktop computer_use bridge connected client=%s profile=%s",
+            connection.client_id,
+            scope.profile,
+        )
         try:
             while True:
                 raw = await ws.receive_text()
@@ -97,22 +199,22 @@ class DesktopBridgeBroker:
                 except json.JSONDecodeError:
                     _log.warning("desktop computer_use bridge sent invalid JSON")
                     continue
-                self._handle_message(message)
+                self._handle_message(connection, message)
         except Exception as exc:
             # Starlette raises WebSocketDisconnect on normal close. Avoid importing
             # it just for an isinstance; debug is enough for expected disconnects.
             _log.debug("desktop computer_use bridge disconnected: %s", exc)
         finally:
-            self._disconnect(ws, client_id)
+            self._disconnect(scope, connection)
 
-    def _handle_message(self, message: Any) -> None:
+    def _handle_message(self, connection: _BridgeConnection, message: Any) -> None:
         if not isinstance(message, dict):
             return
         call_id = str(message.get("id") or "")
         if not call_id:
             return
         with self._lock:
-            pending = self._pending.get(call_id)
+            pending = connection.pending.get(call_id)
         if pending is None:
             return
         if message.get("ok") is False:
@@ -126,50 +228,62 @@ class DesktopBridgeBroker:
                 pending.future.set_result(pending.result)
         pending.event.set()
 
-    def _disconnect(self, ws: Any, client_id: str) -> None:
+    def _disconnect(
+        self, scope: DesktopBridgeScope, connection: _BridgeConnection
+    ) -> None:
         with self._lock:
-            if self._ws is not ws:
+            scoped = self._connections.get(scope)
+            if scoped is None or scoped.get(connection.client_id) is not connection:
                 return
-            self._ws = None
-            self._loop = None
-            self._client_id = None
-            self._connected_at = None
-            pending = list(self._pending.values())
-            self._pending.clear()
+            scoped.pop(connection.client_id, None)
+            if not scoped:
+                self._connections.pop(scope, None)
+            pending = list(connection.pending.values())
+            connection.pending.clear()
         for call in pending:
             call.error = "Desktop Computer Use bridge disconnected"
             if call.future is not None and not call.future.done():
                 call.future.set_exception(RuntimeError(call.error))
             call.event.set()
-        _log.info("desktop computer_use bridge disconnected client=%s", client_id)
+        _log.info(
+            "desktop computer_use bridge disconnected client=%s profile=%s",
+            connection.client_id,
+            scope.profile,
+        )
 
-    def _make_pending(self) -> Tuple[str, _PendingCall, Any, asyncio.AbstractEventLoop]:
+    def _make_pending(
+        self, scope: Optional[DesktopBridgeScope]
+    ) -> Tuple[str, _PendingCall, _BridgeConnection]:
+        _resolved, connection = self._matching_connection(scope)
         with self._lock:
-            ws = self._ws
-            loop = self._loop
-            if ws is None or loop is None:
-                raise RuntimeError("Desktop Computer Use bridge is not connected")
             call_id = uuid.uuid4().hex
             pending = _PendingCall()
-            self._pending[call_id] = pending
-        return call_id, pending, ws, loop
+            connection.pending[call_id] = pending
+        return call_id, pending, connection
 
-    def request(self, payload: Dict[str, Any], timeout: Optional[float] = None) -> Any:
+    def request(
+        self,
+        payload: Dict[str, Any],
+        timeout: Optional[float] = None,
+        scope: Optional[DesktopBridgeScope] = None,
+    ) -> Any:
         """Send one request frame to Desktop and synchronously wait for the reply."""
-        call_id, pending, ws, loop = self._make_pending()
+        call_id, pending, connection = self._make_pending(scope)
 
         try:
             running_loop = asyncio.get_running_loop()
         except RuntimeError:
             running_loop = None
-        if running_loop is loop:
+        if running_loop is connection.loop:
             with self._lock:
-                self._pending.pop(call_id, None)
+                connection.pending.pop(call_id, None)
             raise RuntimeError("Desktop Computer Use bridge sync request cannot run on the WebSocket event loop")
 
         frame = {"id": call_id, **payload}
         try:
-            future = asyncio.run_coroutine_threadsafe(ws.send_text(json.dumps(frame)), loop)
+            future = asyncio.run_coroutine_threadsafe(
+                connection.ws.send_text(json.dumps(frame)), connection.loop
+            )
             future.result(timeout=5)
             if not pending.event.wait(timeout or _DEFAULT_TIMEOUT_S):
                 raise RuntimeError("Desktop Computer Use bridge timed out")
@@ -178,34 +292,44 @@ class DesktopBridgeBroker:
             return pending.result
         finally:
             with self._lock:
-                self._pending.pop(call_id, None)
+                connection.pending.pop(call_id, None)
 
-    async def request_async(self, payload: Dict[str, Any], timeout: Optional[float] = None) -> Any:
+    async def request_async(
+        self,
+        payload: Dict[str, Any],
+        timeout: Optional[float] = None,
+        scope: Optional[DesktopBridgeScope] = None,
+    ) -> Any:
         """Send one request frame from the WebSocket event loop and await its reply."""
-        call_id, pending, ws, _loop = self._make_pending()
+        call_id, pending, connection = self._make_pending(scope)
         pending.future = asyncio.get_running_loop().create_future()
         frame = {"id": call_id, **payload}
         try:
-            await ws.send_text(json.dumps(frame))
+            await connection.ws.send_text(json.dumps(frame))
             return await asyncio.wait_for(pending.future, timeout or _DEFAULT_TIMEOUT_S)
         finally:
             with self._lock:
-                self._pending.pop(call_id, None)
+                connection.pending.pop(call_id, None)
 
 
 _BROKER = DesktopBridgeBroker()
 
 
-def desktop_bridge_connected() -> bool:
-    return _BROKER.is_connected()
+def desktop_bridge_connected(scope: Optional[DesktopBridgeScope] = None) -> bool:
+    return _BROKER.is_connected(scope)
 
 
-def desktop_bridge_info() -> Dict[str, Any]:
-    return _BROKER.connection_info()
+def desktop_bridge_info(
+    scope: Optional[DesktopBridgeScope] = None,
+) -> Dict[str, Any]:
+    return _BROKER.connection_info(scope)
 
 
-async def handle_desktop_bridge_ws(ws: Any) -> None:
-    await _BROKER.handle_ws(ws)
+async def handle_desktop_bridge_ws(
+    ws: Any, *, provider: str, principal: str, profile: str
+) -> None:
+    scope = DesktopBridgeScope(provider, principal, profile).validate()
+    await _BROKER.handle_ws(ws, scope)
 
 
 def _offline_status(message: str) -> Dict[str, Any]:
@@ -237,7 +361,10 @@ def _offline_status(message: str) -> Dict[str, Any]:
 def desktop_bridge_computer_use_status(timeout: float = 5.0) -> Dict[str, Any]:
     """Return the local Desktop host's Computer Use status via the live bridge."""
     if not desktop_bridge_connected():
-        return _offline_status("Desktop Computer Use bridge is not connected")
+        info = desktop_bridge_info()
+        return _offline_status(
+            str(info.get("error") or "Desktop Computer Use bridge is not connected")
+        )
     try:
         result = _BROKER.request({"type": "status"}, timeout=timeout)
         return _status_from_bridge_result(result)
@@ -248,7 +375,10 @@ def desktop_bridge_computer_use_status(timeout: float = 5.0) -> Dict[str, Any]:
 async def desktop_bridge_computer_use_status_async(timeout: float = 5.0) -> Dict[str, Any]:
     """Async status variant for FastAPI routes running on the bridge WS loop."""
     if not desktop_bridge_connected():
-        return _offline_status("Desktop Computer Use bridge is not connected")
+        info = desktop_bridge_info()
+        return _offline_status(
+            str(info.get("error") or "Desktop Computer Use bridge is not connected")
+        )
     try:
         result = await _BROKER.request_async({"type": "status"}, timeout=timeout)
         return _status_from_bridge_result(result)
@@ -287,7 +417,10 @@ class DesktopComputerUseBridgeBackend(ComputerUseBackend):
 
     def start(self) -> None:
         if not desktop_bridge_connected():
-            raise RuntimeError("Desktop Computer Use bridge is not connected")
+            info = desktop_bridge_info()
+            raise RuntimeError(
+                str(info.get("error") or "Desktop Computer Use bridge is not connected")
+            )
         self._request("status", timeout=5.0)
 
     def stop(self) -> None:

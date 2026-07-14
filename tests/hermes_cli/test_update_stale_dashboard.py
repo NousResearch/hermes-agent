@@ -230,6 +230,22 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids(exclude_pids={12345})
         assert pids == []
 
+    def test_desktop_embedded_serve_process_is_ignored(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        12345,
+                        "python3 -m hermes_cli.main serve --desktop-embedded --port 0",
+                    ),
+                    _ps_line(12346, "python3 -m hermes_cli.main serve --port 9119"),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert pids == [12346]
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:
@@ -562,3 +578,18 @@ class TestWindowsWmicEncoding:
             )
             # Must not raise.
             assert _find_stale_dashboard_pids() == []
+
+    def test_wmic_ignores_desktop_embedded_backend(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=(
+                    "CommandLine=python -m hermes_cli.main serve --desktop-embedded --port 0\n"
+                    "ProcessId=12345\n"
+                    "CommandLine=python -m hermes_cli.main serve --port 9119\n"
+                    "ProcessId=12346\n"
+                ),
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12346]

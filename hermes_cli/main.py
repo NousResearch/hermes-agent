@@ -6213,6 +6213,10 @@ def _find_stale_dashboard_pids(
     backend process; ``_kill_stale_dashboard_processes`` reads it and
     passes it here.  (#37532)
 
+    Desktop also marks its backend argv with ``--desktop-embedded`` so direct
+    process-table flows such as ``hermes dashboard --stop`` can skip desktop-
+    owned backends even when no parent update process supplied exclude PIDs.
+
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
     patterns = [
@@ -6226,6 +6230,7 @@ def _find_stale_dashboard_pids(
         "hermes_cli.main serve",
         "hermes_cli/main.py serve",
     ]
+    desktop_embedded_marker = "--desktop-embedded"
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -6263,6 +6268,7 @@ def _find_stale_dashboard_pids(
                     pid_str = line[len("ProcessId=") :]
                     if (
                         any(p in current_cmd for p in patterns)
+                        and desktop_embedded_marker not in current_cmd
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -6295,7 +6301,11 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        any(p in command for p in patterns)
+                        and desktop_embedded_marker not in command
+                        and pid != self_pid
+                    ):
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

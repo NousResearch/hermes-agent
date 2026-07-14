@@ -1472,7 +1472,21 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     """
     from tools.xai_http import resolve_xai_http_credentials
 
-    creds = resolve_xai_http_credentials()
+    # STT is an API-billed endpoint. Prefer the explicit XAI_API_KEY over the
+    # general xAI OAuth/Grok-subscription credential; subscription OAuth may be
+    # valid for Grok while returning personal-team spending-limit errors for
+    # /v1/stt. Other xAI integrations keep their existing resolver precedence.
+    direct_api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+    if direct_api_key:
+        creds = {
+            "provider": "xai",
+            "api_key": direct_api_key,
+            "base_url": str(
+                get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1"
+            ).strip().rstrip("/"),
+        }
+    else:
+        creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
         return {

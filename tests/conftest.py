@@ -580,11 +580,19 @@ def _live_system_guard(request, monkeypatch):
     # the live psutil walk below. Static set keeps the fast path cheap.
     try:
         import psutil as _psutil
-        _initial_children = {
-            c.pid for c in _psutil.Process(test_pid).children(recursive=True)
-        }
     except Exception:
         _psutil = None
+
+    try:
+        _initial_children = (
+            {c.pid for c in _psutil.Process(test_pid).children(recursive=True)}
+            if _psutil is not None
+            else set()
+        )
+    except Exception:
+        # Termux/Android can deny parts of /proc that psutil's recursive
+        # children walk consults. Keep psutil available for the cheaper
+        # per-PID PPID fallback below instead of disabling it entirely.
         _initial_children = set()
 
     def _is_own_subtree(pid: int) -> bool:
@@ -594,6 +602,8 @@ def _live_system_guard(request, monkeypatch):
         # is treated as foreign (refuse).
         if pid == 0:
             return True
+        if pid == 1:
+            return False
         if pid < 0:
             return False
         if pid == test_pid or pid in _initial_children:
@@ -610,7 +620,25 @@ def _live_system_guard(request, monkeypatch):
                 if parent.pid == test_pid:
                     return True
         except Exception:
-            return False
+            # On Android/Termux, psutil.parents() may fail because reading
+            # /proc/stat is denied. The direct PPID chain is still available,
+            # so walk it manually before treating the PID as foreign.
+            seen: set[int] = set()
+            current = walker
+            for _ in range(128):
+                try:
+                    ppid = int(current.ppid())
+                except Exception:
+                    return False
+                if ppid == test_pid or ppid in _initial_children:
+                    return True
+                if ppid in seen or ppid <= 1:
+                    return False
+                seen.add(ppid)
+                try:
+                    current = _psutil.Process(ppid)
+                except Exception:
+                    return False
         return False
 
     real_kill = _os.kill

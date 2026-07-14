@@ -1,4 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# Re-exec under bash from PATH. Termux lacks /usr/bin/env, but has /bin/sh
+# and bash on PATH; using a POSIX trampoline keeps the canonical runner
+# directly executable without hardcoding a phone-specific bash path.
+if [ -z "${HERMES_RUN_TESTS_BASH_REEXEC:-}" ]; then
+  export HERMES_RUN_TESTS_BASH_REEXEC=1
+  exec bash "$0" "$@"
+fi
+unset HERMES_RUN_TESTS_BASH_REEXEC
 # Canonical test runner for hermes-agent. Run this instead of calling
 # `pytest` directly to guarantee your local run matches CI behavior.
 #
@@ -40,14 +48,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Activate venv ───────────────────────────────────────────────────────────
 VENV=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
+  if [ -f "$candidate/bin/activate" ] && "$candidate/bin/python" -c 'import pytest' >/dev/null 2>&1; then
     VENV="$candidate"
     break
   fi
 done
 
 if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv, $REPO_ROOT/venv, or $HOME/.hermes/hermes-agent/venv" >&2
   exit 1
 fi
 

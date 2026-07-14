@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import signal
+import shutil
 import subprocess
 
 import pytest
@@ -26,6 +27,13 @@ import pytest
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
 FOREIGN_PID = 1
+
+
+def _systemctl_or_skip() -> str:
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        pytest.skip("systemctl is not installed on this test host")
+    return systemctl
 
 
 # ──────────────────── kill primitives ─────────────────────────
@@ -208,7 +216,7 @@ def test_systemctl_status_passes_through():
     """Read-only systemctl probes (status/show/list-units) are fine."""
     # Run with check=False so we don't fail on the gateway's exit code.
     r = subprocess.run(
-        ["systemctl", "--user", "status", "hermes-gateway", "--no-pager"],
+        [_systemctl_or_skip(), "--user", "status", "hermes-gateway", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
@@ -218,7 +226,7 @@ def test_systemctl_status_passes_through():
 
 def test_systemctl_show_passes_through():
     r = subprocess.run(
-        ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
+        [_systemctl_or_skip(), "--user", "show", "hermes-gateway", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
@@ -228,7 +236,7 @@ def test_systemctl_show_passes_through():
 
 def test_systemctl_list_units_passes_through():
     r = subprocess.run(
-        ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
+        [_systemctl_or_skip(), "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
         capture_output=True,
         text=True,
         check=False,
@@ -243,7 +251,7 @@ def test_systemctl_unrelated_unit_passes_through():
     # --dry-run via the privileged API; on user scope it usually fails
     # quickly without side effects.
     r = subprocess.run(
-        ["systemctl", "--user", "show", "fake-not-real-unit"],
+        [_systemctl_or_skip(), "--user", "show", "fake-not-real-unit"],
         capture_output=True,
         text=True,
         check=False,

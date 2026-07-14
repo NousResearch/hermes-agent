@@ -1226,7 +1226,17 @@ class LocalEnvironment(BaseEnvironment):
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
-            except ProcessLookupError:
+            except PermissionError:
+                # _run_bash starts POSIX children with os.setsid, so the child
+                # PID is also the process-group id. Android/Termux may still
+                # deny getpgid(); cache the known group id so cleanup can reach
+                # grandchildren instead of degrading to proc.kill() only.
+                proc._hermes_pgid = proc.pid
+            except (ProcessLookupError, OSError):
+                # The cached pgid is a best-effort cleanup optimization, not a
+                # precondition for running the command; _kill_process has its
+                # own fallbacks for already-exited wrappers and unsupported
+                # process-group signalling.
                 pass
 
         if stdin_data is not None:
@@ -1285,6 +1295,12 @@ class LocalEnvironment(BaseEnvironment):
                     pgid = getattr(proc, "_hermes_pgid", None)
                     if pgid is None:
                         raise
+                except PermissionError:
+                    # If getpgid is denied, prefer the cached group id.  For
+                    # LocalEnvironment-spawned POSIX children, os.setsid makes
+                    # proc.pid the group id, so fall back to proc.pid rather
+                    # than abandoning group cleanup.
+                    pgid = getattr(proc, "_hermes_pgid", proc.pid)
 
                 try:
                     os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX process-group SIGTERM (guarded by _IS_WINDOWS above)

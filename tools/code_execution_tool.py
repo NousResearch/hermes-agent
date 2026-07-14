@@ -36,6 +36,7 @@ import os
 import platform
 import secrets
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -1440,7 +1441,7 @@ def execute_code(
         poll_interval = 0.005
         while proc.poll() is None:
             if _is_interrupted():
-                _kill_process_group(proc)
+                _kill_process_group(proc, escalate=True)
                 status = "interrupted"
                 break
             now = time.monotonic()
@@ -1576,7 +1577,61 @@ def execute_code(
 
 
 def _kill_process_group(proc, escalate: bool = False):
-    """Kill the child and its entire process tree (cross-platform via psutil)."""
+    """Kill the sandbox process tree, preferring its POSIX process group.
+
+    Local execute_code children are spawned with ``start_new_session=True``,
+    so on POSIX ``proc.pid`` is also the process-group ID.  That remains a
+    reliable cleanup handle when Android denies psutil access to ``/proc``.
+    """
+    if not _IS_WINDOWS and hasattr(os, "killpg"):
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            # The group is already gone.  A direct kill is harmless and keeps
+            # compatibility with unusual Popen-like callers lacking a group.
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return
+        except (PermissionError, OSError) as e:
+            logger.debug(
+                "Could not terminate POSIX process group %s: %s",
+                proc.pid,
+                e,
+                exc_info=True,
+            )
+        else:
+            if escalate:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        os.killpg(proc.pid, 0)
+                    except ProcessLookupError:
+                        break
+                    except PermissionError:
+                        break
+                    try:
+                        proc.wait(timeout=0.05)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    time.sleep(0.05)
+                try:
+                    os.killpg(proc.pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                else:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            return
+
+    # Windows and rare POSIX group-signal failures retain the psutil tree walk.
     import psutil
     try:
         parent = psutil.Process(proc.pid)
@@ -1584,15 +1639,21 @@ def _kill_process_group(proc, escalate: bool = False):
         for child in children:
             try:
                 child.terminate()
-            except psutil.NoSuchProcess:
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
         try:
             parent.terminate()
         except psutil.NoSuchProcess:
             pass
+        except psutil.AccessDenied as e:
+            logger.debug("Could not terminate parent process via psutil: %s", e, exc_info=True)
+            try:
+                proc.kill()
+            except Exception as e2:
+                logger.debug("Could not kill process: %s", e2, exc_info=True)
     except psutil.NoSuchProcess:
         pass
-    except (PermissionError, OSError) as e:
+    except (psutil.AccessDenied, PermissionError, OSError) as e:
         logger.debug("Could not terminate process tree: %s", e, exc_info=True)
         try:
             proc.kill()
@@ -1600,7 +1661,7 @@ def _kill_process_group(proc, escalate: bool = False):
             logger.debug("Could not kill process: %s", e2, exc_info=True)
 
     if escalate:
-        # Give the process 5s to exit after SIGTERM, then SIGKILL
+        # Give the process 5s to exit after SIGTERM, then SIGKILL.
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -1609,15 +1670,21 @@ def _kill_process_group(proc, escalate: bool = False):
                 for child in parent.children(recursive=True):
                     try:
                         child.kill()
-                    except psutil.NoSuchProcess:
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
                 try:
                     parent.kill()
                 except psutil.NoSuchProcess:
                     pass
+                except psutil.AccessDenied as e:
+                    logger.debug("Could not kill parent process via psutil: %s", e, exc_info=True)
+                    try:
+                        proc.kill()
+                    except Exception as e2:
+                        logger.debug("Could not kill process: %s", e2, exc_info=True)
             except psutil.NoSuchProcess:
                 pass
-            except (PermissionError, OSError) as e:
+            except (psutil.AccessDenied, PermissionError, OSError) as e:
                 logger.debug("Could not kill process tree: %s", e, exc_info=True)
                 try:
                     proc.kill()

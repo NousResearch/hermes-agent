@@ -1167,6 +1167,34 @@ class TestSyncTurn:
         assert data_url[-32:] not in raw_json
         assert "before [inline media omitted from memory] after" in user_message
 
+    def test_sync_turn_redacts_parameterized_data_urls(self, provider_with_config):
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "data:image/svg+xml;charset=utf-8;base64," + ("C" * 128)
+
+        p.sync_turn(f"before {data_url} after", "ok")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        user_message = json.loads(raw_json)[0][0]["content"]
+
+        assert data_url not in raw_json
+        assert "before [inline media omitted from memory] after" in user_message
+
+    def test_sync_turn_redacts_mixed_case_data_urls(self, provider_with_config):
+        p = provider_with_config()
+        p._client = _make_mock_client()
+        data_url = "DaTa:ImAgE/PnG;BaSe64," + ("D" * 128)
+
+        p.sync_turn(f"before {data_url} after", "ok")
+        p._retain_queue.join()
+
+        raw_json = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
+        user_message = json.loads(raw_json)[0][0]["content"]
+
+        assert data_url not in raw_json
+        assert "before [inline media omitted from memory] after" in user_message
+
 
 # ---------------------------------------------------------------------------
 # Shutdown / writer tests

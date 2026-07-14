@@ -183,6 +183,27 @@ def set_session_cookies(
         )
 
 
+def _emit_deletion(response: Response, bare: str, variant: str, prefix: str) -> None:
+    """Emit one Max-Age=0 deletion for a single cookie-name variant.
+
+    The cookie-prefix rules that gate the *setters* gate deletions too: a
+    browser silently rejects a ``Set-Cookie`` for a ``__Secure-`` / ``__Host-``
+    name that lacks ``Secure`` (and ``__Host-`` additionally requires
+    ``Path=/``). Emitting the prefixed deletions as bare HTTP cookies — as we
+    used to — means the browser drops them on the floor and keeps replaying the
+    real, still-live session cookie after logout/expiry. So the deletion must
+    mirror the attributes the setter would have used for that variant.
+    """
+    secure = variant != ""
+    # __Host- is pinned to Path=/ by spec; a deletion under any other path is
+    # rejected, so override the path for that one variant.
+    path = "/" if variant == "__Host-" else _cookie_path(prefix)
+    response.set_cookie(
+        f"{variant}{bare}", "", max_age=0,
+        path=path, httponly=True, samesite="lax", secure=secure,
+    )
+
+
 def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
     """Emit Max-Age=0 deletions for both session cookies.
 
@@ -190,18 +211,13 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
     set path AND the cookie name must match the variant the setter used.
     We don't know which variant was originally set (cookie prefix
     depends on the request that set it), so we emit deletions for every
-    plausible variant under the active path.
+    plausible variant under the active path — each carrying the ``Secure``/
+    ``Path`` attributes that variant's prefix requires (see
+    :func:`_emit_deletion`).
     """
-    path = _cookie_path(prefix)
     for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{SESSION_AT_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
-        response.set_cookie(
-            f"{variant}{SESSION_RT_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
+        _emit_deletion(response, SESSION_AT_COOKIE, variant, prefix)
+        _emit_deletion(response, SESSION_RT_COOKIE, variant, prefix)
 
 
 def set_pkce_cookie(
@@ -216,12 +232,8 @@ def set_pkce_cookie(
 
 
 def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
-    path = _cookie_path(prefix)
     for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{PKCE_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="lax",
-        )
+        _emit_deletion(response, PKCE_COOKIE, variant, prefix)
 
 
 def _read_with_fallback(

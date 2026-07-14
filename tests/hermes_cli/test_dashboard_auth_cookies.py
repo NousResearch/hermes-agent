@@ -130,6 +130,36 @@ def test_clear_session_cookies_emits_expired_at_and_rt():
     )
 
 
+def _deletions_by_name(cookies):
+    """Map a cookie name to its (single) Max-Age=0 deletion header."""
+    return {
+        c.split("=", 1)[0]: c
+        for c in cookies
+        if "Max-Age=0" in c
+    }
+
+
+def test_clear_session_cookies_secure_prefixed_variants_are_deletable():
+    """The ``__Secure-`` / ``__Host-`` deletion variants must carry the
+    attributes their prefix requires (``Secure``, and ``Path=/`` for
+    ``__Host-``). A browser rejects a prefixed Set-Cookie that lacks them,
+    so without these attributes logout/expiry never clears the live HTTPS
+    session cookie and the browser keeps replaying it."""
+    client = TestClient(_build_app())
+    r = client.get("/clear")
+    by_name = _deletions_by_name(r.headers.get_list("set-cookie"))
+
+    for bare in (SESSION_AT_COOKIE, SESSION_RT_COOKIE, PKCE_COOKIE):
+        host = by_name[f"__Host-{bare}"]
+        secure = by_name[f"__Secure-{bare}"]
+        assert "Secure" in host, f"__Host-{bare} deletion missing Secure"
+        assert "Path=/" in host
+        assert "Secure" in secure, f"__Secure-{bare} deletion missing Secure"
+        # The bare (loopback HTTP) variant must NOT be Secure, or it can't
+        # delete the HTTP-set cookie.
+        assert "Secure" not in by_name[bare]
+
+
 def test_pkce_cookie_short_ttl_and_path_root():
     client = TestClient(_build_app(use_https=True))
     r = client.get("/set-pkce")

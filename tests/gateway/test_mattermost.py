@@ -1084,3 +1084,248 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# First-turn thread-context seeding (#37695)
+# ---------------------------------------------------------------------------
+
+
+def _thread_post(pid, uid, msg, create_at, root_id="root_1", username=None):
+    p = {
+        "id": pid,
+        "user_id": uid,
+        "message": msg,
+        "create_at": create_at,
+        "root_id": root_id,
+    }
+    if username is not None:
+        p["username"] = username
+    return p
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_formats_prior_posts_with_attribution():
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    adapter._api_get = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", "first message", 100, "", username="alice"),
+                "p2": _thread_post("p2", "u2", "second message", 200, "root_1", username="bob"),
+                "p3": _thread_post("p3", "u1", "the trigger", 300, "root_1", username="alice"),
+            }
+        }
+    )
+
+    out = await adapter._fetch_thread_context(
+        root_id="root_1",
+        current_post_id="p3",
+        channel_id="chan",
+        chat_type="channel",
+    )
+
+    # Trigger post (p3) is excluded; prior posts are seeded in chronological order.
+    assert "[alice]: first message" in out
+    assert "[bob]: second message" in out
+    assert "the trigger" not in out
+    assert out.startswith("[Thread context")
+    assert out.rstrip().endswith("[End of thread context]")
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_excludes_own_bot_and_commands():
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    adapter._api_get = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", "human question", 100, "", username="alice"),
+                "bp": _thread_post("bp", "bot_user_id", "bot reply", 150, "root_1", username="hermes"),
+                "cp": _thread_post("cp", "u1", "/new", 175, "root_1", username="alice"),
+                "p2": _thread_post("p2", "u1", "trigger", 200, "root_1", username="alice"),
+            }
+        }
+    )
+
+    out = await adapter._fetch_thread_context(
+        root_id="root_1",
+        current_post_id="p2",
+        channel_id="chan",
+        chat_type="channel",
+    )
+
+    assert "human question" in out
+    assert "bot reply" not in out      # own prior replies excluded (circular)
+    assert "/new" not in out           # slash-commands excluded
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_tags_unverified_senders():
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    # Only u1 is authorized; u2 is not.
+    adapter.set_authorization_check(lambda uid, ct, cid: uid == "u1")
+    adapter._api_get = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", "verified msg", 100, "", username="alice"),
+                "p2": _thread_post("p2", "u2", "stranger msg", 200, "root_1", username="mallory"),
+                "p3": _thread_post("p3", "u1", "trigger", 300, "root_1", username="alice"),
+            }
+        }
+    )
+
+    out = await adapter._fetch_thread_context(
+        root_id="root_1",
+        current_post_id="p3",
+        channel_id="chan",
+        chat_type="channel",
+    )
+
+    assert "[alice]: verified msg" in out
+    assert "[unverified] [mallory]: stranger msg" in out
+    # Header switches to the security-aware variant when any post is unverified.
+    assert "[unverified]" in out.split("\n")[0]
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_empty_root_returns_blank():
+    adapter = _make_adapter()
+    adapter._api_get = AsyncMock(return_value={})
+    out = await adapter._fetch_thread_context(
+        root_id="", current_post_id="p1", channel_id="c", chat_type="channel"
+    )
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_context_caches_by_root():
+    adapter = _make_adapter()
+    adapter._bot_user_id = "bot_user_id"
+    api = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", "hello", 100, "", username="alice"),
+                "p2": _thread_post("p2", "u1", "trigger", 200, "root_1", username="alice"),
+            }
+        }
+    )
+    adapter._api_get = api
+
+    a = await adapter._fetch_thread_context("root_1", "p2", "chan", "channel")
+    b = await adapter._fetch_thread_context("root_1", "p2", "chan", "channel")
+    assert a == b
+    # Only one thread fetch despite two calls (TTL cache).
+    assert api.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_ws_event_seeds_channel_context_on_first_thread_turn():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    # No session store => first turn.
+    adapter._api_get = AsyncMock(
+        return_value={
+            "posts": {
+                "root_1": _thread_post("root_1", "u1", "earlier context", 100, "", username="alice"),
+                "reply_1": _thread_post("reply_1", "u1", "@hermes-bot help", 200, "root_1", username="alice"),
+            }
+        }
+    )
+    post_data = {
+        "id": "reply_1",
+        "user_id": "u1",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot help",
+        "root_id": "root_1",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.channel_context is not None
+    assert "earlier context" in msg_event.channel_context
+
+
+@pytest.mark.asyncio
+async def test_handle_ws_event_no_seed_for_root_post():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter.handle_message = AsyncMock()
+    adapter._api_get = AsyncMock()
+    post_data = {
+        "id": "top_1",
+        "user_id": "u1",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot new topic",
+        "root_id": "",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    # Root posts have no prior thread history to seed.
+    assert msg_event.channel_context is None
+    adapter._api_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_ws_event_thread_context_off_disables_seeding():
+    adapter = _make_adapter()
+    adapter._reply_mode = "thread"
+    adapter._bot_user_id = "bot_user_id"
+    adapter._bot_username = "hermes-bot"
+    adapter._thread_context_mode = "off"
+    adapter.handle_message = AsyncMock()
+    adapter._api_get = AsyncMock()
+    post_data = {
+        "id": "reply_1",
+        "user_id": "u1",
+        "channel_id": "chan_456",
+        "message": "@hermes-bot help",
+        "root_id": "root_1",
+    }
+    event = {
+        "event": "posted",
+        "data": {
+            "post": json.dumps(post_data),
+            "channel_type": "O",
+            "sender_name": "@alice",
+        },
+    }
+
+    await adapter._handle_ws_event(event)
+
+    msg_event = adapter.handle_message.call_args[0][0]
+    assert msg_event.channel_context is None
+    adapter._api_get.assert_not_awaited()
+
+
+def test_apply_yaml_config_bridges_thread_context(monkeypatch):
+    from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+    monkeypatch.delenv("MATTERMOST_THREAD_CONTEXT", raising=False)
+    _apply_yaml_config({"thread_context": "off"}, {"thread_context": "off"})
+    assert os.environ["MATTERMOST_THREAD_CONTEXT"] == "off"

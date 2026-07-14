@@ -864,6 +864,14 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+# Mattermost-specific settings (config.yaml top-level, not under platforms:):
+#
+# mattermost:
+#   require_mention: true            # Require @mention in server channels (default: true)
+#   reply_mode: "off"                # "thread" to nest replies under the root post
+#   free_response_channels: ""       # Channel IDs where no mention is needed
+#   thread_context: on               # Seed prior thread posts on first turn (on/off; default: on)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

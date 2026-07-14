@@ -4190,6 +4190,13 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "MATTERMOST_THREAD_CONTEXT": {
+        "description": "Seed prior thread posts into context on the first turn the bot is drawn into an existing thread: on (default) or off.",
+        "prompt": "Seed thread history on first turn (on/off)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "MATRIX_HOMESERVER": {
         "description": "Matrix homeserver URL (e.g. https://matrix.example.org)",
         "prompt": "Matrix homeserver URL",

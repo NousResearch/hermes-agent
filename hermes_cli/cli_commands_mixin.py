@@ -745,6 +745,24 @@ class CLICommandsMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
+        from cli import _get_session_provider
+        stored_provider = _get_session_provider(session_meta)
+        if stored_provider and stored_provider != self.provider:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            try:
+                runtime = resolve_runtime_provider(requested=stored_provider)
+                if runtime:
+                    self.provider = stored_provider
+                    self.model = session_meta.get("model", self.model)
+                    from cli import _cprint
+                    _cprint(
+                        f"  ↔ Switched provider to [bold]{stored_provider}[/bold] (matching session's original configuration)"
+                    )
+            except Exception:
+                _cprint(
+                    f"  ⚠ Stored provider '{stored_provider}' is no longer configured. Continuing with current provider '{self.provider}'."
+                )
+
         if target_id == self.session_id:
             _cprint("  Already on that session.")
             return

@@ -2695,6 +2695,21 @@ def _cprint(text: str):
             pass
 
 
+def _get_session_provider(session_meta: dict | None) -> str | None:
+    """Extract the original provider from session metadata model_config."""
+    if not session_meta:
+        return None
+    raw = session_meta.get("model_config")
+    if not raw:
+        return None
+    try:
+        import json
+        config = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return config.get("provider")
+
+
 def _prepend_note_to_message(message, note: str):
     """Prepend a one-shot system-style note to a user message.
 

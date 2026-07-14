@@ -484,6 +484,24 @@ class CLIAgentSetupMixin:
             if resolved_meta:
                 session_meta = resolved_meta
 
+        from cli import _get_session_provider
+        stored_provider = _get_session_provider(session_meta)
+        if stored_provider and stored_provider != self.provider:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            try:
+                runtime = resolve_runtime_provider(requested=stored_provider)
+                if runtime:
+                    self.provider = stored_provider
+                    self.model = session_meta.get("model", self.model)
+                    from cli import _accent_hex
+                    self._console_print(
+                        f"[{_accent_hex()}]↻ Switched provider to [bold]{stored_provider}[/bold] (matching session's original configuration)[/]"
+                    )
+            except Exception:
+                self._console_print(
+                    f"[yellow]⚠ Stored provider '{stored_provider}' is no longer configured. Continuing with current provider '{self.provider}'.[/]"
+                )
+
         restored = self._session_db.get_messages_as_conversation(self.session_id)
         if restored:
             restored = [m for m in restored if m.get("role") != "session_meta"]

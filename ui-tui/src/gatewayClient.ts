@@ -1,7 +1,8 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { delimiter, resolve } from 'node:path'
+import { delimiter, dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 
 import { WebSocket as UndiciWebSocket } from 'undici'
@@ -47,7 +48,7 @@ const resolveSidecarUrl = () => {
   return raw ? raw : null
 }
 
-const resolvePython = (root: string) => {
+export const resolvePython = (root: string | undefined) => {
   const configured = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim()
 
   if (configured) {
@@ -55,17 +56,32 @@ const resolvePython = (root: string) => {
   }
 
   const venv = process.env.VIRTUAL_ENV?.trim()
+  // root may be undefined when import.meta.dirname is unavailable (Node < 20.11)
+  // — see #63754. Coerce to empty string so path.resolve doesn't trip
+  // ERR_INVALID_ARG_TYPE on the first arg, then fall through to platform default.
+  const safeRoot = root ?? ''
 
   const hit = [
     venv && resolve(venv, 'bin/python'),
     venv && resolve(venv, 'Scripts/python.exe'),
-    resolve(root, '.venv/bin/python'),
-    resolve(root, '.venv/bin/python3'),
-    resolve(root, 'venv/bin/python'),
-    resolve(root, 'venv/bin/python3')
+    resolve(safeRoot, '.venv/bin/python'),
+    resolve(safeRoot, '.venv/bin/python3'),
+    resolve(safeRoot, 'venv/bin/python'),
+    resolve(safeRoot, 'venv/bin/python3')
   ].find(p => p && existsSync(p))
 
   return hit || (process.platform === 'win32' ? 'python' : 'python3')
+}
+
+// Portable __dirname equivalent for ESM — import.meta.dirname was added in
+// Node 20.11. Hermes supports Node 18.x, so compute it manually via the URL.
+// Returns the directory containing this source file.
+const _here = (): string => {
+  try {
+    return dirname(fileURLToPath(import.meta.url))
+  } catch {
+    return ''
+  }
 }
 
 const asGatewayEvent = (value: unknown): GatewayEvent | null =>
@@ -516,7 +532,7 @@ export class GatewayClient extends EventEmitter {
   }
 
   start() {
-    const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
+    const root = process.env.HERMES_PYTHON_SRC_ROOT?.trim() || resolve(_here(), '../../')
     const attachUrl = resolveGatewayAttachUrl()
     const sidecarUrl = resolveSidecarUrl()
 

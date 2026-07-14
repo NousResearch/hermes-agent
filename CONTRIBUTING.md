@@ -130,7 +130,7 @@ cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
 # Add dev/test extras on top of the standard install.
 uv pip install -e ".[all,dev]"
 
-# Optional: browser tools / docs site dependencies.
+# Optional: docs site + workspace dependencies.
 npm install
 ```
 
@@ -167,7 +167,7 @@ export PATH="$VIRTUAL_ENV/bin:$PATH"
 # Install with all extras (messaging, cron, CLI menus, dev tools)
 uv pip install -e ".[all,dev]"
 
-# Optional: browser tools
+# Optional: workspace / docs dependencies
 npm install
 ```
 

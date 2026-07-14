@@ -155,11 +155,10 @@ hermes setup
 
 ### Install optional Node dependencies manually
 
-The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later:
+The tested Termux path skips Node/browser bootstrap on purpose. If you want to experiment with browser tooling later, the only prerequisite is Node.js — `agent-browser` itself resolves lazily via `npx agent-browser` on first browser-tool use, so there's no separate install step:
 
 ```bash
 pkg install nodejs-lts
-npm install
 ```
 
 The browser tool automatically includes Termux directories (`/data/data/com.termux/files/usr/bin`) in its PATH search, so `agent-browser` and `npx` are discovered without any extra PATH configuration.

@@ -51,20 +51,25 @@ _RECONNECT_JITTER = 0.2
 
 
 def check_mattermost_requirements() -> bool:
-    """Return True if the Mattermost adapter can be used."""
-    token = os.getenv("MATTERMOST_TOKEN", "")
-    url = os.getenv("MATTERMOST_URL", "")
-    if not token:
-        logger.debug("Mattermost: MATTERMOST_TOKEN not set")
+    """Return True if the Mattermost adapter can be used.
+
+    Intentionally silent on failure — this is a passive probe registered as
+    the platform's ``check_fn``.  It is called on every
+    ``load_gateway_config()`` (message handling, display lookups, agent
+    turns), so logging here floods the logs for every user without
+    Mattermost configured.  The caller
+    (``gateway/platform_registry.py`` ``create_adapter()``) emits its
+    own warning when requirements are not met and an adapter is actually
+    requested.
+    """
+    if not os.getenv("MATTERMOST_TOKEN", ""):
         return False
-    if not url:
-        logger.warning("Mattermost: MATTERMOST_URL not set")
+    if not os.getenv("MATTERMOST_URL", ""):
         return False
     try:
         import aiohttp  # noqa: F401
         return True
     except ImportError:
-        logger.warning("Mattermost: aiohttp not installed")
         return False
 
 

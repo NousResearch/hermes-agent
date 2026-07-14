@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 
 
@@ -116,6 +117,126 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
     assert "gmi-user-override-test" in gmi.aliases
 
     # Clean up: reset discovery state so other tests see the bundled version
+    _clear_provider_caches()
+
+
+def test_pip_entry_point_registers_provider(monkeypatch):
+    """A dedicated pip entry point registers without general-plugin config."""
+    import providers as provider_module
+
+    def register() -> None:
+        provider_module.register_provider(
+            provider_module.ProviderProfile(
+                name="packaged-provider",
+                aliases=("packaged-alias",),
+                base_url="https://packaged.invalid/v1",
+            )
+        )
+
+    entry_point = MagicMock()
+    entry_point.name = "packaged-provider"
+    entry_point.load.return_value = register
+    entry_points = MagicMock()
+    entry_points.select.return_value = [entry_point]
+    monkeypatch.setattr(
+        provider_module.importlib_metadata,
+        "entry_points",
+        lambda: entry_points,
+    )
+
+    _clear_provider_caches()
+    profile = provider_module.get_provider_profile("packaged-alias")
+
+    assert profile is not None
+    assert profile.name == "packaged-provider"
+    entry_points.select.assert_called_once_with(
+        group="hermes_agent.model_providers"
+    )
+    entry_point.load.assert_called_once_with()
+    _clear_provider_caches()
+
+
+def test_broken_pip_entry_point_does_not_block_others(monkeypatch, caplog):
+    """One package failure is isolated from remaining provider packages."""
+    import logging
+
+    import providers as provider_module
+
+    broken = MagicMock()
+    broken.name = "broken-provider"
+    broken.load.side_effect = RuntimeError("broken package")
+
+    def register_working() -> None:
+        provider_module.register_provider(
+            provider_module.ProviderProfile(name="working-packaged-provider")
+        )
+
+    working = MagicMock()
+    working.name = "working-provider"
+    working.load.return_value = register_working
+    entry_points = MagicMock()
+    entry_points.select.return_value = [broken, working]
+    monkeypatch.setattr(
+        provider_module.importlib_metadata,
+        "entry_points",
+        lambda: entry_points,
+    )
+
+    _clear_provider_caches()
+    with caplog.at_level(logging.WARNING, logger="providers"):
+        profile = provider_module.get_provider_profile("working-packaged-provider")
+
+    assert profile is not None
+    assert any(
+        "broken-provider" in record.message and "broken package" in record.message
+        for record in caplog.records
+    )
+    _clear_provider_caches()
+
+
+def test_user_directory_overrides_pip_entry_point(tmp_path, monkeypatch):
+    """The profile-local directory remains more specific than site packages."""
+    import providers as provider_module
+
+    def register_packaged() -> None:
+        provider_module.register_provider(
+            provider_module.ProviderProfile(
+                name="precedence-provider",
+                base_url="https://packaged.invalid/v1",
+            )
+        )
+
+    entry_point = MagicMock()
+    entry_point.name = "precedence-provider"
+    entry_point.load.return_value = register_packaged
+    entry_points = MagicMock()
+    entry_points.select.return_value = [entry_point]
+    monkeypatch.setattr(
+        provider_module.importlib_metadata,
+        "entry_points",
+        lambda: entry_points,
+    )
+
+    hermes_home = tmp_path / "hermes-home"
+    user_plugin = (
+        hermes_home / "plugins" / "model-providers" / "precedence-provider"
+    )
+    user_plugin.mkdir(parents=True)
+    (user_plugin / "__init__.py").write_text(
+        "from providers import register_provider\n"
+        "from providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(\n"
+        "    name='precedence-provider',\n"
+        "    base_url='https://user.invalid/v1',\n"
+        "))\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _clear_provider_caches()
+    profile = provider_module.get_provider_profile("precedence-provider")
+
+    assert profile is not None
+    assert profile.base_url == "https://user.invalid/v1"
     _clear_provider_caches()
 
 

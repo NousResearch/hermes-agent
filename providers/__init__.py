@@ -1,9 +1,10 @@
 """Provider module registry.
 
-Provider profiles can live in two places:
+Provider profiles can live in three places:
 
 1. Bundled plugins: ``plugins/model-providers/<name>/`` (shipped with hermes-agent)
-2. User plugins: ``$HERMES_HOME/plugins/model-providers/<name>/``
+2. Pip packages: ``hermes_agent.model_providers`` entry points
+3. User plugins: ``$HERMES_HOME/plugins/model-providers/<name>/``
 
 Each plugin directory contains:
   - ``__init__.py`` — calls ``register_provider(profile)`` at import
@@ -34,6 +35,7 @@ import importlib
 import importlib.util
 import logging
 import sys
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
@@ -43,6 +45,7 @@ logger = logging.getLogger(__name__)
 _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
 _discovered = False
+MODEL_PROVIDER_ENTRY_POINTS_GROUP = "hermes_agent.model_providers"
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -137,13 +140,48 @@ def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
         sys.modules.pop(module_name, None)
 
 
+def _load_entry_point_providers() -> None:
+    """Invoke pip-installed model-provider registration entry points."""
+    try:
+        entry_points = importlib_metadata.entry_points()
+        if hasattr(entry_points, "select"):
+            providers = entry_points.select(
+                group=MODEL_PROVIDER_ENTRY_POINTS_GROUP
+            )
+        elif isinstance(entry_points, dict):
+            providers = entry_points.get(MODEL_PROVIDER_ENTRY_POINTS_GROUP, [])
+        else:
+            providers = [
+                entry_point
+                for entry_point in entry_points
+                if entry_point.group == MODEL_PROVIDER_ENTRY_POINTS_GROUP
+            ]
+    except Exception as exc:
+        logger.warning("Failed to discover packaged provider plugins: %s", exc)
+        return
+
+    for entry_point in sorted(providers, key=lambda item: item.name):
+        try:
+            register = entry_point.load()
+            if not callable(register):
+                raise TypeError("entry point must resolve to a callable")
+            register()
+        except Exception as exc:
+            logger.warning(
+                "Failed to load packaged provider plugin %s: %s",
+                entry_point.name,
+                exc,
+            )
+
+
 def _discover_providers() -> None:
     """Populate the registry by importing every provider plugin.
 
     Order:
       1. Bundled plugins at ``<repo>/plugins/model-providers/<name>/``
-      2. User plugins at ``$HERMES_HOME/plugins/model-providers/<name>/``
-      3. Legacy per-file modules at ``providers/<name>.py`` (back-compat)
+      2. Pip packages in ``hermes_agent.model_providers``
+      3. User plugins at ``$HERMES_HOME/plugins/model-providers/<name>/``
+      4. Legacy per-file modules at ``providers/<name>.py`` (back-compat)
 
     Each step imports its plugins, which call ``register_provider()`` at
     module-level. Later steps win on name collision.
@@ -160,7 +198,10 @@ def _discover_providers() -> None:
                 continue
             _import_plugin_dir(child, "bundled")
 
-    # 2. User plugins — under $HERMES_HOME/plugins/model-providers/<name>/.
+    # 2. Pip packages — less local than an explicit HERMES_HOME override.
+    _load_entry_point_providers()
+
+    # 3. User plugins — under $HERMES_HOME/plugins/model-providers/<name>/.
     #    These can override any bundled profile of the same name (last-writer-wins
     #    in register_provider()).
     user_dir = _user_plugins_dir()
@@ -170,7 +211,7 @@ def _discover_providers() -> None:
                 continue
             _import_plugin_dir(child, "user")
 
-    # 3. Legacy single-file profiles at providers/<name>.py. Kept for
+    # 4. Legacy single-file profiles at providers/<name>.py. Kept for
     #    back-compat — if someone drops a ``providers/foo.py`` into an
     #    editable install, it still works without the plugin layout.
     try:

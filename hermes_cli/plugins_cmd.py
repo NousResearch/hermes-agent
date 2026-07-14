@@ -449,7 +449,7 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
 def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, str]:
     """Clone Git plugin into ``~/.hermes/plugins``.
 
-    Returns ``(target_dir, installed_manifest, canonical_name)``.
+    Returns ``(target_dir, installed_manifest, lifecycle_key)``.
     Raises ``PluginOperationError`` on failure.
     """
     import tempfile
@@ -500,7 +500,19 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         )
 
         try:
+            # Validate the manifest-controlled leaf before adding a fixed
+            # category.  Passing the combined key directly with
+            # ``allow_subdir=True`` would let a malicious manifest smuggle in
+            # extra path segments.
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
+            install_key = plugin_name
+            if manifest.get("kind") == "model-provider":
+                install_key = f"model-providers/{plugin_name}"
+                target = _sanitize_plugin_name(
+                    install_key,
+                    plugins_dir,
+                    allow_subdir=True,
+                )
         except ValueError as e:
             raise PluginOperationError(str(e)) from e
 
@@ -526,10 +538,11 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
             if not force:
                 raise PluginOperationError(
                     f"Plugin '{plugin_name}' already exists. Use force reinstall "
-                    f"or run `hermes plugins update {plugin_name}`.",
+                    f"or run `hermes plugins update {install_key}`.",
                 )
             shutil.rmtree(target)
 
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(tmp_target), str(target))
 
     has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
@@ -543,8 +556,7 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
 
     _copy_example_files(target, Console())
     installed_manifest = _read_manifest(target)
-    installed_name = installed_manifest.get("name") or target.name
-    return target, installed_manifest, installed_name
+    return target, installed_manifest, install_key
 
 
 def cmd_install(
@@ -554,8 +566,9 @@ def cmd_install(
 ) -> None:
     """Install a plugin from a Git URL or owner/repo shorthand.
 
-    After install, prompt "Enable now? [y/N]" unless *enable* is provided
-    (True = auto-enable without prompting, False = install disabled).
+    General plugins prompt "Enable now? [y/N]" unless *enable* is provided.
+    Model providers are discovered automatically and skip general-plugin
+    activation; installation makes them available but does not select one.
     """
     from rich.console import Console
 
@@ -599,34 +612,40 @@ def cmd_install(
 
     _display_after_install(target, identifier)
 
-    should_enable = enable
-    if should_enable is None:
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            try:
-                answer = input(
-                    f"  Enable '{installed_name}' now? [y/N]: ",
-                ).strip().lower()
-                should_enable = answer in {"y", "yes"}
-            except (EOFError, KeyboardInterrupt):
-                should_enable = False
-        else:
-            should_enable = False
-
-    if should_enable:
-        enabled = _get_enabled_set()
-        disabled = _get_disabled_set()
-        enabled.add(installed_name)
-        disabled.discard(installed_name)
-        _save_enabled_set(enabled)
-        _save_disabled_set(disabled)
+    if installed_manifest.get("kind") == "model-provider":
         console.print(
-            f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
+            "[green]✓[/green] Model provider installed and available for setup."
         )
+        console.print("[dim]Configure or select it with `hermes model`.[/dim]")
     else:
-        console.print(
-            f"[dim]Plugin installed but not enabled. "
-            f"Run `hermes plugins enable {installed_name}` to activate.[/dim]",
-        )
+        should_enable = enable
+        if should_enable is None:
+            if sys.stdin.isatty() and sys.stdout.isatty():
+                try:
+                    answer = input(
+                        f"  Enable '{installed_name}' now? [y/N]: ",
+                    ).strip().lower()
+                    should_enable = answer in {"y", "yes"}
+                except (EOFError, KeyboardInterrupt):
+                    should_enable = False
+            else:
+                should_enable = False
+
+        if should_enable:
+            enabled = _get_enabled_set()
+            disabled = _get_disabled_set()
+            enabled.add(installed_name)
+            disabled.discard(installed_name)
+            _save_enabled_set(enabled)
+            _save_disabled_set(disabled)
+            console.print(
+                f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
+            )
+        else:
+            console.print(
+                f"[dim]Plugin installed but not enabled. "
+                f"Run `hermes plugins enable {installed_name}` to activate.[/dim]",
+            )
 
     console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
     console.print("[dim]  hermes gateway restart[/dim]")

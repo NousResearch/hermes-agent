@@ -445,6 +445,40 @@ class TestCmdInstall:
         mock_move.assert_not_called()
         mock_display_after_install.assert_not_called()
 
+    def test_model_provider_skips_general_enable_state(self, tmp_path):
+        from hermes_cli.plugins_cmd import cmd_install
+
+        target = tmp_path / "plugins" / "model-providers" / "acme-provider"
+        target.mkdir(parents=True)
+        (target / "plugin.yaml").write_text(
+            "name: acme-provider\nkind: model-provider\n"
+        )
+        (target / "__init__.py").write_text("# provider profile\n")
+
+        with (
+            patch(
+                "hermes_cli.plugins_cmd._resolve_git_url",
+                return_value=("https://github.com/acme/provider.git", None),
+            ),
+            patch(
+                "hermes_cli.plugins_cmd._install_plugin_core",
+                return_value=(
+                    target,
+                    {"name": "acme-provider", "kind": "model-provider"},
+                    "model-providers/acme-provider",
+                ),
+            ),
+            patch("hermes_cli.plugins_cmd._prompt_plugin_env_vars"),
+            patch("hermes_cli.plugins_cmd._display_after_install"),
+            patch("hermes_cli.plugins_cmd._get_enabled_set") as get_enabled,
+            patch("hermes_cli.plugins_cmd._get_disabled_set") as get_disabled,
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+        ):
+            cmd_install("acme/provider", enable=True)
+
+        get_enabled.assert_not_called()
+        get_disabled.assert_not_called()
+
 
 # ── cmd_update tests ─────────────────────────────────────────────────────────
 
@@ -928,3 +962,74 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+
+class TestModelProviderInstallE2E:
+    """Install a model-provider repository into its discovery category."""
+
+    @staticmethod
+    def _make_repo(repo_root: Path) -> None:
+        import subprocess as sp
+
+        repo_root.mkdir(parents=True)
+        (repo_root / "plugin.yaml").write_text(
+            "name: acme-provider\n"
+            "kind: model-provider\n"
+            "manifest_version: 1\n"
+        )
+        (repo_root / "__init__.py").write_text(
+            "from providers import register_provider\n"
+            "from providers.base import ProviderProfile\n"
+            "register_provider(ProviderProfile(\n"
+            "    name='acme', aliases=('acme-ai',),\n"
+            "    base_url='https://api.acme.invalid/v1',\n"
+            "))\n"
+        )
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=repo_root,
+            check=True,
+            env=env,
+        )
+
+    def test_install_path_is_immediately_discoverable(
+        self, tmp_path, monkeypatch
+    ):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+        from tests.providers.test_plugin_discovery import _clear_provider_caches
+
+        repo_root = tmp_path / "model-provider-repo"
+        self._make_repo(repo_root)
+        hermes_home = tmp_path / "hermes-home"
+        plugins_dir = hermes_home / "plugins"
+        plugins_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, key = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        assert manifest["kind"] == "model-provider"
+        assert key == "model-providers/acme-provider"
+        assert target == (plugins_dir / key).resolve()
+
+        _clear_provider_caches()
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("acme-ai")
+        assert profile is not None
+        assert profile.name == "acme"
+        _clear_provider_caches()

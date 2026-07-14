@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import { $activeSessionId, $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -1123,6 +1123,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+
+    // The atom must be updated alongside the ref so subsequent
+    // submits don't re-use the stale runtime id.
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
   it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
@@ -1166,6 +1170,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+
+    // The $activeSessionId atom must be synced after interrupt recovery so
+    // subsequent prompt.submit calls don't re-use the stale runtime id.
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
   it('surfaces the original error (no resume) when the failure is not "session not found"', async () => {

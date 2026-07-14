@@ -4,7 +4,15 @@ import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
-import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { clearClarifyRequest, setClarifyRequest, updateClarifyAnswerDraft } from '@/store/clarify'
+import {
+  $composerAttachments,
+  $composerDraft,
+  clearSessionDraft,
+  type ComposerAttachment,
+  setComposerDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -150,6 +158,54 @@ function Harness({
 
   return null
 }
+
+describe('usePromptActions clarify draft recovery', () => {
+  afterEach(() => {
+    cleanup()
+    clearClarifyRequest()
+    clearSessionDraft(RUNTIME_SESSION_ID)
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('keeps an unsent clarify answer with its session when Stop is followed by a session switch', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+    vi.useFakeTimers()
+    setClarifyRequest({
+      choices: null,
+      question: 'Which release notes should I use?',
+      requestId: 'clarify-stop',
+      sessionId: RUNTIME_SESSION_ID
+    })
+    updateClarifyAnswerDraft(
+      'clarify-stop',
+      RUNTIME_SESSION_ID,
+      'Use the customer-facing release notes.'
+    )
+
+    await handle!.cancelRun()
+    activeSessionIdRef.current = 'session-2'
+    await vi.advanceTimersByTimeAsync(100)
+
+    expect(takeSessionDraft(RUNTIME_SESSION_ID).text).toBe(
+      'Unsent answer to Hermes question:\n' +
+        'Which release notes should I use?\n\n' +
+        'Use the customer-facing release notes.'
+    )
+  })
+})
 
 describe('usePromptActions /title', () => {
   beforeEach(() => {

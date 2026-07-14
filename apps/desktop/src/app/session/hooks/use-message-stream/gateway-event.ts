@@ -4,6 +4,7 @@ import { type MutableRefObject, useCallback, useRef } from 'react'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import { recoverClarifyDrafts } from '@/app/session/clarify-draft-recovery'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
@@ -347,7 +348,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
-        clearClarifyRequest(undefined, sessionId)
+        recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef)
         // Turn ended without a final `todo` update — drop a still-unfinished
         // list so "Tasks N/M" doesn't stay pinned above the composer with the
         // last item stuck pending/in_progress. Finished lists keep their linger.
@@ -633,7 +634,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
-          clearClarifyRequest(undefined, sessionId)
+          recoverClarifyDrafts(clearClarifyRequest(undefined, sessionId), activeSessionIdRef)
           clearActiveSessionTodos(sessionId)
           setSessionCompacting(sessionId, false)
           compactedTurnRef.current.delete(sessionId)

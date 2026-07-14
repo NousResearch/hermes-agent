@@ -1,14 +1,25 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { $clarifyRequests, setClarifyRequest } from '@/store/clarify'
+import { $gateway } from '@/store/gateway'
+import { $activeSessionId } from '@/store/session'
 
 import { ClarifyTool, readClarifyResult } from './clarify-tool'
 
+vi.mock('@assistant-ui/react', async importOriginal => ({
+  ...(await importOriginal<typeof import('@assistant-ui/react')>()),
+  useAuiState: () => true
+}))
+
 afterEach(() => {
   cleanup()
+  $activeSessionId.set(null)
+  $clarifyRequests.set({})
+  $gateway.set(null)
 })
 
 function renderClarify(ui: ReactNode) {
@@ -19,10 +30,11 @@ function renderClarify(ui: ReactNode) {
   )
 }
 
-function settledClarifyProps(
+function clarifyProps(
   args: ToolCallMessagePartProps['args'],
   result: ToolCallMessagePartProps['result'],
-  toolCallId: string
+  toolCallId: string,
+  status: ToolCallMessagePartProps['status'] = { type: 'complete' }
 ): ToolCallMessagePartProps {
   return {
     addResult: vi.fn(),
@@ -31,7 +43,7 @@ function settledClarifyProps(
     isError: false,
     result,
     resume: vi.fn(),
-    status: { type: 'complete' },
+    status,
     toolCallId,
     toolName: 'clarify',
     type: 'tool-call'
@@ -77,11 +89,31 @@ describe('readClarifyResult', () => {
   })
 })
 
+describe('ClarifyTool pending view', () => {
+  it('keeps a typed answer when the pending panel remounts', () => {
+    const question = 'What deployment context should I use?'
+    $activeSessionId.set('session-a')
+    setClarifyRequest({ choices: null, question, requestId: 'req-a', sessionId: 'session-a' })
+
+    const props = clarifyProps({ question }, undefined, 'clarify-pending', { type: 'running' })
+    const first = renderClarify(<ClarifyTool {...props} />)
+
+    fireEvent.change(screen.getByPlaceholderText(/Type your answer/), {
+      target: { value: 'Use staging first, then promote to production after smoke tests.' }
+    })
+
+    first.unmount()
+    renderClarify(<ClarifyTool {...props} />)
+
+    expect(screen.getByDisplayValue('Use staging first, then promote to production after smoke tests.')).toBeTruthy()
+  })
+})
+
 describe('ClarifyTool settled view', () => {
   it('keeps the question and answer visible after the tool completes', () => {
     renderClarify(
       <ClarifyTool
-        {...settledClarifyProps(
+        {...clarifyProps(
           { question: 'Which deployment target?', choices: ['staging', 'prod'] },
           {
             question: 'Which deployment target?',
@@ -102,7 +134,7 @@ describe('ClarifyTool settled view', () => {
   it('labels an empty response as Skipped', () => {
     renderClarify(
       <ClarifyTool
-        {...settledClarifyProps({ question: 'Anything else?' }, { question: 'Anything else?', user_response: '' }, 'clarify-2')}
+        {...clarifyProps({ question: 'Anything else?' }, { question: 'Anything else?', user_response: '' }, 'clarify-2')}
       />
     )
 

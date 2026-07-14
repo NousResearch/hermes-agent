@@ -4401,7 +4401,6 @@ def _init_session(
     history: list,
     cols: int = 80,
     cwd: str | None = None,
-    explicit_cwd: bool = False,
     session_db=None,
 ):
     now = time.time()
@@ -4419,7 +4418,7 @@ def _init_session(
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
-            "explicit_cwd": explicit_cwd,
+            "explicit_cwd": False,
             "cols": cols,
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
@@ -7777,14 +7776,14 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _db_unavailable_error(rid, code=5008)
     old_key = session["session_key"]
+    branch_explicit_cwd = bool(session.get("explicit_cwd"))
+    branch_cwd = _session_cwd(session)
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
     if not history:
         return _err(rid, 4008, "nothing to branch — send a message first")
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
-    branch_cwd = _session_cwd(session)
-    branch_explicit_cwd = bool(session.get("explicit_cwd"))
     lease, limit_message = _claim_active_session_slot(new_key, live_session_id=new_sid)
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
@@ -7830,15 +7829,11 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
         _init_session(
-            new_sid,
-            new_key,
-            agent,
-            list(history),
-            cols=session.get("cols", 80),
-            cwd=branch_cwd,
-            explicit_cwd=branch_explicit_cwd,
+            new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
         )
         if new_sid in _sessions:
+            _sessions[new_sid]["explicit_cwd"] = branch_explicit_cwd
+            _register_session_cwd(_sessions[new_sid])
             _sessions[new_sid]["active_session_lease"] = lease
     except Exception as e:
         if lease is not None:

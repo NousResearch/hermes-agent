@@ -6175,6 +6175,12 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     chat.completions passes it through, the Codex Responses adapter maps it
     to top-level ``reasoning``/``include``, and the Anthropic auxiliary
     client maps it to ``build_anthropic_kwargs(reasoning_config=...)``.
+
+    MoA tasks are excluded by design: reasoning depth for MoA is a per-slot
+    setting in the MoA preset (``moa.presets.<name>.reference_models[].
+    reasoning_effort`` / ``aggregator.reasoning_effort``), not an
+    auxiliary-task knob — an ensemble-wide value would override the
+    per-slot ones.
     """
     task_config = _get_auxiliary_task_config(task)
     raw = task_config.get("extra_body")
@@ -6182,6 +6188,15 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
     if "reasoning" not in result:
         effort = task_config.get("reasoning_effort")
         if effort is not None and effort != "":
+            if task in ("moa_reference", "moa_aggregator"):
+                logger.warning(
+                    "auxiliary.%s.reasoning_effort is not supported — MoA "
+                    "reasoning depth is per-slot: set reasoning_effort on the "
+                    "preset's reference_models entries / aggregator instead "
+                    "(moa.presets.<name>...). Ignoring.",
+                    task,
+                )
+                return result
             from hermes_constants import parse_reasoning_effort
             parsed = parse_reasoning_effort(effort)
             if parsed is not None:

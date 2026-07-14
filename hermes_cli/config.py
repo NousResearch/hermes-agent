@@ -1756,7 +1756,10 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 900,
             "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # NOTE: no reasoning_effort here by design — MoA reasoning depth is
+            # configured PER SLOT in the MoA preset (moa.presets.<name>.
+            # reference_models[].reasoning_effort / aggregator.reasoning_effort),
+            # not at the auxiliary-task level.
         },
         "moa_aggregator": {
             "provider": "auto",
@@ -1765,7 +1768,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 900,
             "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            # NOTE: no reasoning_effort here by design — see moa_reference above.
         },
     },
     

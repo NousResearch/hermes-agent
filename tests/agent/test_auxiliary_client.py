@@ -3331,6 +3331,28 @@ class TestAuxiliaryTaskExtraBody:
         with patch("hermes_cli.config.load_config", return_value=config):
             assert _get_task_extra_body("session_search") == {}
 
+    @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
+    def test_moa_tasks_reject_task_level_reasoning_effort(self, moa_task, caplog):
+        """MoA reasoning is per-slot in the preset — the auxiliary-task
+        shorthand is ignored with a warning pointing at the preset config."""
+        from agent.auxiliary_client import _get_task_extra_body
+
+        config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            result = _get_task_extra_body(moa_task)
+
+        assert "reasoning" not in result
+        assert any("per-slot" in rec.message for rec in caplog.records)
+
+    @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
+    def test_moa_default_config_has_no_reasoning_effort(self, moa_task):
+        """Invariant: the shipped MoA auxiliary blocks must not grow a
+        reasoning_effort key — per-slot preset config is the only surface."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert "reasoning_effort" not in DEFAULT_CONFIG["auxiliary"][moa_task]
+
     def test_anthropic_aux_client_forwards_extra_body_reasoning(self):
         """_AnthropicCompletionsAdapter passes extra_body.reasoning into
         build_anthropic_kwargs as reasoning_config."""

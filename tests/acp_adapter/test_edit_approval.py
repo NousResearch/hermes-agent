@@ -13,6 +13,8 @@ from acp_adapter.edit_approval import (
     set_edit_approval_requester,
     should_auto_approve_edit,
 )
+from acp_adapter.server import HermesACPAgent
+from acp_adapter.session import SessionManager, SessionState
 from model_tools import handle_function_call
 
 
@@ -170,3 +172,94 @@ def test_multifile_v4a_env_write_reaches_permission_prompt_e2e(tmp_path):
     assert "denied" in result["error"].lower()
     assert not env_target.exists()
     assert not ok_target.exists()
+
+
+def _agent_and_state(cwd: str):
+    """A real ``HermesACPAgent`` and ``SessionState``, not a stub.
+
+    The property under test is the freeze that happens inside
+    ``HermesACPAgent.__init__``, so the harness has to run that constructor.
+    It stays cheap because ``SessionManager`` builds no agent and opens no DB
+    until a session is created, and the policy getter only reads
+    ``state.mode`` / ``state.cwd``.
+    """
+    agent = HermesACPAgent(session_manager=SessionManager(agent_factory=lambda: None))
+    return agent, SessionState(session_id="edit-approval-policy", agent=None, cwd=cwd)
+
+
+def test_yolo_mode_promotes_ask_edits_to_session_policy(tmp_path, monkeypatch):
+    """``--yolo`` / ``HERMES_YOLO_MODE`` is process-scoped, so when it is active the
+    default ``"ask"`` edit policy must be promoted to ``"session"`` - the same escape
+    hatch dangerous-command approval already has. Modes that already carry their own
+    policy must not be rewritten."""
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    plain_agent, plain_state = _agent_and_state(str(tmp_path))
+    assert plain_agent._edit_approval_policy_for_state(plain_state) == ("ask", str(tmp_path))
+
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    yolo_agent, yolo_state = _agent_and_state(str(tmp_path))
+    policy, cwd = yolo_agent._edit_approval_policy_for_state(yolo_state)
+    assert policy == "session"
+
+    # An ordinary workspace edit now bypasses the prompt end to end ...
+    assert should_auto_approve_edit(
+        EditProposal("write_file", str(tmp_path / "src.py"), None, "x", {}), policy, cwd)
+    # ... while the paths the downstream gate really covers are still denied.
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(Path.home() / ".ssh" / "id_rsa"), None, "x", {}), policy, cwd)
+    assert not should_auto_approve_edit(
+        EditProposal("write_file", str(tmp_path / ".env"), None, "x", {}), policy, cwd)
+
+    # A mode with its own policy is left alone: yolo must not widen it.
+    yolo_state.mode = "accept_edits"
+    assert yolo_agent._edit_approval_policy_for_state(yolo_state)[0] == "workspace_session"
+
+
+def test_yolo_flag_is_frozen_at_agent_init(tmp_path, monkeypatch):
+    """The flag is read once, in ``__init__``. A later ``os.environ`` flip must neither
+    escalate (a mid-process skill turning yolo on to bypass the prompt) nor de-escalate."""
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    agent, state = _agent_and_state(str(tmp_path))
+    assert agent._yolo_mode_frozen is False
+
+    monkeypatch.setenv("HERMES_YOLO_MODE", "1")
+    assert agent._edit_approval_policy_for_state(state)[0] == "ask"
+
+    yolo_agent, yolo_state = _agent_and_state(str(tmp_path))
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+    assert yolo_agent._yolo_mode_frozen is True
+    assert yolo_agent._edit_approval_policy_for_state(yolo_state)[0] == "session"
+
+
+def test_session_policy_sensitive_perimeter_is_ssh_git_and_env_names_only(tmp_path):
+    """Characterization of the gate yolo promotes ``"ask"`` into.
+
+    ``_is_sensitive_auto_approve_path`` matches only a ``.git`` / ``.ssh`` path component
+    and the basenames ``.env`` / ``.env.local`` / ``.env.production`` / ``id_rsa`` /
+    ``id_ed25519``. Other dotdirs - notably ``~/.aws`` and ``~/.hermes`` - are not in that
+    set and therefore DO auto-approve under ``"session"``. That gap predates this change;
+    this test pins the real perimeter instead of the wider one the fix is sometimes
+    described as covering."""
+    def auto(path) -> bool:
+        return should_auto_approve_edit(
+            EditProposal("write_file", str(path), None, "x", {}), "session", str(tmp_path))
+
+    home = Path.home()
+    for denied in (
+        home / ".ssh" / "id_rsa",
+        home / ".ssh" / "config",
+        tmp_path / ".git" / "config",
+        tmp_path / ".env",
+        tmp_path / ".env.local",
+        tmp_path / ".env.production",
+        tmp_path / "id_rsa",
+        tmp_path / "id_ed25519",
+    ):
+        assert not auto(denied), f"{denied} must stay gated under the 'session' policy"
+
+    for still_auto_approved in (
+        home / ".aws" / "credentials",
+        home / ".hermes" / "config",
+        home / ".gnupg" / "secring.gpg",
+    ):
+        assert auto(still_auto_approved), f"{still_auto_approved} is outside the sensitive set"

@@ -2777,6 +2777,95 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "manual"
 
 
+def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"timeout": 15}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
+    )
+    assert response["result"]["value"] == "smart"
+
+
+def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"mode": "sometimes"}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
+    )
+    assert response["result"]["value"] == "manual"
+
+
+def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"approvals": {"mode": False}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "approvals.mode"}}
+    )
+    assert response["result"]["value"] == "off"
+
+
+def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    server._sessions["sid"] = {"agent": object(), "session_key": "profile-session"}
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"key": "approvals.mode", "value": "manual"},
+            }
+        )
+    finally:
+        server._sessions.clear()
+
+    assert resp["result"] == {"key": "approvals.mode", "value": "manual"}
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
+    assert emitted and emitted[0][0:2] == ("session.info", "sid")
+    assert emitted[0][2]["approval_mode"] == "manual"
+
+
+def test_desktop_contract_includes_approval_mode_rpc():
+    assert server.DESKTOP_BACKEND_CONTRACT >= 3
+
+
+def test_config_set_approval_mode_rejects_unknown_value():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "approvals.mode", "value": "sometimes"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4002
+
+
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
     """An explicit value pins global approvals.mode regardless of prior state."""
     import yaml
@@ -7507,7 +7596,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
         },
     )
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
-    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda model="": None)
     monkeypatch.setattr(server, "_load_service_tier", lambda: None)
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)

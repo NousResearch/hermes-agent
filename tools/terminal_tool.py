@@ -1988,6 +1988,7 @@ def _resolve_command_cwd(
     workdir: Optional[str],
     env: Any,
     default_cwd: str,
+    prev_owner: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command, preferring the live session cwd.
 
@@ -1996,12 +1997,29 @@ def _resolve_command_cwd(
     new directory in ``env.cwd``, but foreground/background calls kept forcing
     the old cwd back through ``env.execute(..., cwd=...)``. Explicit
     ``workdir=`` must still override everything.
+
+    When ``prev_owner`` is provided and differs from the current session,
+    ``env.cwd`` was mutated by a *different* session's ``cd`` and must NOT be
+    trusted — fall through to ``default_cwd`` (the config/override cwd) so
+    the command runs in this session's own workspace, not the previous
+    session's leftover checkout.  This mirrors the ``_live_cwd_if_owned``
+    guard file_tools uses for the same shared-env problem.
     """
     if workdir:
         return workdir
 
     live_cwd = getattr(env, "cwd", None)
     if isinstance(live_cwd, str) and live_cwd.strip():
+        # The env is shared (collapsed to "default"); its cwd tracks the LAST
+        # session that ran a command.  If a different session owned the env
+        # before this call claimed it, env.cwd is that session's leftover `cd`
+        # — not ours.  Don't use it.
+        if prev_owner is not None:
+            session_key = getattr(env, "cwd_owner", "")
+            # cwd_owner was already overwritten to the current session at the
+            # call site, so compare against the captured previous owner.
+            if prev_owner and prev_owner != "default" and session_key != prev_owner:
+                return default_cwd
         return live_cwd
 
     return default_cwd
@@ -2295,6 +2313,8 @@ def terminal_tool(
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
                         "pattern_key": approval.get("pattern_key", ""),
+                        "smart_denied": approval.get("smart_denied", False),
+                        "allow_permanent": approval.get("allow_permanent", True),
                     }, ensure_ascii=False)
                 # Command was blocked
                 desc = approval.get("description", "command flagged")
@@ -2352,6 +2372,10 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        # Capture the env's previous owner BEFORE claiming it — _resolve_command_cwd
+        # needs to know whether env.cwd was left by a *different* session's `cd`
+        # (in which case it's stale for this session and must be ignored).
+        prev_cwd_owner = getattr(env, "cwd_owner", "") or ""
         try:
             env.cwd_owner = session_key
         except Exception:
@@ -2367,6 +2391,7 @@ def terminal_tool(
                 workdir=workdir,
                 env=env,
                 default_cwd=cwd,
+                prev_owner=prev_cwd_owner,
             )
             try:
                 if env_type == "local":
@@ -2627,6 +2652,7 @@ def terminal_tool(
                         workdir=workdir,
                         env=env,
                         default_cwd=cwd,
+                        prev_owner=prev_cwd_owner,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

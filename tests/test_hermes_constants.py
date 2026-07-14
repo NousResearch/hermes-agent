@@ -483,11 +483,312 @@ class TestParseReasoningEffort:
         """Guard against silently dropping a documented level.
 
         The docstring promises "minimal", "low", "medium", "high", "xhigh",
-        "max". If someone removes one from VALID_REASONING_EFFORTS without
+        "max", "ultra". If someone removes one from VALID_REASONING_EFFORTS without
         updating the docstring, this test will fail and force the call out.
         """
-        documented = {"minimal", "low", "medium", "high", "xhigh", "max"}
+        documented = {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+
+class TestResolvePerModelReasoningEffort:
+    """Tests for resolve_per_model_reasoning_effort() — spelling-tolerant
+    per-model override lookup from agent.reasoning_overrides dict.
+
+    Contract: the override key the user writes in config.yaml should match
+    regardless of how downstream consumers normalize the model string.
+    normalize_model_for_provider() converts dots to dashes and
+    adds/strips provider prefixes. Our resolver tolerates these
+    variations so the user's intent ("this model always gets xhigh")
+    is honored no matter which code path feeds the model string.
+    """
+
+    def test_exact_match(self):
+        """Exact model string match returns the parsed override."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "xhigh"}
+        result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_none_when_no_matching_key(self):
+        """Model not in overrides returns None (caller falls back to global)."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "xhigh"}
+        assert resolve_per_model_reasoning_effort("gpt-5", overrides) is None
+
+    def test_none_value_returns_disabled(self):
+        """Override set to 'none' returns {'enabled': False}."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "none"}
+        result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
+        assert result == {"enabled": False}
+
+    def test_invalid_value_returns_none(self):
+        """Override with invalid effort falls back to None (global)."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "banana"}
+        assert resolve_per_model_reasoning_effort("claude-opus-4.5", overrides) is None
+
+    def test_none_or_empty_overrides_returns_none(self):
+        """None or empty overrides dict returns None."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        assert resolve_per_model_reasoning_effort("claude-opus-4.5", None) is None
+        assert resolve_per_model_reasoning_effort("claude-opus-4.5", {}) is None
+
+    def test_empty_model_returns_none(self):
+        """Empty model string returns None."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        assert resolve_per_model_reasoning_effort("", {"gpt-5": "low"}) is None
+
+    # --- Spelling tolerance layer ---
+
+    def test_dots_to_dashes_variant(self):
+        """User wrote key with dots; input comes in normalized with dashes.
+
+        normalize_model_for_provider converts claude-opus-4.5 → claude-opus-4-5
+        for the anthropic provider. The user's override key should still match.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "xhigh"}
+        result = resolve_per_model_reasoning_effort("claude-opus-4-5", overrides)
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_dashes_to_dots_variant(self):
+        """User wrote key with dashes; input comes in with dots."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4-5": "high"}
+        result = resolve_per_model_reasoning_effort("claude-opus.4.5", overrides)
+        assert result == {"enabled": True, "effort": "high"}
+
+    def test_strip_provider_prefix(self):
+        """User wrote key WITH provider prefix; input comes in bare.
+
+        E.g. user config: model.default: claude-opus-4.5 (no prefix),
+        but override key: anthropic/claude-opus-4.5.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"anthropic/claude-opus-4.5": "high"}
+        result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
+        assert result == {"enabled": True, "effort": "high"}
+
+    def test_prepend_provider_prefix(self):
+        """User wrote key bare; input comes in WITH provider prefix.
+
+        E.g. user config: model.default: anthropic/claude-opus-4.5,
+        but override key: claude-opus-4.5 (no prefix).
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "high"}
+        result = resolve_per_model_reasoning_effort("anthropic/claude-opus-4.5", overrides)
+        assert result == {"enabled": True, "effort": "high"}
+
+    def test_aggregator_prefix_stripping(self):
+        """openrouter/anthropic/claude-opus-4.5 should match key anthropic/claude-opus-4.5.
+
+        Aggregator providers (openrouter) prepend their own name,
+        creating a triple-prefix. The resolver strips the aggregator
+        layer to find the user's two-segment key.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"anthropic/claude-opus-4.5": "xhigh"}
+        result = resolve_per_model_reasoning_effort("openrouter/anthropic/claude-opus-4.5", overrides)
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_exact_match_wins_over_variant(self):
+        """Ambiguity resolution: exact match takes priority over a variant.
+
+        If both 'claude-opus-4.5' (exact) and 'claude-opus-4-5' (dashes
+        variant) are keys, the exact input matches the exact key first.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "high", "claude-opus-4-5": "xhigh"}
+        result = resolve_per_model_reasoning_effort("claude-opus-4.5", overrides)
+        assert result == {"enabled": True, "effort": "high"}
+
+    def test_none_when_no_variant_matches(self):
+        """All variants exhausted without a match returns None."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"gpt-5": "low"}
+        assert resolve_per_model_reasoning_effort("claude-opus-4.5", overrides) is None
+
+    def test_all_dotted_input_matches_canonical_key(self):
+        """Regression: all-dotted input (claude-opus.4.5) must match
+        canonical key (claude-opus-4.5).
+
+        This was a real bug found by delegate review: the old
+        all_dashed = model.replace('.', '-') collapsed version dots,
+        making the canonical form unreachable from all-dotted input.
+        """
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"claude-opus-4.5": "xhigh"}
+        result = resolve_per_model_reasoning_effort("claude-opus.4.5", overrides)
+        assert result is not None
+        assert result["effort"] == "xhigh"
+
+    def test_different_models_do_not_match(self):
+        """No false positives: gemini-2.0-flash must not match gemini-flash."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        overrides = {"gemini-flash": "low"}
+        assert resolve_per_model_reasoning_effort("gemini-2.0-flash", overrides) is None
+
+
+class TestResolveReasoningConfig:
+    """Tests for resolve_reasoning_config() — the single shared chokepoint
+    every surface (CLI, gateway, TUI, cron, /model switch, fallback) calls.
+
+    Contract: per-model override > global agent.reasoning_effort; the raw
+    global value passes through uncoerced (YAML False = disabled); an
+    explicit model argument wins over the config's model.default.
+    """
+
+    def _cfg(self, effort: object = "medium", overrides=None, default_model="gpt-5"):
+        return {
+            "model": {"default": default_model},
+            "agent": {
+                "reasoning_effort": effort,
+                "reasoning_overrides": overrides or {},
+            },
+        }
+
+    def test_per_model_override_wins(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(overrides={"claude-opus-4.5": "xhigh"})
+        result = resolve_reasoning_config(cfg, "claude-opus-4.5")
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_global_fallback_when_no_override(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="low", overrides={"claude-opus-4.5": "xhigh"})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "low"}
+
+    def test_explicit_model_wins_over_config_default(self):
+        """The session's effective model (e.g. after a session-only /model
+        switch) must be used for override lookup — NOT model.default."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(
+            effort="medium",
+            overrides={"gpt-5": "low", "claude-opus-4.5": "xhigh"},
+            default_model="gpt-5",
+        )
+        # Session switched to opus; its override must win over gpt-5's.
+        result = resolve_reasoning_config(cfg, "claude-opus-4.5")
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_empty_model_derives_from_config_default(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(overrides={"gpt-5": "high"}, default_model="gpt-5")
+        assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "high"}
+
+    def test_empty_model_derives_from_model_alias_key(self):
+        """model: {model: ...} alias shape (older configs) also resolves."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = {
+            "model": {"model": "gpt-5"},
+            "agent": {"reasoning_effort": "medium", "reasoning_overrides": {"gpt-5": "high"}},
+        }
+        assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "high"}
+
+    def test_string_model_section(self):
+        """Top-level ``model: <string>`` config shape (cron raw-YAML path)."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = {
+            "model": "claude-opus-4.5",
+            "agent": {"reasoning_effort": "low", "reasoning_overrides": {"claude-opus-4.5": "xhigh"}},
+        }
+        assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "xhigh"}
+
+    def test_yaml_false_global_uncoerced(self):
+        """YAML boolean False must mean disabled — never coerced to ''."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort=False)
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": False}
+
+    def test_yaml_false_not_shadowed_by_other_models_override(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort=False, overrides={"claude-opus-4.5": "xhigh"})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": False}
+
+    def test_override_none_disables_for_model(self):
+        """Per-model override value 'none' disables thinking for that model."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="high", overrides={"gemini-flash": "none"})
+        assert resolve_reasoning_config(cfg, "gemini-flash") == {"enabled": False}
+
+    def test_unknown_global_returns_none(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="bogus-level")
+        assert resolve_reasoning_config(cfg, "gpt-5") is None
+
+    def test_empty_config_returns_none(self):
+        from hermes_constants import resolve_reasoning_config
+        assert resolve_reasoning_config({}) is None
+        assert resolve_reasoning_config(None) is None
+
+    def test_malformed_sections_tolerated(self):
+        """Non-dict agent/model sections must not raise."""
+        from hermes_constants import resolve_reasoning_config
+        assert resolve_reasoning_config({"agent": "oops", "model": 42}) is None
+        assert resolve_reasoning_config({"agent": None, "model": None}) is None
+        assert resolve_reasoning_config({"agent": {"reasoning_overrides": "bad"}}) is None
+
+    def test_invalid_override_value_falls_back_to_global(self):
+        """A junk override value for the matching model falls through to global."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
+
+
+class TestReasoningOverridesDefaultConfig:
+    """Tests for the agent.reasoning_overrides default config key (Task 2)."""
+
+    def test_default_config_has_reasoning_overrides_key(self):
+        """DEFAULT_CONFIG['agent'] contains 'reasoning_overrides' as an empty dict."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert "reasoning_overrides" in DEFAULT_CONFIG["agent"]
+        assert DEFAULT_CONFIG["agent"]["reasoning_overrides"] == {}
+
+    def test_load_config_preserves_user_reasoning_overrides(self, tmp_path, monkeypatch):
+        """User-added reasoning_overrides are preserved through load_config()."""
+        import yaml
+        from hermes_cli.config import load_config, get_config_path
+
+        user_config = {
+            "agent": {
+                "reasoning_overrides": {
+                    "anthropic/claude-opus-4-5": "high",
+                    "openrouter/anthropic/claude-sonnet-4-6": "low",
+                }
+            }
+        }
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(user_config))
+
+        # load_config() reads from get_config_path() — patch its global reference
+        monkeypatch.setitem(
+            load_config.__globals__, "get_config_path", lambda: config_path
+        )
+
+        loaded = load_config()
+        assert loaded["agent"]["reasoning_overrides"] == {
+            "anthropic/claude-opus-4-5": "high",
+            "openrouter/anthropic/claude-sonnet-4-6": "low",
+        }
+
+    def test_spelling_tolerant_lookup_works_with_user_config(self):
+        """resolve_per_model_reasoning_effort works with user-added overrides."""
+        from hermes_constants import resolve_per_model_reasoning_effort
+        # User config with one override, query uses different spelling
+        overrides = {
+            "anthropic/claude-opus-4.5": "xhigh",  # user wrote with dots
+        }
+        # Lookup with different spelling (bare, dashes) — should still match
+        result = resolve_per_model_reasoning_effort("claude-opus-4-5", overrides)
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+        # Another override, bare key
+        overrides2 = {"gpt-5": "low"}
+        # Lookup with provider prefix — should match
+        result2 = resolve_per_model_reasoning_effort("openai/gpt-5", overrides2)
+        assert result2 == {"enabled": True, "effort": "low"}
 
 
 class TestSecureParentDir:
@@ -834,3 +1135,38 @@ class TestGetHermesDir:
         legacy.symlink_to(empty)
         result = get_hermes_dir("cache/audio", "audio_cache")
         assert result == tmp_path / "cache/audio"
+
+
+class TestWslPathTranslation:
+    """Cross-boundary path translation for a Windows-host UI + WSL backend."""
+
+    def test_windows_drive_to_wsl_mount(self):
+        assert hermes_constants.windows_path_to_wsl(r"C:\Users\alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.windows_path_to_wsl("C:/Users/alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.windows_path_to_wsl("D:\\") == "/mnt/d/"
+
+    def test_windows_drive_ignores_non_drive_paths(self):
+        assert hermes_constants.windows_path_to_wsl("/home/alex") is None
+        assert hermes_constants.windows_path_to_wsl("relative\\dir") is None
+
+    def test_wsl_unc_to_posix_both_spellings(self):
+        assert hermes_constants.wsl_unc_path_to_posix(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
+        assert hermes_constants.wsl_unc_path_to_posix(r"\\wsl$\Ubuntu\home\alex") == "/home/alex"
+        # Forward-slash spelling and distro root.
+        assert hermes_constants.wsl_unc_path_to_posix("//wsl.localhost/Debian/srv/app") == "/srv/app"
+        assert hermes_constants.wsl_unc_path_to_posix("\\\\wsl.localhost\\Ubuntu\\") == "/"
+
+    def test_wsl_unc_ignores_non_unc_paths(self):
+        assert hermes_constants.wsl_unc_path_to_posix(r"C:\Users\alex") is None
+        assert hermes_constants.wsl_unc_path_to_posix("/home/alex") is None
+
+    def test_translate_is_noop_off_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: False)
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"C:\Users\alex") == r"C:\Users\alex"
+
+    def test_translate_maps_windows_and_unc_on_wsl(self, monkeypatch):
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"C:\Users\alex") == "/mnt/c/Users/alex"
+        assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
+        # Already-POSIX paths pass through untouched.
+        assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"

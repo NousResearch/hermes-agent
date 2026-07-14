@@ -88,9 +88,14 @@ export const zh: Translations = {
       retry: '重试',
       repairInstall: '修复安装',
       useLocalGateway: '使用本地网关',
+      gatewaySettings: '网关设置',
+      back: '返回',
       openLogs: '打开日志',
       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
-      remoteSignInHint: '打开网关登录窗口。也可以使用本地网关切换到随应用提供的后端。',
+      remoteSignInHint: signInLabel =>
+        `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
+      signOutAndSignIn: '退出并重新登录',
+      remoteFailureHint: '在“网关设置”中检查网关 URL 和登录，或切换到本地网关。',
       hideRecentLogs: '隐藏最近日志',
       showRecentLogs: '显示最近日志',
       signedInTitle: '已登录',
@@ -376,6 +381,8 @@ export const zh: Translations = {
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      backdropTitle: '聊天背景',
+      backdropDesc: '对话后方那张淡淡的雕像图片。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
@@ -890,6 +897,9 @@ export const zh: Translations = {
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
       providerDefault: '(提供方默认)',
+      fallbackAdd: '添加备用模型',
+      fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
+      notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },
@@ -1647,7 +1657,10 @@ export const zh: Translations = {
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',
     optional: '可选',
+    promptRequired: '提示词为必填项。',
     promptScheduleRequired: '提示词和排程为必填项。',
+    scheduleRequired: '排程为必填项。',
+    scriptOnlyEditHint: '仅脚本任务（无 AI 提示词）。任务 ID：',
     saveChanges: '保存更改',
     createAction: '创建定时任务'
   },
@@ -1750,6 +1763,9 @@ export const zh: Translations = {
       newWorktreeTitle: '新建工作树',
       newWorktreeDesc: '为这个工作树命名分支。',
       branchPlaceholder: '例如 my-feature',
+      branchOff: () => ({ after: ' 分支', before: '从 ' }),
+      baseBranchPlaceholder: '搜索分支…',
+      baseBranchNone: '未找到分支',
       startWorkFailed: '无法创建工作树',
       convertBranch: '转换分支…',
       convertBranchTitle: '转换分支',
@@ -2200,7 +2216,9 @@ export const zh: Translations = {
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '极高',
       max: '最高',
+      ultra: '超高',
       updateFailed: '模型选项更新失败',
       fastFailed: '快速模式更新失败'
     },
@@ -2218,6 +2236,16 @@ export const zh: Translations = {
       recentActivity: '最近活动',
       viewAllLogs: '查看全部日志 →',
       messagingPlatforms: '消息平台'
+    },
+    approvalMode: {
+      title: '审批模式',
+      ariaLabel: mode => `审批模式：${mode}`,
+      manual: '手动',
+      manualDescription: '执行需要审批的操作前询问',
+      smart: '智能',
+      smartDescription: '自动评估操作，并在需要时询问',
+      off: '关闭',
+      offDescription: '不显示审批提示，直接运行'
     },
     statusbar: {
       unknown: '未知',
@@ -2473,6 +2501,7 @@ export const zh: Translations = {
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
       skip: '跳过',
+      skipped: '已跳过',
       continueLabel: '继续'
     },
     tool: {

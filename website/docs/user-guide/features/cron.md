@@ -750,6 +750,34 @@ Cron jobs run in a completely fresh agent session. The prompt must contain every
 
 **GOOD:** `"SSH into server 192.168.1.100 as user 'deploy', check if nginx is running with 'systemctl status nginx', and verify https://example.com returns HTTP 200."`
 
+## Memory isolation (built-in vs providers)
+
+Cron always skips **built-in** memory (`MEMORY.md` / `USER.md`) so scheduled system prompts cannot pollute local user notes. External memory **providers** are separate and default to **off**.
+
+Opt in **per job** with `memory_provider`:
+
+| Value | What you get |
+|-------|----------------|
+| `off` (default) | No provider init, no provider tools |
+| `tools` | Provider tools available; **no** automatic prompt injection, prefetch, turn sync, or session-end retain |
+| `full` | Full interactive provider lifecycle (use sparingly — can reintroduce user-representation corruption if cron prompts are treated as user speech; see [#4052](https://github.com/NousResearch/hermes-agent/issues/4052)) |
+
+```python
+cronjob(
+    action="create",
+    schedule="0 3 * * *",
+    name="nightly-memory-curator",
+    memory_provider="tools",
+    prompt="Use provider tools to search and store durable facts. Explicit tool calls only.",
+)
+```
+
+The job field is stored in `~/.hermes/cron/jobs.json`. Prefer the `cronjob` tool (or a direct job edit) until a `hermes cron create --memory-provider` CLI flag lands on your build.
+
+There is no global `cron.skip_memory: false`. Prefer `tools` for maintenance jobs; reserve `full` for deliberate lifecycle sync on a single job.
+
+See [Cron Troubleshooting → Memory and Memory Providers](/guides/cron-troubleshooting#memory-and-memory-providers).
+
 ## Security
 
 Scheduled task prompts are scanned for prompt-injection and credential-exfiltration patterns at creation and update time. Prompts containing invisible Unicode tricks, SSH backdoor attempts, or obvious secret-exfiltration payloads are blocked.

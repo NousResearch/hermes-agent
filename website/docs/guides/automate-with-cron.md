@@ -11,7 +11,7 @@ The [daily briefing bot tutorial](/guides/daily-briefing-bot) covers the basics.
 For the full feature reference, see [Scheduled Tasks (Cron)](/user-guide/features/cron).
 
 :::info Key Concept
-Cron jobs run in fresh agent sessions with no memory of your current chat. Prompts must be **completely self-contained** — include everything the agent needs to know.
+Cron jobs run in fresh agent sessions with no memory of your current chat. Prompts must be **completely self-contained** — include everything the agent needs to know. Built-in MEMORY.md is always skipped; external memory providers default to off and need a per-job `memory_provider=tools|full` opt-in ([details](/user-guide/features/cron#memory-isolation-built-in-vs-providers)).
 :::
 
 :::tip Don't need the LLM? You have two zero-token options.

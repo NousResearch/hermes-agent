@@ -3196,6 +3196,8 @@ def run_job(
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            # Per-job external provider opt-in (default off). See memory_provider_mode.
+            memory_provider_mode=(job.get("memory_provider") or "off"),
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

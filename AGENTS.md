@@ -333,7 +333,9 @@ class AIAgent:
         platform: str = None,              # "cli", "telegram", etc.
         session_id: str = None,
         skip_context_files: bool = False,
-        skip_memory: bool = False,
+        skip_memory: bool = False,         # skip built-in MEMORY.md / USER.md
+        memory_provider_mode: str = None,  # "off" | "tools" | "full" (None → derive)
+        skip_memory_provider: bool = None, # legacy: True→off, False→tools
         credential_pool=None,
         # ... plus callbacks, thread/user/chat IDs, iteration_budget, fallback_model,
         # checkpoints config, prefill_messages, service_tier, reasoning_config, etc.
@@ -1066,7 +1068,8 @@ Per-job fields include `skills` (load specific skills), `model` /
 stdout is injected into the prompt; `no_agent=True` turns the script
 into the entire job), `context_from` (chain job A's last output into
 job B's prompt), `workdir` (run in a specific directory with its
-`AGENTS.md`/`CLAUDE.md` loaded), and multi-platform delivery.
+`AGENTS.md`/`CLAUDE.md` loaded), multi-platform delivery, and
+`memory_provider` (`off` | `tools` | `full` — see below).
 
 Hardening invariants:
 - **3-minute hard interrupt** on cron sessions — runaway agent loops
@@ -1075,8 +1078,27 @@ Hardening invariants:
 - Grace window: 120s for one-shot jobs whose fire time was missed.
 - File lock at `~/.hermes/cron/.tick.lock` prevents duplicate ticks
   across processes.
-- Cron sessions pass `skip_memory=True` by default; memory providers
-  intentionally do not run during cron.
+- Cron sessions always pass `skip_memory=True` so built-in
+  `MEMORY.md` / `USER.md` are never written by cron system prompts
+  (see #4052 — auto-sync of cron prompts into user representations
+  corrupts long-term memory).
+- External memory **providers** are independent of `skip_memory` and
+  are controlled by `memory_provider_mode` on `AIAgent` (resolved via
+  `agent/memory_provider_mode.py`):
+  - **`off`** (cron default) — no provider init, no provider tools.
+  - **`tools`** — provider loaded + tools injected; **no** automatic
+    system-prompt context, prefetch, per-turn `sync_turn`, or
+    session-end retain. Explicit tool calls only (safe for
+    maintenance / curator jobs).
+  - **`full`** — normal interactive lifecycle (prompt + prefetch +
+    auto-sync + session-end). Opt-in only; can reintroduce the #4052
+    class of corruption if the job prompt looks like a user message.
+- Per-job opt-in via the job field `memory_provider` (same three
+  values). Scheduler maps it to `AIAgent(memory_provider_mode=...)`
+  while keeping `skip_memory=True`. There is **no** global
+  `cron.skip_memory=false` switch — that shape is too broad.
+- Legacy `skip_memory_provider`: `True` → `off`, `False` → `tools`
+  (never silently implies `full`).
 
 Cron deliveries are **not** mirrored into the target gateway session —
 they land in their own cron session with a header/footer frame so the

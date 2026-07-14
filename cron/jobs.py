@@ -1054,6 +1054,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    memory_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1065,7 +1066,7 @@ def create_job(
         name: Optional friendly name
         repeat: How many times to run (None = forever, 1 = once)
         deliver: Where to deliver output ("origin", "local", "telegram", etc.)
-        origin: Source info where job was created (for "origin" delivery)
+        origin: Source info where job was created for "origin" delivery
         skill: Optional legacy single skill name to load before running the prompt
         skills: Optional ordered list of skills to load before running the prompt
         model: Optional per-job model override
@@ -1098,6 +1099,12 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        memory_provider: Optional external memory-provider mode for agent runs:
+                ``off`` (default / unset), ``tools`` (provider tools available,
+                no auto prompt/prefetch/turn-sync), or ``full`` (normal
+                interactive provider lifecycle). Independent of ``skip_memory``
+                so cron can keep MEMORY.md protected while optionally loading
+                plugins. Ignored when ``no_agent=True``.
 
     Returns:
         The created job dict
@@ -1130,6 +1137,9 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    from agent.memory_provider_mode import normalize_job_memory_provider
+
+    normalized_memory_provider = normalize_job_memory_provider(memory_provider)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1225,6 +1235,10 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    # Only persist memory_provider when non-default so existing jobs stay clean
+    # (absent key / None / off => scheduler keeps provider off with skip_memory).
+    if normalized_memory_provider and normalized_memory_provider != "off":
+        job["memory_provider"] = normalized_memory_provider
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1314,6 +1328,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            # memory_provider: empty/None/off clears (scheduler treats as off).
+            if "memory_provider" in updates:
+                from agent.memory_provider_mode import normalize_job_memory_provider
+
+                updates["memory_provider"] = normalize_job_memory_provider(
+                    updates["memory_provider"]
+                )
+                # Store None for default/off so JSON stays clean.
+                if updates["memory_provider"] in (None, "off"):
+                    updates["memory_provider"] = None
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})

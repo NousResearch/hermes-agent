@@ -131,6 +131,80 @@ In this example, `context-skill` loads before `target-skill`.
 
 ---
 
+## Memory and Memory Providers
+
+Cron deliberately isolates memory. If a job cannot use `memory`, Hindsight, Honcho, mem0, etc., check this section before treating it as a bug.
+
+### Built-in MEMORY.md / USER.md are always off for cron
+
+Every cron agent is constructed with `skip_memory=True`. That protects the built-in local memory files from being polluted by cron system prompts (identity lines, model/tool banners, etc.). There is **no** global config switch to turn built-in memory back on for all cron jobs.
+
+If the built-in `memory` tool reports that memory is unavailable, that is expected under cron.
+
+### External providers are opt-in per job
+
+External memory providers (Hindsight, Honcho, mem0, …) are controlled separately via the per-job field `memory_provider`:
+
+| Job `memory_provider` | Built-in MEMORY.md | Provider tools | Auto prompt / prefetch / sync / session retain |
+|-----------------------|--------------------|----------------|--------------------------------------------------|
+| *(unset)* / `off`     | skipped            | no             | no                                               |
+| `tools`               | skipped            | yes            | **no** (explicit tool calls only)                |
+| `full`                | skipped            | yes            | yes (same lifecycle as interactive sessions)     |
+
+Default is **`off`**. Prefer **`tools`** for scheduled maintenance jobs that need to search/store facts without auto-writing the whole cron prompt into the user representation. Use **`full`** only when you explicitly want automatic lifecycle behavior and understand the risk from [#4052](https://github.com/NousResearch/hermes-agent/issues/4052) (cron prompts misattributed as user messages).
+
+Example (agent tool):
+
+```python
+cronjob(
+    action="create",
+    schedule="every day 3am",
+    name="nightly-memory-curator",
+    memory_provider="tools",
+    prompt=(
+        "Use hindsight_recall / hindsight_retain (or your active provider tools) "
+        "to dedupe and store durable facts from the last day. "
+        "Do not treat this prompt as user speech."
+    ),
+)
+```
+
+CLI form (when the flag is available on your build):
+
+```bash
+hermes cron create "every day 3am" "Curate long-term memory via provider tools..." \
+  --memory-provider tools \
+  --name nightly-memory-curator
+```
+
+If your installed CLI has no `--memory-provider` flag yet, create/update the job via the `cronjob` tool (or set `"memory_provider": "tools"` on the job record) — the field is stored in `~/.hermes/cron/jobs.json` and honored by the scheduler.
+
+### Common failure modes
+
+**"Memory is not available" on the built-in `memory` tool**
+Expected. Built-in memory is disabled for cron. Use the active provider's tools after setting `memory_provider=tools` (or `full`), or run the work interactively outside cron.
+
+**Provider tools missing even with `memory.provider` set in config.yaml**
+Confirm the job itself has `memory_provider: tools` (or `full`). A configured global provider does **not** auto-enable in cron.
+
+**Provider tools present but recall/context is empty every run**
+You are probably on `tools` mode. Automatic prefetch and system-prompt injection are disabled on purpose. Call the provider search/recall tools explicitly in the job prompt.
+
+**User representation polluted with "I am Hermes…" / model identity**
+Classic #4052 symptom. Ensure the job is not on `memory_provider=full` (or legacy paths that enabled full auto-sync). Prefer `tools` and never auto-sync raw cron system prompts into user-modeling backends.
+
+**Want full interactive memory behavior in a scheduled job**
+Set `memory_provider=full` on that one job only. Still never enables built-in MEMORY.md/USER.md writes under cron.
+
+### Related code / design pointers
+
+- Mode resolution: `agent/memory_provider_mode.py` (`off` | `tools` | `full`)
+- Init + flags: `agent/agent_init.py` (`_memory_provider_auto_sync`, `_memory_provider_prefetch`, `_memory_provider_prompt_context`)
+- Cron construction: `cron/scheduler.py` (`skip_memory=True` + per-job `memory_provider_mode`)
+- Tracking / history: [#9763](https://github.com/NousResearch/hermes-agent/issues/9763), [#4052](https://github.com/NousResearch/hermes-agent/issues/4052), PR [#18565](https://github.com/NousResearch/hermes-agent/pull/18565)
+
+---
+
 ## Job Errors and Failures
 
 ### Check 1: Review recent job output

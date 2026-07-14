@@ -336,6 +336,8 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    memory_provider_mode: Optional[str] = None,
+    skip_memory_provider: Optional[bool] = None,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -395,6 +397,12 @@ def init_agent(
         load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
             identity even when skip_context_files=True. Project context files from the cwd
             remain skipped.
+        skip_memory (bool): If True, skip built-in MEMORY.md/USER.md store. Does NOT
+            alone control external memory providers — see memory_provider_mode.
+        memory_provider_mode (str): External provider mode: ``off`` (no provider),
+            ``tools`` (provider + tools, no auto prompt/prefetch/sync/session retain),
+            ``full`` (normal interactive lifecycle). Default: off when skip_memory else full.
+        skip_memory_provider (bool): Legacy tri-state. True→off, False→tools, None→derive.
     """
     _install_safe_stdio()
 
@@ -1374,9 +1382,35 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
+    # External provider mode (off|tools|full). Independent of skip_memory so
+    # cron can keep MEMORY.md protected while optionally loading providers.
+    from agent.memory_provider_mode import (
+        provider_lifecycle_enabled as _provider_lifecycle_enabled,
+        provider_tools_enabled as _provider_tools_enabled,
+        resolve_memory_provider_mode as _resolve_memory_provider_mode,
+    )
+    try:
+        _mp_mode = _resolve_memory_provider_mode(
+            skip_memory=skip_memory,
+            memory_provider_mode=memory_provider_mode,
+            skip_memory_provider=skip_memory_provider,
+        )
+    except ValueError as _mp_mode_err:
+        _ra().logger.warning("%s — defaulting memory_provider_mode to 'off'", _mp_mode_err)
+        _mp_mode = "off"
+    agent._memory_provider_mode = _mp_mode
+    agent._memory_provider_auto_sync = _provider_lifecycle_enabled(_mp_mode)
+    agent._memory_provider_prefetch = _provider_lifecycle_enabled(_mp_mode)
+    agent._memory_provider_prompt_context = _provider_lifecycle_enabled(_mp_mode)
+
+    mem_config = {}
+    try:
+        mem_config = _agent_cfg.get("memory", {}) or {}
+    except Exception:
+        mem_config = {}
+
     if not skip_memory:
         try:
-            mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -1389,13 +1423,12 @@ def init_agent(
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
-    
-
 
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
+    # Loaded when mode is tools|full even if skip_memory=True (cron opt-in).
     agent._memory_manager = None
-    if not skip_memory:
+    if _provider_tools_enabled(_mp_mode):
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
@@ -1403,6 +1436,9 @@ def init_agent(
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
+                # Mirror mode gates onto the manager so CLI /new boundary
+                # commits (commit_session_boundary_async) honor tools mode.
+                agent._memory_manager.auto_lifecycle = _provider_lifecycle_enabled(_mp_mode)
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
@@ -1452,7 +1488,11 @@ def init_agent(
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
-                    _ra().logger.info("Memory provider '%s' activated", _mem_provider_name)
+                    _ra().logger.info(
+                        "Memory provider '%s' activated (mode=%s)",
+                        _mem_provider_name,
+                        _mp_mode,
+                    )
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None

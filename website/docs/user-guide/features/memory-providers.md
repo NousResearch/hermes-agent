@@ -38,6 +38,25 @@ When a memory provider is active, Hermes automatically:
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
+### Modes: `off` | `tools` | `full`
+
+Provider lifecycle is not all-or-nothing. `AIAgent` resolves a `memory_provider_mode`:
+
+| Mode | Provider init + tools | Auto prompt / prefetch / turn-sync / session retain |
+|------|------------------------|-----------------------------------------------------|
+| `off` | no | no |
+| `tools` | yes | **no** — explicit tool calls only |
+| `full` | yes | yes (normal interactive behaviour above) |
+
+Defaults:
+
+- Interactive sessions (`skip_memory=False`): **`full`**
+- Cron and other `skip_memory=True` callers: **`off`**, unless overridden
+
+Cron jobs opt in **per job** via the `memory_provider` field (`tools` recommended; `full` is an explicit lifecycle opt-in). Built-in MEMORY.md remains skipped under cron either way. See [Scheduled Tasks (Cron) → Memory isolation](./cron#memory-isolation-built-in-vs-providers) and [Cron Troubleshooting](/guides/cron-troubleshooting#memory-and-memory-providers).
+
+Legacy constructor flag `skip_memory_provider`: `True` → `off`, `False` → `tools` (never silently upgrades to `full`).
+
 ## Available Providers
 
 ### Honcho

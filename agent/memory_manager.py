@@ -361,6 +361,11 @@ class MemoryManager:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        # When False (memory_provider_mode=tools|off), automatic lifecycle
+        # writes are suppressed: on_session_end extraction inside
+        # commit_session_boundary_async. Explicit tool calls still work.
+        # Agent init sets this from provider_lifecycle_enabled(mode).
+        self.auto_lifecycle: bool = True
         # Background executor for end-of-turn sync/prefetch. Lazily created on
         # first use so the common builtin-only path spawns no extra threads.
         # A single worker serializes a provider's writes (turn N must land
@@ -814,12 +819,15 @@ class MemoryManager:
         if not self._providers:
             return
         snapshot = list(messages or [])
+        retain = bool(getattr(self, "auto_lifecycle", True))
 
         def _run() -> None:
-            try:
-                self.on_session_end(snapshot)
-            except Exception as e:  # pragma: no cover - on_session_end guards per-provider
-                logger.warning("Session-boundary extraction failed: %s", e)
+            # tools mode: rebind session id without automatic retain/extraction
+            if retain:
+                try:
+                    self.on_session_end(snapshot)
+                except Exception as e:  # pragma: no cover - on_session_end guards per-provider
+                    logger.warning("Session-boundary extraction failed: %s", e)
             try:
                 self.on_session_switch(
                     new_session_id,

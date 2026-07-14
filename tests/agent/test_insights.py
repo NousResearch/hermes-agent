@@ -1,7 +1,11 @@
 """Tests for agent/insights.py — InsightsEngine analytics and reporting."""
 
+from io import StringIO
 import time
+
 import pytest
+from rich.cells import cell_len
+from rich.console import Console
 
 from hermes_state import SessionDB
 from agent.insights import (
@@ -13,6 +17,19 @@ from agent.usage_pricing import (
     format_duration_compact as _format_duration,
     has_known_pricing as _has_known_pricing,
 )
+
+
+def _render_to_text(renderable, *, width: int = 100) -> str:
+    """Render a Rich object without ANSI escapes for text assertions."""
+    stream = StringIO()
+    console = Console(
+        file=stream,
+        width=width,
+        force_terminal=False,
+        color_system=None,
+    )
+    console.print(renderable)
+    return stream.getvalue()
 
 
 @pytest.fixture()
@@ -245,7 +262,7 @@ class TestInsightsEmpty:
     def test_empty_db_terminal_format(self, db):
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
         assert "No sessions found" in text
 
     def test_empty_db_gateway_format(self, db):
@@ -515,7 +532,7 @@ class TestTerminalFormatting:
     def test_terminal_format_has_sections(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
 
         assert "Hermes Insights" in text
         assert "Overview" in text
@@ -528,19 +545,20 @@ class TestTerminalFormatting:
     def test_terminal_format_shows_tokens(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
 
         assert "Input tokens" in text
         assert "Output tokens" in text
         # Cost and cache metrics are intentionally hidden (pricing was unreliable).
-        assert "Est. cost" not in text
+        assert "cost" not in text.lower()
+        assert "$" not in text
         assert "Cache read" not in text
         assert "Cache write" not in text
 
     def test_terminal_format_shows_platforms(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
 
         # Multi-platform, so Platforms section should show
         assert "Platforms" in text
@@ -550,9 +568,38 @@ class TestTerminalFormatting:
     def test_terminal_format_shows_bar_chart(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
 
         assert "█" in text  # Bar chart characters
+
+    def test_terminal_format_respects_narrow_width(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        width = 40
+        text = _render_to_text(engine.format_terminal(report), width=width)
+
+        assert "Hermes Insights" in text
+        assert all(cell_len(line) <= width for line in text.splitlines())
+
+    def test_terminal_format_treats_dynamic_names_as_plain_text(self, populated_db):
+        engine = InsightsEngine(populated_db)
+        report = engine.generate(days=30)
+        dynamic_names = {
+            "model": "model[/]name",
+            "platform": "platform[/]name",
+            "tool": "tool[/]name",
+            "skill": "skill[/]name",
+            "achievement": "achievement[/]name",
+        }
+        report["models"][0]["model"] = dynamic_names["model"]
+        report["platforms"][0]["platform"] = dynamic_names["platform"]
+        report["tools"][0]["tool"] = dynamic_names["tool"]
+        report["skills"]["top_skills"][0]["skill"] = dynamic_names["skill"]
+        report["top_sessions"][0]["label"] = dynamic_names["achievement"]
+
+        text = _render_to_text(engine.format_terminal(report))
+
+        assert all(name in text for name in dynamic_names.values())
 
     def test_terminal_format_hides_cost_for_custom_models(self, db):
         """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
@@ -562,18 +609,19 @@ class TestTerminalFormatting:
 
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
 
         assert "N/A" not in text
         assert "custom/self-hosted" not in text
-        assert "Cost" not in text
+        assert "cost" not in text.lower()
+        assert "$" not in text
 
 
 class TestGatewayFormatting:
     def test_gateway_format_is_shorter(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
-        terminal_text = engine.format_terminal(report)
+        terminal_text = _render_to_text(engine.format_terminal(report))
         gateway_text = engine.format_gateway(report)
 
         assert len(gateway_text) < len(terminal_text)
@@ -777,7 +825,7 @@ class TestEdgeCases:
         assert report["platforms"][0]["platform"] == "cli"
 
         # Terminal format should NOT show platform section for single platform
-        text = engine.format_terminal(report)
+        text = _render_to_text(engine.format_terminal(report))
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
 

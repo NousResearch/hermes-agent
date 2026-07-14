@@ -11,9 +11,11 @@ breakdown capabilities.
 
 Usage:
     from agent.insights import InsightsEngine
+    from rich.console import Console
+
     engine = InsightsEngine(db)
     report = engine.generate(days=30)
-    print(engine.format_terminal(report))
+    Console().print(engine.format_terminal(report))
 """
 
 import json
@@ -29,8 +31,6 @@ from agent.usage_pricing import (
     format_duration_compact,
     has_known_pricing,
 )
-
-
 
 
 def _estimate_cost(
@@ -70,8 +70,6 @@ def _estimate_cost(
         base_url=base_url,
     )
     return float(result.amount_usd or 0.0), result.status
-
-
 
 
 def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
@@ -873,119 +871,272 @@ class InsightsEngine:
     # Formatting
     # =========================================================================
 
-    def format_terminal(self, report: Dict) -> str:
-        """Format the insights report for terminal display (CLI)."""
+    def format_terminal(self, report: Dict) -> Any:
+        """Format the insights report for terminal display (CLI).
+
+        Returns a Rich Renderable (Group, Table, Panel, etc.)
+        """
+        from rich import box
+        from rich.columns import Columns
+        from rich.console import Group
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+
         if report.get("empty"):
             days = report.get("days", 30)
-            src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
-            return f"  No sessions found in the last {days} days{src}."
+            src = (
+                f" (source: {report['source_filter']})"
+                if report.get("source_filter")
+                else ""
+            )
+            return Text(
+                f"  No sessions found in the last {days} days{src}.",
+                style="yellow",
+            )
 
-        lines = []
+        renderables = []
         o = report["overview"]
         days = report["days"]
         src_filter = report.get("source_filter")
 
         # Header
-        lines.append("")
-        lines.append("  ╔══════════════════════════════════════════════════════════╗")
-        lines.append("  ║                    📊 Hermes Insights                    ║")
+        title = "📊 Hermes Insights"
         period_label = f"Last {days} days"
         if src_filter:
             period_label += f" ({src_filter})"
-        padding = 58 - len(period_label) - 2
-        left_pad = padding // 2
-        right_pad = padding - left_pad
-        lines.append(f"  ║{' ' * left_pad} {period_label} {' ' * right_pad}║")
-        lines.append("  ╚══════════════════════════════════════════════════════════╝")
-        lines.append("")
+
+        renderables.append(
+            Panel(
+                Text(period_label, justify="center", style="bold cyan"),
+                title=f"[bold]{title}[/bold]",
+                border_style="cyan",
+                box=box.DOUBLE,
+                padding=(0, 2),
+            )
+        )
 
         # Date range
         if o.get("date_range_start") and o.get("date_range_end"):
-            start_str = datetime.fromtimestamp(o["date_range_start"]).strftime("%b %d, %Y")
-            end_str = datetime.fromtimestamp(o["date_range_end"]).strftime("%b %d, %Y")
-            lines.append(f"  Period: {start_str} — {end_str}")
-            lines.append("")
+            start_str = datetime.fromtimestamp(o["date_range_start"]).strftime(
+                "%b %d, %Y"
+            )
+            end_str = datetime.fromtimestamp(o["date_range_end"]).strftime(
+                "%b %d, %Y"
+            )
+            renderables.append(
+                Text(
+                    f"Period: {start_str} — {end_str}",
+                    style="dim",
+                    justify="center",
+                )
+            )
+            renderables.append(Text(""))
 
         # Overview
-        lines.append("  📋 Overview")
-        lines.append("  " + "─" * 56)
-        lines.append(f"  Sessions:          {o['total_sessions']:<12}  Messages:        {o['total_messages']:,}")
-        lines.append(f"  Tool calls:        {o['total_tool_calls']:<12,}  User messages:   {o['user_messages']:,}")
-        lines.append(f"  Input tokens:      {o['total_input_tokens']:<12,}  Output tokens:   {o['total_output_tokens']:,}")
-        lines.append(f"  Total tokens:      {o['total_tokens']:,}")
+        overview_table = Table(
+            title="📋 Overview",
+            box=box.ROUNDED,
+            show_header=False,
+            expand=True,
+            title_justify="left",
+        )
+        overview_table.add_column("Key1", ratio=1)
+        overview_table.add_column("Val1", ratio=1)
+        overview_table.add_column("Key2", ratio=1)
+        overview_table.add_column("Val2", ratio=1)
+
+        overview_table.add_row(
+            "Sessions:",
+            f"[bold cyan]{o['total_sessions']}[/bold cyan]",
+            "Messages:",
+            f"[bold cyan]{o['total_messages']:,}[/bold cyan]",
+        )
+        overview_table.add_row(
+            "Tool calls:",
+            f"{o['total_tool_calls']:,}",
+            "User messages:",
+            f"{o['user_messages']:,}",
+        )
+        overview_table.add_row(
+            "Input tokens:",
+            f"{o['total_input_tokens']:,}",
+            "Output tokens:",
+            f"{o['total_output_tokens']:,}",
+        )
+        overview_table.add_row(
+            "Total tokens:",
+            f"[bold green]{o['total_tokens']:,}[/bold green]",
+            "",
+            "",
+        )
+
         if o["total_hours"] > 0:
-            lines.append(f"  Active time:       ~{format_duration_compact(o['total_hours'] * 3600):<11}  Avg session:     ~{format_duration_compact(o['avg_session_duration'])}")
-        lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
-        lines.append("")
+            overview_table.add_row(
+                "Active time:",
+                f"~{format_duration_compact(o['total_hours'] * 3600)}",
+                "Avg session:",
+                f"~{format_duration_compact(o['avg_session_duration'])}",
+            )
+
+        overview_table.add_row(
+            "Avg msgs/session:",
+            f"{o['avg_messages_per_session']:.1f}",
+            "",
+            "",
+        )
+
+        renderables.append(overview_table)
+        renderables.append(Text(""))
+
+        # Model and Platform breakdowns in columns if width allows
+        breakdown_tables = []
 
         # Model breakdown
         if report["models"]:
-            lines.append("  🤖 Models Used")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}")
+            model_table = Table(
+                title="🤖 Models Used",
+                box=box.SIMPLE,
+                expand=True,
+                title_justify="left",
+            )
+            model_table.add_column("Model", style="cyan")
+            model_table.add_column("Sessions", justify="right")
+            model_table.add_column("Tokens", justify="right", style="green")
+
             for m in report["models"]:
-                model_name = m["model"][:28]
-                lines.append(f"  {model_name:<30} {m['sessions']:>8} {m['total_tokens']:>12,}")
-            lines.append("")
+                model_table.add_row(
+                    Text(str(m["model"])),
+                    str(m["sessions"]),
+                    f"{m['total_tokens']:,}",
+                )
+
+            breakdown_tables.append(model_table)
 
         # Platform breakdown
-        if len(report["platforms"]) > 1 or (report["platforms"] and report["platforms"][0]["platform"] != "cli"):
-            lines.append("  📱 Platforms")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Platform':<14} {'Sessions':>8} {'Messages':>10} {'Tokens':>14}")
+        if len(report["platforms"]) > 1 or (
+            report["platforms"] and report["platforms"][0]["platform"] != "cli"
+        ):
+            platform_table = Table(
+                title="📱 Platforms",
+                box=box.SIMPLE,
+                expand=True,
+                title_justify="left",
+            )
+            platform_table.add_column("Platform", style="magenta")
+            platform_table.add_column("Sessions", justify="right")
+            platform_table.add_column("Messages", justify="right")
+            platform_table.add_column("Tokens", justify="right", style="green")
+
             for p in report["platforms"]:
-                lines.append(f"  {p['platform']:<14} {p['sessions']:>8} {p['messages']:>10,} {p['total_tokens']:>14,}")
-            lines.append("")
+                platform_table.add_row(
+                    Text(str(p["platform"])),
+                    str(p["sessions"]),
+                    f"{p['messages']:,}",
+                    f"{p['total_tokens']:,}",
+                )
+
+            breakdown_tables.append(platform_table)
+
+        if breakdown_tables:
+            renderables.append(Columns(breakdown_tables, equal=True, expand=True))
+            renderables.append(Text(""))
 
         # Tool usage
         if report["tools"]:
-            lines.append("  🔧 Top Tools")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Tool':<28} {'Calls':>8} {'%':>8}")
-            for t in report["tools"][:15]:  # Top 15
-                lines.append(f"  {t['tool']:<28} {t['count']:>8,} {t['percentage']:>7.1f}%")
+            tool_table = Table(
+                title="🔧 Top Tools",
+                box=box.SIMPLE,
+                expand=True,
+                title_justify="left",
+            )
+            tool_table.add_column("Tool", style="yellow")
+            tool_table.add_column("Calls", justify="right")
+            tool_table.add_column("%", justify="right", style="dim")
+
+            for t in report["tools"][:15]:
+                tool_table.add_row(
+                    Text(str(t["tool"])),
+                    f"{t['count']:,}",
+                    f"{t['percentage']:.1f}%",
+                )
+
+            renderables.append(tool_table)
             if len(report["tools"]) > 15:
-                lines.append(f"  ... and {len(report['tools']) - 15} more tools")
-            lines.append("")
+                renderables.append(
+                    Text(
+                        f"  ... and {len(report['tools']) - 15} more tools",
+                        style="dim italic",
+                    )
+                )
+            renderables.append(Text(""))
 
         # Skill usage
         skills = report.get("skills", {})
         top_skills = skills.get("top_skills", [])
         if top_skills:
-            lines.append("  🧠 Top Skills")
-            lines.append("  " + "─" * 56)
-            lines.append(f"  {'Skill':<28} {'Loads':>7} {'Edits':>7} {'Last used':>11}")
+            skill_table = Table(
+                title="🧠 Top Skills",
+                box=box.SIMPLE,
+                expand=True,
+                title_justify="left",
+            )
+            skill_table.add_column("Skill", style="blue")
+            skill_table.add_column("Loads", justify="right")
+            skill_table.add_column("Edits", justify="right")
+            skill_table.add_column("Last used", justify="right", style="dim")
+
             for skill in top_skills[:10]:
                 last_used = "—"
                 if skill.get("last_used_at"):
-                    last_used = datetime.fromtimestamp(skill["last_used_at"]).strftime("%b %d")
-                lines.append(
-                    f"  {skill['skill'][:28]:<28} {skill['view_count']:>7,} {skill['manage_count']:>7,} {last_used:>11}"
+                    last_used = datetime.fromtimestamp(
+                        skill["last_used_at"]
+                    ).strftime("%b %d")
+                skill_table.add_row(
+                    Text(str(skill["skill"])),
+                    f"{skill['view_count']:,}",
+                    f"{skill['manage_count']:,}",
+                    last_used,
                 )
+
+            renderables.append(skill_table)
             summary = skills.get("summary", {})
-            lines.append(
-                f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  "
-                f"Loads: {summary.get('total_skill_loads', 0):,}  "
-                f"Edits: {summary.get('total_skill_edits', 0):,}"
+            renderables.append(
+                Text(
+                    f"  Distinct skills: {summary.get('distinct_skills_used', 0)}  "
+                    f"Loads: {summary.get('total_skill_loads', 0):,}  "
+                    f"Edits: {summary.get('total_skill_edits', 0):,}",
+                    style="dim",
+                )
             )
-            lines.append("")
+            renderables.append(Text(""))
 
         # Activity patterns
         act = report.get("activity", {})
         if act.get("by_day"):
-            lines.append("  📅 Activity Patterns")
-            lines.append("  " + "─" * 56)
+            # Horizontal layout for activity patterns
+            day_table = Table(
+                title="📅 Activity Patterns",
+                box=box.SIMPLE,
+                expand=True,
+                title_justify="left",
+            )
+            day_table.add_column("Day")
+            day_table.add_column("Activity Bar", ratio=2)
+            day_table.add_column("Count", justify="right")
 
-            # Day of week chart
             day_values = [d["count"] for d in act["by_day"]]
-            bars = _bar_chart(day_values, max_width=15)
+            bars = _bar_chart(day_values, max_width=20)
             for i, d in enumerate(act["by_day"]):
-                bar = bars[i]
-                lines.append(f"  {d['day']}  {bar:<15} {d['count']}")
+                day_table.add_row(
+                    d["day"],
+                    f"[green]{bars[i]}[/green]",
+                    str(d["count"]),
+                )
 
-            lines.append("")
+            renderables.append(day_table)
 
-            # Peak hours (show top 5 busiest hours)
+            # Peak hours
             busy_hours = sorted(act["by_hour"], key=lambda x: x["count"], reverse=True)
             busy_hours = [h for h in busy_hours if h["count"] > 0][:5]
             if busy_hours:
@@ -994,24 +1145,49 @@ class InsightsEngine:
                     hr = h["hour"]
                     ampm = "AM" if hr < 12 else "PM"
                     display_hr = hr % 12 or 12
-                    hour_strs.append(f"{display_hr}{ampm} ({h['count']})")
-                lines.append(f"  Peak hours: {', '.join(hour_strs)}")
+                    hour_strs.append(
+                        f"[bold cyan]{display_hr}{ampm}[/bold cyan] ({h['count']})"
+                    )
+                renderables.append(
+                    Text.from_markup(f"  Peak hours: {', '.join(hour_strs)}")
+                )
 
+            extra_info = []
             if act.get("active_days"):
-                lines.append(f"  Active days: {act['active_days']}")
+                extra_info.append(f"Active days: [bold]{act['active_days']}[/bold]")
             if act.get("max_streak") and act["max_streak"] > 1:
-                lines.append(f"  Best streak: {act['max_streak']} consecutive days")
-            lines.append("")
+                extra_info.append(
+                    f"Best streak: [bold green]{act['max_streak']} consecutive days[/bold green]"
+                )
+
+            if extra_info:
+                renderables.append(Text.from_markup("  " + " • ".join(extra_info)))
+
+            renderables.append(Text(""))
 
         # Notable sessions
         if report.get("top_sessions"):
-            lines.append("  🏆 Notable Sessions")
-            lines.append("  " + "─" * 56)
-            for ts in report["top_sessions"]:
-                lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
-            lines.append("")
+            top_table = Table(
+                title="🏆 Notable Sessions",
+                box=box.SIMPLE,
+                expand=True,
+                title_justify="left",
+            )
+            top_table.add_column("Achievement", style="bold yellow")
+            top_table.add_column("Value", style="cyan")
+            top_table.add_column("Details", style="dim")
 
-        return "\n".join(lines)
+            for ts in report["top_sessions"]:
+                top_table.add_row(
+                    Text(str(ts["label"])),
+                    Text(str(ts["value"])),
+                    Text(f"{ts['date']}, {ts['session_id']}"),
+                )
+
+            renderables.append(top_table)
+            renderables.append(Text(""))
+
+        return Group(*renderables)
 
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""

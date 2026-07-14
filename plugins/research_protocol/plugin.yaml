@@ -1,0 +1,5 @@
+name: research-protocol
+version: "0.1.0"
+description: "Baseline opt-in du protocole de recherche reproductible, traçable et fail-closed."
+author: NousResearch
+kind: standalone

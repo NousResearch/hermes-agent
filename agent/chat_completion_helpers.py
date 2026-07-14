@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -1530,6 +1531,199 @@ def _fallback_entry_unavailable_without_network(agent, fb: dict) -> Optional[str
     return None
 
 
+_FALLBACK_RUNTIME_MISSING = object()
+
+
+def _snapshot_fallback_candidate_runtime(agent) -> dict[str, Any]:
+    """Capture every mutable runtime field a fallback candidate may replace."""
+
+    def _value(name: str, *, deep: bool = False):
+        value = getattr(agent, name, _FALLBACK_RUNTIME_MISSING)
+        if value is _FALLBACK_RUNTIME_MISSING:
+            return value
+        return copy.deepcopy(value) if deep else value
+
+    snapshot = {
+        name: _value(name)
+        for name in (
+            "model",
+            "provider",
+            "base_url",
+            "api_mode",
+            "api_key",
+            "client",
+            "_anthropic_client",
+            "_anthropic_api_key",
+            "_anthropic_base_url",
+            "_is_anthropic_oauth",
+            "_credential_pool",
+            "_fallback_activated",
+            "_config_context_length",
+            "_use_prompt_caching",
+            "_use_native_cache_layout",
+            "_cached_system_prompt",
+            "_pending_fallback_notice",
+        )
+    }
+    for name in ("_client_kwargs", "request_overrides", "reasoning_config"):
+        snapshot[name] = _value(name, deep=True)
+
+    transport_cache = _value("_transport_cache")
+    snapshot["_transport_cache"] = (
+        dict(transport_cache)
+        if transport_cache is not _FALLBACK_RUNTIME_MISSING
+        else transport_cache
+    )
+
+    compressor = getattr(agent, "context_compressor", _FALLBACK_RUNTIME_MISSING)
+    snapshot["context_compressor"] = compressor
+    if compressor is not _FALLBACK_RUNTIME_MISSING and compressor is not None:
+        snapshot["compressor_fields"] = {
+            name: getattr(compressor, name, _FALLBACK_RUNTIME_MISSING)
+            for name in (
+                "model",
+                "context_length",
+                "base_url",
+                "api_key",
+                "provider",
+                "api_mode",
+                "threshold_tokens",
+            )
+        }
+    else:
+        snapshot["compressor_fields"] = {}
+    return snapshot
+
+
+def _restore_fallback_candidate_runtime(agent, snapshot: dict[str, Any]) -> None:
+    """Rollback a failed candidate without rewinding chain progress."""
+
+    def _restore_attr(name: str, *, deep: bool = False) -> None:
+        value = snapshot[name]
+        if value is _FALLBACK_RUNTIME_MISSING:
+            try:
+                delattr(agent, name)
+            except AttributeError:
+                pass
+            return
+        setattr(agent, name, copy.deepcopy(value) if deep else value)
+
+    for name in ("model", "provider", "base_url", "api_mode", "api_key"):
+        _restore_attr(name)
+    for name in (
+        "client",
+        "_anthropic_client",
+        "_anthropic_api_key",
+        "_anthropic_base_url",
+        "_is_anthropic_oauth",
+    ):
+        _restore_attr(name)
+    for name in ("_client_kwargs", "request_overrides", "reasoning_config"):
+        _restore_attr(name, deep=True)
+    _restore_attr("_transport_cache")
+    for name in (
+        "_credential_pool",
+        "_fallback_activated",
+        "_config_context_length",
+        "_use_prompt_caching",
+        "_use_native_cache_layout",
+        "_cached_system_prompt",
+        "_pending_fallback_notice",
+    ):
+        _restore_attr(name)
+
+    compressor = snapshot["context_compressor"]
+    if compressor is _FALLBACK_RUNTIME_MISSING:
+        try:
+            delattr(agent, "context_compressor")
+        except AttributeError:
+            pass
+        return
+    agent.context_compressor = compressor
+    if compressor is None:
+        return
+
+    fields = snapshot["compressor_fields"]
+    update_model = getattr(compressor, "update_model", None)
+    required = ("model", "context_length", "base_url", "api_key", "provider")
+    if callable(update_model) and all(
+        fields.get(name, _FALLBACK_RUNTIME_MISSING) is not _FALLBACK_RUNTIME_MISSING
+        for name in required
+    ):
+        try:
+            update_model(
+                model=fields["model"],
+                context_length=fields["context_length"],
+                base_url=fields["base_url"],
+                api_key=fields["api_key"],
+                provider=fields["provider"],
+                api_mode=(
+                    ""
+                    if fields.get("api_mode", _FALLBACK_RUNTIME_MISSING)
+                    is _FALLBACK_RUNTIME_MISSING
+                    else fields["api_mode"]
+                ),
+            )
+        except Exception:
+            logger.debug(
+                "Fallback rollback could not rebind context compressor",
+                exc_info=True,
+            )
+    # Preserve exact observable state even for lightweight/plugin compressors
+    # whose update_model is partial or failed.
+    for name, value in fields.items():
+        try:
+            if value is _FALLBACK_RUNTIME_MISSING:
+                delattr(compressor, name)
+            else:
+                setattr(compressor, name, value)
+        except (AttributeError, TypeError):
+            pass
+
+
+def _close_rejected_fallback_clients(
+    agent,
+    snapshot: dict[str, Any],
+    *,
+    resolved_client: Any,
+    active_client: Any,
+    active_anthropic_client: Any,
+) -> None:
+    """Best-effort close clients created by a candidate that was rolled back."""
+    retained = {
+        id(value)
+        for value in (snapshot["client"], snapshot["_anthropic_client"])
+        if value is not _FALLBACK_RUNTIME_MISSING and value is not None
+    }
+    seen: set[int] = set()
+    for client, is_anthropic in (
+        (resolved_client, False),
+        (active_client, False),
+        (active_anthropic_client, True),
+    ):
+        if client is None or id(client) in retained or id(client) in seen:
+            continue
+        seen.add(id(client))
+        try:
+            if not is_anthropic and callable(
+                getattr(agent, "_close_openai_client", None)
+            ):
+                agent._close_openai_client(
+                    client,
+                    reason="fallback_activation_rollback",
+                    shared=True,
+                )
+            else:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+        except Exception:
+            logger.debug(
+                "Fallback rollback could not close rejected candidate client",
+                exc_info=True,
+            )
+
+
 
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
@@ -1624,6 +1818,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     # Use centralized router for client construction.
     # raw_codex=True because the main agent needs direct responses.stream()
     # access for Codex providers.
+    _entry_runtime = _snapshot_fallback_candidate_runtime(agent)
+    fb_client = None
     try:
         from agent.auxiliary_client import resolve_provider_client
         # Pass base_url and api_key from fallback config so custom
@@ -1702,6 +1898,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
         old_model = agent.model
         old_provider = agent.provider
+        old_base_url = agent.base_url
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1711,6 +1908,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         agent.provider = fb_provider
         agent.base_url = fb_base_url
         agent.api_mode = fb_api_mode
+        from agent.agent_runtime_helpers import (
+            _rebuild_request_overrides_for_runtime,
+        )
+
+        _rebuild_request_overrides_for_runtime(
+            agent,
+            previous_provider=old_provider,
+            previous_base_url=old_base_url,
+            previous_model=old_model,
+        )
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent._fallback_activated = True
@@ -1890,6 +2097,16 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _reset_stale_streak(agent)
         return True
     except Exception as e:
+        _rejected_client = getattr(agent, "client", None)
+        _rejected_anthropic_client = getattr(agent, "_anthropic_client", None)
+        _restore_fallback_candidate_runtime(agent, _entry_runtime)
+        _close_rejected_fallback_clients(
+            agent,
+            _entry_runtime,
+            resolved_client=fb_client,
+            active_client=_rejected_client,
+            active_anthropic_client=_rejected_anthropic_client,
+        )
         if fb_provider == "nous":
             unavailable.add(fb_key)
         logger.error("Failed to activate fallback %s: %s", fb_model, e)

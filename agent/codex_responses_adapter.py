@@ -23,6 +23,15 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 logger = logging.getLogger(__name__)
 
 
+# Request-body controls accepted by GLM/Kimi/DeepSeek and local template
+# runtimes, but not by the Codex Responses contract.  These can survive an
+# in-place provider switch via request_overrides; strip them at the final
+# serialization boundary as defense-in-depth.
+_CODEX_RESPONSES_FOREIGN_EXTRA_BODY_KEYS = frozenset(
+    {"thinking", "enable_thinking", "chat_template_kwargs"}
+)
+
+
 def _classify_responses_issuer(
     *,
     is_xai_responses: bool = False,
@@ -974,14 +983,17 @@ def _preflight_codex_api_kwargs(
     if extra_body is not None:
         if not isinstance(extra_body, dict):
             raise ValueError("Codex Responses request 'extra_body' must be an object.")
-        # Pass extra_body through verbatim — used by xAI Responses to
-        # carry `prompt_cache_key` as a body-level field (the documented
-        # cache-routing surface on /v1/responses). The openai SDK
-        # serializes extra_body into the JSON body without per-field
-        # type checks, so it survives Responses.stream() kwarg-signature
-        # changes that would otherwise raise TypeError before the wire.
-        if extra_body:
-            normalized["extra_body"] = dict(extra_body)
+        # Preserve endpoint-compatible extension fields (notably xAI's
+        # body-level ``prompt_cache_key``), but never forward thinking controls
+        # belonging to foreign providers.  Copy while filtering so preflight
+        # does not mutate the caller's request_overrides.
+        normalized_extra_body = {
+            key: value
+            for key, value in extra_body.items()
+            if key not in _CODEX_RESPONSES_FOREIGN_EXTRA_BODY_KEYS
+        }
+        if normalized_extra_body:
+            normalized["extra_body"] = normalized_extra_body
 
     if allow_stream:
         stream = api_kwargs.get("stream")

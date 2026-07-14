@@ -1155,6 +1155,7 @@ def try_recover_primary_transport(
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
+        agent.request_overrides = copy.deepcopy(rt.get("request_overrides", {}))
 
         if agent.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client
@@ -1319,6 +1320,7 @@ def restore_primary_runtime(agent) -> bool:
             agent._transport_cache.clear()
         agent.api_key = rt["api_key"]
         agent._client_kwargs = dict(rt["client_kwargs"])
+        agent.request_overrides = copy.deepcopy(rt.get("request_overrides", {}))
         agent._use_prompt_caching = rt["use_prompt_caching"]
         # Default to native layout when the restored snapshot predates the
         # native-vs-proxy split (older sessions saved before this PR).
@@ -1924,6 +1926,72 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     return client
 
 
+def _rebuild_request_overrides_for_runtime(
+    agent,
+    *,
+    previous_provider: str,
+    previous_base_url: str,
+    previous_model: str,
+) -> bool:
+    """Rebuild provider-owned overrides after crossing a runtime boundary."""
+    from hermes_cli.runtime_provider import _normalize_base_url_for_match
+
+    previous_provider = str(previous_provider or "").strip().lower()
+    current_provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    previous_base_url = _normalize_base_url_for_match(previous_base_url)
+    current_base_url = _normalize_base_url_for_match(
+        getattr(agent, "base_url", "")
+    )
+    previous_model = str(previous_model or "").strip().lower()
+    current_model = str(getattr(agent, "model", "") or "").strip().lower()
+    if (
+        previous_provider == current_provider
+        and previous_base_url == current_base_url
+        and previous_model == current_model
+    ):
+        return False
+
+    # There is no provenance on the live dict that can distinguish
+    # provider-owned values from route-local ones.  At a provider/endpoint
+    # boundary, start empty and apply only the target provider's config.
+    agent.request_overrides = {}
+    custom_providers = getattr(agent, "_custom_providers", [])
+    try:
+        from hermes_cli.config import (
+            get_compatible_custom_providers,
+            load_config_readonly,
+        )
+
+        custom_providers = get_compatible_custom_providers(load_config_readonly())
+    except Exception:
+        logger.debug(
+            "custom-provider request override resolution skipped on runtime switch",
+            exc_info=True,
+        )
+    try:
+        from agent.agent_init import _merge_custom_provider_extra_body
+
+        _merge_custom_provider_extra_body(agent, custom_providers)
+    except Exception:
+        logger.debug(
+            "custom-provider request override rebuild failed on runtime switch",
+            exc_info=True,
+        )
+    if getattr(agent, "service_tier", None):
+        try:
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            fast_overrides = resolve_fast_mode_overrides(agent.model)
+            if fast_overrides:
+                agent.request_overrides.update(fast_overrides)
+        except Exception:
+            logger.debug(
+                "fast-mode request override rebuild failed on runtime switch",
+                exc_info=True,
+            )
+    return True
+
+
 def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mode=''):
     """Switch the model/provider in-place for a live agent.
 
@@ -1959,6 +2027,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     old_model = agent.model
     old_provider = agent.provider
+    old_base_url = agent.base_url
 
     # ── Snapshot all fields the swap+rebuild can mutate ──
     # If the rebuild raises (bad API key, network error, build_anthropic_client
@@ -1988,9 +2057,15 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             "_config_context_length",
         )
     }
-    # _client_kwargs is a dict — snapshot a shallow copy so mutating the
-    # live dict doesn't poison the rollback target.
+    # _client_kwargs and request_overrides are dicts. Overrides may contain
+    # nested provider payloads, so keep a deep rollback snapshot.
     _snapshot["_client_kwargs"] = dict(getattr(agent, "_client_kwargs", {}) or {})
+    _old_request_overrides = getattr(agent, "request_overrides", _MISSING)
+    _snapshot["request_overrides"] = (
+        copy.deepcopy(_old_request_overrides)
+        if isinstance(_old_request_overrides, dict)
+        else _old_request_overrides
+    )
     # Snapshot the credential pool reference so a failed client rebuild can
     # restore the original pool (issue #52727: pool reload is part of this
     # switch and must be reversible on rollback).
@@ -2030,6 +2105,14 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
                 "refusing to keep the previous provider's endpoint"
             )
         agent.api_mode = api_mode
+
+        _rebuild_request_overrides_for_runtime(
+            agent,
+            previous_provider=old_provider,
+            previous_base_url=old_base_url,
+            previous_model=old_model,
+        )
+
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
             agent._transport_cache.clear()
@@ -2258,6 +2341,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "request_overrides": copy.deepcopy(
+            getattr(agent, "request_overrides", {}) or {}
+        ),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,

@@ -1726,6 +1726,23 @@ def test_preflight_codex_api_kwargs_rejects_unsupported_request_fields(monkeypat
         _preflight_codex_api_kwargs(kwargs)
 
 
+def test_preflight_codex_api_kwargs_strips_foreign_provider_extra_body(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["extra_body"] = {
+        "thinking": {"type": "enabled"},
+        "enable_thinking": True,
+        "chat_template_kwargs": {"enable_thinking": True},
+        "prompt_cache_key": "conversation-1",
+    }
+
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+    result = _preflight_codex_api_kwargs(kwargs)
+
+    assert result["extra_body"] == {"prompt_cache_key": "conversation-1"}
+    assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+
 def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = _codex_request_kwargs()

@@ -2701,6 +2701,29 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         logger.debug("failed to persist live session runtime", exc_info=True)
 
 
+def _persist_live_session_billing_route(session: dict | None) -> None:
+    """Persist the billing route for the agent currently bound to a session."""
+    if not session:
+        return
+    agent = session.get("agent")
+    session_key = str(session.get("session_key") or "").strip()
+    if agent is None or not session_key:
+        return
+
+    db = getattr(agent, "_session_db", None) or _get_db()
+    if db is None or not hasattr(db, "update_session_billing_route"):
+        return
+    try:
+        db.update_session_billing_route(
+            session_key,
+            provider=str(getattr(agent, "provider", "") or ""),
+            base_url=str(getattr(agent, "base_url", "") or ""),
+            billing_mode=str(getattr(agent, "api_mode", "") or "") or None,
+        )
+    except Exception:
+        logger.debug("failed to persist live session billing route", exc_info=True)
+
+
 def _persist_live_session_system_prompt(session: dict | None) -> None:
     """Refresh the stored system prompt after a live runtime identity change."""
     if not session:
@@ -3135,7 +3158,7 @@ def _persist_model_switch(result) -> None:
 
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
-    return {
+    snapshot = {
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
         "api_key": getattr(agent, "api_key", ""),
@@ -3143,19 +3166,75 @@ def _snapshot_agent_model_runtime(agent) -> dict:
         "api_mode": getattr(agent, "api_mode", ""),
         "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
     }
+    if hasattr(agent, "request_overrides"):
+        snapshot["request_overrides"] = copy.deepcopy(agent.request_overrides)
+    snapshot["one_turn_fallback_state"] = {
+        name: copy.deepcopy(getattr(agent, name))
+        for name in (
+            "_fallback_chain",
+            "_fallback_model",
+            "_fallback_index",
+            "_consecutive_stale_streams",
+        )
+        if hasattr(agent, name)
+    }
+    try:
+        from agent.chat_completion_helpers import (
+            _snapshot_fallback_candidate_runtime,
+        )
+
+        snapshot["atomic_runtime"] = _snapshot_fallback_candidate_runtime(agent)
+    except Exception:
+        logger.debug("TUI one-turn atomic runtime snapshot failed", exc_info=True)
+    return snapshot
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     """Restore an agent model runtime captured before a one-turn override."""
     if not snapshot or agent is None:
         return
+
+    def _restore_request_overrides() -> None:
+        if "request_overrides" in snapshot:
+            agent.request_overrides = copy.deepcopy(snapshot["request_overrides"])
+
+    def _restore_one_turn_fallback_state() -> None:
+        for name, value in snapshot.get("one_turn_fallback_state", {}).items():
+            setattr(agent, name, copy.deepcopy(value))
+
     primary = snapshot.get("primary_runtime")
+    atomic_runtime = snapshot.get("atomic_runtime")
+    if atomic_runtime:
+        try:
+            from agent.chat_completion_helpers import (
+                _close_rejected_fallback_clients,
+                _restore_fallback_candidate_runtime,
+            )
+
+            rejected_client = getattr(agent, "client", None)
+            rejected_anthropic_client = getattr(agent, "_anthropic_client", None)
+            if "primary_runtime" in snapshot:
+                agent._primary_runtime = copy.deepcopy(primary)
+            _restore_fallback_candidate_runtime(agent, atomic_runtime)
+            _close_rejected_fallback_clients(
+                agent,
+                atomic_runtime,
+                resolved_client=None,
+                active_client=rejected_client,
+                active_anthropic_client=rejected_anthropic_client,
+            )
+            _restore_one_turn_fallback_state()
+            return
+        except Exception:
+            logger.debug("TUI one-turn atomic runtime restore failed", exc_info=True)
     if primary and hasattr(agent, "_restore_primary_runtime"):
         try:
             agent._primary_runtime = copy.deepcopy(primary)
             agent._fallback_activated = True
             agent._rate_limited_until = 0
             if agent._restore_primary_runtime():
+                _restore_request_overrides()
+                _restore_one_turn_fallback_state()
                 return
         except Exception:
             logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
@@ -3167,6 +3246,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             base_url=snapshot.get("base_url", ""),
             api_mode=snapshot.get("api_mode", ""),
         )
+        _restore_request_overrides()
+        _restore_one_turn_fallback_state()
 
 
 def _apply_model_switch(
@@ -3334,17 +3415,70 @@ def _apply_model_switch(
                 f"Model switch to {result.new_model} failed ({exc}); "
                 f"staying on {getattr(agent, 'model', current_model)}."
             ) from exc
-        _restart_slash_worker(sid, session)
-        _persist_live_session_runtime(session)
-        _persist_live_session_system_prompt(session)
-        _append_model_switch_marker(
-            session, model=result.new_model, provider=result.target_provider
-        )
-        _emit("session.info", sid, _session_info(agent, session))
         if one_turn:
+            # Install the rollback token immediately after the runtime commit.
+            # Every later hook can fail (worker restart, persistence, stdio
+            # event delivery), and a temporary runtime must never survive such
+            # a partial command.
             session["one_turn_model_restore"] = restore_snapshot
         else:
             session.pop("one_turn_model_restore", None)
+
+        if one_turn:
+            history_len = len(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+            try:
+                _restart_slash_worker(sid, session)
+                _persist_live_session_runtime(session)
+                _persist_live_session_system_prompt(session)
+                # Event delivery can raise (for example ENOSPC on a saturated
+                # pipe). Emit before appending the durable history marker so a
+                # delivery failure cannot leave a marker for a rolled-back swap.
+                _emit("session.info", sid, _session_info(agent, session))
+                _append_model_switch_marker(
+                    session,
+                    model=result.new_model,
+                    provider=result.target_provider,
+                )
+            except Exception:
+                try:
+                    _restore_agent_model_runtime(agent, restore_snapshot)
+                finally:
+                    session.pop("one_turn_model_restore", None)
+                    lock = session.get("history_lock")
+                    if lock is not None:
+                        with lock:
+                            del session.setdefault("history", [])[history_len:]
+                            session["history_version"] = history_version
+                    else:
+                        del session.setdefault("history", [])[history_len:]
+                        session["history_version"] = history_version
+
+                # Earlier hooks may already have persisted the temporary
+                # runtime. Repair those durable/session-adjacent surfaces on a
+                # best-effort basis after the in-memory rollback.
+                for repair in (
+                    lambda: _persist_live_session_runtime(session),
+                    lambda: _persist_live_session_billing_route(session),
+                    lambda: _persist_live_session_system_prompt(session),
+                    lambda: _restart_slash_worker(sid, session),
+                ):
+                    try:
+                        repair()
+                    except Exception:
+                        logger.debug(
+                            "TUI one-turn rollback repair hook failed",
+                            exc_info=True,
+                        )
+                raise
+        else:
+            _restart_slash_worker(sid, session)
+            _persist_live_session_runtime(session)
+            _persist_live_session_system_prompt(session)
+            _append_model_switch_marker(
+                session, model=result.new_model, provider=result.target_provider
+            )
+            _emit("session.info", sid, _session_info(agent, session))
 
     # Record the switch as a PER-SESSION override so a later rebuild of THIS
     # session (e.g. /new via _reset_session_agent, or resume) re-derives the
@@ -10297,11 +10431,36 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if one_turn_restore:
                 try:
                     _restore_agent_model_runtime(agent, one_turn_restore)
-                    _restart_slash_worker(sid, session)
-                    _persist_live_session_runtime(session)
-                    _persist_live_session_system_prompt(session)
                 except Exception:
-                    logger.debug("TUI one-turn model restore failed", exc_info=True)
+                    logger.debug(
+                        "TUI one-turn in-memory model restore failed",
+                        exc_info=True,
+                    )
+                # Each session-adjacent repair is independent. A dead slash
+                # worker or one unavailable DB surface must not leave the
+                # remaining metadata pinned to the temporary route. Billing
+                # precedes the prompt because updating the route invalidates
+                # the stored prompt snapshot.
+                for repair_name, repair in (
+                    ("runtime", lambda: _persist_live_session_runtime(session)),
+                    (
+                        "billing route",
+                        lambda: _persist_live_session_billing_route(session),
+                    ),
+                    (
+                        "system prompt",
+                        lambda: _persist_live_session_system_prompt(session),
+                    ),
+                    ("slash worker", lambda: _restart_slash_worker(sid, session)),
+                ):
+                    try:
+                        repair()
+                    except Exception:
+                        logger.debug(
+                            "TUI one-turn %s repair failed",
+                            repair_name,
+                            exc_info=True,
+                        )
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)

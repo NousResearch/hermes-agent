@@ -288,6 +288,39 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    def test_current_user_temp_root_allowed(self, monkeypatch):
+        """macOS pytest/tempfile paths under the current user's temp root are writable."""
+        from tools import file_tools
+
+        temp_root = "/private/var/folders/ab/current-user/T"
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: temp_root)
+        assert file_tools._check_sensitive_path(f"{temp_root}/workspace/result.txt") is None
+
+    def test_other_private_var_folder_remains_blocked(self, monkeypatch):
+        """The exception is exact to this process's temp root, not all /private/var/folders."""
+        from tools import file_tools
+
+        monkeypatch.setattr(
+            file_tools.tempfile,
+            "gettempdir",
+            lambda: "/private/var/folders/ab/current-user/T",
+        )
+        assert file_tools._check_sensitive_path(
+            "/private/var/folders/zz/other-user/T/result.txt"
+        ) is not None
+
+    def test_hermes_config_inside_temp_root_remains_blocked(self, monkeypatch):
+        from tools import file_tools
+
+        config_path = "/private/var/folders/ab/current-user/T/hermes/config.yaml"
+        monkeypatch.setattr(
+            file_tools.tempfile,
+            "gettempdir",
+            lambda: "/private/var/folders/ab/current-user/T",
+        )
+        monkeypatch.setattr(file_tools, "_get_hermes_config_resolved", lambda: config_path)
+        assert file_tools._check_sensitive_path(config_path) is not None
+
     def test_boot_still_blocked(self):
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None

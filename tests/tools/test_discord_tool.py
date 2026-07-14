@@ -833,6 +833,46 @@ class TestConfigAllowlist:
 
 
 class TestPrivilegedRolePermsConfig:
+    def test_real_temp_hermes_home_config_enables_override(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n  allow_privileged_role_perms: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert _allow_privileged_role_perms() is True
+
+    @patch("tools.discord_tool._discord_request")
+    def test_real_temp_hermes_home_config_controls_create_role_boundary(
+        self, mock_req, tmp_path, monkeypatch,
+    ):
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n  allow_privileged_role_perms: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "777", "name": "Ops", "permissions": "8"}
+
+        result = json.loads(discord_admin_handler(
+            action="create_role",
+            guild_id="111",
+            name="Ops",
+            permissions="8",
+        ))
+
+        assert result == {"success": True, "role_id": "777", "name": "Ops", "permissions": "8"}
+        mock_req.assert_called_once_with(
+            "POST",
+            "/guilds/111/roles",
+            "test-token",
+            body={"name": "Ops", "permissions": "8", "mentionable": False},
+        )
+
     def test_missing_key_defaults_false(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.load_config",

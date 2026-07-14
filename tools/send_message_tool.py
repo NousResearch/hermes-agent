@@ -528,7 +528,7 @@ async def _dispatch_live_media(adapter, chat_id, chunk, *, media_files, force_do
     # ── Media ───────────────────────────────────────────────────────
     for media_path, _is_voice in (media_files or []):
         ext = os.path.splitext(media_path)[1].lower()
-        media_type = classify_media_type(ext, force_document=force_document)
+        media_type = classify_media_type(ext, is_voice=_is_voice, force_document=force_document)
 
         if media_type == MEDIA_TYPE_VOICE:
             result = await adapter.send_voice(

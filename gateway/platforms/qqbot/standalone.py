@@ -69,7 +69,7 @@ async def _standalone_send(
     if not app_id or not secret:
         return {"error": "QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured."}
 
-    target_type, target_id = resolve_target(chat_id)
+    target_type, target_id, _has_prefix = resolve_target(chat_id)
     if not target_id:
         return {"error": f"QQBot: empty target ID in chat_id '{chat_id}'"}
 
@@ -93,7 +93,7 @@ async def _standalone_send(
         mp = Path(media_path)
         if not mp.is_file():
             return {"error": f"Media file not found: {media_path}"}
-        ft = classify_media_type(mp.suffix, force_document=force_document)
+        ft = classify_media_type(mp.suffix, is_voice=_is_voice, force_document=force_document)
         media_items.append((media_path, ft))
 
     # ── Group targets cannot receive document-type uploads ─────────────

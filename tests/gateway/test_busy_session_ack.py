@@ -869,3 +869,34 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", agent, executor_task=live_task
         ) is True
+
+
+class TestBusyAckSystemPrefixUnit:
+    """Unit tests for [System] prefix — verify the prefix is present in
+    the gateway/run.py code path without running full async scaffolding."""
+
+    def test_system_prefix_applied_in_source(self):
+        """The [System] prefix must appear in gateway/run.py in the
+        _handle_active_session_busy_message function source."""
+        src = open("gateway/run.py").read()
+        assert '"[System] " + message' in src or "'[System] ' + message" in src, (
+            "[System] prefix must be applied to the final message in "
+            "_handle_active_session_busy_message"
+        )
+
+    def test_system_prefix_after_message_branches(self):
+        """The prefix must appear AFTER the is_steer/is_queue/else message branches
+        so all busy modes are covered."""
+        src = open("gateway/run.py").read()
+        # Find the handle function section
+        fn_start = src.find("async def _handle_active_session_busy_message")
+        fn_end = src.find("\nasync def ", fn_start + 1)
+        fn_src = src[fn_start:fn_end] if fn_end > fn_start else src[fn_start:]
+        steer_pos = fn_src.rfind("is_steer_mode")
+        queue_pos = fn_src.rfind("is_queue_mode")
+        prefix_pos = fn_src.find("[System]")
+        assert prefix_pos > 0, "[System] prefix must be present in the function"
+        assert prefix_pos > max(steer_pos, queue_pos), (
+            "[System] prefix must be applied after all message selection branches"
+        )
+

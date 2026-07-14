@@ -5464,6 +5464,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as _onb_err:
             logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
 
+        # Prefix all busy-ack messages with [System] so the user and the
+        # agent can distinguish automated gateway notices from agent replies.
+        # Applied after the final message is selected (including onboarding hint
+        # append) so every busy mode -- steer, queue, interrupt, subagent, and
+        # compression demotion -- is uniformly prefixed (issue #21074).
+        message = "[System] " + message
+
         reply_anchor = self._reply_anchor_for_event(event)
         thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
         try:

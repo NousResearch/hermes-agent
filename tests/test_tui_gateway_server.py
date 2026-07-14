@@ -9129,7 +9129,8 @@ def test_prompts_dispatch_select_1_returns_most_recent(monkeypatch, tmp_path):
         test_db.close()
 
 
-def test_prompts_dispatch_invalid_arg_returns_error(monkeypatch, tmp_path):
+@pytest.mark.parametrize("arg", ["abc", "1 extra"])
+def test_prompts_dispatch_invalid_arg_returns_error(monkeypatch, tmp_path, arg):
     from hermes_state import SessionDB
 
     db_path = tmp_path / "state.db"
@@ -9147,41 +9148,11 @@ def test_prompts_dispatch_invalid_arg_returns_error(monkeypatch, tmp_path):
         monkeypatch.setattr(server, "_db", test_db)
         monkeypatch.setattr(server, "_db_error", None)
         resp = server._methods["command.dispatch"](
-            "r1", {"name": "prompts", "arg": "abc", "session_id": sid}
+            "r1", {"name": "prompts", "arg": arg, "session_id": sid}
         )
         assert resp["error"]["code"] == 4004
         assert "invalid index" in resp["error"]["message"]
         assert "/prompts N" in resp["error"]["message"]
-    finally:
-        server._sessions.pop(sid, None)
-        test_db.close()
-
-
-def test_prompts_dispatch_trailing_token_rejected(monkeypatch, tmp_path):
-    """TUI must reject /prompts 1 extra (trailing token) with 4004,
-    matching the classic CLI's full-arg digit contract."""
-    from hermes_state import SessionDB
-
-    db_path = tmp_path / "state.db"
-    test_db = SessionDB(db_path=db_path)
-    test_db.create_session("pk1", "cli")
-    test_db.append_message("pk1", role="user", content="prompt")
-
-    sid = "prompts-sid"
-    server._sessions[sid] = {
-        "session_key": "pk1",
-        "history_lock": threading.Lock(),
-        "history": [],
-    }
-    try:
-        monkeypatch.setattr(server, "_db", test_db)
-        monkeypatch.setattr(server, "_db_error", None)
-        resp = server._methods["command.dispatch"](
-            "r1", {"name": "prompts", "arg": "1 extra", "session_id": sid}
-        )
-        assert resp["error"]["code"] == 4004
-        assert "invalid index" in resp["error"]["message"]
-        # Must NOT return a prefill result
         assert "result" not in resp
     finally:
         server._sessions.pop(sid, None)

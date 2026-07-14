@@ -475,7 +475,26 @@ def _is_whole_body_match(low_body: str, vocab: Sequence[str]) -> bool:
 # Substring helpers
 # --------------------------------------------------------------------------
 def _contains_any(haystack: str, needles: Iterable[str]) -> bool:
-    return any(n in haystack for n in needles)
+    """Return True if any needle occurs in haystack.
+
+    Single-token ASCII needles use word boundaries so that ``research`` does
+    not match inside ``NousResearch`` / GitHub org paths. Multi-word English
+    phrases and non-ASCII (Korean) needles stay plain substring matches.
+    """
+    for n in needles:
+        if not n:
+            continue
+        if " " in n or not n.isascii():
+            if n in haystack:
+                return True
+            continue
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(n)}(?![A-Za-z0-9_])",
+            haystack,
+            flags=re.IGNORECASE,
+        ):
+            return True
+    return False
 
 
 def _starts_with_any(low_body: str, prefixes: Iterable[str]) -> bool:

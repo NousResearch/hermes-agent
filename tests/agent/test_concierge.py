@@ -77,6 +77,29 @@ def test_plain_question_falls_through_to_main():
     assert handle_concierge("서울 파니니 맛집 추천해줘", session=session) is None
 
 
+def test_github_url_not_swallowed_as_worker_or_status():
+    """NousResearch contains substring 'research' — must not force WORKER."""
+    from agent.concierge import handle_concierge
+    from agent.control_plane import Intent, classify
+
+    url = (
+        "https://github.com/NousResearch/hermes-agent/pull/26261"
+        "#pullrequestreview-4682150406"
+    )
+    d = classify(url, concierge_mode_active=True)
+    assert d.intent is not Intent.STATUS
+    assert d.intent is not Intent.NEW_TASK_WORKER
+    session = {"concierge_live_enabled": True}
+    assert handle_concierge(url, session=session) is None
+
+
+def test_imperative_go_not_status():
+    from agent.concierge import handle_concierge
+
+    session = {"concierge_live_enabled": True}
+    assert handle_concierge("이거 진행해", session=session) is None
+
+
 def test_shim_still_imports():
     from agent.concierge import handle_concierge, concierge_enabled
 

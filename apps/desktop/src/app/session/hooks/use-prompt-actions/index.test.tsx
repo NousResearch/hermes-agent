@@ -8,6 +8,7 @@ import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
+  $activeSessionId,
   $busy,
   $connection,
   $currentUsage,
@@ -1834,6 +1835,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls.map(c => c.method)).toEqual(['prompt.submit', 'session.resume', 'prompt.submit'])
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
+
+    // The atom must be updated alongside the ref so subsequent
+    // submits don't re-use the stale runtime id.
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
   // #67603 (second symptom): a recovery resume must re-register on the session's
@@ -2025,6 +2030,10 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
     expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID, source: 'desktop' })
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+
+    // The $activeSessionId atom must be synced after interrupt recovery so
+    // subsequent prompt.submit calls don't re-use the stale runtime id.
+    expect($activeSessionId.get()).toBe(RECOVERED_SESSION_ID)
   })
 
   it('clears the active and cached turn clocks when stopping a turn', async () => {

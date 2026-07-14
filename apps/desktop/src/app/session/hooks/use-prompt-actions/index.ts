@@ -26,6 +26,7 @@ import {
   $busy,
   $connection,
   $messages,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setMessages,
@@ -613,6 +614,7 @@ export function usePromptActions({
           const recoveredId = resumed?.session_id
 
           if (recoveredId) {
+            setActiveSessionId(recoveredId)
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
             releaseBusy()

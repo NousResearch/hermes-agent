@@ -20,7 +20,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { setActiveSessionId, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -554,6 +554,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
             if (recoveredId) {
               if (targetIsCurrentView()) {
+                setActiveSessionId(recoveredId)
                 activeSessionIdRef.current = recoveredId
               }
 

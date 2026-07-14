@@ -727,6 +727,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             content_type=_attachment_content_type(requested_name, is_audio_message=True),
         )
 
+    @staticmethod
+    def _cleanup_prepared_attachment(prepared: _PreparedAttachment) -> None:
+        if prepared.cleanup:
+            try:
+                os.unlink(prepared.path)
+            except OSError:
+                pass
+
+    def _cleanup_cancelled_preparation(self, task: asyncio.Task) -> None:
+        try:
+            prepared = task.result()
+        except BaseException:
+            return
+        self._cleanup_prepared_attachment(prepared)
+
     async def _send_attachment(
         self,
         chat_id: str,
@@ -745,15 +760,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not guid:
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
 
-        prepared = (
-            await asyncio.to_thread(self._prepare_voice_attachment, file_path, filename)
-            if is_audio_message
-            else _PreparedAttachment(
+        if is_audio_message:
+            preparation_task = asyncio.create_task(
+                asyncio.to_thread(self._prepare_voice_attachment, file_path, filename)
+            )
+            try:
+                prepared = await asyncio.shield(preparation_task)
+            except asyncio.CancelledError:
+                preparation_task.add_done_callback(self._cleanup_cancelled_preparation)
+                raise
+        else:
+            prepared = _PreparedAttachment(
                 path=file_path,
                 filename=filename or os.path.basename(file_path),
                 content_type=_attachment_content_type(filename or os.path.basename(file_path)),
             )
-        )
         try:
             with open(prepared.path, "rb") as f:
                 files = {"attachment": (prepared.filename, f, prepared.content_type)}
@@ -791,11 +812,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         finally:
-            if prepared.cleanup:
-                try:
-                    os.unlink(prepared.path)
-                except OSError:
-                    pass
+            self._cleanup_prepared_attachment(prepared)
 
     async def send_image(
         self,

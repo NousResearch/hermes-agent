@@ -2,7 +2,9 @@
 import asyncio
 import json
 import tempfile
+import threading
 import wave
+from pathlib import Path
 
 import pytest
 
@@ -727,16 +729,20 @@ class TestBlueBubblesVoiceSend:
 
         prepared = adapter._prepare_voice_attachment(str(source), None)
 
-        assert prepared.path.endswith(".caf")
-        assert prepared.filename == "Audio Message.caf"
-        assert prepared.content_type == "audio/x-caf"
-        assert prepared.cleanup is True
-        assert len(calls) == 2
-        assert calls[0][0].endswith("ffmpeg")
-        assert "-ar" in calls[0]
-        assert "24000" in calls[0]
-        assert calls[1][0].endswith("afconvert")
-        assert "opus@24000" in calls[1]
+        try:
+            assert prepared.path.endswith(".caf")
+            assert prepared.filename == "Audio Message.caf"
+            assert prepared.content_type == "audio/x-caf"
+            assert prepared.cleanup is True
+            assert len(calls) == 2
+            assert calls[0][0].endswith("ffmpeg")
+            assert "-ar" in calls[0]
+            assert "24000" in calls[0]
+            assert calls[1][0].endswith("afconvert")
+            assert "opus@24000" in calls[1]
+        finally:
+            if prepared.cleanup:
+                Path(prepared.path).unlink(missing_ok=True)
 
     def test_prepare_voice_attachment_transcodes_mp3_to_caf(self, monkeypatch, tmp_path):
         adapter = _make_adapter(monkeypatch)
@@ -756,10 +762,14 @@ class TestBlueBubblesVoiceSend:
 
         prepared = adapter._prepare_voice_attachment(str(source), None)
 
-        assert prepared.path.endswith(".caf")
-        assert prepared.filename == "Audio Message.caf"
-        assert prepared.content_type == "audio/x-caf"
-        assert prepared.cleanup is True
+        try:
+            assert prepared.path.endswith(".caf")
+            assert prepared.filename == "Audio Message.caf"
+            assert prepared.content_type == "audio/x-caf"
+            assert prepared.cleanup is True
+        finally:
+            if prepared.cleanup:
+                Path(prepared.path).unlink(missing_ok=True)
 
     def test_prepare_voice_attachment_cleans_temp_caf_when_ffmpeg_missing(
         self, monkeypatch, tmp_path
@@ -786,6 +796,39 @@ class TestBlueBubblesVoiceSend:
 
         assert prepared.path == str(source)
         assert not list(tmp_path.glob("hermes-bluebubbles-voice-*.caf"))
+
+    def test_prepare_voice_attachment_cleans_all_temps_for_empty_ffmpeg_output(
+        self, monkeypatch, tmp_path
+    ):
+        adapter = _make_adapter(monkeypatch)
+        source = tmp_path / "voice.mp3"
+        source.write_bytes(b"mp3fake")
+        real_named_temporary_file = tempfile.NamedTemporaryFile
+        calls = []
+
+        def temp_in_test_dir(*args, **kwargs):
+            kwargs["dir"] = tmp_path
+            return real_named_temporary_file(*args, **kwargs)
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.tempfile.NamedTemporaryFile",
+            temp_in_test_dir,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name in {"ffmpeg", "afconvert"} else None,
+        )
+        monkeypatch.setattr("gateway.platforms.bluebubbles.subprocess.run", fake_run)
+
+        prepared = adapter._prepare_voice_attachment(str(source), None)
+
+        assert prepared.path == str(source)
+        assert [call[0] for call in calls] == ["/usr/bin/ffmpeg"]
+        assert not list(tmp_path.glob("hermes-bluebubbles-voice-*.caf"))
+        assert not list(tmp_path.glob("hermes-bluebubbles-voice-src-*.wav"))
 
     def test_prepare_voice_attachment_cleans_all_temps_for_invalid_afconvert_output(
         self, monkeypatch, tmp_path
@@ -824,22 +867,38 @@ class TestBlueBubblesVoiceSend:
         assert not list(tmp_path.glob("hermes-bluebubbles-voice-src-*.wav"))
 
     @pytest.mark.asyncio
-    async def test_send_voice_offloads_attachment_preparation(self, monkeypatch, tmp_path):
-        from gateway.platforms.bluebubbles import _PreparedAttachment
-
+    async def test_send_voice_converts_mp3_off_thread_and_cleans_output(
+        self, monkeypatch, tmp_path
+    ):
         adapter = _make_adapter(monkeypatch)
         audio_path = tmp_path / "voice.mp3"
         audio_path.write_bytes(b"mp3fake")
-        calls = []
+        real_named_temporary_file = tempfile.NamedTemporaryFile
+        captured = {}
+        offloaded = []
+
+        def temp_in_test_dir(*args, **kwargs):
+            kwargs["dir"] = tmp_path
+            return real_named_temporary_file(*args, **kwargs)
+
+        def fake_run(cmd, **kwargs):
+            Path(cmd[-1]).write_bytes(b"audio")
 
         async def fake_to_thread(func, *args):
-            calls.append((func, args))
+            offloaded.append((func, args))
             return func(*args)
 
         async def fake_resolve_chat_guid(chat_id):
             return "iMessage;-;user@example.com"
 
         async def fake_post(self, url, *, files, data, timeout):
+            attachment = files["attachment"]
+            captured["filename"] = attachment[0]
+            captured["path"] = attachment[1].name
+            captured["content_type"] = attachment[2]
+            captured["data"] = data
+            captured["exists_during_upload"] = Path(attachment[1].name).exists()
+
             class Response:
                 def raise_for_status(self):
                     pass
@@ -852,20 +911,73 @@ class TestBlueBubblesVoiceSend:
         adapter.client = type("MockClient", (), {"post": fake_post})()
         monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
         monkeypatch.setattr(
-            adapter,
-            "_prepare_voice_attachment",
-            lambda path, filename: _PreparedAttachment(
-                path=path,
-                filename=filename or "voice.mp3",
-                content_type="audio/mpeg",
-            ),
+            "gateway.platforms.bluebubbles.tempfile.NamedTemporaryFile",
+            temp_in_test_dir,
         )
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.shutil.which",
+            lambda name: f"/usr/bin/{name}" if name in {"ffmpeg", "afconvert"} else None,
+        )
+        monkeypatch.setattr("gateway.platforms.bluebubbles.subprocess.run", fake_run)
         monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
 
         result = await adapter.send_voice("user@example.com", str(audio_path))
 
         assert result.success is True
-        assert len(calls) == 1
+        assert len(offloaded) == 1
+        assert captured["filename"] == "Audio Message.caf"
+        assert captured["content_type"] == "audio/x-caf"
+        assert captured["data"]["isAudioMessage"] == "true"
+        assert captured["exists_during_upload"] is True
+        assert not Path(captured["path"]).exists()
+        assert not list(tmp_path.glob("hermes-bluebubbles-voice-src-*.wav"))
+
+    @pytest.mark.asyncio
+    async def test_send_voice_cancellation_cleans_completed_thread_result(
+        self, monkeypatch, tmp_path
+    ):
+        from gateway.platforms.bluebubbles import _PreparedAttachment
+
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "client", object())
+        audio_path = tmp_path / "voice.mp3"
+        audio_path.write_bytes(b"mp3fake")
+        caf_path = tmp_path / "cancelled.caf"
+        caf_path.write_bytes(b"caffake")
+        started = threading.Event()
+        release = threading.Event()
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        def blocking_prepare(path, filename):
+            started.set()
+            release.wait(timeout=2)
+            return _PreparedAttachment(
+                path=str(caf_path),
+                filename="Audio Message.caf",
+                content_type="audio/x-caf",
+                cleanup=True,
+            )
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_prepare_voice_attachment", blocking_prepare)
+
+        send_task = asyncio.create_task(
+            adapter.send_voice("user@example.com", str(audio_path))
+        )
+        assert await asyncio.to_thread(started.wait, 1)
+        send_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await send_task
+
+        release.set()
+        for _ in range(50):
+            if not caf_path.exists():
+                break
+            await asyncio.sleep(0.01)
+
+        assert not caf_path.exists()
 
     def test_prepare_voice_attachment_skips_ffmpeg_for_native_wav_source(self, monkeypatch, tmp_path):
         import wave
@@ -900,10 +1012,14 @@ class TestBlueBubblesVoiceSend:
 
         prepared = adapter._prepare_voice_attachment(str(source), None)
 
-        assert prepared.path.endswith(".caf")
-        assert prepared.content_type == "audio/x-caf"
-        assert [call[0] for call in calls] == ["/usr/bin/afconvert"]
-        assert "opus@24000" in calls[0]
+        try:
+            assert prepared.path.endswith(".caf")
+            assert prepared.content_type == "audio/x-caf"
+            assert [call[0] for call in calls] == ["/usr/bin/afconvert"]
+            assert "opus@24000" in calls[0]
+        finally:
+            if prepared.cleanup:
+                Path(prepared.path).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

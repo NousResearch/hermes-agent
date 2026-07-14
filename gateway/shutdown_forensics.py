@@ -254,8 +254,31 @@ def spawn_async_diagnostic(
         # would also reap us anyway, but defense in depth).  Without
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
+        # Run the diagnostic through Python so the timeout is portable. macOS
+        # does not ship GNU coreutils `timeout`; relying on that binary made
+        # every diagnostic silently fail on an otherwise supported platform.
+        wrapper = r'''
+import os, signal, subprocess, sys
+script, timeout_s = sys.argv[1], float(sys.argv[2])
+proc = subprocess.Popen(
+    ["bash", "-c", script],
+    stdin=subprocess.DEVNULL,
+    stdout=sys.stdout,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+try:
+    proc.wait(timeout=timeout_s)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait()
+    print(f"=== diagnostic timed out after {timeout_s:.1f}s ===", flush=True)
+'''
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            [sys.executable, "-c", wrapper, script, str(timeout_seconds)],
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

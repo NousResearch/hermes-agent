@@ -3931,4 +3931,66 @@ def tick(
 
 
 if __name__ == "__main__":
+    import argparse as _argparse
+
+    _p = _argparse.ArgumentParser(
+        description="Hermes cron scheduler",
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python -m cron.scheduler              # run one tick\n"
+            "  python -m cron.scheduler --list       # list registered jobs\n"
+            "  python -m cron.scheduler --run-job morning_brief_discord --dry-run\n"
+        ),
+    )
+    _p.add_argument("--list", action="store_true", help="List all registered cron jobs and exit")
+    _p.add_argument(
+        "--run-job",
+        metavar="JOB_ID_OR_NAME",
+        help="Run a specific job by ID or name immediately",
+    )
+    _p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dry-run: set MORNING_BRIEF_DRY_RUN=1 and skip real deliveries where supported",
+    )
+    _args = _p.parse_args()
+
+    if _args.list:
+        from cron.jobs import list_jobs as _list_jobs
+
+        _jobs = _list_jobs(include_disabled=True)
+        if not _jobs:
+            print("No cron jobs registered.")
+        else:
+            _hdr = f"{'ID':<14} {'NAME':<30} {'SCHEDULE':<22} {'TIMEZONE':<18} {'NEXT RUN'}"
+            print(_hdr)
+            print("-" * len(_hdr))
+            for _j in _jobs:
+                _sch_dict = _j.get("schedule") or {}
+                _tz = str(_sch_dict.get("tz") or "")
+                _expr = str(_sch_dict.get("expr") or "")
+                _sched = _expr or str(_j.get("schedule_display") or "")
+                print(
+                    f"{_j.get('id', ''):<14} "
+                    f"{_j.get('name', ''):<30} "
+                    f"{_sched:<22} "
+                    f"{_tz:<18} "
+                    f"{_j.get('next_run_at', '')}"
+                )
+        sys.exit(0)
+
+    if _args.run_job:
+        from cron.jobs import resolve_job_ref as _resolve_job_ref
+
+        if _args.dry_run:
+            os.environ["MORNING_BRIEF_DRY_RUN"] = "1"
+
+        _job = _resolve_job_ref(_args.run_job)
+        if not _job:
+            print(f"Job not found: {_args.run_job!r}", file=sys.stderr)
+            sys.exit(1)
+        _ok = run_one_job(_job, verbose=True)
+        sys.exit(0 if _ok else 1)
+
     tick(verbose=True)

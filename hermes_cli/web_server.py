@@ -2333,6 +2333,11 @@ async def git_branches_route(path: str):
     return {"branches": await _git_op(_web_git.branch_list, _git_path(path))}
 
 
+@app.get("/api/git/base-branches")
+async def git_base_branches_route(path: str):
+    return {"branches": await _git_op(_web_git.base_branch_list, _git_path(path))}
+
+
 @app.get("/api/git/review/list")
 async def git_review_list_route(path: str, scope: str = "uncommitted", base: Optional[str] = None):
     return await _git_op(_web_git.review_list, _git_path(path), scope, base)
@@ -9569,6 +9574,34 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionImport(BaseModel):
+    sessions: List[Dict[str, Any]]
+    profile: Optional[str] = None
+
+
+# Keep the dashboard import endpoint stream-safe: FastAPI otherwise parses and
+# buffers an arbitrarily large JSON body before SessionDB can enforce its own
+# per-session and transaction-work limits.
+_SESSION_IMPORT_MAX_BYTES = 25 * 1024 * 1024
+
+
+async def _read_session_import_body(request: Request) -> bytes:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > _SESSION_IMPORT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Session import payload is too large")
+        body.extend(chunk)
+    return bytes(body)
+
+
+def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    db = _open_session_db_for_profile(profile)
+    try:
+        return db.import_sessions(sessions)
+    finally:
+        db.close()
+
+
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
@@ -9617,6 +9650,32 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
+
+
+@app.post("/api/sessions/import")
+async def import_sessions_endpoint(request: Request):
+    """Import one or more sessions exported from the dashboard or CLI.
+
+    This is intentionally separate from ``/api/ops/import``: that endpoint
+    restores a whole Hermes backup archive, while this endpoint is scoped to
+    session rows/messages and is safe to use from the Sessions page.
+    """
+    try:
+        raw_body = await _read_session_import_body(request)
+        body = SessionImport.model_validate_json(raw_body)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid session import payload") from exc
+
+    try:
+        result = await asyncio.to_thread(_import_sessions_for_profile, body.profile, body.sessions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not result.get("ok", False):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/sessions/empty/count")

@@ -4148,6 +4148,48 @@ class TestVisionAutoSkipsKimiCoding:
     on every request (#17076).
     """
 
+    def test_openrouter_text_only_main_uses_strict_vision_backend(self, monkeypatch):
+        """OpenRouter as main + text-only chat model still falls back to
+        OpenRouter's dedicated vision default instead of exhausting auto.
+        """
+        fake_or_client = MagicMock(name="openrouter_vision_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider", lambda: "openrouter",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model", lambda: "openrouter/owl-alpha",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._main_model_supports_vision",
+            lambda provider, model: False,
+        )
+        rpc_mock = MagicMock(side_effect=AssertionError(
+            "resolve_provider_client should not be called with the text-only "
+            "OpenRouter chat model on the vision auto path"))
+        monkeypatch.setattr(
+            "agent.auxiliary_client.resolve_provider_client", rpc_mock,
+        )
+
+        calls = []
+
+        def fake_strict(provider, model=None):
+            calls.append((provider, model))
+            if provider == "openrouter":
+                return fake_or_client, "google/gemini-3-flash-preview"
+            return None, None
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            fake_strict,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_or_client
+        assert model == "google/gemini-3-flash-preview"
+        assert calls == [("openrouter", None)]
+
     def test_kimi_coding_skipped_falls_through_to_openrouter(self, monkeypatch):
         """kimi-coding as main + vision auto → OpenRouter (not kimi)."""
         fake_or_client = MagicMock(name="openrouter_client")

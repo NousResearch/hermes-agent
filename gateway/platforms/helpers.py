@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Callable, Dict, Optional
 
 from utils import atomic_json_write
 
@@ -40,16 +40,23 @@ class MessageDeduplicator:
             return
     """
 
-    def __init__(self, max_size: int = 2000, ttl_seconds: float = 300):
+    def __init__(
+        self,
+        max_size: int = 2000,
+        ttl_seconds: float = 300,
+        *,
+        clock: Optional[Callable[[], float]] = None,
+    ):
         self._seen: Dict[str, float] = {}
         self._max_size = max_size
         self._ttl = ttl_seconds
+        self._clock = clock
 
     def is_duplicate(self, msg_id: str) -> bool:
         """Return True if *msg_id* was already seen within the TTL window."""
         if not msg_id:
             return False
-        now = time.time()
+        now = self._clock() if self._clock is not None else time.time()
         if msg_id in self._seen:
             if now - self._seen[msg_id] < self._ttl:
                 return True

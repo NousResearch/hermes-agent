@@ -988,6 +988,109 @@ class TestWeixinContentDedup:
         # is_duplicate should only be called for message_id, never for content
         assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)
 
+    def test_same_command_uses_a_sliding_window_across_bucket_boundary(self, monkeypatch):
+        """A repeated command is suppressed for a full 3 seconds, not a bucket.
+
+        The second attempt crosses an epoch-aligned 3-second boundary after
+        only 20ms. It must still be suppressed; an attempt exactly three
+        seconds after the first one must be accepted.
+        """
+        now = [101.99]
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        monkeypatch.setattr(adapter._command_dedup, "_clock", lambda: now[0])
+
+        base_message = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "/approve"}}],
+        }
+
+        async def _drive():
+            await adapter._process_message({**base_message, "message_id": "cmd-1"})
+            now[0] = 102.01  # 20ms later, but in the next 3-second bucket.
+            await adapter._process_message({**base_message, "message_id": "cmd-2"})
+            now[0] = 104.99  # Exactly 3s after cmd-1: the window has expired.
+            await adapter._process_message({**base_message, "message_id": "cmd-3"})
+
+        asyncio.run(_drive())
+
+        assert [call.args[0].text for call in adapter.handle_message.await_args_list] == [
+            "/approve", "/approve",
+        ]
+
+    def test_command_dedup_is_scoped_by_sender(self, monkeypatch):
+        now = [50.0]
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        monkeypatch.setattr(adapter._command_dedup, "_clock", lambda: now[0])
+
+        def _message(sender, message_id):
+            return {
+                "from_user_id": sender,
+                "message_id": message_id,
+                "item_list": [{"type": 1, "text_item": {"text": "/approve"}}],
+            }
+
+        async def _drive():
+            await adapter._process_message(_message("wxid_alice", "alice-1"))
+            await adapter._process_message(_message("wxid_bob", "bob-1"))
+
+        asyncio.run(_drive())
+
+        assert [call.args[0].source.user_id for call in adapter.handle_message.await_args_list] == [
+            "wxid_alice", "wxid_bob",
+        ]
+
+    def test_command_dedup_is_scoped_by_chat(self, monkeypatch):
+        now = [75.0]
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._group_policy = "allowlist"
+        adapter._group_allow_from = ["room-a", "room-b"]
+        adapter.handle_message = AsyncMock()
+        monkeypatch.setattr(adapter._command_dedup, "_clock", lambda: now[0])
+
+        def _message(room_id, message_id):
+            return {
+                "from_user_id": "wxid_alice",
+                "room_id": room_id,
+                "message_id": message_id,
+                "item_list": [{"type": 1, "text_item": {"text": "/status"}}],
+            }
+
+        async def _drive():
+            await adapter._process_message(_message("room-a", "room-a-1"))
+            await adapter._process_message(_message("room-b", "room-b-1"))
+
+        asyncio.run(_drive())
+
+        assert [call.args[0].source.chat_id for call in adapter.handle_message.await_args_list] == [
+            "room-a", "room-b",
+        ]
+
+    def test_regular_text_keeps_existing_long_content_dedup(self, monkeypatch):
+        now = [10.0]
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._enqueue_text_event = Mock()
+        monkeypatch.setattr(adapter._dedup, "_clock", lambda: now[0])
+
+        base_message = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "hello"}}],
+        }
+
+        async def _drive():
+            await adapter._process_message({**base_message, "message_id": "text-1"})
+            now[0] = 13.0  # Well beyond command TTL, still within text TTL.
+            await adapter._process_message({**base_message, "message_id": "text-2"})
+
+        asyncio.run(_drive())
+
+        assert adapter._enqueue_text_event.call_count == 1
+
 
 class TestWeixinTextDebounce:
     """Text-debounce batching for rapid multi-message bursts (issue #35301).

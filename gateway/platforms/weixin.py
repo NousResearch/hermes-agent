@@ -94,6 +94,7 @@ BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
+COMMAND_DEDUP_TTL_SECONDS = 3
 
 
 def _is_stale_session_ret(
@@ -1157,7 +1158,15 @@ class WeixinAdapter(BasePlatformAdapter):
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
+        # Network retry IDs/content and intentional commands have different
+        # lifetimes.  Keep commands in their own short, monotonic TTL cache so
+        # `/approve` can be repeated after three seconds without weakening the
+        # existing five-minute duplicate-content protection for ordinary text.
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
+        self._command_dedup = MessageDeduplicator(
+            ttl_seconds=COMMAND_DEDUP_TTL_SECONDS,
+            clock=time.monotonic,
+        )
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
@@ -1412,16 +1421,31 @@ class WeixinAdapter(BasePlatformAdapter):
         if message_id and self._dedup.is_duplicate(message_id):
             return
 
-        # Secondary content-fingerprint dedup for text messages
+        # Secondary content-fingerprint dedup for text messages. Commands are
+        # intentionally repeatable, so suppress only rapid duplicate delivery
+        # in a short sliding window; ordinary text retains the 5-minute cache
+        # that protects against iLink retries with different message IDs.
         item_list = message.get("item_list") or []
         text = _extract_text(item_list)
+        chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if text:
-            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
-            if self._dedup.is_duplicate(content_key):
-                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+            text_hash = hashlib.md5(text.encode()).hexdigest()
+            if text.startswith("/"):
+                duplicate = self._command_dedup.is_duplicate(
+                    f"command:{effective_chat_id}:{sender_id}:{text_hash}"
+                )
+            else:
+                duplicate = self._dedup.is_duplicate(
+                    f"content:{sender_id}:{text_hash}"
+                )
+            if duplicate:
+                logger.debug(
+                    "[%s] Content-dedup: skipping duplicate message from %s",
+                    self.name,
+                    sender_id,
+                )
                 return
 
-        chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if self._group_policy == "disabled":
                 return

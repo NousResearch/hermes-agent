@@ -1197,6 +1197,200 @@ class TestPollLoop(unittest.TestCase):
         self.assertEqual(dispatched[0]["subject"], "Inbox Test")
 
 
+class TestImapPollingShutdown(unittest.TestCase):
+    """Regression coverage for executor-backed IMAP polling shutdown."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+            "EMAIL_POLL_INTERVAL": "1",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    async def _wait_until(self, predicate, *, timeout=1.0):
+        import asyncio
+        import time
+
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() >= deadline:
+                raise AssertionError("condition was not met before timeout")
+            await asyncio.sleep(0.01)
+
+    def test_disconnect_interrupts_blocked_imap_poll_worker(self):
+        """disconnect() must wake the synchronous IMAP worker, not just cancel the task."""
+        import asyncio
+        import threading
+
+        adapter = self._make_adapter()
+        search_entered = threading.Event()
+        released = threading.Event()
+        worker_finished = threading.Event()
+
+        class FakeSocket:
+            def __init__(self):
+                self.shutdown_called = False
+                self.close_called = False
+
+            def shutdown(self, _how):
+                self.shutdown_called = True
+                released.set()
+
+            def close(self):
+                self.close_called = True
+                released.set()
+
+        class BlockingImap:
+            def __init__(self):
+                self.sock = FakeSocket()
+
+            def login(self, *_args):
+                return "OK", []
+
+            def select(self, *_args):
+                return "OK", []
+
+            def xatom(self, *_args):
+                return "OK", []
+
+            def uid(self, command, *_args):
+                if command == "search":
+                    search_entered.set()
+                    released.wait()
+                    worker_finished.set()
+                    raise OSError("IMAP socket interrupted")
+                return "NO", []
+
+            def logout(self):
+                return "OK", []
+
+            def force_release(self):
+                released.set()
+
+        fake_imap = BlockingImap()
+
+        async def exercise():
+            adapter._running = True
+            with patch("imaplib.IMAP4_SSL", return_value=fake_imap):
+                adapter._poll_task = asyncio.create_task(adapter._poll_loop())
+                await self._wait_until(search_entered.is_set)
+                try:
+                    await adapter.disconnect()
+                    await self._wait_until(worker_finished.is_set, timeout=0.5)
+                finally:
+                    fake_imap.force_release()
+                    await self._wait_until(worker_finished.is_set, timeout=0.5)
+
+        asyncio.run(exercise())
+
+        self.assertTrue(fake_imap.sock.shutdown_called)
+        self.assertTrue(fake_imap.sock.close_called)
+
+    def test_fetch_does_not_open_new_connection_after_disconnect(self):
+        """Once shutdown starts, stale executor work must not start a new IMAP session."""
+        import asyncio
+
+        adapter = self._make_adapter()
+
+        async def exercise_disconnect():
+            adapter._running = True
+            await adapter.disconnect()
+
+        asyncio.run(exercise_disconnect())
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap:
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        mock_imap.assert_not_called()
+
+    def test_fetch_stops_between_uids_when_disconnect_requested(self):
+        """A long UID batch should stop after shutdown begins."""
+        import asyncio
+        import threading
+
+        adapter = self._make_adapter()
+        first_fetch_entered = threading.Event()
+        release_fetch = threading.Event()
+        fetched_uids = []
+
+        raw_email = MIMEText("Hello", "plain", "utf-8")
+        raw_email["From"] = "user@test.com"
+        raw_email["Subject"] = "Test"
+        raw_email["Message-ID"] = "<msg@test.com>"
+        raw_email["Authentication-Results"] = (
+            "mx.test.com; dmarc=pass header.from=test.com"
+        )
+
+        class FakeSocket:
+            def shutdown(self, _how):
+                release_fetch.set()
+
+            def close(self):
+                release_fetch.set()
+
+        class BatchImap:
+            sock = FakeSocket()
+
+            def login(self, *_args):
+                return "OK", []
+
+            def select(self, *_args):
+                return "OK", []
+
+            def xatom(self, *_args):
+                return "OK", []
+
+            def uid(self, command, *args):
+                if command == "search":
+                    return "OK", [b"1 2 3"]
+                if command == "fetch":
+                    uid = args[0]
+                    fetched_uids.append(uid)
+                    if len(fetched_uids) == 1:
+                        first_fetch_entered.set()
+                        release_fetch.wait()
+                    return "OK", [(b"RFC822", raw_email.as_bytes())]
+                return "NO", []
+
+            def logout(self):
+                return "OK", []
+
+        fake_imap = BatchImap()
+
+        async def exercise():
+            loop = asyncio.get_running_loop()
+            with patch("imaplib.IMAP4_SSL", return_value=fake_imap):
+                fetch_task = loop.run_in_executor(None, adapter._fetch_new_messages)
+                await self._wait_until(first_fetch_entered.is_set)
+                try:
+                    await adapter.disconnect()
+                finally:
+                    release_fetch.set()
+                return await asyncio.wait_for(fetch_task, timeout=1.0)
+
+        asyncio.run(exercise())
+
+        self.assertEqual(fetched_uids, [b"1"])
+
+    def test_active_imap_reference_clears_after_fetch_exception(self):
+        """Failed polling attempts must not leave a stale active connection handle."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = RuntimeError("search failed")
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertIsNone(adapter._active_imap)
+
+
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 

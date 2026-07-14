@@ -24,6 +24,7 @@ import re
 import smtplib
 import socket
 import ssl
+import threading
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -480,6 +481,9 @@ class EmailAdapter(BasePlatformAdapter):
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
+        self._poll_stop_event = threading.Event()
+        self._active_imap_lock = threading.Lock()
+        self._active_imap: Optional[Any] = None
 
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
@@ -548,6 +552,45 @@ class EmailAdapter(BasePlatformAdapter):
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
 
+    def _set_active_imap(self, imap: Any) -> None:
+        """Remember the IMAP connection currently owned by the poll worker."""
+        with self._active_imap_lock:
+            self._active_imap = imap
+
+    def _clear_active_imap(self, imap: Any) -> None:
+        """Clear the active IMAP handle without racing a newer poll."""
+        with self._active_imap_lock:
+            if self._active_imap is imap:
+                self._active_imap = None
+
+    def _interrupt_active_imap(self) -> None:
+        """Wake a blocking IMAP poll by closing its socket from the loop thread."""
+        with self._active_imap_lock:
+            imap = self._active_imap
+        if imap is None:
+            return
+
+        raw_sock = None
+        for attr in ("sock", "_sock"):
+            raw_sock = getattr(imap, attr, None)
+            if raw_sock is not None:
+                break
+        if raw_sock is None:
+            return
+
+        try:
+            raw_sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        except Exception as exc:
+            logger.debug("[Email] Error shutting down active IMAP socket: %s", exc)
+        try:
+            raw_sock.close()
+        except OSError:
+            pass
+        except Exception as exc:
+            logger.debug("[Email] Error closing active IMAP socket: %s", exc)
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
         # Validate up front so a missing host surfaces as an actionable config
@@ -611,6 +654,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] SMTP connection failed: %s", e)
             return False
 
+        self._poll_stop_event.clear()
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
@@ -619,6 +663,8 @@ class EmailAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop polling and disconnect."""
         self._running = False
+        self._poll_stop_event.set()
+        self._interrupt_active_imap()
         if self._poll_task:
             self._poll_task.cancel()
             try:
@@ -626,6 +672,7 @@ class EmailAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+        self._interrupt_active_imap()
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:
@@ -650,18 +697,31 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        if self._poll_stop_event.is_set():
+            return results
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            self._set_active_imap(imap)
             try:
+                if self._poll_stop_event.is_set():
+                    return results
                 imap.login(self._address, self._password)
+                if self._poll_stop_event.is_set():
+                    return results
                 _send_imap_id(imap)
+                if self._poll_stop_event.is_set():
+                    return results
                 imap.select("INBOX")
+                if self._poll_stop_event.is_set():
+                    return results
 
                 status, data = imap.uid("search", None, "UNSEEN")
-                if status != "OK" or not data or not data[0]:
+                if self._poll_stop_event.is_set() or status != "OK" or not data or not data[0]:
                     return results
 
                 for uid in data[0].split():
+                    if self._poll_stop_event.is_set():
+                        break
                     if uid in self._seen_uids:
                         continue
                     self._seen_uids.add(uid)
@@ -670,6 +730,8 @@ class EmailAdapter(BasePlatformAdapter):
                         self._trim_seen_uids()
 
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    if self._poll_stop_event.is_set():
+                        break
                     if status != "OK":
                         continue
 
@@ -741,6 +803,8 @@ class EmailAdapter(BasePlatformAdapter):
                     imap.logout()
                 except Exception:
                     pass
+                finally:
+                    self._clear_active_imap(imap)
         except Exception as e:
             logger.error("[Email] IMAP fetch error: %s", e)
         return results

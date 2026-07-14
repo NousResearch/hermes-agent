@@ -1509,6 +1509,8 @@ def register(ctx):
     ctx.register_hook("pre_llm_call", inject_memory)
     ctx.register_hook("on_session_start", on_new_session)
     ctx.register_hook("on_session_end", on_session_end)
+    ctx.register_hook("on_session_pre_switch", before_cli_session_switch)
+    ctx.register_hook("on_session_post_switch", after_cli_session_switch)
 ```
 
 ### Rewrite the reply before the user sees it
@@ -1543,6 +1545,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | [`on_session_reset`](../../user-guide/features/hooks.md#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`on_session_delete`](../../user-guide/features/hooks.md#on_session_delete) | A session delete or deliberate archive commits (every surface, sweeps, prune) | `session_id: str, reason: str, profile: str \| None`, optional `deleted_ids: list[str]`, `sessions_dir: str` | ignored |
 | [`post_compaction`](../../user-guide/features/hooks.md#post_compaction) | A compaction committed (any path: auto, `/compress`, gateway, Codex, micro, prune) | `session_id: str, old_session_id: str, kind: str, reason: str, before_tokens: int \| None, after_tokens: int \| None, messages_removed: int \| None` | ignored |
+| [`on_session_pre_switch`](../../user-guide/features/hooks.md#shipped-plugin-hook-catalog) | CLI `new_session()` is about to finalize the old session and rotate its identity | `old_session_id: str, cli: HermesCLI` | ignored (fail-open observer) |
+| [`on_session_post_switch`](../../user-guide/features/hooks.md#shipped-plugin-hook-catalog) | CLI `new_session()` completed successfully; the durable row, title, memory handoff, and reset hook are complete | `old_session_id: str, new_session_id: str, cli: HermesCLI` | ignored |
 | [`gateway_platform_event`](../../user-guide/features/hooks.md#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |

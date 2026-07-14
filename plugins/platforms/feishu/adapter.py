@@ -4530,7 +4530,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
+            # Strip residual markdown markers (**, `, ~~, etc.) when forcing
+            # table content to plain text. Previously the raw content was
+            # emitted verbatim, leaving literal ** / ` visible on the client.
+            text_payload = {"text": _strip_markdown_to_plain_text(content)}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)

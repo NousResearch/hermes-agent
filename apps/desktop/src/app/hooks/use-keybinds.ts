@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { setRightSidebarTab } from '@/app/right-sidebar/store'
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
-import { PROFILE_SLOT_COUNT } from '@/lib/keybinds/actions'
+import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding, toggleKeybindPanel } from '@/store/keybinds'
 import {
@@ -18,16 +20,31 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import {
+  $newChatProfile,
   cycleProfile,
   requestProfileCreate,
   switchProfileToSlot,
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { $activeSessionId, $sessions, setModelPickerOpen } from '@/store/session'
+import { requestNewWorktree } from '@/store/projects'
+import { toggleReview } from '@/store/review'
+import { setModelPickerOpen } from '@/store/session'
+import {
+  $switcherOpen,
+  closeSwitcher,
+  commitOnCtrlUp,
+  onSwitcherTabDown,
+  onSwitcherTabUp,
+  openOrAdvanceSwitcher,
+  slotSessionId,
+  switcherActive,
+  switcherJustClosed
+} from '@/store/session-switcher'
+import { openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus } from '../chat/composer/focus'
+import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import {
   AGENTS_ROUTE,
@@ -60,6 +77,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   // Keep the latest closures without re-subscribing the listener.
   const handlersRef = useRef<HandlerMap>({})
+  const commitSwitcherRef = useRef<() => void>(() => {})
 
   const profileSwitchHandlers: HandlerMap = {}
 
@@ -67,26 +85,32 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     profileSwitchHandlers[`profile.switch.${slot}`] = () => switchProfileToSlot(slot)
   }
 
-  // Move to the adjacent session in recency order, wrapping at the ends.
-  const cycleSession = (direction: 1 | -1) => {
-    const sessions = $sessions.get()
-
-    if (sessions.length < 2) {
-      return
-    }
-
-    const current = sessions.findIndex(session => session.id === $activeSessionId.get())
-    const start = current === -1 ? (direction === 1 ? -1 : 0) : current
-    const next = sessions[(start + direction + sessions.length) % sessions.length]
-
-    if (next) {
-      navigate(sessionRoute(next.id))
+  const goToSession = (sessionId: null | string) => {
+    if (sessionId) {
+      navigate(sessionRoute(sessionId))
     }
   }
 
-  const showRightSidebarTab = (tab: 'files' | 'terminal') => {
+  // ^N jumps straight to the Nth recent session and dismisses the switcher.
+  const sessionSlotHandlers: HandlerMap = {}
+
+  for (let slot = 1; slot <= SESSION_SLOT_COUNT; slot += 1) {
+    sessionSlotHandlers[`session.slot.${slot}`] = () => {
+      closeSwitcher()
+      goToSession(slotSessionId(slot))
+    }
+  }
+
+  commitSwitcherRef.current = () => goToSession(commitOnCtrlUp())
+
+  const stepSession = (direction: 1 | -1) => {
+    onSwitcherTabDown()
+    goToSession(openOrAdvanceSwitcher(direction))
+  }
+
+  const showFiles = () => {
     setFileBrowserOpen(true)
-    setRightSidebarTab(tab)
+    setTerminalTakeover(false)
   }
 
   handlersRef.current = {
@@ -94,6 +118,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
+    'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,
@@ -106,13 +131,22 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
     'session.new': () => {
+      // Match the sidebar New Session button. A plain keyboard new chat should
+      // target the current live profile, not a stale per-profile quick-create
+      // selection from a prior action.
+      $newChatProfile.set(null)
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
-    'session.next': () => cycleSession(1),
-    'session.prev': () => cycleSession(-1),
+    'session.newWindow': () => void openNewSessionInNewWindow(),
+    'session.next': () => stepSession(1),
+    'session.prev': () => stepSession(-1),
+    ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
+    // Only meaningful inside a git repo — a no-op otherwise (the key falls
+    // through instead of silently doing nothing).
+    'workspace.newWorktree': () => $repoStatus.get() && requestNewWorktree(),
 
     'view.toggleSidebar': () => {
       if (matchesQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)) {
@@ -128,8 +162,20 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         toggleFileBrowserOpen()
       }
     },
-    'view.showFiles': () => showRightSidebarTab('files'),
-    'view.showTerminal': () => showRightSidebarTab('terminal'),
+    'view.toggleReview': toggleReview,
+    'view.showFiles': showFiles,
+    'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
+    // Create first so the pane's open-effect ensure sees a non-empty set and
+    // doesn't also spawn one — net effect is exactly one fresh terminal.
+    'view.newTerminal': () => {
+      createTerminal()
+      setTerminalTakeover(true)
+    },
+    // Switch / close only act while the pane is open (no focus-scoping here, so
+    // this stands in for "terminal is showing").
+    'view.nextTerminal': () => $terminalTakeover.get() && cycleTerminal(1),
+    'view.prevTerminal': () => $terminalTakeover.get() && cycleTerminal(-1),
+    'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
@@ -170,6 +216,16 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
+      // While the session switcher is up, Esc abandons it (stay put) before any
+      // combo dispatch — ⌃Tab keeps stepping through the existing handler.
+      if (switcherActive() && event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeSwitcher()
+
+        return
+      }
+
       const combo = comboFromEvent(event)
 
       if (!combo) {
@@ -196,8 +252,39 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       handler()
     }
 
-    window.addEventListener('keydown', onKeyDown, { capture: true })
+    // Mac-app-switcher commit: lifting Ctrl with the overlay open lands on the
+    // highlighted session. A window blur (Cmd+Tab away mid-switch) cancels so
+    // the overlay never gets stranded waiting for a keyup that never comes.
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'Tab') {
+        onSwitcherTabUp()
+      }
 
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+      if (event.key === 'Control') {
+        commitSwitcherRef.current()
+      }
+    }
+
+    const onBlur = () => switcherActive() && closeSwitcher()
+
+    // Swallow trailing contextmenu after Ctrl+click commit (Electron main menu).
+    const onContextMenu = (event: MouseEvent) => {
+      if ($switcherOpen.get() || switcherJustClosed()) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+    window.addEventListener('keyup', onKeyUp, { capture: true })
+    window.addEventListener('blur', onBlur)
+    window.addEventListener('contextmenu', onContextMenu, { capture: true })
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, { capture: true })
+      window.removeEventListener('keyup', onKeyUp, { capture: true })
+      window.removeEventListener('blur', onBlur)
+      window.removeEventListener('contextmenu', onContextMenu, { capture: true })
+    }
   }, [])
 }

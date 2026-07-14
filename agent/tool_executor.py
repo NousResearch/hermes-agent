@@ -36,6 +36,7 @@ from agent.tool_dispatch_helpers import (
     _is_multimodal_tool_result,
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
+    _extract_file_mutation_targets,
     make_tool_result_message,
 )
 from tools.terminal_tool import (
@@ -128,6 +129,31 @@ def _flush_session_db_after_tool_progress(
         agent._flush_messages_to_session_db(messages)
     except Exception as exc:
         logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
+
+
+def _checkpoint_before_file_mutation(agent, function_name, function_args) -> None:
+    """Snapshot every working dir a file-mutating tool will touch, before it runs.
+
+    ``write_file`` and ``patch`` in replace mode carry their target in the
+    ``path`` arg, but a V4A ``patch`` (``mode="patch"``) lists its targets in the
+    patch BODY instead — so keying the checkpoint off ``path`` alone silently
+    skipped the snapshot for the highest-blast-radius operation we have: a
+    multi-file patch that can overwrite or ``*** Delete File:`` many files with
+    nothing to roll back to. Resolve the real targets the same way the dispatch
+    layer already does (``_extract_file_mutation_targets``) and checkpoint each
+    one. ``ensure_checkpoint`` dedupes per working dir within a turn, so a
+    multi-file patch that lands in one repo only snapshots it once.
+
+    Never raises — a checkpoint failure must not block tool execution.
+    """
+    try:
+        for file_path in _extract_file_mutation_targets(function_name, function_args):
+            if not file_path:
+                continue
+            work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
+            agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
+    except Exception:
+        pass  # never block tool execution
 
 
 def _ra():
@@ -493,15 +519,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         # ── Checkpoint preflight (only for tools that will execute) ──
         if block_result is None:
-            # Checkpoint for file-mutating tools
+            # Checkpoint for file-mutating tools (handles V4A multi-file patches,
+            # whose targets live in the patch body rather than the ``path`` arg).
             if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
-                try:
-                    file_path = function_args.get("path", "")
-                    if file_path:
-                        work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                        agent._checkpoint_mgr.ensure_checkpoint(work_dir, f"before {function_name}")
-                except Exception:
-                    pass
+                _checkpoint_before_file_mutation(agent, function_name, function_args)
 
             # Checkpoint before destructive terminal commands
             if function_name == "terminal" and agent._checkpoint_mgr.enabled:
@@ -1174,17 +1195,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
-        # Checkpoint: snapshot working dir before file-mutating tools
+        # Checkpoint: snapshot working dir before file-mutating tools (handles
+        # V4A multi-file patches, whose targets live in the patch body, not path)
         if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
-            try:
-                file_path = function_args.get("path", "")
-                if file_path:
-                    work_dir = agent._checkpoint_mgr.get_working_dir_for_path(file_path)
-                    agent._checkpoint_mgr.ensure_checkpoint(
-                        work_dir, f"before {function_name}"
-                    )
-            except Exception:
-                pass  # never block tool execution
+            _checkpoint_before_file_mutation(agent, function_name, function_args)
 
         # Checkpoint before destructive terminal commands
         if not _execution_blocked and function_name == "terminal" and agent._checkpoint_mgr.enabled:

@@ -883,6 +883,49 @@ def test_ws_events_rejects_missing_board_without_recreating_it(tmp_path, monkeyp
     assert not ghost_dir.exists()
 
 
+def test_ws_events_rejects_malformed_board_before_accept_or_connect(tmp_path, monkeypatch):
+    """Malformed explicit slugs fail the handshake without touching storage."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    import hermes_cli
+    import types
+    from starlette.websockets import WebSocket, WebSocketDisconnect
+
+    stub = types.SimpleNamespace(
+        _SESSION_TOKEN="secret-xyz",
+        _ws_auth_ok=lambda ws: ws.query_params.get("token", "") == "secret-xyz",
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    async def _unexpected_accept(_self):
+        pytest.fail("malformed board slug was accepted")
+
+    def _unexpected_connect(*_args, **_kwargs):
+        pytest.fail("malformed board slug reached kanban_db.connect()")
+
+    monkeypatch.setattr(WebSocket, "accept", _unexpected_accept)
+    monkeypatch.setattr(kb, "connect", _unexpected_connect)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+    fs_before = {path.relative_to(home) for path in home.rglob("*")}
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(
+            "/api/plugins/kanban/events?token=secret-xyz&board=../malformed"
+        ):
+            pass
+
+    assert exc.value.code == 1008
+    assert {path.relative_to(home) for path in home.rglob("*")} == fs_before
+
+
 def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
     """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject
     a bare ?token=, even one matching _SESSION_TOKEN). This is the regression

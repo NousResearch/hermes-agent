@@ -130,6 +130,45 @@ def test_do_list_distinguishes_hub_builtin_and_local(three_source_env):
     assert "1 hub-installed, 1 builtin, 1 local" in output
 
 
+def test_do_list_surfaces_collision_identifier_and_source(monkeypatch, hub_env):
+    import tools.skills_hub as hub
+    import tools.skills_sync as skills_sync
+    import tools.skills_tool as skills_tool
+
+    monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([]))
+    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(
+        skills_tool,
+        "_find_all_skills",
+        lambda **_kwargs: [
+            {
+                "name": "duplicate-demo",
+                "load_name": "alpha/one",
+                "category": "alpha",
+                "description": "first",
+                "collision": True,
+                "source": "/skills/local",
+            },
+            {
+                "name": "duplicate-demo",
+                "load_name": None,
+                "category": "external",
+                "description": "second",
+                "collision": True,
+                "source": "/skills/external",
+            },
+        ],
+    )
+
+    output = _capture()
+
+    assert "alpha/one" in output
+    assert "/skills/local" in output
+    assert "/skills/external" in output
+    assert "qualified" in output
+    assert "ambiguous" in output
+
+
 def test_do_list_filter_local(three_source_env):
     output = _capture(source_filter="local")
 
@@ -780,4 +819,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

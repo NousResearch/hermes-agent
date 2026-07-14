@@ -118,8 +118,10 @@ class TestExternalSkillsInFindAll:
         names = [s["name"] for s in skills]
         assert "my-external-skill" in names
 
-    def test_local_takes_precedence(self, hermes_home, external_skills_dir):
-        """If the same skill name exists locally and externally, local wins."""
+    def test_same_relative_path_collision_preserves_both_sources(
+        self, hermes_home, external_skills_dir
+    ):
+        """Identical local/external paths are visible but not loadable by alias."""
         local_skills = hermes_home / "skills"
         local_skill = local_skills / "my-external-skill"
         local_skill.mkdir(parents=True)
@@ -136,8 +138,17 @@ class TestExternalSkillsInFindAll:
             from tools.skills_tool import _find_all_skills
             skills = _find_all_skills()
         matching = [s for s in skills if s["name"] == "my-external-skill"]
-        assert len(matching) == 1
-        assert matching[0]["description"] == "Local version"
+        assert len(matching) == 2
+        assert {skill["description"] for skill in matching} == {
+            "Local version",
+            "A skill from an external directory",
+        }
+        assert all(skill["collision"] for skill in matching)
+        assert all(skill["load_name"] is None for skill in matching)
+        assert {skill["source"] for skill in matching} == {
+            str(local_skills),
+            str(external_skills_dir.resolve()),
+        }
 
 
 class TestExternalSkillView:

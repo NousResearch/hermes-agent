@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -425,6 +426,75 @@ class TestBuildSkillsSystemPrompt:
         result = build_skills_system_prompt()
         # "search" should appear only once per category
         assert result.count("- search") == 1
+
+    def test_cross_category_collisions_use_loadable_identifiers(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for category, directory in (("alpha", "one"), ("beta", "two")):
+            skill_dir = tmp_path / "skills" / category / directory
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: duplicate-demo\ndescription: Duplicate demo.\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "- alpha/one: Duplicate demo." in result
+        assert "- beta/two: Duplicate demo." in result
+        assert "- duplicate-demo:" not in result
+
+        from tools.skills_tool import skill_view
+
+        assert json.loads(skill_view("alpha/one"))["success"] is True
+        assert json.loads(skill_view("beta/two"))["success"] is True
+
+    def test_same_category_collisions_keep_both_qualified_entries(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for directory in ("one", "two"):
+            skill_dir = tmp_path / "skills" / "alpha" / directory
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: duplicate-demo\ndescription: Duplicate demo.\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert result.count("duplicate-demo") == 0
+        assert "- alpha/one: Duplicate demo." in result
+        assert "- alpha/two: Duplicate demo." in result
+
+    def test_omits_collision_without_unique_relative_path(
+        self, monkeypatch, tmp_path
+    ):
+        local_dir = tmp_path / "skills"
+        external_dir = tmp_path / "external"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        prompt_globals = build_skills_system_prompt.__globals__
+        prompt_globals["_SKILLS_PROMPT_CACHE"].clear()
+        monkeypatch.setitem(prompt_globals, "get_skills_dir", lambda: local_dir)
+        monkeypatch.setitem(
+            prompt_globals, "_load_skills_snapshot", lambda _root: None
+        )
+        monkeypatch.setitem(
+            prompt_globals,
+            "get_all_skills_dirs",
+            lambda: [local_dir, external_dir],
+        )
+        for root in (local_dir, external_dir):
+            skill_dir = root / "same-path"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: duplicate-demo\ndescription: Duplicate demo.\n---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "- duplicate-demo:" not in result
+        assert "Ambiguous skills omitted" in result
+        assert "duplicate-demo" in result
 
     def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
         """Posture-driven demotion keeps every skill NAME visible.
@@ -1651,5 +1721,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

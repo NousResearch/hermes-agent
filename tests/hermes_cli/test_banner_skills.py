@@ -65,3 +65,26 @@ def test_get_available_skills_null_category_becomes_general():
 
     assert "general" in result
     assert result["general"] == ["orphan-skill"]
+
+
+def test_get_available_skills_uses_only_loadable_collision_names():
+    skills = [
+        {
+            "name": "duplicate-demo",
+            "load_name": "alpha/one",
+            "collision": True,
+            "category": "alpha",
+        },
+        {
+            "name": "duplicate-demo",
+            "load_name": None,
+            "collision": True,
+            "category": "external",
+        },
+    ]
+    with patch("tools.skills_tool._find_all_skills", return_value=skills):
+        from hermes_cli.banner import get_available_skills
+
+        result = get_available_skills()
+
+    assert result == {"alpha": ["alpha/one"]}

@@ -10,10 +10,48 @@ from agent.skill_utils import (
     is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
+    resolve_skill_identifiers,
     resolve_skill_config_values,
     skill_matches_platform,
     skill_matches_platform_list,
 )
+
+
+def test_resolve_skill_identifiers_accounts_for_directory_aliases():
+    resolved = resolve_skill_identifiers([
+        {
+            "name": "alpha",
+            "directory_name": "duplicate-demo",
+            "relative_path": "tools/alpha",
+        },
+        {
+            "name": "duplicate-demo",
+            "directory_name": "beta",
+            "relative_path": "tools/beta",
+        },
+    ])
+
+    assert resolved[0]["load_name"] == "alpha"
+    assert resolved[0]["collision"] is False
+    assert resolved[1]["load_name"] == "tools/beta"
+    assert resolved[1]["collision"] is True
+
+
+def test_resolve_skill_identifiers_rejects_duplicate_relative_paths():
+    entries = [
+        {
+            "name": "duplicate-demo",
+            "directory_name": "same-path",
+            "relative_path": "same-path",
+            "source": source,
+        }
+        for source in ("local", "external")
+    ]
+
+    resolved = resolve_skill_identifiers(entries)
+
+    assert all(entry["collision"] for entry in resolved)
+    assert all(entry["load_name"] is None for entry in resolved)
 
 
 def test_metadata_as_dict_with_hermes():

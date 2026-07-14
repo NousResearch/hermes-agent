@@ -307,6 +307,23 @@ class TestFindAllSkills:
         assert [s["name"] for s in skills] == ["knowledge-brain"]
         assert skills[0]["category"] == "linked"
 
+    def test_preserves_collisions_with_exact_load_names(self, tmp_path):
+        for category, directory in (("alpha", "one"), ("beta", "two")):
+            skill_dir = tmp_path / category / directory
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: duplicate-demo\ndescription: Duplicate demo.\n---\n"
+            )
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skills = _find_all_skills()
+
+        assert len(skills) == 2
+        assert {skill["name"] for skill in skills} == {"duplicate-demo"}
+        assert {skill["load_name"] for skill in skills} == {"alpha/one", "beta/two"}
+        assert all(skill["collision"] for skill in skills)
+        assert all(len(skill["matches"]) == 2 for skill in skills)
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -1224,6 +1241,31 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL VERSION" in result["content"]
+
+    def test_cross_category_collision_reports_loadable_identifiers(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        for category, directory, body in (
+            ("alpha", "one", "FIRST VERSION"),
+            ("beta", "two", "SECOND VERSION"),
+        ):
+            skill_dir = local_dir / category / directory
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: duplicate-demo\ndescription: Duplicate demo.\n---\n\n"
+                + body
+            )
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            ambiguous = json.loads(skill_view("duplicate-demo"))
+            first = json.loads(skill_view("alpha/one"))
+            second = json.loads(skill_view("beta/two"))
+
+        assert ambiguous["success"] is False
+        assert ambiguous["load_names"] == ["alpha/one", "beta/two"]
+        assert first["success"] is True and "FIRST VERSION" in first["content"]
+        assert second["success"] is True and "SECOND VERSION" in second["content"]
 
     def test_support_markdown_does_not_collide_with_real_skill(self, tmp_path):
         """Supporting reference docs named <skill>.md are not skills.

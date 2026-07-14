@@ -675,7 +675,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts. Every entry includes ``name``,
+        ``load_name``, ``description``, ``category``, and ``collision``.
+        Collision entries also expose their candidate ``path``, ``source``,
+        and complete ``matches`` list.
 
     Results are cached per-session; the cache is invalidated when the scan
     signature changes (dir/category mtimes or the disabled-set) and expires
@@ -712,11 +715,10 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
         # out the cached objects would poison the cache for everyone else.
         return [dict(s) for s in cached[2]]
 
-    skills = []
-    seen_names: set = set()
+    discovered = []
 
-    # Scan local dir first, then external dirs (local takes precedence) —
-    # dirs_to_scan already resolved above for the signature.
+    # Scan local first for stable output ordering, then external dirs. Collision
+    # resolution below decides whether a declared name or relative path is safe.
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
@@ -728,18 +730,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 content = skill_md.read_text(encoding="utf-8")[:4000]
                 frontmatter, body = _parse_frontmatter(content)
 
-                if not skill_matches_platform(frontmatter):
-                    continue
-
-                if not skill_matches_environment(frontmatter):
-                    continue
-
                 name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
-                if name in seen_names:
-                    continue
-                if name in disabled:
-                    continue
-
                 description = frontmatter.get("description", "")
                 if not description:
                     for line in body.strip().split("\n"):
@@ -752,12 +743,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
                 category = _get_category_from_path(skill_md)
-
-                seen_names.add(name)
-                skills.append({
+                relative_path = skill_dir.relative_to(scan_dir).as_posix()
+                discovered.append({
                     "name": name,
+                    "directory_name": skill_dir.name,
+                    "relative_path": relative_path,
                     "description": description,
                     "category": category,
+                    "source": str(scan_dir),
+                    "path": str(skill_md),
+                    "platform_compatible": skill_matches_platform(frontmatter),
+                    "environment_compatible": skill_matches_environment(frontmatter),
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -768,6 +764,31 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True
                 )
                 continue
+
+    from agent.skill_utils import resolve_skill_identifiers
+
+    resolved = resolve_skill_identifiers(discovered)
+    skills = []
+    for entry in resolved:
+        if not entry["platform_compatible"]:
+            continue
+        if not entry["environment_compatible"]:
+            continue
+        if entry["name"] in disabled:
+            continue
+
+        skill = dict(entry)
+        collision_indices = skill.pop("collision_indices")
+        if skill["collision"]:
+            skill["matches"] = [resolved[i]["path"] for i in collision_indices]
+        else:
+            skill.pop("source")
+            skill.pop("path")
+        skill.pop("directory_name")
+        skill.pop("relative_path")
+        skill.pop("platform_compatible")
+        skill.pop("environment_compatible")
+        skills.append(skill)
 
     # Store in cache keyed by the scan signature computed BEFORE the scan
     # (a write racing the scan changes the signature, so the next call
@@ -786,15 +807,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    Returns compact metadata plus the exact ``load_name`` accepted by
+    skill_view(). Collision entries include candidate paths and sources.
 
     Args:
         category: Optional category filter (e.g., "mlops")
         task_id: Optional task identifier used to probe the active backend
 
     Returns:
-        JSON string with minimal skill info: name, description, category
+        JSON string with skill identifiers, descriptions, categories, and
+        collision diagnostics
     """
     try:
         active_skills_dir = _skills_dir()
@@ -842,7 +864,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "skills": all_skills,
                 "categories": categories,
                 "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "hint": "Use skill_view(load_name) to see full content, tags, and linked files",
             },
             ensure_ascii=False,
         )
@@ -1106,10 +1128,10 @@ def skill_view(
         # loaded the other) so we surface it loudly instead of guessing.
         from agent.skill_utils import iter_skill_index_files
 
-        candidates: List[Tuple[Optional[Path], Path]] = []  # (skill_dir, skill_md)
+        candidates: List[Tuple[Optional[Path], Path, Path]] = []
         seen_md: set = set()
 
-        def _record(sd: Optional[Path], smd: Path) -> None:
+        def _record(sd: Optional[Path], smd: Path, root: Path) -> None:
             try:
                 key = smd.resolve()
             except Exception:
@@ -1117,7 +1139,7 @@ def skill_view(
             if key in seen_md:
                 return
             seen_md.add(key)
-            candidates.append((sd, smd))
+            candidates.append((sd, smd, root))
 
         for search_dir in all_dirs:
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
@@ -1128,11 +1150,11 @@ def skill_view(
                 and direct_path.is_dir()
                 and (direct_path / "SKILL.md").exists()
             ):
-                _record(direct_path, direct_path / "SKILL.md")
+                _record(direct_path, direct_path / "SKILL.md", search_dir)
             elif direct_path.with_suffix(".md").exists() and not _is_skill_support_path(
                 direct_path.with_suffix(".md")
             ):
-                _record(None, direct_path.with_suffix(".md"))
+                _record(None, direct_path.with_suffix(".md"), search_dir)
 
             # Strategy 1b: categorized form for plugin namespace fall-through
             # (e.g., a "myplugin:explore" name with no plugin registered also
@@ -1144,13 +1166,13 @@ def skill_view(
                     and categorized_path.is_dir()
                     and (categorized_path / "SKILL.md").exists()
                 ):
-                    _record(categorized_path, categorized_path / "SKILL.md")
+                    _record(categorized_path, categorized_path / "SKILL.md", search_dir)
                 elif categorized_path.with_suffix(
                     ".md"
                 ).exists() and not _is_skill_support_path(
                     categorized_path.with_suffix(".md")
                 ):
-                    _record(None, categorized_path.with_suffix(".md"))
+                    _record(None, categorized_path.with_suffix(".md"), search_dir)
 
             # Strategy 2: recursive by directory name (catches nested skills
             # like "foundations/runtime/explore-codebase" called by bare name),
@@ -1159,7 +1181,7 @@ def skill_view(
             # when the on-disk directory is a shorter category/alias.
             for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                 if found_skill_md.parent.name == name:
-                    _record(found_skill_md.parent, found_skill_md)
+                    _record(found_skill_md.parent, found_skill_md, search_dir)
                     continue
                 try:
                     fm_content = found_skill_md.read_text(encoding="utf-8")
@@ -1167,7 +1189,7 @@ def skill_view(
                 except Exception:
                     fm = {}
                 if fm.get("name") == name:
-                    _record(found_skill_md.parent, found_skill_md)
+                    _record(found_skill_md.parent, found_skill_md, search_dir)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             # Exclude skill support docs: references/templates/assets/scripts
@@ -1177,10 +1199,34 @@ def skill_view(
                 if found_md.name != "SKILL.md" and not _is_skill_support_path(
                     found_md
                 ):
-                    _record(None, found_md)
+                    _record(None, found_md, search_dir)
 
         if len(candidates) > 1:
-            paths = [str(smd) for _, smd in candidates]
+            paths = [str(smd) for _, smd, _ in candidates]
+            from agent.skill_utils import resolve_skill_identifiers
+
+            identifier_entries = []
+            for candidate_dir, candidate_md, root in candidates:
+                try:
+                    candidate_content = candidate_md.read_text(encoding="utf-8")
+                    candidate_frontmatter, _ = _parse_frontmatter(candidate_content)
+                except Exception:
+                    candidate_frontmatter = {}
+                if candidate_dir is not None:
+                    relative_path = candidate_dir.relative_to(root).as_posix()
+                    directory_name = candidate_dir.name
+                else:
+                    relative_path = candidate_md.relative_to(root).with_suffix("").as_posix()
+                    directory_name = candidate_md.stem
+                identifier_entries.append({
+                    "name": candidate_frontmatter.get("name", directory_name),
+                    "directory_name": directory_name,
+                    "relative_path": relative_path,
+                })
+            resolved_identifiers = resolve_skill_identifiers(identifier_entries)
+            load_names = sorted({
+                entry["load_name"] for entry in resolved_identifiers if entry["load_name"]
+            })
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
@@ -1194,20 +1240,28 @@ def skill_view(
                         "Refusing to guess — load one explicitly by its categorized path."
                     ),
                     "matches": paths,
+                    "load_names": load_names,
                     "hint": (
-                        "Pass the full relative path instead of the bare name "
-                        "(e.g., 'category/skill-name'), or rename one of the "
-                        "colliding skills so each name is unique."
+                        f"Load an unambiguous candidate with one of: {load_names}. "
+                        if load_names else
+                        "No unique relative path exists for these candidates. "
+                    ) + (
+                        "Otherwise rename one of the colliding skills so each "
+                        "name or relative path is unique."
                     ),
                 },
                 ensure_ascii=False,
             )
 
         if candidates:
-            skill_dir, skill_md = candidates[0]
+            skill_dir, skill_md, _ = candidates[0]
 
         if not skill_md or not skill_md.exists():
-            available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+            available = [
+                s["load_name"]
+                for s in _sort_skills(_find_all_skills())
+                if s.get("load_name")
+            ][:20]
             return json.dumps(
                 {
                     "success": False,

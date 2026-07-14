@@ -21,6 +21,84 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
+// Per-thread draft stash for the decoupled composer. Session lifecycle never
+// touches this — only ChatBar's scope swap reads/writes it. Text mirrors to
+// localStorage; attachments are memory-only (blobs, upload state).
+export const SESSION_DRAFTS_STORAGE_KEY = 'hermes:composer-drafts:v3'
+
+const NEW_SESSION_DRAFT_KEY = '__new__'
+const MAX_PERSISTED_DRAFTS = 50
+const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
+
+export interface SessionDraft {
+  attachments: ComposerAttachment[]
+  text: string
+}
+
+const draftKey = (scope: string | null | undefined) => scope?.trim() || NEW_SESSION_DRAFT_KEY
+
+const cloneDraft = (draft: SessionDraft): SessionDraft => ({
+  attachments: draft.attachments.map(attachment => ({ ...attachment })),
+  text: draft.text
+})
+
+function loadPersistedDraftTexts(): [string, SessionDraft][] {
+  try {
+    const raw = window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY)
+
+    if (!raw) {
+      return []
+    }
+
+    return Object.entries(JSON.parse(raw) as Record<string, string>).map(([key, text]) => [
+      key,
+      { attachments: [], text }
+    ])
+  } catch {
+    return []
+  }
+}
+
+const draftsBySession = new Map<string, SessionDraft>(loadPersistedDraftTexts())
+
+function persistDraftTexts() {
+  try {
+    const entries = [...draftsBySession]
+      .filter(([, draft]) => draft.text)
+      .slice(-MAX_PERSISTED_DRAFTS)
+      .map(([key, draft]) => [key, draft.text] as const)
+
+    if (entries.length === 0) {
+      window.localStorage.removeItem(SESSION_DRAFTS_STORAGE_KEY)
+    } else {
+      window.localStorage.setItem(SESSION_DRAFTS_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
+    }
+  } catch {
+    // Best-effort only — quota/private-mode must never break typing.
+  }
+}
+
+export function stashSessionDraft(scope: string | null | undefined, text: string, attachments: ComposerAttachment[]) {
+  const key = draftKey(scope)
+
+  // Delete-then-set keeps MRU order for MAX_PERSISTED_DRAFTS eviction.
+  draftsBySession.delete(key)
+
+  if (text.trim() || attachments.length > 0) {
+    draftsBySession.set(key, cloneDraft({ attachments, text }))
+  }
+
+  persistDraftTexts()
+}
+
+export function takeSessionDraft(scope: string | null | undefined): SessionDraft {
+  const stashed = draftsBySession.get(draftKey(scope))
+
+  return stashed ? cloneDraft(stashed) : EMPTY_SESSION_DRAFT
+}
+
+export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }

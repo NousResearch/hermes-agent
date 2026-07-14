@@ -14,11 +14,13 @@
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
+  <a href="README.ja-JP.md"><img src="https://img.shields.io/badge/Lang-日本語-green?style=for-the-badge" alt="日本語"></a>
 </p>
 
 **[Nous Research](https://nousresearch.com)が構築した、自己改善型のAIエージェントです。** 学習ループを組み込んだ唯一のエージェントであり、経験からスキルを生成し、使用中にそれらを改善し、自身に知識の永続化を促し、過去の会話を自ら検索し、セッションをまたいであなたという人物への理解を深めていきます。月5ドルのVPSでも、GPUクラスタでも、アイドル時にはほぼゼロコストのサーバーレス基盤でも動作します。ノートPCに縛られることはなく、Telegramから話しかけている間にクラウドVM上で作業を進めさせることもできます。
 
-どんなモデルでも使用できます — [Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)（200以上のモデル）、[NovitaAI](https://novita.ai)（Model API、Agent Sandbox、GPU Cloud向けのAIネイティブクラウド）、[NVIDIA NIM](https://build.nvidia.com)（Nemotron）、[Xiaomi MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI、または独自のエンドポイント。`hermes model`で切り替え可能 — コード変更もロックインも不要です。
+どんなモデルでも使用できます — [Nous Portal](https://portal.nousresearch.com)、OpenRouter、OpenAI、独自のエンドポイント、その他[多数](https://hermes-agent.nousresearch.com/docs/integrations/providers)。`hermes model`で切り替え可能 — コード変更もロックインも不要です。
 
 <table>
 <tr><td><b>本格的なターミナルインターフェース</b></td><td>マルチライン編集、スラッシュコマンドの自動補完、会話履歴、割り込みとリダイレクト、ストリーミングツール出力に対応したフル機能のTUI。</td></tr>
@@ -64,6 +66,41 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 source ~/.bashrc    # シェルを再読み込み（または: source ~/.zshrc）
 hermes              # 会話開始！
 ```
+
+### トラブルシューティング
+
+#### Windows Defenderやアンチウイルスが`uv.exe`をマルウェアとして検出する
+
+アンチウイルス（Bitdefender、Windows Defenderなど）がHermesの`bin`フォルダ（`%LOCALAPPDATA%\hermes\bin\uv.exe`）から`uv.exe`を隔離する場合、これは**誤検知**です。このファイルはAstralの`uv` — HermesがPython環境を管理するために同梱しているRust製Pythonパッケージマネージャです。MLベースのアンチウイルスエンジンは、パッケージをダウンロード・インストールする署名なしのRustバイナリを頻繁に誤検知します。
+
+**手元のコピーが正規のものか検証するには:**
+
+```powershell
+# 必要ならGitHub CLIをインストール
+winget install --id GitHub.cli
+
+# GitHubにログイン
+gh auth login
+
+# 検証を実行
+$uv = "$env:LOCALAPPDATA\hermes\bin\uv.exe"
+$ver = (& $uv --version).Split(' ')[1]
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$zip = "$env:TEMP\uv.zip"
+Invoke-WebRequest "https://github.com/astral-sh/uv/releases/download/$ver/uv-x86_64-pc-windows-msvc.zip" -OutFile $zip -UseBasicParsing
+gh attestation verify $zip --repo astral-sh/uv
+Expand-Archive $zip "$env:TEMP\uv_x" -Force
+(Get-FileHash "$env:TEMP\uv_x\uv.exe").Hash -eq (Get-FileHash $uv).Hash
+```
+
+attestation（証明）が「Verification succeeded」と表示され、最後の行が`True`を出力すれば問題ありません。
+
+**Hermesをホワイトリストに登録するには:**
+- **Windows Defender:** PowerShellを管理者として実行 → `Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\hermes\bin"`
+- **Bitdefender:** Bitdefenderコンソールで例外を追加（Protection > Antivirus > Settings > Manage Exceptions）
+- ファイルのハッシュではなく**フォルダ**をホワイトリストに登録してください — Hermesは`uv`を更新し、バージョンごとにハッシュが変わります
+
+詳しい背景は、Astralのアップストリームレポートを参照してください: [astral-sh/uv#13553](https://github.com/astral-sh/uv/issues/13553)、[astral-sh/uv#15011](https://github.com/astral-sh/uv/issues/15011)、[astral-sh/uv#10079](https://github.com/astral-sh/uv/issues/10079)。
 
 ---
 
@@ -182,21 +219,23 @@ hermes claw migrate --overwrite  # 既存の競合を上書き
 
 コントリビューションを歓迎します！開発セットアップ、コードスタイル、PRプロセスについては[コントリビューションガイド](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)を参照してください。
 
-コントリビュータ向けのクイックスタート — `setup-hermes.sh`でクローンして開始:
+コントリビュータ向けのクイックスタート — 標準のインストーラを使い、それが作成する`$HERMES_HOME/hermes-agent`（通常は`~/.hermes/hermes-agent`）の完全なgitチェックアウトから作業してください。これは`hermes update`、管理されたvenv、遅延依存関係、ゲートウェイ、ドキュメントツールが使用するレイアウトと一致します。
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # uvをインストール、venvを作成、.[all]をインストール、~/.local/bin/hermesにシンボリックリンク
-./hermes              # venvを自動検出 — 事前の`source`は不要
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+uv pip install -e ".[all,dev]"
+scripts/run_tests.sh
 ```
 
-手動手順（上記と同等）:
+手動クローンのフォールバック（管理インストールのレイアウトを意図的に使わない使い捨てクローンやCI向け）:
+
+venvはクローンしたソースツリーの外に作成してください — エージェントが動作するディレクトリ内のvenvは、エージェントが自身のチェックアウトに対して実行する相対パスのコマンドによって消去され、実行中のランタイムをセッションの途中で破壊する可能性があります。
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv .venv --python 3.11
-source .venv/bin/activate
+uv venv ~/.hermes/venvs/hermes-dev --python 3.11
+source ~/.hermes/venvs/hermes-dev/bin/activate
 uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```

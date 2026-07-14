@@ -397,3 +397,52 @@ class TestEnumNullStripping:
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"], \
             "null/empty enum values must be stripped after anyOf collapse"
+
+
+class TestUnionTypeList:
+    """Moonshot sanitizer accepts JSON Schema union type arrays."""
+
+    def test_union_type_list_normalizes_to_first_concrete_type(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": ["number", "string"],
+                    "description": "Max results",
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        assert out["properties"]["limit"]["type"] == "number"
+
+    def test_union_type_list_skips_null_type(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "name": {"type": ["null", "string"]},
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        assert out["properties"]["name"]["type"] == "string"
+
+    def test_union_type_list_with_enum_does_not_crash_or_mutate_input(self):
+        params = {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": ["string", "null"],
+                    "enum": ["asc", "desc", None, ""],
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        sort = out["properties"]["sort"]
+        assert sort["type"] == "string"
+        assert sort["enum"] == ["asc", "desc"]
+        assert params["properties"]["sort"]["type"] == ["string", "null"]

@@ -93,6 +93,10 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
+    managingProfile: "Managing profile",
+    currentProfileOption: "this dashboard ({name})",
+    managingProfileBanner:
+      "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
   },
 
   status: {
@@ -103,6 +107,7 @@ export const en: Translations = {
     activeSessions: "Active Sessions",
     connected: "Connected",
     connectedPlatforms: "Connected Platforms",
+    disabled: "Disabled",
     disconnected: "Disconnected",
     error: "Error",
     failed: "Failed",
@@ -116,6 +121,9 @@ export const en: Translations = {
     platformError: "error",
     recentSessions: "Recent Sessions",
     restartGateway: "Restart Gateway",
+    restartGatewayConfirmMessage:
+      "This restarts the Hermes gateway process. Connected channels and active sessions will reconnect afterward.",
+    restartGatewayConfirmTitle: "Restart gateway?",
     restartingGateway: "Restarting gateway…",
     running: "Running",
     runningRemote: "Running (remote)",
@@ -124,6 +132,10 @@ export const en: Translations = {
     startedInBackground: "Started in background — check logs for progress",
     stopped: "Stopped",
     updateHermes: "Update Hermes",
+    updateHermesConfirmMessage:
+      "This runs hermes update and restarts the gateway when it finishes. Active sessions keep their prompt cache until then.",
+    updateHermesConfirmNow: "Update now",
+    updateHermesConfirmTitle: "Update Hermes?",
     updatingHermes: "Updating Hermes…",
     waitingForOutput: "Waiting for output…",
   },
@@ -161,6 +173,7 @@ export const en: Translations = {
     selectedSessionsDeleted: "{count} sessions deleted",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
+    newChat: "New chat",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -293,7 +306,8 @@ export const en: Translations = {
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
     invalidName: "Invalid profile name",
-    cloneFromDefault: "Clone config from default profile",
+    cloneFrom: "Clone config from",
+    cloneFromNone: "None (blank)",
     allProfiles: "Profiles",
     noProfiles: "No profiles found.",
     defaultBadge: "default",
@@ -408,6 +422,10 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
+    profileSelector: "Profile",
+    currentProfile: "current ({name})",
+    managingProfile:
+      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {
@@ -470,21 +488,32 @@ export const en: Translations = {
     replaceCurrentValue: "Replace current value ({preview})",
     showValue: "Show real value",
     hideValue: "Hide value",
+    customTitle: "Custom Keys",
+    customHint: "Arbitrary environment variables stored in your .env that Hermes doesn't recognise. Use these to inject env vars for skills, MCP servers, or your own tooling.",
+    customConfigured: "{count} custom key{s} set",
+    addCustomKey: "Add a custom key",
+    customKeyName: "Variable name",
+    customKeyNamePlaceholder: "e.g. MY_SERVICE_API_KEY",
+    add: "Add",
+    invalidKeyName: "Use letters, numbers and underscores only (must start with a letter or underscore).",
   },
 
   oauth: {
     title: "Provider Logins (OAuth)",
     providerLogins: "Provider Logins (OAuth)",
-    description: "{connected} of {total} OAuth providers connected. Login flows currently run via the CLI; click Copy command and paste into a terminal to set up.",
+    description:
+      "{connected} of {total} OAuth providers connected. Use Login for dashboard-supported flows; CLI commands remain available for external or fallback setup.",
     connected: "Connected",
     expired: "Expired",
-    notConnected: "Not connected. Run {command} in a terminal.",
+    notConnected: "Not connected. Use Login when available, or run {command} in a terminal.",
     runInTerminal: "in a terminal.",
     noProviders: "No OAuth-capable providers detected.",
     login: "Login",
     disconnect: "Disconnect",
     managedExternally: "Managed externally",
     copied: "Copied ✓",
+    copyCode: "Copy code",
+    copyFailed: "Could not copy automatically. Select the code and copy it manually.",
     cli: "Copy",
     copyCliCommand: "Copy CLI command (for external / fallback)",
     connect: "Connect",

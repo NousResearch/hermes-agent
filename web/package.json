@@ -26,7 +26,6 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "gsap": "^3.15.0",
-    "leva": "^0.10.1",
     "lucide-react": "^0.577.0",
     "motion": "^12.38.0",
     "qrcode": "^1.5.4",

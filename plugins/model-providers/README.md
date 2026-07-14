@@ -1,15 +1,14 @@
 # Model Provider Plugins
 
-Each subdirectory is a self-contained provider profile plugin. The
-directory layout mirrors `plugins/platforms/`:
+Each subdirectory is a self-contained provider profile plugin. Simple
+OpenAI-compatible providers are data-only; custom providers keep Python hooks.
 
 ```
 plugins/model-providers/
+├── alibaba/
+│   └── plugin.yaml      # manifest + profile block
 ├── openrouter/
-│   ├── __init__.py      # registers the ProviderProfile
-│   └── plugin.yaml      # manifest: name, kind, version, description
-├── anthropic/
-│   ├── __init__.py
+│   ├── __init__.py      # custom ProviderProfile hooks
 │   └── plugin.yaml
 └── ...
 ```
@@ -18,8 +17,10 @@ plugins/model-providers/
 
 `providers/__init__.py._discover_providers()` scans this directory (and
 `$HERMES_HOME/plugins/model-providers/`) the first time anything calls
-`get_provider_profile()` or `list_providers()`. Each `__init__.py` is
-imported and expected to call `providers.register_provider(profile)`.
+`get_provider_profile()` or `list_providers()`. If `plugin.yaml` has a
+`profile` block, the loader instantiates `ProviderProfile` directly. Otherwise
+`__init__.py` is imported and expected to call
+`providers.register_provider(profile)`.
 
 User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override
 bundled plugins of the same name — last-writer-wins in
@@ -27,27 +28,7 @@ bundled plugins of the same name — last-writer-wins in
 
 ## Adding a new provider
 
-1. Create `plugins/model-providers/<your_provider>/__init__.py`:
-
-   ```python
-   from providers import register_provider
-   from providers.base import ProviderProfile
-
-   my_provider = ProviderProfile(
-       name="your-provider",
-       aliases=("alias1", "alias2"),
-       display_name="Your Provider",
-       description="One-line description shown in the setup picker",
-       signup_url="https://your-provider.example.com/keys",
-       env_vars=("YOUR_PROVIDER_API_KEY", "YOUR_PROVIDER_BASE_URL"),
-       base_url="https://api.your-provider.example.com/v1",
-       default_aux_model="your-cheap-model",
-   )
-
-   register_provider(my_provider)
-   ```
-
-2. Create `plugins/model-providers/<your_provider>/plugin.yaml`:
+1. For a simple provider, create `plugins/model-providers/<your_provider>/plugin.yaml`:
 
    ```yaml
    name: your-provider-profile
@@ -55,6 +36,15 @@ bundled plugins of the same name — last-writer-wins in
    version: 1.0.0
    description: Short sentence about the provider
    author: Your Name
+   profile:
+     name: your-provider
+     aliases: [alias1, alias2]
+     display_name: Your Provider
+     description: One-line description shown in the setup picker
+     signup_url: https://your-provider.example.com/keys
+     env_vars: [YOUR_PROVIDER_API_KEY, YOUR_PROVIDER_BASE_URL]
+     base_url: https://api.your-provider.example.com/v1
+     default_aux_model: your-cheap-model
    ```
 
 Nothing else needs to change. `auth.py`, `config.py`, `models.py`,

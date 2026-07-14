@@ -92,7 +92,6 @@
     "hast-util-to-text": "^4.0.2",
     "ignore": "^7.0.5",
     "katex": "^0.16.45",
-    "leva": "^0.10.1",
     "mermaid": "^11.15.0",
     "motion": "^12.38.0",
     "nanostores": "^1.3.0",

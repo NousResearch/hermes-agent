@@ -3,3 +3,12 @@ kind: model-provider
 version: 1.0.0
 description: Alibaba DashScope (international)
 author: Nous Research
+profile:
+  name: alibaba
+  aliases:
+  - dashscope
+  - alibaba-cloud
+  - qwen-dashscope
+  env_vars:
+  - DASHSCOPE_API_KEY
+  base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1

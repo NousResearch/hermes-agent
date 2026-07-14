@@ -16,8 +16,9 @@ Discovers, loads, and manages plugins from four sources:
 Later sources override earlier ones on name collision, so a user or project
 plugin with the same name as a bundled plugin replaces it.
 
-Each directory plugin must contain a ``plugin.yaml`` manifest **and** an
-``__init__.py`` with a ``register(ctx)`` function.
+Directory plugins normally contain ``plugin.yaml`` plus ``__init__.py`` with a
+``register(ctx)`` function. Bundled platform plugins may put that entry point
+directly in ``adapter.py`` to avoid 20 no-op re-export wrappers.
 
 Lifecycle hooks
 ---------------
@@ -1838,9 +1839,11 @@ class PluginManager:
         future ``tts/openai``.
         """
         plugin_dir = Path(manifest.path)  # type: ignore[arg-type]
-        init_file = plugin_dir / "__init__.py"
-        if not init_file.exists():
-            raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
+        module_file = plugin_dir / "__init__.py"
+        if not module_file.exists() and manifest.kind == "platform":
+            module_file = plugin_dir / "adapter.py"
+        if not module_file.exists():
+            raise FileNotFoundError(f"No __init__.py or adapter.py in {plugin_dir}")
 
         # Ensure the namespace parent package exists
         if _NS_PARENT not in sys.modules:
@@ -1854,11 +1857,11 @@ class PluginManager:
         module_name = f"{_NS_PARENT}.{slug}"
         spec = importlib.util.spec_from_file_location(
             module_name,
-            init_file,
+            module_file,
             submodule_search_locations=[str(plugin_dir)],
         )
         if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot create module spec for {init_file}")
+            raise ImportError(f"Cannot create module spec for {module_file}")
 
         module = importlib.util.module_from_spec(spec)
         module.__package__ = module_name

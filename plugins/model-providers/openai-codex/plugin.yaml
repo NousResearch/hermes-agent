@@ -3,3 +3,12 @@ kind: model-provider
 version: 1.0.0
 description: OpenAI Codex (Responses API)
 author: Nous Research
+profile:
+  name: openai-codex
+  aliases:
+  - codex
+  - openai_codex
+  api_mode: codex_responses
+  env_vars: []
+  base_url: https://chatgpt.com/backend-api/codex
+  auth_type: oauth_external

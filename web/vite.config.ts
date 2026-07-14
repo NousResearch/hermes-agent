@@ -79,7 +79,6 @@ export default defineConfig({
       "@react-three/fiber",
       "@observablehq/plot",
       "three",
-      "leva",
       "gsap",
     ],
   },

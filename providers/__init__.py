@@ -5,9 +5,9 @@ Provider profiles can live in two places:
 1. Bundled plugins: ``plugins/model-providers/<name>/`` (shipped with hermes-agent)
 2. User plugins: ``$HERMES_HOME/plugins/model-providers/<name>/``
 
-Each plugin directory contains:
-  - ``__init__.py`` — calls ``register_provider(profile)`` at import
-  - ``plugin.yaml`` — manifest (name, kind: model-provider, version, description)
+Each plugin directory contains either:
+  - ``plugin.yaml`` with a ``profile`` block for declarative providers, or
+  - ``__init__.py`` that calls ``register_provider(profile)`` for custom hooks.
 
 Discovery is lazy: the first call to ``get_provider_profile()`` or
 ``list_providers()`` scans both locations and imports every plugin. User
@@ -34,9 +34,12 @@ import importlib
 import importlib.util
 import logging
 import sys
+from dataclasses import fields
 from pathlib import Path
+from typing import Any
 
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
+from utils import fast_safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,39 @@ _discovered = False
 _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
 )
+_PROFILE_FIELDS = {field.name for field in fields(ProviderProfile)}
+_PROFILE_TUPLES = {"aliases", "env_vars", "fallback_models"}
+
+
+def _coerce_profile_value(key: str, value):
+    if key in _PROFILE_TUPLES and isinstance(value, list):
+        return tuple(value)
+    return value
+
+
+def _register_manifest_profile(plugin_dir: Path) -> bool:
+    """Register a simple ProviderProfile declared in plugin.yaml.
+
+    This keeps one-product provider modules out of the tree while preserving
+    ``__init__.py`` for providers that need request-time hooks.
+    """
+    manifest_file = plugin_dir / "plugin.yaml"
+    if not manifest_file.exists():
+        manifest_file = plugin_dir / "plugin.yml"
+    if not manifest_file.exists():
+        return False
+    data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+    profile_data = data.get("profile")
+    if not isinstance(profile_data, dict):
+        return False
+    kwargs: dict[str, Any] = {
+        key: _coerce_profile_value(key, value)
+        for key, value in profile_data.items()
+        if key in _PROFILE_FIELDS
+    }
+    kwargs.setdefault("name", plugin_dir.name)
+    register_provider(ProviderProfile(**kwargs))
+    return True
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -100,12 +136,14 @@ def _user_plugins_dir() -> Path | None:
 
 
 def _import_plugin_dir(plugin_dir: Path, source: str) -> None:
-    """Import a single plugin directory so it self-registers.
+    """Load one provider plugin directory.
 
     ``source`` is "bundled" or "user", used only for log messages.
     """
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
+        if _register_manifest_profile(plugin_dir):
+            return
         return
 
     # Give bundled plugins a stable import path (``plugins.model_providers.<name>``)

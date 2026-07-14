@@ -32,7 +32,9 @@ def _clear_provider_caches():
 
 
 def test_bundled_plugins_discovered():
-    """Every plugins/model-providers/<name>/ should contain a plugin.yaml + __init__.py."""
+    """Every bundled provider has a manifest and either code or a profile block."""
+    import yaml
+
     plugins_dir = REPO_ROOT / "plugins" / "model-providers"
     assert plugins_dir.is_dir(), f"Missing {plugins_dir}"
 
@@ -40,8 +42,12 @@ def test_bundled_plugins_discovered():
     assert len(child_dirs) >= 28, f"Expected at least 28 provider plugins, found {len(child_dirs)}"
 
     for child in child_dirs:
-        assert (child / "__init__.py").exists(), f"{child.name} missing __init__.py"
-        assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
+        manifest_file = child / "plugin.yaml"
+        assert manifest_file.exists(), f"{child.name} missing plugin.yaml"
+        data = yaml.safe_load(manifest_file.read_text()) or {}
+        has_code = (child / "__init__.py").exists()
+        has_profile = isinstance(data.get("profile"), dict)
+        assert has_code or has_profile, f"{child.name} missing __init__.py or profile block"
 
 
 def test_all_profiles_register():

@@ -104,6 +104,30 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_platform_plugin_can_use_adapter_entrypoint(self, tmp_path):
+        """Platform plugins may put register(ctx) in adapter.py without a wrapper."""
+        plugin_dir = tmp_path / "demo_platform"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: demo-platform\nkind: platform\nversion: 0.1.0\n"
+        )
+        (plugin_dir / "adapter.py").write_text(
+            "def register(ctx):\n    ctx.loaded_from_adapter = True\n"
+        )
+
+        manifest = PluginManifest(
+            name="demo-platform",
+            kind="platform",
+            source="bundled",
+            path=str(plugin_dir),
+            key="platforms/demo_platform",
+        )
+        module = PluginManager()._load_directory_module(manifest)
+
+        ctx = types.SimpleNamespace(loaded_from_adapter=False)
+        module.register(ctx)
+        assert ctx.loaded_from_adapter is True
+
     def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
         plugins_dir = tmp_path / "hermes_test" / "plugins"
         _make_plugin_dir(

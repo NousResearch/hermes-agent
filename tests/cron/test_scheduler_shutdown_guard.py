@@ -135,3 +135,14 @@ class TestSourceGuardrail:
         # The guard appears shortly before the standalone send comment.
         window = source[max(0, idx - 600):idx]
         assert "_interpreter_shutting_down()" in window
+
+    def test_run_and_release_guards_runtime_error(self, source):
+        """``_run_and_release`` must catch RuntimeError during interpreter
+        shutdown so a Future exception doesn't crash the process through
+        ThreadPoolExecutor's atexit handler (#58720)."""
+        idx = source.find("def _run_and_release(")
+        assert idx >= 0, "_run_and_release not found in scheduler.py"
+        body = source[idx:idx + 400]
+        assert "except RuntimeError as e:" in body
+        assert "_interpreter_shutting_down(e)" in body
+        assert "return None" in body

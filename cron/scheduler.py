@@ -297,6 +297,8 @@ def _is_cron_silence_response(text: str) -> bool:
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_job_started: dict = {}  # job_id -> monotonic timestamp
+_STALE_RUNNING_TIMEOUT = 30 * 60  # seconds — auto-clear stuck jobs after 30 min
 _running_lock = threading.Lock()
 
 # Job IDs the gateway shutdown path force-killed the tool subprocess of
@@ -3745,14 +3747,27 @@ def tick(
                 return None
             with _running_lock:
                 if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
+                    # Auto-clear stale locks after timeout
+                    started = _running_job_started.get(job_id)
+                    if started is None or (time.monotonic() - started) > _STALE_RUNNING_TIMEOUT:
+                        _running_job_ids.discard(job_id)
+                        _running_job_started.pop(job_id, None)
+                        logger.warning("Job '%s' — cleared stale lock (stuck >%ds)", job.get("name", job_id), _STALE_RUNNING_TIMEOUT)
+                    else:
+                        logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                        return None
                 _running_job_ids.add(job_id)
+                _running_job_started[job_id] = time.monotonic()
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=job, ctx=_ctx):
                 try:
                     return ctx.run(_process_job, j)
+                except RuntimeError as e:
+                    if _interpreter_shutting_down(e):
+                        logger.debug("Job '%s': suppressed error during interpreter shutdown: %s", j.get("name", j["id"]), e)
+                        return None
+                    raise
                 finally:
                     with _running_lock:
                         _running_job_ids.discard(j["id"])

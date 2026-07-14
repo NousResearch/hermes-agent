@@ -346,8 +346,12 @@ def _local_delivery_notice(job: Dict[str, Any], user_deliver: Optional[str]) -> 
 
 
 def _repeat_display(job: Dict[str, Any]) -> str:
-    times = (job.get("repeat") or {}).get("times")
-    completed = (job.get("repeat") or {}).get("completed", 0)
+    repeat = job.get("repeat") or {}
+    # v0.18+ can store repeat as a plain int (max count)
+    if isinstance(repeat, int):
+        return "forever" if repeat >= 2147483647 else f"{repeat} times"
+    times = repeat.get("times")
+    completed = repeat.get("completed", 0)
     if times is None:
         return "forever"
     if times == 1:

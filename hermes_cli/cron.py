@@ -123,9 +123,14 @@ def cron_list(show_all: bool = False):
         # `repeat` may be present-but-null in the job record (e.g. a one-shot
         # job persisted with "repeat": null), so coalesce to {} rather than
         # relying on the dict-default, which only applies to a missing key.
+        # v0.18+ can also store repeat as a plain int (max count); handle both.
         repeat_info = job.get("repeat") or {}
-        repeat_times = repeat_info.get("times")
-        repeat_completed = repeat_info.get("completed", 0)
+        if isinstance(repeat_info, int):
+            repeat_times = repeat_info
+            repeat_completed = 0
+        else:
+            repeat_times = repeat_info.get("times")
+            repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
 
         # `deliver` may be present-but-null in the job record (same pitfall as

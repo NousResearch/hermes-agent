@@ -733,10 +733,19 @@ def compress_context(
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
             return messages, _existing_sp
+    _lock_released = False
+
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""
+        nonlocal _lock_released
+        if _lock_released:
+            return
+        _lock_released = True
         if _lock_refresher is not None:
-            _lock_refresher.stop()
+            try:
+                _lock_refresher.stop()
+            except Exception as _stop_err:
+                logger.debug("compression lock refresher stop failed: %s", _stop_err)
         if _lock_db is not None and _lock_sid and _lock_holder:
             try:
                 _lock_db.release_compression_lock(_lock_sid, _lock_holder)
@@ -800,54 +809,54 @@ def compress_context(
         _release_lock()
         raise
 
-    # Capture boundary quality before session-rotation callbacks run. Built-in
-    # and plugin lifecycle hooks may reset per-session compressor fields while
-    # rebinding to the child id; the completed attempt's verdict must survive
-    # that rebind and be recorded only after the full boundary commits.
-    _compression_made_progress = bool(
-        getattr(agent.context_compressor, "_last_compression_made_progress", False)
-    )
-    _compression_used_fallback = bool(
-        getattr(agent.context_compressor, "_last_summary_fallback_used", False)
-    )
+    try:
+        # Capture boundary quality before session-rotation callbacks run. Built-in
+        # and plugin lifecycle hooks may reset per-session compressor fields while
+        # rebinding to the child id; the completed attempt's verdict must survive
+        # that rebind and be recorded only after the full boundary commits.
+        _compression_made_progress = bool(
+            getattr(agent.context_compressor, "_last_compression_made_progress", False)
+        )
+        _compression_used_fallback = bool(
+            getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+        )
 
-    # If compression aborted (aux LLM failed to produce a usable summary)
-    # the compressor returns the input messages unchanged.  Surface the
-    # error to the user, skip the session-rotation work entirely (no
-    # session has logically ended), and let auto-compress callers detect
-    # the no-op via len(returned) == len(input).
-    if getattr(agent.context_compressor, "_last_compress_aborted", False):
-        try:
-            _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
-            if getattr(agent, "_last_compression_summary_warning", None) != _err:
-                agent._last_compression_summary_warning = _err
-                agent._emit_warning(
-                    f"⚠ Compression aborted: {_err}. "
-                    "No messages were dropped — conversation continues unchanged. "
-                    "Run /compress to retry, or /new to start a fresh session."
-                )
+        # If compression aborted (aux LLM failed to produce a usable summary)
+        # the compressor returns the input messages unchanged.  Surface the
+        # error to the user, skip the session-rotation work entirely (no
+        # session has logically ended), and let auto-compress callers detect
+        # the no-op via len(returned) == len(input).
+        if getattr(agent.context_compressor, "_last_compress_aborted", False):
+            try:
+                _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+                if getattr(agent, "_last_compression_summary_warning", None) != _err:
+                    agent._last_compression_summary_warning = _err
+                    agent._emit_warning(
+                        f"⚠ Compression aborted: {_err}. "
+                        "No messages were dropped — conversation continues unchanged. "
+                        "Run /compress to retry, or /new to start a fresh session."
+                    )
+                _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                if not _existing_sp:
+                    _existing_sp = agent._build_system_prompt(system_message)
+                return messages, _existing_sp
+            finally:
+                _release_lock()
+
+        # A compressor that returns the exact input object made no structural
+        # progress. Do not rotate/rewrite the session or arm post-compression
+        # deferral in that case; its own anti-thrash counter records the no-op.
+        if compressed is messages:
+            logger.info(
+                "Compression made no progress (session=%s) — skipping boundary rewrite.",
+                agent.session_id or "none",
+            )
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
-            return messages, _existing_sp
-        finally:
             _release_lock()
+            return messages, _existing_sp
 
-    # A compressor that returns the exact input object made no structural
-    # progress. Do not rotate/rewrite the session or arm post-compression
-    # deferral in that case; its own anti-thrash counter records the no-op.
-    if compressed is messages:
-        logger.info(
-            "Compression made no progress (session=%s) — skipping boundary rewrite.",
-            agent.session_id or "none",
-        )
-        _existing_sp = getattr(agent, "_cached_system_prompt", None)
-        if not _existing_sp:
-            _existing_sp = agent._build_system_prompt(system_message)
-        _release_lock()
-        return messages, _existing_sp
-
-    try:
         summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
         if summary_error:
             if getattr(agent, "_last_compression_summary_warning", None) != summary_error:

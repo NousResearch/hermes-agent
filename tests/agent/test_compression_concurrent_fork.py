@@ -471,6 +471,131 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert not refreshers[0]._thread.is_alive()
 
 
+def test_noop_prompt_exception_releases_lock_and_refresher(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """No-op prompt rebuild failures must not escape the lock cleanup scope."""
+    from agent.conversation_compression import (
+        _CompressionLockLeaseRefresher as RealLeaseRefresher,
+    )
+
+    refreshers = []
+
+    class RecordingLeaseRefresher(RealLeaseRefresher):
+        def start(self):
+            refreshers.append(self)
+            return super().start()
+
+    monkeypatch.setattr(
+        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        RecordingLeaseRefresher,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "NOOP_PROMPT_EXCEPTION_TEST"
+    db.create_session(parent_sid, source="discord")
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._compression_lock_refresh_interval = 0.1
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+    agent.context_compressor.compress.side_effect = lambda *_a, **_kw: messages
+    agent._cached_system_prompt = None
+    agent._build_system_prompt = lambda *_a, **_kw: (_ for _ in ()).throw(
+        RuntimeError("prompt rebuild boom")
+    )
+
+    with pytest.raises(RuntimeError, match="prompt rebuild boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert db.get_compression_lock_holder(parent_sid) is None
+    assert len(refreshers) == 1
+    assert not refreshers[0]._thread.is_alive()
+
+
+def test_post_dispatch_attribute_exception_releases_lock_and_refresher(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Plugin state lookup failures after dispatch must release the lock."""
+    from agent.conversation_compression import (
+        _CompressionLockLeaseRefresher as RealLeaseRefresher,
+    )
+
+    refreshers = []
+
+    class RecordingLeaseRefresher(RealLeaseRefresher):
+        def start(self):
+            refreshers.append(self)
+            return super().start()
+
+    class AttributeBombEngine:
+        name = "attribute-bomb"
+
+        def compress(self, messages, **_kwargs):
+            return [messages[0], messages[-1]]
+
+        def __getattribute__(self, name):
+            if name == "_last_compression_made_progress":
+                raise RuntimeError("post-dispatch attribute boom")
+            return object.__getattribute__(self, name)
+
+    monkeypatch.setattr(
+        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        RecordingLeaseRefresher,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "POST_DISPATCH_ATTRIBUTE_EXCEPTION_TEST"
+    db.create_session(parent_sid, source="discord")
+    agent = _build_agent_with_db(db, parent_sid)
+    agent._compression_lock_refresh_interval = 0.1
+    agent.context_compressor = AttributeBombEngine()
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with pytest.raises(RuntimeError, match="post-dispatch attribute boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert db.get_compression_lock_holder(parent_sid) is None
+    assert len(refreshers) == 1
+    assert not refreshers[0]._thread.is_alive()
+
+
+def test_refresher_stop_exception_does_not_block_lock_release(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Refresher cleanup failure must not prevent holder-qualified DB release."""
+    refreshers = []
+
+    class StopFailingLeaseRefresher:
+        def __init__(self, *_args, **_kwargs):
+            self.stop_calls = 0
+            refreshers.append(self)
+
+        def start(self):
+            return self
+
+        def stop(self):
+            self.stop_calls += 1
+            raise RuntimeError("refresher stop boom")
+
+    monkeypatch.setattr(
+        "agent.conversation_compression._CompressionLockLeaseRefresher",
+        StopFailingLeaseRefresher,
+    )
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    parent_sid = "REFRESHER_STOP_EXCEPTION_TEST"
+    db.create_session(parent_sid, source="discord")
+    agent = _build_agent_with_db(db, parent_sid)
+    agent.context_compressor.compress.side_effect = RuntimeError("engine boom")
+    messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+    with pytest.raises(RuntimeError, match="engine boom"):
+        agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert db.get_compression_lock_holder(parent_sid) is None
+    assert len(refreshers) == 1
+    assert refreshers[0].stop_calls == 1
+
+
 def _make_legacy_session_db_class() -> type:
     """Model the class retained in ``sys.modules`` before the lock API existed.
 

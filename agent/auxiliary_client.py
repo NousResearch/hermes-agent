@@ -155,6 +155,9 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
         return True
 
 
+_WARNED_KEEPALIVE_IMPORT_SKEW = False
+
+
 def _openai_http_client_kwargs(
     base_url: Optional[str],
     *,
@@ -169,15 +172,26 @@ def _openai_http_client_kwargs(
             verify=_resolve_aux_verify(base_url),
         )
     except (ImportError, AttributeError):
-        # Fallback for older hermes-agent versions without build_keepalive_http_client.
-        # This can happen when Desktop users run with stale code (#64333).
-        # Without the keepalive client, auxiliary calls use the OpenAI SDK's default
-        # httpx client, which respects macOS system proxy (less predictable for env-only
-        # proxy use) and has no pool-level keepalive expiry (connections may live longer).
-        # This is a graceful degradation — functionality still works, just with slightly
-        # different proxy/keepalive behavior.
+        # Version-skewed installs (#64333): a process whose sys.path resolves
+        # an older agent/process_bootstrap.py without this helper — seen when
+        # the Desktop app's bundled runtime lags a git-installed source tree
+        # that newer callers (cron scheduler) were written against. Every cron
+        # job died on this ImportError before any agent logic ran. Degrade
+        # gracefully to the OpenAI SDK's default httpx client (respects macOS
+        # system proxy, no pool-level keepalive expiry) instead of failing the
+        # whole job, and say so once — silent version skew is how this bug
+        # went unnoticed until jobs were already dead on arrival.
+        global _WARNED_KEEPALIVE_IMPORT_SKEW
+        if not _WARNED_KEEPALIVE_IMPORT_SKEW:
+            _WARNED_KEEPALIVE_IMPORT_SKEW = True
+            logger.warning(
+                "agent.process_bootstrap.build_keepalive_http_client is "
+                "unavailable — mixed/stale install detected (#64333). Falling "
+                "back to the SDK default HTTP client. Run `hermes update` (or "
+                "reinstall the Desktop app) to resync the runtime."
+            )
         client = None
-    
+
     if client is None:
         return {}
     return {"http_client": client}

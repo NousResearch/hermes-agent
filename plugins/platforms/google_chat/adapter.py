@@ -138,6 +138,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    validate_inbound_media_size,
 )
 
 
@@ -186,6 +187,7 @@ _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 8.0
 _RETRY_JITTER = 0.3
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+_ATTACHMENT_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 def _is_retryable_error(exc: BaseException) -> bool:
@@ -297,6 +299,48 @@ def _redact_sensitive(text: str) -> str:
         text,
     )
     return text
+
+
+def _validate_attachment_size(size: int, *, mime: str = "") -> None:
+    media_type = "Google Chat attachment"
+    if mime:
+        media_type = f"{media_type} ({mime})"
+    validate_inbound_media_size(size, media_type=media_type)
+
+
+def _read_streaming_attachment_response(resp: Any, *, mime: str = "") -> bytes:
+    headers = getattr(resp, "headers", {}) or {}
+    content_length = None
+    try:
+        content_length = headers.get("content-length") or headers.get("Content-Length")
+    except Exception:
+        content_length = None
+    if content_length:
+        try:
+            _validate_attachment_size(int(content_length), mime=mime)
+        except ValueError:
+            raise
+        except Exception:
+            logger.debug(
+                "[GoogleChat] ignoring invalid attachment Content-Length: %r",
+                content_length,
+            )
+
+    iter_content = getattr(resp, "iter_content", None)
+    if callable(iter_content):
+        chunks: list[bytes] = []
+        total = 0
+        for chunk in iter_content(chunk_size=_ATTACHMENT_DOWNLOAD_CHUNK_BYTES):
+            if not chunk:
+                continue
+            total += len(chunk)
+            _validate_attachment_size(total, mime=mime)
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    data = getattr(resp, "content", b"") or b""
+    _validate_attachment_size(len(data), mime=mime)
+    return data
 
 
 def _mime_for_message_type(mime: str) -> MessageType:
@@ -1703,15 +1747,20 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 import io
 
                 buf = io.BytesIO()
-                downloader = MediaIoBaseDownload(buf, req)
+                downloader = MediaIoBaseDownload(
+                    buf,
+                    req,
+                    chunksize=_ATTACHMENT_DOWNLOAD_CHUNK_BYTES,
+                )
                 done = False
                 while not done:
                     _status, done = downloader.next_chunk()
+                    _validate_attachment_size(buf.tell(), mime=mime)
                 return buf.getvalue()
 
             try:
                 data = await asyncio.to_thread(_fetch_media)
-            except HttpError as exc:
+            except (HttpError, ValueError) as exc:
                 logger.warning(
                     "[GoogleChat] media.download_media failed: %s",
                     _redact_sensitive(str(exc)),
@@ -1730,9 +1779,14 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 import google.auth.transport.requests as gar
 
                 authed_session = gar.AuthorizedSession(self._credentials)
-                resp = authed_session.get(download_uri, timeout=30)
-                resp.raise_for_status()
-                return resp.content
+                resp = authed_session.get(download_uri, timeout=30, stream=True)
+                try:
+                    resp.raise_for_status()
+                    return _read_streaming_attachment_response(resp, mime=mime)
+                finally:
+                    close = getattr(resp, "close", None)
+                    if callable(close):
+                        close()
 
             try:
                 data = await asyncio.to_thread(_fetch_uri)

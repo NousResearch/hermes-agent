@@ -414,6 +414,10 @@ class TestBareTextNoLongerApproves:
 class TestBlockingApprovalE2E:
     """Test the full blocking flow: agent thread blocks → user approves → agent resumes."""
 
+    @pytest.fixture(autouse=True)
+    def _manual_approval_mode(self, monkeypatch):
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+
     def setup_method(self):
         _clear_approval_state()
         os.environ.pop("HERMES_YOLO_MODE", None)
@@ -515,28 +519,42 @@ class TestBlockingApprovalE2E:
         assert "BLOCKED" in result_holder[0]["message"]
         unregister_gateway_notify(session_key)
 
-    def test_blocking_approval_timeout(self):
-        """check_all_command_guards returns BLOCKED on timeout."""
+    @pytest.mark.parametrize(
+        "approval_config",
+        [
+            {"mode": "manual", "timeout": 0},
+            {"mode": "manual", "timeout": 0, "gateway_timeout": 300},
+        ],
+        ids=["shared-timeout-only", "shared-timeout-is-canonical"],
+    )
+    def test_blocking_approval_uses_canonical_timeout(self, approval_config, monkeypatch):
+        """Gateway waits use approvals.timeout, without a second timeout knob."""
+        from tools import approval as approval_module
         from tools.approval import (
-            register_gateway_notify, unregister_gateway_notify,
             check_all_command_guards,
+            register_gateway_notify,
+            reset_current_session_key,
+            resolve_gateway_approval,
+            set_current_session_key,
+            unregister_gateway_notify,
         )
 
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         session_key = "e2e-timeout"
         register_gateway_notify(session_key, lambda d: None)
 
         result_holder = [None]
 
         def agent_thread():
-            from tools.approval import reset_current_session_key, set_current_session_key
-
             token = set_current_session_key(session_key)
             os.environ["HERMES_GATEWAY_SESSION"] = "1"
             os.environ["HERMES_EXEC_ASK"] = "1"
             os.environ["HERMES_SESSION_KEY"] = session_key
             try:
-                with patch("tools.approval._get_approval_config",
-                           return_value={"gateway_timeout": 1}):
+                with patch(
+                    "tools.approval._get_approval_config",
+                    return_value=approval_config,
+                ):
                     result_holder[0] = check_all_command_guards(
                         "rm -rf /important", "local"
                     )
@@ -548,9 +566,13 @@ class TestBlockingApprovalE2E:
 
         t = threading.Thread(target=agent_thread)
         t.start()
-        t.join(timeout=10)
+        t.join(timeout=1)
+        if t.is_alive():
+            resolve_gateway_approval(session_key, "deny")
+            t.join(timeout=5)
 
         assert result_holder[0]["approved"] is False
+        assert result_holder[0]["outcome"] == "timeout"
         assert "timed out" in result_holder[0]["message"]
         unregister_gateway_notify(session_key)
 
@@ -725,6 +747,10 @@ class TestCrossSessionApprovalIsolation:
     worker thread carrying session A's contextvar resolves to session A
     even when ``os.environ`` has been clobbered to session B.
     """
+
+    @pytest.fixture(autouse=True)
+    def _manual_approval_mode(self, monkeypatch):
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
 
     def setup_method(self):
         _clear_approval_state()

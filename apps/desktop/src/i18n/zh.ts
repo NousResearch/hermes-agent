@@ -1761,6 +1761,9 @@ export const zh: Translations = {
       newWorktreeTitle: '新建工作树',
       newWorktreeDesc: '为这个工作树命名分支。',
       branchPlaceholder: '例如 my-feature',
+      branchOff: () => ({ after: ' 分支', before: '从 ' }),
+      baseBranchPlaceholder: '搜索分支…',
+      baseBranchNone: '未找到分支',
       startWorkFailed: '无法创建工作树',
       convertBranch: '转换分支…',
       convertBranchTitle: '转换分支',
@@ -2231,6 +2234,16 @@ export const zh: Translations = {
       recentActivity: '最近活动',
       viewAllLogs: '查看全部日志 →',
       messagingPlatforms: '消息平台'
+    },
+    approvalMode: {
+      title: '审批模式',
+      ariaLabel: mode => `审批模式：${mode}`,
+      manual: '手动',
+      manualDescription: '执行需要审批的操作前询问',
+      smart: '智能',
+      smartDescription: '自动评估操作，并在需要时询问',
+      off: '关闭',
+      offDescription: '不显示审批提示，直接运行'
     },
     statusbar: {
       unknown: '未知',

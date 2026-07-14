@@ -194,10 +194,26 @@ def _normalized_custom_base_url(value: Any) -> str:
 
 
 def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
-    provider_model = str(entry.get("model", "") or "").strip().lower()
-    if not provider_model:
+    agent_model_norm = str(agent_model or "").strip().lower()
+    # Multi-model entries (v12+ `providers.<name>.models` mapping / legacy
+    # `models:` list): the agent's model matching ANY catalog entry counts.
+    # Without this, a provider whose `model`/`default_model` differs from the
+    # session model silently fails to match and per-provider request settings
+    # (extra_body, e.g. OpenAI service_tier) are dropped — billing the whole
+    # session at the wrong tier (July 2026 sweeper incident: flex config
+    # ignored, ~2.3x overbilling).
+    models = entry.get("models")
+    catalog: List[str] = []
+    if isinstance(models, dict):
+        catalog = [str(k).strip().lower() for k in models.keys()]
+    elif isinstance(models, (list, tuple)):
+        catalog = [str(m).strip().lower() for m in models]
+    if catalog and agent_model_norm in catalog:
         return True
-    return provider_model == str(agent_model or "").strip().lower()
+    provider_model = str(entry.get("model", "") or "").strip().lower()
+    if not provider_model and not catalog:
+        return True
+    return provider_model == agent_model_norm
 
 
 def _custom_provider_extra_body_for_agent(

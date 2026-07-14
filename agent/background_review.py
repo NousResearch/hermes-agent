@@ -687,9 +687,37 @@ def _run_review_in_thread(
             # parent below so memory(action="add") writes from
             # the review still land on disk; the review just
             # has zero side effects on external providers.
-            # Match parent's toolset config so ``tools[]`` is byte-identical
-            # in the request body — Anthropic's cache key includes it.
-            # (The runtime whitelist below still restricts dispatch.)
+            # Toolset config for the fork. For cache-backed providers we match
+            # the parent's toolsets so ``tools[]`` is byte-identical in the
+            # request body — Anthropic's cache key includes it — and rely on
+            # the runtime whitelist below to restrict dispatch.
+            #
+            # For a LOCAL review endpoint there is no prefix cache to preserve,
+            # so we narrow the *advertised* schema to the review's real
+            # permissions instead. Otherwise a weaker local model imitates the
+            # snapshot history (full of write_file/read_file/terminal calls)
+            # and burns turns hitting the dispatch deny-wall — pure waste,
+            # since advertising the full schema buys nothing without a cache.
+            # Classification uses the RESOLVED review runtime (_rt), so an
+            # auxiliary.background_review route is judged by the endpoint that
+            # actually serves the review, not the parent's. The narrowed set
+            # mirrors the runtime whitelist's memory gate below: a profile
+            # with memory/user-profile disabled must not get the memory tool
+            # re-advertised at schema level. The runtime whitelist still
+            # applies as a belt-and-suspenders net.
+            from agent.model_metadata import is_local_endpoint
+
+            _review_base_url = _rt.get("base_url") or None
+            if _review_base_url and is_local_endpoint(_review_base_url):
+                _review_enabled_toolsets = ["skills"]
+                if getattr(agent, "_memory_enabled", False) or getattr(
+                    agent, "_user_profile_enabled", False
+                ):
+                    _review_enabled_toolsets.insert(0, "memory")
+                _review_disabled_toolsets = None
+            else:
+                _review_enabled_toolsets = getattr(agent, "enabled_toolsets", None)
+                _review_disabled_toolsets = getattr(agent, "disabled_toolsets", None)
             _fork_kwargs: Dict[str, Any] = {}
             if isinstance(_rt.get("max_tokens"), int):
                 _fork_kwargs["max_tokens"] = _rt["max_tokens"]
@@ -716,13 +744,13 @@ def _run_review_in_thread(
                 platform=agent.platform,
                 provider=_rt.get("provider") or agent.provider,
                 api_mode=_rt.get("api_mode"),
-                base_url=_rt.get("base_url") or None,
+                base_url=_review_base_url,
                 api_key=_rt.get("api_key") or None,
                 credential_pool=_rt.get("credential_pool"),
                 request_overrides=_rt.get("request_overrides") or {},
                 parent_session_id=agent.session_id,
-                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                enabled_toolsets=_review_enabled_toolsets,
+                disabled_toolsets=_review_disabled_toolsets,
                 skip_memory=True,
                 **_fork_kwargs,
             )

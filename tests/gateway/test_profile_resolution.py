@@ -6,9 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute
+from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 
 
 @pytest.fixture
@@ -331,3 +333,89 @@ class TestGatewayRunnerInjection:
         # every adapter, not just the ones that pre-declared it (Discord).
         assert hasattr(_ToyAdapter, "gateway_runner")
         assert _ToyAdapter.gateway_runner is None
+
+
+# A concrete adapter we can instantiate without the full platform stack.
+# ``build_source`` only reads ``self.platform`` and ``self.gateway_runner``, so a
+# bare instance with those two attrs exercises the real BasePlatformAdapter
+# method end-to-end. Clearing ``__abstractmethods__`` lets ``__new__`` bypass
+# the ABC instantiation guard without stubbing connect/send/get_chat_info/…
+class _StubAdapter(BasePlatformAdapter):
+    pass
+
+
+_StubAdapter.__abstractmethods__ = frozenset()  # type: ignore[attr-defined]
+
+
+def _stub_adapter(platform: Platform, runner) -> "_StubAdapter":
+    a = _StubAdapter.__new__(_StubAdapter)
+    a.platform = platform
+    a.gateway_runner = runner
+    return a
+
+
+class TestAdapterToSessionKeyIntegration:
+    """Adapter -> ``source.profile`` -> session-key integration coverage.
+
+    The review asked for integration coverage for Discord AND a non-Discord
+    platform. These drive a concrete adapter's real ``build_source``
+    (BasePlatformAdapter) with an injected ``gateway_runner``, assert the
+    matched route's profile is stamped on the source, and that the resulting
+    session key is profile-scoped (``agent:<profile>:...`` rather than the
+    shared ``agent:main:...``). The Telegram case is the bug-#2 regression:
+    pre-fix it never received ``gateway_runner`` and fell through to default.
+    """
+
+    @staticmethod
+    def _routes():
+        return [
+            ProfileRoute(name="dc", platform="discord", profile="coder",
+                         guild_id="111", chat_id="222"),
+            ProfileRoute(name="tg", platform="telegram", profile="ops",
+                         chat_id="-1001234567890"),
+        ]
+
+    def test_discord_adapter_stamps_profile_and_scopes_key(self, mock_runner):
+        mock_runner.config.profile_routes = self._routes()
+        adapter = _stub_adapter(Platform.DISCORD, mock_runner)
+
+        source = adapter.build_source(
+            chat_id="222", chat_type="group", guild_id="111", user_id="u1",
+        )
+        assert source.profile == "coder"
+
+        key = build_session_key(source, profile=source.profile)
+        assert key.startswith("agent:coder:"), key
+        # A default-profile key would land in agent:main — must differ.
+        assert key != build_session_key(source, profile=None)
+
+    def test_telegram_adapter_stamps_profile_and_scopes_key(self, mock_runner):
+        """Non-Discord platform (bug #2). The adapter now receives
+        ``gateway_runner``, so ``build_source`` stamps the profile and the
+        session key is isolated under ``agent:ops:`` instead of ``agent:main:``."""
+        mock_runner.config.profile_routes = self._routes()
+        adapter = _stub_adapter(Platform.TELEGRAM, mock_runner)
+
+        source = adapter.build_source(
+            chat_id="-1001234567890", chat_type="group", user_id="u1",
+        )
+        assert source.profile == "ops"
+
+        key = build_session_key(source, profile=source.profile)
+        assert key.startswith("agent:ops:"), key
+        assert key != build_session_key(source, profile=None)
+
+    def test_adapter_without_runner_falls_back_to_default_namespace(self, mock_runner):
+        """Regression anchor: with no ``gateway_runner`` injected (the pre-fix
+        state for non-Discord adapters), ``build_source`` leaves ``profile=None``
+        and the session key is the shared ``agent:main:`` namespace — no
+        per-profile isolation. This is the silent fallback the fix removes for
+        non-Discord platforms."""
+        adapter = _stub_adapter(Platform.TELEGRAM, runner=None)
+
+        source = adapter.build_source(
+            chat_id="-1001234567890", chat_type="group", user_id="u1",
+        )
+        assert source.profile is None
+        key = build_session_key(source, profile=source.profile)
+        assert key.startswith("agent:main:"), key

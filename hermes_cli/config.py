@@ -8164,6 +8164,127 @@ _ENV_REDIRECT_KEYS = frozenset({
 })
 
 
+_KNOWN_MODEL_CONFIG_KEYS = frozenset({
+    "default",
+    "model",
+    "name",
+    "provider",
+    "fallback",
+    "base_url",
+    "api_base",
+    "api_key",
+    "api",
+    "api_mode",
+    "auth_mode",
+    "key_env",
+    "api_key_env",
+    "context_length",
+    "max_tokens",
+    "reasoning_effort",
+    "supports_vision",
+    "ollama_num_ctx",
+    "persist_switch_by_default",
+    "openai_runtime",
+    "default_headers",
+    "aliases",
+    "entra",
+})
+
+_KNOWN_PROVIDER_MODEL_KEYS = frozenset({
+    "context_length",
+    "timeout_seconds",
+    "stale_timeout_seconds",
+    "supports_vision",
+})
+
+_KNOWN_QUICK_COMMAND_KEYS = frozenset({"type", "command", "target"})
+
+_KNOWN_TTS_COMMAND_PROVIDER_KEYS = frozenset({
+    "type",
+    "command",
+    "format",
+    "output_format",
+    "timeout",
+    "timeout_seconds",
+    "voice_compatible",
+    "max_text_length",
+    "voice",
+    "model",
+})
+
+_KNOWN_STT_COMMAND_PROVIDER_KEYS = frozenset({
+    "type",
+    "command",
+    "format",
+    "output_format",
+    "language",
+    "timeout",
+    "timeout_seconds",
+    "model",
+})
+
+
+def _is_valid_dynamic_config_key(parts: List[str]) -> bool:
+    """Validate config namespaces whose user-defined names are absent from defaults."""
+    if not parts or any(not part for part in parts):
+        return False
+
+    root = parts[0]
+
+    # DEFAULT_CONFIG keeps ``model`` as a legacy scalar, while the runtime also
+    # supports a structured model block. Keep the structured surface explicit so
+    # typos under model do not become inert config entries.
+    if root == "model":
+        if len(parts) == 1:
+            return True
+        field = parts[1]
+        if field not in _KNOWN_MODEL_CONFIG_KEYS:
+            return False
+        if field == "aliases":
+            return len(parts) in {2, 3}
+        if field == "default_headers":
+            return len(parts) >= 2
+        if field == "entra":
+            return len(parts) == 2 or (len(parts) == 3 and parts[2] == "scope")
+        return len(parts) == 2
+
+    # providers.<name> has both provider-wide fields and per-model overrides.
+    if root == "providers":
+        if len(parts) == 2:
+            return True
+        if len(parts) < 3:
+            return False
+        field = parts[2]
+        if field not in _KNOWN_PROVIDER_KEYS:
+            return False
+        if len(parts) == 3:
+            return True
+        if field in {"extra_body", "extra_headers"}:
+            return True
+        if field == "models":
+            return len(parts) == 4 or (
+                len(parts) == 5 and parts[4] in _KNOWN_PROVIDER_MODEL_KEYS
+            )
+        return False
+
+    if root == "quick_commands":
+        return len(parts) == 2 or (
+            len(parts) == 3 and parts[2] in _KNOWN_QUICK_COMMAND_KEYS
+        )
+
+    if len(parts) >= 2 and root in {"tts", "stt"} and parts[1] == "providers":
+        if len(parts) in {2, 3}:
+            return True
+        known_fields = (
+            _KNOWN_TTS_COMMAND_PROVIDER_KEYS
+            if root == "tts"
+            else _KNOWN_STT_COMMAND_PROVIDER_KEYS
+        )
+        return len(parts) == 4 and parts[3] in known_fields
+
+    return False
+
+
 def _is_valid_config_key(dotted_key: str, current_user_config: Dict[str, Any]) -> bool:
     """Return True if dotted_key is a recognized configuration or environment variable key."""
     # 1. Check environment variables
@@ -8193,16 +8314,12 @@ def _is_valid_config_key(dotted_key: str, current_user_config: Dict[str, Any]) -
     except Exception:
         pass
 
-    # 3. Check DEFAULT_CONFIG tree
+    # 3. Check namespaces containing user-defined names.
     parts = dotted_key.split('.')
+    if _is_valid_dynamic_config_key(parts):
+        return True
 
-    # Special case: providers.<name>.<field>
-    if parts[0] == "providers" and len(parts) >= 2:
-        if len(parts) == 2:
-            return True
-        return parts[-1] in _KNOWN_PROVIDER_KEYS
-
-    # Special case: skills.config.<name>
+    # Skill manifests define their own non-secret config keys.
     if dotted_key.startswith("skills.config."):
         return True
 
@@ -8210,7 +8327,7 @@ def _is_valid_config_key(dotted_key: str, current_user_config: Dict[str, Any]) -
     if parts[0] in {"custom_providers", "platforms", "verbose"}:
         return True
 
-    # Recursive check in DEFAULT_CONFIG
+    # 4. Check the static DEFAULT_CONFIG tree.
     current = DEFAULT_CONFIG
     for part in parts:
         if isinstance(current, dict):
@@ -8252,6 +8369,18 @@ def set_config_value(key: str, value: str):
         )
         sys.exit(1)
 
+    # Environment-shaped keys do not depend on config.yaml. Route them before
+    # reading the YAML so a malformed config file cannot block secret rotation.
+    upper_key = key.upper()
+    if (
+        upper_key in _ENV_REDIRECT_KEYS
+        or upper_key.endswith(("_API_KEY", "_TOKEN"))
+        or upper_key.startswith("TERMINAL_SSH")
+    ):
+        save_env_value(upper_key, value)
+        print(f"✓ Set {key} in {get_env_path()}")
+        return
+
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
@@ -8270,13 +8399,6 @@ def set_config_value(key: str, value: str):
         print(f"  Check '{get_config_path()}' for valid structure.")
         sys.exit(1)
 
-    # Check if it's an API key (goes to .env)
-    upper_key = key.upper()
-    if upper_key in _ENV_REDIRECT_KEYS or upper_key.endswith(('_API_KEY', '_TOKEN')) or upper_key.startswith('TERMINAL_SSH'):
-        save_env_value(upper_key, value)
-        print(f"✓ Set {key} in {get_env_path()}")
-        return
-    
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
     # _set_nested which preserves list-typed nodes; before #17876 the

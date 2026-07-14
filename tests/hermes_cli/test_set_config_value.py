@@ -126,6 +126,83 @@ class TestConfigYamlRouting:
 
 
 # ---------------------------------------------------------------------------
+# Config key validation — regression tests for PR #45820 review
+# ---------------------------------------------------------------------------
+
+class TestConfigKeyValidation:
+    """Fresh dynamic entries stay writable while unknown paths are rejected."""
+
+    def test_fresh_model_alias_is_accepted(self, _isolated_hermes_home):
+        set_config_value(
+            "model.aliases.fav",
+            "anthropic/claude-opus-4.6",
+        )
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["model"]["aliases"]["fav"] == "anthropic/claude-opus-4.6"
+
+    def test_fresh_quick_command_is_accepted(self, _isolated_hermes_home):
+        set_config_value("quick_commands.status.type", "exec")
+        set_config_value(
+            "quick_commands.status.command",
+            "systemctl status hermes-agent",
+        )
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["quick_commands"]["status"] == {
+            "type": "exec",
+            "command": "systemctl status hermes-agent",
+        }
+
+    @pytest.mark.parametrize(("key", "value", "expected"), [
+        ("providers.example.models.model-v1.timeout_seconds", "30", 30),
+        ("providers.example.extra_headers.X-Tenant", "acme", "acme"),
+        ("tts.providers.local-piper.type", "command", "command"),
+        ("tts.providers.local-piper.timeout_seconds", "45", 45),
+        ("stt.providers.local-whisper.command", "whisper-cli", "whisper-cli"),
+        ("stt.providers.local-whisper.output_format", "txt", "txt"),
+    ])
+    def test_documented_dynamic_registries_are_accepted(
+        self, _isolated_hermes_home, key, value, expected
+    ):
+        set_config_value(key, value)
+
+        import yaml
+        node = yaml.safe_load(_read_config(_isolated_hermes_home))
+        for part in key.split("."):
+            node = node[part]
+        assert node == expected
+
+    @pytest.mark.parametrize("key", [
+        "model.typo",
+        "providers.example.typo",
+        "quick_commands.status.typo",
+        "tts.providers.local.typo",
+    ])
+    def test_unknown_dynamic_fields_are_rejected(
+        self, _isolated_hermes_home, key
+    ):
+        with pytest.raises(SystemExit) as exc:
+            set_config_value(key, "value")
+
+        assert exc.value.code == 1
+        assert _read_config(_isolated_hermes_home) == ""
+
+    def test_unknown_root_path_is_rejected(
+        self, _isolated_hermes_home, capsys
+    ):
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("foo.bar", "baz")
+
+        assert exc.value.code == 1
+        assert "Unknown configuration key: foo.bar" in capsys.readouterr().out
+        assert _read_config(_isolated_hermes_home) == ""
+        assert _read_env(_isolated_hermes_home) == ""
+
+
+# ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277
 # ---------------------------------------------------------------------------
 
@@ -281,12 +358,14 @@ class TestStringTypedConfigValues:
         assert node == expected
         assert type(node) is type(expected)
 
-    def test_unknown_keys_keep_existing_coercion(self, _isolated_hermes_home):
-        set_config_value("custom.enabled", "off")
+    def test_dynamic_keys_without_defaults_keep_existing_coercion(
+        self, _isolated_hermes_home
+    ):
+        set_config_value("providers.custom.discover_models", "off")
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["custom"]["enabled"] is False
+        assert saved["providers"]["custom"]["discover_models"] is False
 
 
 # ---------------------------------------------------------------------------

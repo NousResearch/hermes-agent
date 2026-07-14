@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
@@ -6,6 +6,7 @@ import {
   attachmentDisplayText,
   attachmentId,
   coerceThinkingText,
+  createClientSessionState,
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
@@ -13,6 +14,19 @@ import {
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
+
+describe('createClientSessionState', () => {
+  it('anchors a fresh runtime to its creation time', () => {
+    const createdAt = 1_700_000_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(createdAt)
+
+    try {
+      expect(createClientSessionState('stored-1').runtimeStartedAt).toBe(createdAt)
+    } finally {
+      now.mockRestore()
+    }
+  })
+})
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'kind'>): ComposerAttachment {
   return { id: 'a', label: 'file.png', ...overrides }

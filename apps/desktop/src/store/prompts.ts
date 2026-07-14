@@ -1,5 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { $clarifyRequest } from './clarify'
 import { $activeSessionId } from './session'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
@@ -70,8 +71,10 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  choices?: string[]
   command: string
   description: string
+  smartDenied?: boolean
 }
 
 export interface SudoRequest extends KeyedPrompt {
@@ -109,6 +112,16 @@ export const clearSudoRequest = sudo.clear
 export const $secretRequest = secret.$active
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
+
+// True when the active session is blocked on the user (clarify question or an
+// approval / sudo / secret prompt). Mirrors the pet's `awaitingInput` concept
+// (agent/pet/state.py): the turn is paused on you, not working — so callers can
+// suppress "thinking" indicators and the Esc-to-interrupt shortcut while you
+// decide, instead of treating the wait as an in-flight turn.
+export const $activeSessionAwaitingInput = computed(
+  [$clarifyRequest, $approvalRequest, $sudoRequest, $secretRequest],
+  (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
+)
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
 // or every parked prompt when no session is given (global reset / tests).

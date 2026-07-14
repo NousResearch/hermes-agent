@@ -4,6 +4,7 @@ import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
@@ -11,7 +12,7 @@ import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 // export (everything else stays real) and flip the holder per test.
 const envState = { dashboardTuiMode: false }
 vi.mock('../config/env.js', async importActual => {
-  const actual = await importActual<typeof import('../config/env.js')>()
+  const actual = await importActual<typeof EnvModule>()
 
   return {
     ...actual,
@@ -182,6 +183,15 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('opens the model picker with refresh for /model --refresh', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --refresh')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ refresh: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('honors TUI picker session scope without adding --global', async () => {
     patchUiState({ sid: 'sid-abc' })
 
@@ -199,7 +209,7 @@ describe('createSlashHandler', () => {
       confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
-      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter --session'
     })
   })
 
@@ -218,6 +228,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -240,6 +251,7 @@ describe('createSlashHandler', () => {
 
   it('applies /reasoning show to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'hidden' }, showReasoning: false, sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),
@@ -273,6 +285,35 @@ describe('createSlashHandler', () => {
       action: 'install',
       query: 'foo'
     })
+  })
+
+  it('opens the pet picker for /pet list only', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet list')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet' }))
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet toggle' })
+    )
+  })
+
+  it('routes /pet <slug> to the slash worker without opening the picker', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet boba')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'pet boba' }))
   })
 
   it('routes /skills inspect <name> to skills.manage', () => {
@@ -346,11 +387,14 @@ describe('createSlashHandler', () => {
       if (method === 'skills.reload') {
         return Promise.resolve({ output: '42 skill(s) available' })
       }
+
       if (method === 'commands.catalog') {
         return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
       }
+
       return Promise.resolve({})
     })
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     createSlashHandler(ctx)('/reload-skills')
@@ -516,7 +560,9 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chromium-family browser remote debugging at http://127.0.0.1:9222...')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(
+      'checking Chromium-family browser remote debugging at http://127.0.0.1:9222...'
+    )
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(

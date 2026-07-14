@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8645
 DEFAULT_PATH = "/wecom/callback"
+# Cap pre-auth request bodies. WeCom callbacks are small encrypted XML
+# envelopes (media is delivered out-of-band via MediaId, never inline), so
+# 64 KB is ample for any legitimate message while bounding the work an
+# unauthenticated POST can force before signature verification.
+_MAX_BODY = 65_536
 ACCESS_TOKEN_TTL_SECONDS = 7200
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
@@ -110,7 +115,13 @@ class WecomCallbackAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is forwarded by GatewayRunner on every retry per
+        # the BasePlatformAdapter.connect contract. Callback adapters have
+        # no server-side queue to preserve, so the flag is accepted-and-
+        # ignored — but the kwarg MUST be present or the reconnect watcher
+        # dies with TypeError and the platform silently stays offline.
+        del is_reconnect
         if not self._apps:
             logger.warning("[WecomCallback] No callback apps configured")
             return False
@@ -132,7 +143,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
-            self._app = web.Application()
+            # client_max_size rejects oversized bodies at the aiohttp layer
+            # (413) before our handler — and before any signature work — runs.
+            self._app = web.Application(client_max_size=_MAX_BODY)
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
             self._app.router.add_post(self._path, self._handle_callback)
@@ -273,7 +286,13 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         msg_signature = request.query.get("msg_signature", "")
         timestamp = request.query.get("timestamp", "")
         nonce = request.query.get("nonce", "")
-        body = await request.text()
+        # Explicit guard in addition to client_max_size: rejects oversized
+        # payloads before any XML parse / signature check (DoS, zip bombs).
+        body_bytes = await request.read()
+        if len(body_bytes) > _MAX_BODY:
+            logger.warning("[WecomCallback] Payload too large (%d bytes) — rejected", len(body_bytes))
+            return web.Response(status=413, text="payload too large")
+        body = body_bytes.decode("utf-8", errors="replace")
 
         for app in self._apps:
             try:

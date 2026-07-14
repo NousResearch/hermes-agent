@@ -4211,6 +4211,85 @@ class TestRunConversation:
         assert result["final_response"] == "Done searching"
         assert mock_handle_function_call.call_args.args[:2] == ("web_search", {})
 
+    def test_incomplete_scratchpad_preserves_structured_tool_call(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(
+            content="Visible preface\n<REASONING_SCRATCHPAD>Need current data",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert result["api_calls"] == 2
+        mock_handle_function_call.assert_called_once()
+        replay_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        recovered = next(msg for msg in replay_messages if msg.get("tool_calls"))
+        assert recovered["content"] == "Visible preface"
+        assert "REASONING_SCRATCHPAD" not in recovered["content"]
+
+    def test_incomplete_scratchpad_does_not_execute_non_object_tool_call(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(
+            name="web_search",
+            arguments="[]",
+            call_id="c1",
+        )
+        resp1 = _mock_response(
+            content="<REASONING_SCRATCHPAD>Need current data",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(content="Recovered", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Recovered"
+        assert result["api_calls"] == 2
+        mock_handle_function_call.assert_not_called()
+        replay_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        tool_result = next(msg for msg in replay_messages if msg.get("role") == "tool")
+        assert "Invalid tool arguments" in tool_result["content"]
+
+    def test_incomplete_scratchpad_without_tool_calls_still_fails_bounded(self, agent):
+        self._setup_agent(agent)
+        incomplete = _mock_response(
+            content="<REASONING_SCRATCHPAD>Still thinking",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.return_value = incomplete
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hard question")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert result["api_calls"] == 3
+        assert agent.client.chat.completions.create.call_count == 3
+        mock_handle_function_call.assert_not_called()
+
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

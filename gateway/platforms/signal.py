@@ -260,6 +260,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.notify_self = extra.get("notify_self", False)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -1070,7 +1071,12 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            recipient = await self._resolve_recipient(chat_id)
+            params["recipient"] = [recipient]
+            if self.notify_self and (
+                recipient == self._account_normalized or chat_id == self._account_normalized
+            ):
+                params["notifySelf"] = True
 
         logger.info("[Signal] Sending response (%d chars) to %s", len(plain_text), chat_id)
         result = await self._rpc("send", params)
@@ -1396,7 +1402,12 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            recipient = await self._resolve_recipient(chat_id)
+            params["recipient"] = [recipient]
+            if self.notify_self and (
+                recipient == self._account_normalized or chat_id == self._account_normalized
+            ):
+                params["notifySelf"] = True
 
         result = await self._rpc("send", params)
         if result is not None:
@@ -1438,7 +1449,12 @@ class SignalAdapter(BasePlatformAdapter):
         if chat_id.startswith("group:"):
             params["groupId"] = chat_id[6:]
         else:
-            params["recipient"] = [await self._resolve_recipient(chat_id)]
+            recipient = await self._resolve_recipient(chat_id)
+            params["recipient"] = [recipient]
+            if self.notify_self and (
+                recipient == self._account_normalized or chat_id == self._account_normalized
+            ):
+                params["notifySelf"] = True
 
         result = await self._rpc("send", params)
         if result is not None:

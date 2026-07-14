@@ -78,6 +78,66 @@ class TestSignalConfigLoading:
 
         assert Platform.SIGNAL not in config.platforms
 
+class TestSignalNotifySelf:
+    """Verify Note-to-Self sends use Signal's inbound-style rendering toggle."""
+
+    @staticmethod
+    def _send_params(captured):
+        return [call["params"] for call in captured if call["method"] == "send"][0]
+
+    @pytest.mark.asyncio
+    async def test_text_to_self_adds_notify_self(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send("+15551234567", "hello self")
+
+        assert result.success is True
+        assert self._send_params(captured)["notifySelf"] is True
+
+    @pytest.mark.asyncio
+    async def test_image_to_self_adds_notify_self(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        image_path = tmp_path / "chart.png"
+        image_path.write_bytes(b"\x89PNG" + b"\x00" * 100)
+
+        result = await adapter.send_image_file("+15551234567", str(image_path))
+
+        assert result.success is True
+        assert self._send_params(captured)["notifySelf"] is True
+
+    @pytest.mark.asyncio
+    async def test_voice_to_self_adds_notify_self(self, monkeypatch, tmp_path):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        audio_path = tmp_path / "note.ogg"
+        audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+
+        result = await adapter.send_voice("+15551234567", str(audio_path))
+
+        assert result.success is True
+        assert self._send_params(captured)["notifySelf"] is True
+
+    @pytest.mark.asyncio
+    async def test_send_to_other_omits_notify_self(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, notify_self=True)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send("+15559999999", "hello other")
+
+        assert result.success is True
+        assert "notifySelf" not in self._send_params(captured)
+
+
 # ---------------------------------------------------------------------------
 # Adapter Init & Helpers
 # ---------------------------------------------------------------------------

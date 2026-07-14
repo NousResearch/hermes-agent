@@ -452,6 +452,42 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_signal_notify_self_bridges_from_config_yaml(self, tmp_path, monkeypatch):
+        """Behavior settings belong in config.yaml, not the secret env file."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "signal:\n  notify_self: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+
+        config = load_gateway_config()
+
+        signal_config = config.platforms[Platform.SIGNAL]
+        assert signal_config.enabled is True
+        assert signal_config.extra["notify_self"] is True
+
+    def test_signal_notify_self_false_bridges_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "signal:\n  notify_self: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:9090")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+
+        config = load_gateway_config()
+
+        signal_config = config.platforms[Platform.SIGNAL]
+        assert signal_config.extra["notify_self"] is False
+
     def test_multiplex_profiles_from_nested_gateway_section(self, tmp_path, monkeypatch):
         """``gateway.multiplex_profiles: true`` (the nested form written by
         ``hermes config set gateway.multiplex_profiles true``) must enable

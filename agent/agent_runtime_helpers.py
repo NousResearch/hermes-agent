@@ -1421,6 +1421,23 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
 
 
 
+def _api_mode_endpoint_suffix(api_mode: Optional[str]) -> str:
+    """Map an api_mode to the endpoint path the request actually hits.
+
+    The real transports route by api_mode: ``anthropic_messages`` goes to
+    ``/v1/messages`` (the Anthropic Messages API, used for Claude on Copilot,
+    which unlocks the full context window), ``codex_responses`` to
+    ``/responses``, and everything else to ``/chat/completions``. Keep this in
+    sync with the transports so the debug dump's URL reflects reality instead
+    of always labelling Anthropic requests as ``/chat/completions``.
+    """
+    if api_mode == "codex_responses":
+        return "/responses"
+    if api_mode == "anthropic_messages":
+        return "/v1/messages"
+    return "/chat/completions"
+
+
 def dump_api_request_debug(
     agent,
     api_kwargs: Dict[str, Any],
@@ -1452,7 +1469,7 @@ def dump_api_request_debug(
             "reason": reason,
             "request": {
                 "method": "POST",
-                "url": f"{agent.base_url.rstrip('/')}{'/responses' if agent.api_mode == 'codex_responses' else '/chat/completions'}",
+                "url": f"{agent.base_url.rstrip('/')}{_api_mode_endpoint_suffix(agent.api_mode)}",
                 "headers": {
                     "Authorization": f"Bearer {agent._mask_api_key_for_logs(api_key)}",
                     "Content-Type": "application/json",

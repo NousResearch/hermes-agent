@@ -108,6 +108,34 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+# ── Copilot+Claude wrong-route detection ─────────────────────────────────
+# When a provider error parses a max_prompt_tokens value <= 200k for
+# provider=copilot AND model=claude*, the request almost certainly went
+# through Copilot's /chat/completions proxy clamp (which misleadingly
+# reports `exceeds the limit of 168000`) rather than /v1/messages (real
+# ~1M ceiling). Persisting that value would poison the on-disk cache so
+# every future session believes the cap is 168k. The conversation-loop
+# adopt-on-error path consults this predicate to refuse the persistable
+# flag in that case while still adopting the value for the current turn.
+def _detect_copilot_claude_wrong_route(
+    *, provider: str, base_url: str, model: str, new_ctx: int
+) -> bool:
+    """Return True if the parsed ``new_ctx`` looks like a Copilot misroute.
+
+    Args:
+        provider: agent.provider string (may be empty for base-url-only).
+        base_url: agent.base_url string.
+        model: agent.model string.
+        new_ctx: the integer context limit parsed out of the provider error.
+    """
+    norm_provider = (provider or "").strip().lower()
+    is_copilot = norm_provider in {
+        "copilot", "github-copilot", "copilot-acp",
+    } or "githubcopilot.com" in (base_url or "").lower()
+    is_claude = "claude" in (model or "").lower()
+    return bool(is_copilot and is_claude and new_ctx <= 200_000)
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -3598,6 +3626,17 @@ def run_conversation(
 
                     if new_ctx is not None:
                         agent._buffer_vprint(f"Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})")
+                        # Wrong-route guard: a sub-200k limit for copilot+claude is
+                        # the /chat/completions proxy clamp, not the real /v1/messages
+                        # ~1M ceiling. Adopt the value for THIS turn (so the loop can
+                        # compress and survive) but do NOT persist it. Persisting the
+                        # 168k clamp would poison every future session.
+                        _wrong_route = _detect_copilot_claude_wrong_route(
+                            provider=getattr(agent, "provider", "") or "",
+                            base_url=getattr(agent, "base_url", "") or "",
+                            model=getattr(agent, "model", "") or "",
+                            new_ctx=new_ctx,
+                        )
                         compressor.update_model(
                             model=agent.model,
                             context_length=new_ctx,
@@ -3608,10 +3647,19 @@ def run_conversation(
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).  This
-                        # value came from the provider, so it is safe to cache.
+                        # value came from the provider, so it is safe to cache,
+                        # UNLESS it's a detected copilot+claude misroute.
                         if hasattr(compressor, "_context_probed"):
                             compressor._context_probed = True
-                            compressor._context_probe_persistable = True
+                            compressor._context_probe_persistable = not _wrong_route
+                        if _wrong_route:
+                            _ra().logger.warning(
+                                "copilot+claude wrong-route guard: refused to persist "
+                                "context_length=%d for %s@%s (sub-200k on copilot+claude "
+                                "means the request hit the /chat/completions proxy clamp "
+                                "instead of /v1/messages). Adopted for this turn only.",
+                                new_ctx, agent.model, agent.provider,
+                            )
                         agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
                     elif minimax_delta_only_overflow:
                         agent._buffer_vprint(

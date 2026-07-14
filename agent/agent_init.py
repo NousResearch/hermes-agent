@@ -482,6 +482,40 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    # ── Copilot + Claude → Anthropic Messages (/v1/messages) override ──────
+    # The GitHub Copilot proxy serves Claude on TWO endpoints with very
+    # different limits:
+    #   * POST /chat/completions  → proxy CLAMPS Claude prompts and returns a
+    #     misleading ``prompt token count … exceeds the limit of 168000``
+    #     (real clamp ~300k, error text says 168k).  This is the regular tier.
+    #   * POST /v1/messages       → the genuine 1,000,000-token input window for
+    #     opus/sonnet 4.6 to 4.8, unlocked by the anthropic-beta triplet
+    #     (cli-internal + context-1m + task-budgets) that the Anthropic
+    #     adapter already attaches for the Copilot base_url.
+    # The default decision tree above has no Copilot+Claude branch, so a Claude
+    # model on provider=copilot falls through to ``chat_completions`` and hits
+    # the 168k clamp (the "1M → snap to 168k → cannot compress further"
+    # failure).  Force the Anthropic Messages transport so Claude rides the 1M
+    # path.  This intentionally overrides an explicit ``api_mode:
+    # chat_completions`` from config because that default is simply wrong for
+    # Claude-on-Copilot.  Excludes ``copilot-acp`` (the ACP CLI subprocess does
+    # its own endpoint routing and does not use this adapter).
+    _model_lower = (agent.model or "").lower()
+    _is_copilot_native = (
+        agent.provider in {"copilot", "github-copilot"}
+        or (
+            agent.provider not in {"copilot-acp"}
+            and base_url_host_matches(agent._base_url_lower, "api.githubcopilot.com")
+        )
+    )
+    if (
+        agent.provider != "copilot-acp"
+        and _is_copilot_native
+        and "claude" in _model_lower
+        and agent.api_mode != "anthropic_messages"
+    ):
+        agent.api_mode = "anthropic_messages"
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:

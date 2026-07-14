@@ -183,6 +183,38 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 
 ---
 
+## Edge-Native mode (local SLM optimization)
+
+Hermes includes an optional, non-breaking **edge-native mode** aimed at small local models (for example Qwen via Ollama) on consumer CPUs: it reduces pathological pre-fill cost and runaway context growth from very large tool outputs, without changing default cloud behaviour when the mode is off.
+
+### Behaviour
+
+- **Context budgeting:** When edge mode is on, compression uses a fixed token floor (default `4000`) instead of waiting for a large fraction of a cloud-sized context window, so summarisation runs earlier on small contexts.
+- **Head–tail tool truncation:** Long **string** tool results are shaped before they enter the live model transcript. When output exceeds the edge persistence threshold, the full payload is written to the sandbox persisted-output path; the model sees a JSON-safe preview or head/tail slice.
+
+### Configuration
+
+In `~/.hermes/config.yaml` (or the `agent:` section of your active profile):
+
+```yaml
+agent:
+  edge_mode: true
+  local_context_budget: 4000
+```
+
+### CLI overrides
+
+Flags apply to `hermes chat`, `hermes -z` (oneshot), and TUI launches that forward them into the subprocess:
+
+```bash
+hermes chat --edge-mode --local-context-budget 6000
+hermes -z "Analyze my local repo" --edge-mode
+```
+
+Gateway, cron, and delegated subagents read the same `agent.*` settings so behaviour stays consistent across entry points.
+
+---
+
 ## Migrating from OpenClaw
 
 If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.

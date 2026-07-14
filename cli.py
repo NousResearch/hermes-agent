@@ -423,6 +423,8 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
+            "edge_mode": False,
+            "local_context_budget": 4000,
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -3696,6 +3698,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
+        edge_mode: Optional[bool] = None,
+        local_context_budget: Optional[int] = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -3875,6 +3879,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self.max_turns = 90
         else:
             self.max_turns = 90
+
+        if edge_mode is not None:
+            self.edge_mode = bool(edge_mode)
+        else:
+            self.edge_mode = bool(CLI_CONFIG["agent"].get("edge_mode", False))
+        if local_context_budget is not None:
+            try:
+                self.local_context_budget = int(local_context_budget)
+            except (TypeError, ValueError):
+                self.local_context_budget = 4000
+        else:
+            try:
+                self.local_context_budget = int(
+                    CLI_CONFIG["agent"].get("local_context_budget", 4000)
+                )
+            except (TypeError, ValueError):
+                self.local_context_budget = 4000
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -15810,6 +15831,8 @@ def main(
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
+    edge_mode: bool = None,
+    local_context_budget: int = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -15945,6 +15968,8 @@ def main(
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
         ignore_rules=ignore_rules,
+        edge_mode=getattr(args, "edge_mode", None),
+        local_context_budget=getattr(args, "local_context_budget", None),
     )
 
     if parsed_skills:

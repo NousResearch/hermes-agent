@@ -3101,6 +3101,13 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        _cron_agent = _cfg.get("agent") if isinstance(_cfg.get("agent"), dict) else {}
+        _cron_edge = bool(_cron_agent.get("edge_mode", False))
+        try:
+            _cron_local_budget = int(_cron_agent.get("local_context_budget", 4000))
+        except (TypeError, ValueError):
+            _cron_local_budget = 4000
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3132,6 +3139,8 @@ def run_job(
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
+            edge_mode=_cron_edge,
+            local_context_budget=_cron_local_budget,
         )
         
         # Run the agent with an *inactivity*-based timeout: the job can run

@@ -13461,6 +13461,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            _bg_edge_mode = bool(agent_cfg.get("edge_mode", False))
+            try:
+                _bg_local_budget = int(agent_cfg.get("local_context_budget", 4000))
+            except (TypeError, ValueError):
+                _bg_local_budget = 4000
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
@@ -13516,6 +13521,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    edge_mode=_bg_edge_mode,
+                    local_context_budget=_bg_local_budget,
                 )
                 try:
                     return agent.run_conversation(
@@ -15932,6 +15939,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
+        ("agent", "edge_mode"),
+        ("agent", "local_context_budget"),
         ("memory", "provider"),
     )
 
@@ -17227,6 +17236,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        _edge_mode = bool(agent_cfg_local.get("edge_mode", False))
+        try:
+            _local_context_budget = int(agent_cfg_local.get("local_context_budget", 4000))
+        except (TypeError, ValueError):
+            _local_context_budget = 4000
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -18503,6 +18517,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    edge_mode=_edge_mode,
+                    local_context_budget=_local_context_budget,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

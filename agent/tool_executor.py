@@ -60,11 +60,73 @@ def _budget_for_agent(agent) -> BudgetConfig:
     request past the model's limit (#23767). Falls back to the default budget
     when the context length isn't resolvable.
     """
+    if getattr(agent, "edge_mode", False):
+        return getattr(agent, "_tool_result_budget", DEFAULT_BUDGET)
     try:
         ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
         return budget_for_context_window(int(ctx)) if ctx else DEFAULT_BUDGET
     except Exception:
         return DEFAULT_BUDGET
+
+# Edge mode: cap oversized string tool results before they enter live messages.
+_EDGE_TRUNC_LEN_TRIGGER = 4000
+_EDGE_TRUNC_HEAD = 2000
+_EDGE_TRUNC_TAIL = 1500
+_EDGE_TRUNC_MARKER = (
+    "\n\n[... TRUNCATED BY EDGE-MODE TO PROTECT LOCAL CPU KV-CACHE ...]\n\n"
+)
+_JSON_TRUNC_TOOLS = frozenset({"terminal", "execute_code"})
+
+
+def _truncate_text_head_tail(text: str) -> str:
+    if len(text) <= _EDGE_TRUNC_LEN_TRIGGER:
+        return text
+    head = text[:_EDGE_TRUNC_HEAD]
+    tail = text[-_EDGE_TRUNC_TAIL:]
+    return head + _EDGE_TRUNC_MARKER + tail
+
+
+def _truncate_json_string_field(value: str) -> str:
+    if len(value) <= _EDGE_TRUNC_LEN_TRIGGER:
+        return value
+    head_len = int(_EDGE_TRUNC_LEN_TRIGGER * 0.4)
+    notice = (
+        f"\n\n... [{len(value) - _EDGE_TRUNC_LEN_TRIGGER:,} chars omitted by edge mode] ...\n\n"
+    )
+    tail_len = max(0, _EDGE_TRUNC_LEN_TRIGGER - head_len - len(notice))
+    return value[:head_len] + notice + value[-tail_len:]
+
+
+def _edge_mode_truncate_string_tool_result(
+    agent: Any,
+    function_result: Any,
+    tool_name: str = "",
+) -> Any:
+    """Shrink huge string tool payloads before they enter live ``messages``."""
+    if not getattr(agent, "edge_mode", False):
+        return function_result
+    if _is_multimodal_tool_result(function_result):
+        return function_result
+    if not isinstance(function_result, str):
+        return function_result
+    if len(function_result) <= _EDGE_TRUNC_LEN_TRIGGER:
+        return function_result
+
+    if tool_name in _JSON_TRUNC_TOOLS:
+        try:
+            data = json.loads(function_result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return _truncate_text_head_tail(function_result)
+        if isinstance(data, dict):
+            for key in ("output", "stdout", "content", "result"):
+                field = data.get(key)
+                if isinstance(field, str) and len(field) > _EDGE_TRUNC_LEN_TRIGGER:
+                    data[key] = _truncate_json_string_field(field)
+                    data["truncated"] = True
+                    return json.dumps(data, ensure_ascii=False)
+        return _truncate_text_head_tail(function_result)
+
+    return _truncate_text_head_tail(function_result)
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
@@ -951,6 +1013,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
 
+        function_result = _edge_mode_truncate_string_tool_result(
+            agent, function_result, tool_name=name,
+        )
+
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
             if _is_multimodal_tool_result(function_result):
@@ -1641,6 +1707,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         ) if not _is_multimodal_tool_result(function_result) else function_result
+
+        function_result = _edge_mode_truncate_string_tool_result(
+            agent, function_result, tool_name=function_name,
+        )
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)

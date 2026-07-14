@@ -2443,6 +2443,8 @@ def cmd_chat(args):
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
+        "edge_mode": True if getattr(args, "edge_mode", False) else None,
+        "local_context_budget": getattr(args, "local_context_budget", None),
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or getattr(args, "safe_mode", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False) or getattr(args, "safe_mode", False),
@@ -12583,6 +12585,8 @@ def _try_termux_fast_cli_launch() -> bool:
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
                 usage_file=getattr(args, "usage_file", None),
+                edge_mode=True if getattr(args, "edge_mode", False) else None,
+                local_context_budget=getattr(args, "local_context_budget", None),
             )
         )
 
@@ -14740,6 +14744,8 @@ def main():
                 provider=getattr(args, "provider", None),
                 toolsets=getattr(args, "toolsets", None),
                 usage_file=getattr(args, "usage_file", None),
+                edge_mode=True if getattr(args, "edge_mode", False) else None,
+                local_context_budget=getattr(args, "local_context_budget", None),
             )
         )
 

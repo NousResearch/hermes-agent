@@ -999,6 +999,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens = self._compute_threshold_tokens(
             context_length, self.threshold_percent, self.max_tokens,
         )
+        self._apply_edge_threshold_cap()
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -1117,6 +1118,17 @@ class ContextCompressor(ContextEngine):
                               effective_window - 1))
         return floored
 
+    def _apply_edge_threshold_cap(self) -> None:
+        """Lower the compaction trigger when edge mode is active."""
+        if not getattr(self, "_edge_mode", False):
+            return
+        cap = max(256, int(getattr(self, "_edge_context_budget_tokens", 4000)))
+        self.threshold_tokens = min(
+            self.threshold_tokens,
+            cap,
+            max(1, int(self.context_length)),
+        )
+
     def __init__(
         self,
         model: str,
@@ -1133,6 +1145,8 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
+        edge_mode: bool = False,
+        edge_context_budget_tokens: int = 4000,
     ):
         self.model = model
         self.base_url = base_url
@@ -1156,6 +1170,8 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+        self._edge_mode = bool(edge_mode)
+        self._edge_context_budget_tokens = int(edge_context_budget_tokens)
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -1183,6 +1199,7 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens = self._compute_threshold_tokens(
             self.context_length, threshold_percent, self.max_tokens,
         )
+        self._apply_edge_threshold_cap()
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context

@@ -391,6 +391,8 @@ class CLIAgentSetupMixin:
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction,
+                edge_mode=self.edge_mode,
+                local_context_budget=self.local_context_budget,
             )
             # Store reference for atexit memory provider shutdown.
             # NOTE: this MUST write to the ``cli`` module's global, not a

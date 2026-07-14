@@ -346,6 +346,8 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    edge_mode: bool | None = None,
+    local_context_budget: int | None = None,
 ):
     """
     Initialize the AI Agent.
@@ -1464,6 +1466,36 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    if edge_mode is not None:
+        agent.edge_mode = bool(edge_mode)
+    else:
+        agent.edge_mode = bool(_agent_section.get("edge_mode", False))
+    if local_context_budget is not None:
+        try:
+            agent.local_context_budget = int(local_context_budget)
+        except (TypeError, ValueError):
+            agent.local_context_budget = 4000
+    else:
+        try:
+            agent.local_context_budget = int(_agent_section.get("local_context_budget", 4000))
+        except (TypeError, ValueError):
+            agent.local_context_budget = 4000
+
+    from tools.budget_config import DEFAULT_BUDGET, BudgetConfig
+
+    if agent.edge_mode:
+        _edge_trigger = 4000
+        agent._tool_result_budget = BudgetConfig(
+            default_result_size=_edge_trigger,
+            preview_size=min(1500, _edge_trigger),
+            tool_overrides={
+                "terminal": _edge_trigger,
+                "execute_code": _edge_trigger,
+            },
+        )
+    else:
+        agent._tool_result_budget = DEFAULT_BUDGET
+
     # Intent-ack continuation config: "auto" (default — codex_responses only,
     # the historical gate), true (all api_modes), false (never), or a list of
     # model-name substrings.  Resolved against the active api_mode/model in the
@@ -1855,6 +1887,8 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
+            edge_mode=getattr(agent, "edge_mode", False),
+            edge_context_budget_tokens=getattr(agent, "local_context_budget", 4000),
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):

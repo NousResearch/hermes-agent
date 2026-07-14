@@ -3438,3 +3438,37 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestEdgeModeCompressionThreshold:
+    def test_edge_mode_overrides_threshold_tokens(self):
+        c = ContextCompressor(
+            model="test-model",
+            threshold_percent=0.50,
+            config_context_length=32000,
+            edge_mode=True,
+            edge_context_budget_tokens=4000,
+        )
+        assert c.threshold_tokens == 4000
+
+    def test_edge_mode_false_uses_percent_floor(self):
+        c = ContextCompressor(
+            model="test-model",
+            threshold_percent=0.50,
+            config_context_length=32000,
+            edge_mode=False,
+        )
+        assert c.threshold_tokens >= 16000
+
+    def test_edge_mode_respects_anti_thrash(self):
+        c = ContextCompressor(
+            model="test-model",
+            threshold_percent=0.50,
+            config_context_length=32000,
+            edge_mode=True,
+            edge_context_budget_tokens=4000,
+        )
+        c._ineffective_compression_count = 2
+        c.last_prompt_tokens = 5000
+        assert c.should_compress() is False
+

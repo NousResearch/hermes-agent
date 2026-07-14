@@ -684,6 +684,11 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Edge / local-SLM mode (opt-in). Lowers tool-result persistence thresholds
+  # and caps compression trigger tokens for small local context windows.
+  # edge_mode: false
+  # local_context_budget: 4000
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

@@ -4147,6 +4147,28 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
 
 
+def _cfg_edge_mode(cfg: dict) -> bool:
+    env_raw = os.environ.get("HERMES_TUI_EDGE_MODE", "").strip().lower()
+    if env_raw in ("1", "true", "yes", "on"):
+        return True
+    agent_cfg = cfg.get("agent") or {}
+    return bool(agent_cfg.get("edge_mode", False))
+
+
+def _cfg_local_context_budget(cfg: dict, default: int = 4000) -> int:
+    raw = os.environ.get("HERMES_TUI_LOCAL_CONTEXT_BUDGET", "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    agent_cfg = cfg.get("agent") or {}
+    try:
+        return int(agent_cfg.get("local_context_budget", default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_tui_skills_env() -> list[str]:
     raw = os.environ.get("HERMES_TUI_SKILLS", "")
     skills: list[str] = []
@@ -4217,6 +4239,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "platform": "tui",
         "session_db": _get_db(),
         "fallback_model": _agent_fallback_model(agent),
+        "edge_mode": getattr(agent, "edge_mode", False),
+        "local_context_budget": int(getattr(agent, "local_context_budget", 4000)),
     }
 
 
@@ -4666,6 +4690,8 @@ def _make_agent(
         skip_context_files=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         skip_memory=is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")),
         fallback_model=_load_fallback_model(),
+        edge_mode=_cfg_edge_mode(cfg),
+        local_context_budget=_cfg_local_context_budget(cfg),
         **_agent_cbs(sid),
     )
 

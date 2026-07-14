@@ -307,6 +307,8 @@ class _SlashWorker:
             "tui_gateway.slash_worker",
             "--session-key",
             session_key,
+            "--parent-pid",
+            str(os.getpid()),
         ]
         if model:
             argv += ["--model", model]

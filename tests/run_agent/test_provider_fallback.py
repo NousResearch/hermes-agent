@@ -211,6 +211,40 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.api_mode == "anthropic_messages"
 
+    def test_explicit_anthropic_api_mode_overrides_fallback_heuristics(self):
+        fallback = {
+            "provider": "custom",
+            "model": "claude-compatible-model",
+            "base_url": "https://relay.example.com/claude-proxy",
+            "api_key": "custom-secret",
+            "api_mode": "anthropic_messages",
+        }
+        agent = _make_agent(fallback_model=[fallback])
+        mock_client = _mock_client(
+            base_url=fallback["base_url"],
+            api_key=fallback["api_key"],
+        )
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(mock_client, fallback["model"]),
+            ) as mock_resolve,
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda model, provider: model,
+            ),
+        ):
+            activated = agent._try_activate_fallback()
+
+        assert activated is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.client is None
+        assert mock_resolve.call_args.kwargs["api_mode"] == "anthropic_messages"
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

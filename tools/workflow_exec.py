@@ -11,6 +11,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Callable, Set, Tuple
 
@@ -18,6 +19,27 @@ from tools.delegate_tool import delegate_task
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Approval-gate runtime registry — bridges HTTP endpoints to running executors
+# ---------------------------------------------------------------------------
+_RUNNING_EXECUTORS: Dict[str, "WorkflowExecutor"] = {}
+_RUN_LOCK = threading.Lock()
+
+
+def register_run(run_id: str, executor: "WorkflowExecutor") -> None:
+    with _RUN_LOCK:
+        _RUNNING_EXECUTORS[run_id] = executor
+
+
+def unregister_run(run_id: str) -> None:
+    with _RUN_LOCK:
+        _RUNNING_EXECUTORS.pop(run_id, None)
+
+
+def get_run(run_id: str) -> Optional["WorkflowExecutor"]:
+    with _RUN_LOCK:
+        return _RUNNING_EXECUTORS.get(run_id)
 
 
 class WorkflowExecutor:
@@ -33,6 +55,7 @@ class WorkflowExecutor:
         parent_agent=None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         max_workers: Optional[int] = None,
+        run_id: Optional[str] = None,
     ):
         self.nodes = {str(n["id"]): n for n in nodes}
         self.edges = edges
@@ -61,6 +84,11 @@ class WorkflowExecutor:
         self.running_count = 0
         self.executor: Optional[ThreadPoolExecutor] = None
         self.start_times: Dict[str, float] = {}
+        # Approval-gate state: node_id -> threading.Event + decision
+        self.gate_events: Dict[str, threading.Event] = {}
+        self.gate_decisions: Dict[str, str] = {}
+        # Unique run identifier for gate-resolve routing
+        self._run_id = run_id or f"local-{id(self):x}"
 
     def has_cycle(self) -> bool:
         """
@@ -158,6 +186,34 @@ class WorkflowExecutor:
                 for child_id in self.adj[curr]:
                     queue.append(child_id)
 
+    def _await_gate_decision(self, node_id: str, data: dict) -> str:
+        """
+        Blocks until the approval resolver returns a decision.
+        Default: waits on a per-node threading.Event (set by resolve_gate).
+        """
+        event = threading.Event()
+        self.gate_events[node_id] = event
+        try:
+            prompt = data.get("prompt") or data.get("label") or f"Gate {node_id}"
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("Gate %s waiting for decision: %s", node_id, prompt)
+            event.wait()
+            return self.gate_decisions.get(node_id, "denied")
+        finally:
+            self.gate_events.pop(node_id, None)
+
+    def resolve_gate(self, node_id: str, decision: str) -> bool:
+        """
+        Wake a blocked approval gate. Returns True if a gate was waiting.
+        Called by the HTTP endpoint after the user clicks approve/deny.
+        """
+        event = self.gate_events.get(node_id)
+        if event is None:
+            return False
+        self.gate_decisions[node_id] = decision if decision in ("approved", "denied") else "denied"
+        event.set()
+        return True
+
     def _run_node(self, node_id: str):
         """
         Executes a single node task. Invoked in a thread pool worker.
@@ -173,50 +229,89 @@ class WorkflowExecutor:
             self._notify_status(node_id, "running")
 
         node_type = node.get("type", "agent")
-        if node_type != "agent":
+
+        # Synthetic control nodes (start/end) — pure plumbing, never submitted.
+        if node_type in ("start", "end"):
             nodes_to_submit = []
             with self.lock:
                 self.states[node_id] = "completed"
                 self.results[node_id] = {"status": "completed"}
                 self.running_count -= 1
                 self._notify_status(node_id, "completed", result=self.results[node_id])
-
-                # Decrement in-degree of all targets
                 for child_id in self.adj[node_id]:
                     if self.states[child_id] == "pending":
                         self.in_degree[child_id] -= 1
                         if self.in_degree[child_id] == 0:
                             nodes_to_submit.append(child_id)
+                # We handle this below — skip the rest of the method
+            if self.executor:
+                for next_id in nodes_to_submit:
+                    self.executor.submit(self._run_node, next_id)
+            return
 
-                # Check if all nodes are in terminal state
+        # Approval gate — blocks until resolved by the user
+        if node_type == "gate":
+            with self.lock:
+                self.states[node_id] = "pending"
+                self._notify_status(node_id, "pending")
+            decision = self._await_gate_decision(node_id, node.get("data", {}))
+            with self.lock:
+                self.running_count -= 1
+                if decision == "denied":
+                    self.states[node_id] = "failed"
+                    self.results[node_id] = {
+                        "status": "failed",
+                        "error": "Approval denied by user.",
+                    }
+                    self._notify_status(node_id, "failed", result=self.results[node_id])
+                    self._abort_downstream(node_id)
+                    if self.running_count == 0 and not any(s == "running" for s in self.states.values()):
+                        self.condition.notify_all()
+                    return
+                # approved:
+                self.states[node_id] = "completed"
+                self.results[node_id] = {"status": "completed"}
+                self._notify_status(node_id, "completed", result=self.results[node_id])
+                nodes_to_submit = []
+                for child_id in self.adj[node_id]:
+                    if self.states[child_id] == "pending":
+                        self.in_degree[child_id] -= 1
+                        if self.in_degree[child_id] == 0:
+                            nodes_to_submit.append(child_id)
                 if self.running_count == 0 and not any(s == "running" for s in self.states.values()):
                     self.condition.notify_all()
-
             for next_id in nodes_to_submit:
                 if self.executor:
                     self.executor.submit(self._run_node, next_id)
             return
 
+        # Unknown node type — fail fast rather than silently complete
+        if node_type not in ("agent",):
+            with self.lock:
+                self.states[node_id] = "failed"
+                self.results[node_id] = {"status": "failed", "error": f"Unknown node type '{node_type}'."}
+                self.running_count -= 1
+                self._notify_status(node_id, "failed", result=self.results[node_id])
+                self._abort_downstream(node_id)
+                if self.running_count == 0 and not any(s == "running" for s in self.states.values()):
+                    self.condition.notify_all()
+            return
+
+        # Agent node — delegate to subagent
         data = node.get("data", {})
         goal = data.get("goal") or data.get("prompt")
         context = data.get("context")
-        toolsets = data.get("toolsets")
         role = data.get("role")
-        max_iterations = data.get("max_iterations")
 
         status = "failed"
         result_data = {}
 
         try:
-            # Execute subagent via delegate_task
             res_str = delegate_task(
                 goal=goal,
                 context=context,
-                toolsets=toolsets,
                 role=role,
-                max_iterations=max_iterations,
                 parent_agent=self.parent_agent,
-                model=data.get("model"),
             )
             res = json.loads(res_str)
 
@@ -306,20 +401,25 @@ class WorkflowExecutor:
 
         overall_start = time.monotonic()
 
-        # Execute using a ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            self.executor = executor
-            for node_id in start_nodes:
-                executor.submit(self._run_node, node_id)
+        # Register this executor for gate-resolve routing from the HTTP layer
+        register_run(self._run_id, self)
+        try:
+            # Execute using a ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                self.executor = executor
+                for node_id in start_nodes:
+                    executor.submit(self._run_node, node_id)
 
-            # Wait until all tasks are complete, while checking for interrupts
-            with self.lock:
-                while not self._is_finished():
-                    if self.parent_agent and getattr(self.parent_agent, "_interrupt_requested", False):
-                        self._interrupt_all()
-                        break
-                    # Wait on condition with a timeout to check for interrupts periodically
-                    self.condition.wait(timeout=0.2)
+                # Wait until all tasks are complete, while checking for interrupts
+                with self.lock:
+                    while not self._is_finished():
+                        if self.parent_agent and getattr(self.parent_agent, "_interrupt_requested", False):
+                            self._interrupt_all()
+                            break
+                        # Wait on condition with a timeout to check for interrupts periodically
+                        self.condition.wait(timeout=0.2)
+        finally:
+            unregister_run(self._run_id)
 
         duration = round(time.monotonic() - overall_start, 2)
         success = all(self.states[nid] == "completed" for nid in self.nodes)
@@ -426,7 +526,7 @@ def execute_workflow_tool(graph: Any, parent_agent=None) -> str:
         return tool_error(f"Workflow execution failed: {str(e)}")
 
 
-def execute_workflow_graph(graph: Any, log_callback: Callable[[str], None]) -> bool:
+def execute_workflow_graph(graph: Any, log_callback: Callable[[str], None], run_id: Optional[str] = None) -> bool:
     """
     Main entry point for executing a workflow graph from a thread with log feedback.
     """
@@ -476,6 +576,7 @@ def execute_workflow_graph(graph: Any, log_callback: Callable[[str], None]) -> b
             edges,
             parent_agent=parent_agent,
             progress_callback=progress_callback,
+            run_id=run_id,
         )
         if executor.has_cycle():
             log_callback("[Error] Cyclic dependency (loop) detected in workflow graph.")

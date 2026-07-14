@@ -90,6 +90,39 @@ def _build_codex_gpt5_autoraise_notice(autoraise: Dict[str, Any]) -> str:
     )
 
 
+def _infer_init_fallback_api_mode(agent, provider: str, model: str, base_url: str) -> str:
+    """Infer transport mode after init-time fallback swaps provider/backend."""
+    provider_name = (provider or "").strip().lower()
+    base_url_text = str(base_url or "")
+    base_url_lower = base_url_text.lower()
+    hostname = (urlparse(base_url_text).hostname or "").lower()
+
+    if provider_name == "openai-codex" or (
+        hostname == "chatgpt.com" and "/backend-api/codex" in base_url_lower
+    ):
+        return "codex_responses"
+    if provider_name in {"xai", "xai-oauth"} or hostname == "api.x.ai":
+        return "codex_responses"
+    if (
+        provider_name == "anthropic"
+        or hostname == "api.anthropic.com"
+        or base_url_lower.rstrip("/").endswith("/anthropic")
+    ):
+        return "anthropic_messages"
+    if agent._is_azure_openai_url(base_url_text):
+        return "chat_completions"
+    if agent._is_direct_openai_url(base_url_text):
+        return "codex_responses"
+    if agent._provider_model_requires_responses_api(model, provider=provider_name):
+        return "codex_responses"
+    if provider_name == "bedrock" or (
+        hostname.startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url_lower, "amazonaws.com")
+    ):
+        return "bedrock_converse"
+    return "chat_completions"
+
+
 def _resolve_compression_threshold(
     global_threshold: float,
     model_cthresh: Optional[float],
@@ -1040,13 +1073,25 @@ def init_agent(
                         if _fb_client is not None:
                             agent.provider = _fb["provider"]
                             agent.model = _fb_model or _fb["model"]
+                            agent.base_url = str(_fb_client.base_url)
+                            agent.api_mode = _infer_init_fallback_api_mode(
+                                agent,
+                                agent.provider,
+                                agent.model,
+                                agent.base_url,
+                            )
+                            if hasattr(agent, "_transport_cache"):
+                                agent._transport_cache.clear()
                             agent._fallback_activated = True
                             client_kwargs = {
                                 "api_key": _fb_client.api_key,
-                                "base_url": str(_fb_client.base_url),
+                                "base_url": agent.base_url,
                             }
-                            if _provider_timeout is not None:
-                                client_kwargs["timeout"] = _provider_timeout
+                            _fb_provider_timeout = get_provider_request_timeout(
+                                agent.provider, agent.model
+                            )
+                            if _fb_provider_timeout is not None:
+                                client_kwargs["timeout"] = _fb_provider_timeout
                             _fb_headers = getattr(_fb_client, "_custom_headers", None)
                             if not _fb_headers:
                                 _fb_headers = getattr(_fb_client, "default_headers", None)

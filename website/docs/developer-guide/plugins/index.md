@@ -281,6 +281,44 @@ def register(ctx):
 - `ctx.dispatch_tool(name, arguments)` — call any other tool (built-in or from another plugin) with the parent agent's context (approvals, credentials, task_id) wired up automatically. Useful from slash-command handlers that need to invoke `terminal`, `read_file`, or any other tool as if the model had called it directly.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
+### Extend the API server
+
+API-server extensions are registered during plugin startup:
+
+```python
+from aiohttp import web
+
+async def health(request):
+    return web.json_response({"status": "ready"})
+
+def capabilities(*, adapter, request):
+    return {"health": {"method": "GET", "path": "/v1/plugins/acme/health"}}
+
+def register(ctx):
+    ctx.register_api_server_route(
+        "GET",
+        "/v1/plugins/acme/health",
+        health,
+        name="acme_health",
+    )
+    ctx.register_api_server_capability(capabilities)
+```
+
+Route handlers receive an `aiohttp.web.Request` and may be synchronous or
+asynchronous, but must return an `aiohttp.web.StreamResponse` such as
+`web.Response` or `web.json_response(...)`. Routes inherit the API server's
+bearer authentication and security middleware. Methods are limited to
+`GET`, `HEAD`, `OPTIONS`, `POST`, `PUT`, `PATCH`, and `DELETE`; paths must be
+non-empty and live below `/v1/plugins/`; and method/path pairs and optional
+route names must be unique.
+
+Capability providers are synchronous callbacks invoked with keyword-only
+`adapter` and `request` context. Register at most one provider per plugin and
+return either a JSON-serializable dictionary or `None`. Valid dictionaries are
+published at `extensions.plugins.<plugin-name>` in `GET /v1/capabilities`.
+Provider failures and invalid payloads are logged and skipped so one plugin
+cannot break capability discovery for the server.
+
 **`dispatch_tool` example — a slash command that runs a tool:**
 
 ```python

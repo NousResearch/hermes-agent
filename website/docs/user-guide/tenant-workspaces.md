@@ -74,26 +74,42 @@ Create a profile normally:
 hermes profile create client-a --description "Client A assistant for CRM drafts and reporting."
 ```
 
-Then initialize the workspace convention:
+Then, from an admin/default shell, initialize the workspace convention. If
+`HERMES_HOME` is set, it must identify the custom Hermes root. Do not run this
+path calculation from a profile-local shell where `HERMES_HOME` already points
+at that profile, or it would duplicate `profiles/client-a`.
+
+On Linux or macOS with Bash:
 
 ```bash
-mkdir -p ~/.hermes/profiles/client-a/workspace/{projects,scripts,skills,cron,docs,data,runtime,candidates,support,incidents}
-cp website/static/templates/tenant/TENANT_MANIFEST.md \
-  ~/.hermes/profiles/client-a/workspace/TENANT_MANIFEST.md
-cp website/static/templates/tenant/CRON_MANIFEST.md \
-  ~/.hermes/profiles/client-a/workspace/CRON_MANIFEST.md
+HERMES_ROOT="${HERMES_HOME:-$HOME/.hermes}"
+WORKSPACE="$HERMES_ROOT/profiles/client-a/workspace"
+mkdir -p "$WORKSPACE"/{projects,scripts,skills,cron,docs,data,runtime,candidates,support,incidents}
+curl -fL "https://hermes-agent.nousresearch.com/docs/templates/tenant/TENANT_MANIFEST.md" \
+  -o "$WORKSPACE/TENANT_MANIFEST.md"
+curl -fL "https://hermes-agent.nousresearch.com/docs/templates/tenant/CRON_MANIFEST.md" \
+  -o "$WORKSPACE/CRON_MANIFEST.md"
 ```
 
-Set the profile's default terminal working directory:
+Set the profile's default terminal working directory using the computed path:
 
 ```bash
-client-a config set terminal.cwd ~/.hermes/profiles/client-a/workspace
+client-a config set terminal.cwd "$WORKSPACE"
 ```
 
-Use an absolute path if you manage profiles from scripts or services:
+On native Windows with PowerShell:
 
-```bash
-client-a config set terminal.cwd /home/user/.hermes/profiles/client-a/workspace
+```powershell
+$HermesRoot = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { Join-Path $env:LOCALAPPDATA 'hermes' }
+$Workspace = Join-Path $HermesRoot 'profiles\client-a\workspace'
+$Directories = 'projects', 'scripts', 'skills', 'cron', 'docs', 'data', 'runtime', 'candidates', 'support', 'incidents'
+New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
+$Directories | ForEach-Object { New-Item -ItemType Directory -Force -Path (Join-Path $Workspace $_) | Out-Null }
+Invoke-WebRequest 'https://hermes-agent.nousresearch.com/docs/templates/tenant/TENANT_MANIFEST.md' `
+  -OutFile (Join-Path $Workspace 'TENANT_MANIFEST.md')
+Invoke-WebRequest 'https://hermes-agent.nousresearch.com/docs/templates/tenant/CRON_MANIFEST.md' `
+  -OutFile (Join-Path $Workspace 'CRON_MANIFEST.md')
+client-a config set terminal.cwd "$Workspace"
 ```
 
 ## Tenant governance block
@@ -133,7 +149,7 @@ private skill
 → shared skill or shared template
 ```
 
-Do not automatically copy tenant skills into a global or shared skill library. Ask the tenant agent to produce a candidate card instead. A starter template is available at `website/static/templates/tenant/SKILL_CANDIDATE_CARD.md` in the repository and at `/templates/tenant/SKILL_CANDIDATE_CARD.md` on the built site.
+Do not automatically copy tenant skills into a global or shared skill library. Ask the tenant agent to produce a candidate card instead. Use the published [skill candidate card template](https://hermes-agent.nousresearch.com/docs/templates/tenant/SKILL_CANDIDATE_CARD.md).
 
 A safe candidate card should summarize:
 
@@ -149,7 +165,7 @@ It should not include raw memory, session transcripts, customer data, credential
 
 ## Support without opening the whole profile
 
-When a tenant needs help, prefer a scoped support packet over full profile access. A starter template is available at `website/static/templates/tenant/SUPPORT_PACKET.md` in the repository and at `/templates/tenant/SUPPORT_PACKET.md` on the built site.
+When a tenant needs help, prefer a scoped support packet over full profile access. Use the published [support packet template](https://hermes-agent.nousresearch.com/docs/templates/tenant/SUPPORT_PACKET.md).
 
 A support packet should include:
 
@@ -165,7 +181,7 @@ This lets an operator help with a failing cron job or tool without reading the t
 
 ## Cron jobs
 
-Tenant cron jobs should be documented in a `CRON_MANIFEST.md` before they become important automation. A starter template is available at `website/static/templates/tenant/CRON_MANIFEST.md` in the repository and at `/templates/tenant/CRON_MANIFEST.md` on the built site.
+Tenant cron jobs should be documented in a `CRON_MANIFEST.md` before they become important automation. Use the published [cron manifest template](https://hermes-agent.nousresearch.com/docs/templates/tenant/CRON_MANIFEST.md).
 
 At minimum, record:
 
@@ -182,7 +198,7 @@ Cron jobs should be quiet when nothing changed and should avoid sending noisy me
 
 ## Incident packets
 
-If a tenant bot sends the wrong message, writes bad data, leaks private context, or starts a noisy cron loop, stop the impact first and then create an incident packet. A starter template is available at `website/static/templates/tenant/INCIDENT_PACKET.md` in the repository and at `/templates/tenant/INCIDENT_PACKET.md` on the built site.
+If a tenant bot sends the wrong message, writes bad data, leaks private context, or starts a noisy cron loop, stop the impact first and then create an incident packet. Use the published [incident packet template](https://hermes-agent.nousresearch.com/docs/templates/tenant/INCIDENT_PACKET.md).
 
 The incident packet should preserve enough detail to debug while excluding secrets and raw private data unless the tenant explicitly authorizes a narrower review.
 

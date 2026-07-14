@@ -215,6 +215,32 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 _DEFAULT_HTTP_TIMEOUT = 30.0
 
 
+def resolve_http_timeout(config: HonchoClientConfig | None) -> float:
+    """Resolve the effective HTTP timeout (seconds) for Honcho SDK calls.
+
+    Mirrors the resolution chain inside :func:`get_honcho_client` so that
+    other code paths (e.g. provider shutdown, which must outlast a
+    pending dialectic call to avoid CPython finalization aborts) can
+    reason about the same upper bound the SDK is using.
+    """
+    resolved = config.timeout if config is not None else None
+    if resolved is None:
+        try:
+            from hermes_cli.config import load_config
+            hermes_cfg = load_config()
+            honcho_cfg = hermes_cfg.get("honcho", {})
+            if isinstance(honcho_cfg, dict):
+                resolved = _resolve_optional_float(
+                    honcho_cfg.get("timeout"),
+                    honcho_cfg.get("request_timeout"),
+                )
+        except Exception:
+            pass
+    if resolved is None:
+        resolved = _DEFAULT_HTTP_TIMEOUT
+    return resolved
+
+
 def _resolve_optional_float(*values: Any) -> float | None:
     """Return the first non-empty value coerced to a positive float."""
     for value in values:
@@ -839,27 +865,19 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # mapping, enabling remote self-hosted Honcho deployments without
         # requiring the server to live on localhost.
         resolved_base_url = config.base_url
-        resolved_timeout = config.timeout
-        if not resolved_base_url or resolved_timeout is None:
+        if not resolved_base_url:
             try:
                 from hermes_cli.config import load_config
                 hermes_cfg = load_config()
                 honcho_cfg = hermes_cfg.get("honcho", {})
                 if isinstance(honcho_cfg, dict):
-                    if not resolved_base_url:
-                        resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
-                    if resolved_timeout is None:
-                        resolved_timeout = _resolve_optional_float(
-                            honcho_cfg.get("timeout"),
-                            honcho_cfg.get("request_timeout"),
-                        )
+                    resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
             except Exception:
                 pass
 
         # Fall back to the default so an unconfigured install cannot hang
         # indefinitely on a stalled Honcho request.
-        if resolved_timeout is None:
-            resolved_timeout = _DEFAULT_HTTP_TIMEOUT
+        resolved_timeout = resolve_http_timeout(config)
 
         if resolved_base_url:
             logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)

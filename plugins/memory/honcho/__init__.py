@@ -1412,9 +1412,21 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
+        # Honcho dialectic / prefetch HTTP calls can block for the
+        # configured client timeout (default 30s). Joining for less than
+        # that leaves the daemon thread mid-call when CPython starts
+        # finalization, which intermittently aborts the interpreter
+        # (issue #33485). Align join window with the HTTP timeout while
+        # keeping a 5s floor so very-short configured timeouts still get
+        # a reasonable shutdown grace period.
+        try:
+            from plugins.memory.honcho.client import resolve_http_timeout
+            join_timeout = max(5.0, resolve_http_timeout(self._config))
+        except Exception:
+            join_timeout = 5.0
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
-                t.join(timeout=5.0)
+                t.join(timeout=join_timeout)
         # Flush any remaining messages
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:

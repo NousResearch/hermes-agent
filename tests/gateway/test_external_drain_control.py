@@ -19,6 +19,7 @@ import pytest
 
 import gateway.drain_control as dc
 from gateway.run import GatewayRunner
+from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
@@ -238,6 +239,16 @@ def _drain_runner():
 
 
 class TestDrainStateMachine:
+    def test_active_work_count_includes_api_and_cron_work(self, monkeypatch):
+        runner, _ = _drain_runner()
+        runner.adapters = {
+            Platform.API_SERVER: MagicMock(active_agent_work_count=MagicMock(return_value=2))
+        }
+        runner._running_agents = {"session": MagicMock()}
+        monkeypatch.setattr("cron.scheduler.get_running_job_ids", lambda: {"job-1"})
+
+        assert runner._active_work_count() == 4
+
     def test_enter_sets_flag_and_flips_state(self):
         runner, _ = _drain_runner()
         runner._enter_external_drain()
@@ -289,6 +300,26 @@ class TestDrainStateMachine:
 
 
 class TestDrainWatcher:
+    @pytest.mark.asyncio
+    async def test_watcher_persists_aggregate_work_during_external_drain(self, home, monkeypatch):
+        runner, _ = _drain_runner()
+        runner._drain_control_watcher = GatewayRunner._drain_control_watcher.__get__(
+            runner, GatewayRunner
+        )
+        runner._persist_active_agents = MagicMock()
+        dc.write_drain_request()
+        task = asyncio.create_task(runner._drain_control_watcher(interval=0.01))
+        await asyncio.sleep(0.03)
+        runner._running = False
+        await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        runner._persist_active_agents.assert_called()
+
     @pytest.mark.asyncio
     async def test_watcher_enters_then_exits_with_marker(self, home):
         runner, _ = _drain_runner()

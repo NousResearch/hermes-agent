@@ -24,6 +24,20 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     # config show (default)
     config_subparsers.add_parser("show", help="Show current configuration")
 
+    config_effective = config_subparsers.add_parser(
+        "effective", help="Show effective configuration values"
+    )
+    config_effective.add_argument(
+        "--sources",
+        action="store_true",
+        help="Show where each effective value came from",
+    )
+    config_effective.add_argument(
+        "--json",
+        action="store_true",
+        help="Output JSON instead of human-readable text",
+    )
+
     # config edit
     config_subparsers.add_parser("edit", help="Open config file in editor")
 

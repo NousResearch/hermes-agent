@@ -10,6 +10,7 @@ import yaml
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     check_config_version,
+    build_effective_config_report,
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
@@ -126,6 +127,58 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestEffectiveConfigReport:
+    def test_reports_sources_and_environment_precedence_for_api_server(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  default: custom/model\n", encoding="utf-8"
+        )
+        (tmp_path / ".env").write_text(
+            "API_SERVER_ENABLED=false\n"
+            "API_SERVER_KEY=dotenv-secret\n"
+            "OPENAI_API_KEY=openai-extra-secret\n"
+            "TERMINAL_SSH_KEY=ssh-extra-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "anthropic-extra-secret")
+
+        report = build_effective_config_report()
+        by_key = {entry["key"]: entry for entry in report["values"]}
+
+        assert by_key["model.default"]["source"] == "YAML"
+        assert by_key["model.default"]["value"] == "custom/model"
+        assert by_key["terminal.backend"]["source"] == "default"
+        assert by_key["API_SERVER_ENABLED"]["source"] == "environment"
+        assert by_key["API_SERVER_ENABLED"]["value"] == "true"
+        assert "dotenv" in by_key["API_SERVER_ENABLED"]["shadowed_sources"]
+        assert by_key["API_SERVER_KEY"]["source"] == "dotenv"
+        assert by_key["API_SERVER_KEY"]["value"] != "dotenv-secret"
+        serialized = repr(report)
+        assert "openai-extra-secret" not in serialized
+        assert "ssh-extra-secret" not in serialized
+        assert "anthropic-extra-secret" not in serialized
+
+    def test_normalized_legacy_model_preserves_yaml_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "model: legacy/model-id\n", encoding="utf-8"
+        )
+
+        report = build_effective_config_report()
+        by_key = {entry["key"]: entry for entry in report["values"]}
+
+        assert by_key["model.default"] == {
+            "key": "model.default",
+            "value": "legacy/model-id",
+            "source": "YAML",
+            "shadowed_sources": [],
+        }
+        assert "model" not in by_key
 
 
 class TestLoadConfigParseFailure:
@@ -1926,5 +1979,3 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
-

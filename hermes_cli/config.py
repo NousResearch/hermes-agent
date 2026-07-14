@@ -7866,6 +7866,172 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     return value
 
 
+def _flatten_mapping(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for key, value in data.items():
+        dotted = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            out.update(_flatten_mapping(value, dotted))
+        else:
+            out[dotted] = value
+    return out
+
+
+def _has_dotted_key(data: Dict[str, Any], dotted_key: str) -> bool:
+    current: Any = data
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
+
+
+def _get_dotted_value(data: Dict[str, Any], dotted_key: str) -> Any:
+    current: Any = data
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _is_secret_config_path(dotted_key: str) -> bool:
+    return dotted_key.rsplit(".", 1)[-1].lower() in _SECRET_CONFIG_KEYS
+
+
+_SECRET_ENV_SUFFIXES = (
+    "_API_KEY",
+    "_SECRET_KEY",
+    "_SECRET",
+    "_TOKEN",
+    "_PASSWORD",
+    "_PASSWD",
+    "_PRIVATE_KEY",
+    "_SSH_KEY",
+)
+
+
+def _is_secret_env_key(key: str) -> bool:
+    """Recognize credential-shaped environment names without metadata."""
+    normalized = key.strip().upper()
+    return (
+        normalized.lower() in _SECRET_CONFIG_KEYS
+        or normalized.endswith(_SECRET_ENV_SUFFIXES)
+    )
+
+
+def _redact_effective_value(key: str, value: Any, *, env_info: Optional[dict] = None) -> Any:
+    from agent.redact import mask_secret
+
+    if isinstance(value, str) and value:
+        if (env_info and env_info.get("password")) or _is_secret_env_key(key):
+            return mask_secret(value)
+        if _is_secret_config_path(key):
+            return mask_secret(value)
+    return redact_config_value(value)
+
+
+def _normalize_effective_report_mapping(mapping: Dict[str, Any]) -> Dict[str, Any]:
+    """Canonicalize legacy shapes for provenance display without mutating config."""
+    normalized = copy.deepcopy(mapping)
+    if "model" in normalized and not isinstance(normalized.get("model"), dict):
+        normalized["model"] = {"default": normalized.get("model")}
+    return _normalize_root_model_keys(normalized)
+
+
+def build_effective_config_report() -> Dict[str, Any]:
+    """Build effective config values with source provenance."""
+    from hermes_cli import managed_scope
+
+    effective = _normalize_effective_report_mapping(load_config())
+    # Attribute provenance using the same canonical key shape consumers see.
+    # This maps supported legacy aliases such as scalar ``model: <id>`` to
+    # ``model.default`` instead of emitting a misleading raw ``model`` row.
+    raw = _normalize_effective_report_mapping(read_raw_config())
+    managed = _normalize_effective_report_mapping(
+        managed_scope.load_managed_config()
+    )
+
+    default_flat = _flatten_mapping(
+        _normalize_effective_report_mapping(DEFAULT_CONFIG)
+    )
+    raw_flat = _flatten_mapping(raw) if isinstance(raw, dict) else {}
+    managed_flat = _flatten_mapping(managed) if isinstance(managed, dict) else {}
+    config_keys = sorted(set(default_flat) | set(raw_flat) | set(managed_flat))
+
+    values: list[dict[str, Any]] = []
+    for key in config_keys:
+        value = _get_dotted_value(effective, key)
+        if key in managed_flat:
+            source = "runtime override"
+        elif _has_dotted_key(raw, key):
+            source = "YAML"
+        else:
+            source = "default"
+        values.append({
+            "key": key,
+            "value": _redact_effective_value(key, value),
+            "source": source,
+            "shadowed_sources": [],
+        })
+
+    dotenv_values = load_env()
+    known_env = set(REQUIRED_ENV_VARS) | set(OPTIONAL_ENV_VARS) | _EXTRA_ENV_KEYS
+    known_env.add("API_SERVER_ENABLED")
+    for key in sorted(known_env):
+        env_info = OPTIONAL_ENV_VARS.get(key) or REQUIRED_ENV_VARS.get(key) or {}
+        shadowed_sources: list[str] = []
+        if key in os.environ:
+            value = os.environ[key]
+            source = "environment"
+            if key in dotenv_values:
+                shadowed_sources.append("dotenv")
+        elif key in dotenv_values:
+            value = dotenv_values[key]
+            source = "dotenv"
+        elif key == "API_SERVER_ENABLED":
+            value = "false"
+            source = "default"
+        else:
+            continue
+        values.append({
+            "key": key,
+            "value": _redact_effective_value(key, value, env_info=env_info),
+            "source": source,
+            "shadowed_sources": shadowed_sources,
+        })
+
+    return {
+        "config_path": str(get_config_path()),
+        "env_path": str(get_env_path()),
+        "values": values,
+    }
+
+
+def show_effective_config(*, sources: bool = False, as_json: bool = False) -> None:
+    report = build_effective_config_report()
+    if as_json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
+
+    print()
+    print(color("Effective Hermes Configuration", Colors.CYAN, Colors.BOLD))
+    print()
+    if sources:
+        print(f"{'Key':<44} {'Source':<18} Value")
+        print("-" * 88)
+        for entry in report["values"]:
+            shadowed = entry.get("shadowed_sources") or []
+            source = entry["source"]
+            if shadowed:
+                source = f"{source} > {','.join(shadowed)}"
+            print(f"{entry['key']:<44} {source:<18} {entry['value']}")
+    else:
+        for entry in report["values"]:
+            print(f"{entry['key']}: {entry['value']}")
+    print()
+
+
 def show_config():
     """Display current configuration."""
     config = load_config()
@@ -8243,6 +8409,12 @@ def config_command(args):
     
     if subcmd is None or subcmd == "show":
         show_config()
+
+    elif subcmd == "effective":
+        show_effective_config(
+            sources=bool(getattr(args, "sources", False)),
+            as_json=bool(getattr(args, "json", False)),
+        )
     
     elif subcmd == "edit":
         edit_config()
@@ -8365,6 +8537,7 @@ def config_command(args):
         print()
         print("Available commands:")
         print("  hermes config           Show current configuration")
+        print("  hermes config effective --sources   Show effective values and sources")
         print("  hermes config edit      Open config in editor")
         print("  hermes config set <key> <value>   Set a config value")
         print("  hermes config check     Check for missing/outdated config")

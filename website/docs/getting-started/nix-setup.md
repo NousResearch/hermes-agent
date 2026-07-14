@@ -6,7 +6,13 @@ description: "Install and deploy Hermes Agent with Nix — from quick `nix run` 
 
 # Nix & NixOS Setup
 
-Hermes Agent ships a Nix flake with three levels of integration:
+:::warning Tier 2 platform
+Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake and NixOS module documented here are maintained on a best-effort basis only. Commits to `main` may break these packages at any point in time.
+
+For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
+:::
+
+Hermes Agent ships a Nix flake & a NixOS module.
 
 | Level | Who it's for | What you get |
 |-------|-------------|--------------|
@@ -34,42 +40,39 @@ The `curl | bash` installer manages Python, Node, and dependencies itself. The N
 No clone needed. Nix fetches, builds, and runs everything:
 
 ```bash
-# Run directly (builds on first use, cached after)
-nix run github:NousResearch/hermes-agent -- setup
-nix run github:NousResearch/hermes-agent -- chat
+# Run the desktop app
+nix run github:NousResearch/hermes-agent#desktop
 
 # Or install persistently
+nix profile install github:NousResearch/hermes-agent#desktop
+
+# run the tui
+nix run github:NousResearch/hermes-agent -- setup
+nix run github:NousResearch/hermes-agent -- --tui
+
+# or install it in your profile
 nix profile install github:NousResearch/hermes-agent
 hermes setup
-hermes chat
+hermes --tui
 ```
 
 After `nix profile install`, `hermes`, `hermes-agent`, and `hermes-acp` are on your PATH. From here, the workflow is identical to the [standard installation](./installation.md) — `hermes setup` walks you through provider selection, `hermes gateway install` sets up a launchd (macOS) or systemd user service, and config lives in `~/.hermes/`.
 
 :::warning Messaging platforms (Discord, Telegram, Slack)
-The default package doesn't include messaging platform libraries — they were moved to on-demand installation, which can't work in Nix's read-only environment. If you plan to connect the agent to Discord, Telegram, or Slack, install the `messaging` variant:
+The default package includes ALL libraries hermes-agent might need. if you want a smaller variant, check the other flake outputs. 
 
-```bash
-nix profile install github:NousResearch/hermes-agent#messaging
-```
+The `default` package adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
 
-For all optional extras (voice, all providers, all platforms):
-
-```bash
-nix profile install github:NousResearch/hermes-agent#full
-```
-
-The `full` variant adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
 :::
 
 <details>
-<summary><strong>Building from a local clone</strong></summary>
+<summary><strong>Running from a local clone</strong></summary>
 
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-nix build
-./result/bin/hermes setup
+nix develop
+hermes setup
 ```
 
 </details>
@@ -583,7 +586,7 @@ Host                                    Container
   │   ├── state.db, sessions/, memories/   (runtime state)
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)
-  └── workspace/                           (MESSAGING_CWD)
+  └── workspace/                           (agent working directory)
       ├── SOUL.md                          (from documents option)
       └── (agent-created files)
 
@@ -831,7 +834,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | `group` | `str` | `"hermes"` | System group |
 | `createUser` | `bool` | `true` | Auto-create user/group |
 | `stateDir` | `str` | `"/var/lib/hermes"` | State directory (`HERMES_HOME` parent) |
-| `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory (`MESSAGING_CWD`) |
+| `workingDirectory` | `str` | `"${stateDir}/workspace"` | Agent working directory |
 | `addToSystemPackages` | `bool` | `false` | Add `hermes` CLI to system PATH and set `HERMES_HOME` system-wide |
 
 ### Configuration
@@ -918,7 +921,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 │   ├── cron/
 │   └── logs/
 ├── home/                            # Agent HOME
-└── workspace/                       # MESSAGING_CWD
+└── workspace/                       # Agent working directory
     ├── SOUL.md                      # From documents option
     └── (agent-created files)
 ```

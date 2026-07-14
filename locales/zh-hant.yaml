@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]僅此一次  |  [s]本次工作階段  |  [d]拒絕"
   prompt_long:     "      選擇 [o/s/a/D]: "
   prompt_short:    "      選擇 [o/s/D]: "
+  choose_smart_deny: "      [o]僅此一次  |  [d]拒絕"
+  prompt_smart_deny: "      選擇 [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ 逾時 — 已拒絕指令"
   allowed_once:    "      ✓ 本次允許"
   allowed_session: "      ✓ 本次工作階段內允許"
@@ -88,6 +92,7 @@ gateway:
     not_enough:            "對話內容不足，無法壓縮（至少需要 4 則訊息）。"
     no_provider:           "未設定提供方 — 無法壓縮。"
     nothing_to_do:         "目前沒有可壓縮的內容（對話記錄仍全部為受保護的上下文）。"
+    aggressive_unsupported: "不支援 --aggressive；請使用 '/compress here [N]' 只保留最近的對話，或使用 /undo 刪除回合。"
     focus_line:            "聚焦：\"{topic}\""
     summary_failed:        "⚠️ 摘要產生失敗（{error}）。{count} 則歷史訊息已被移除並以佔位符取代；先前的上下文已無法復原。建議檢查 auxiliary.compression 模型設定。"
     aborted:               "⚠️ 壓縮已中止 ({error})。未刪除任何訊息 — 對話保持不變。執行 /compress 重試，執行 /reset 開始新工作階段，或檢查你的 auxiliary.compression 模型設定。"
@@ -106,6 +111,8 @@ gateway:
     no_pending:            "沒有待拒絕的指令。"
     denied_singular:       "❌ 指令已拒絕。"
     denied_plural:         "❌ 指令已拒絕（{count} 條指令）。"
+    denied_reason_singular: "❌ 指令已拒絕。 已將原因轉達給代理: \"{reason}\""
+    denied_reason_plural:  "❌ 指令已拒絕（{count} 條指令）。 已將原因轉達給代理: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast 僅適用於支援 Priority Processing 的 OpenAI 模型。"
@@ -149,6 +156,15 @@ gateway:
     subscribed_suffix:     "（已訂閱 — 當 {task_id} 完成或被封鎖時將通知您）"
     truncated_suffix:      "…（已截斷；如需完整輸出請在終端機執行 `hermes kanban …`）"
     no_output:             "（無輸出）"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "`{path}/config.yaml` 中未設定人格"
@@ -219,6 +235,15 @@ gateway:
 
   resume:
     db_unavailable:        "工作階段資料庫無法使用。"
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "找不到已命名的工作階段。\n使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。"
     list_header:           "📋 **已命名工作階段**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,10 +276,20 @@ gateway:
 
   status:
     header:                "📊 **Hermes 閘道狀態**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**工作階段 ID：** `{session_id}`"
     title:                 "**標題：** {title}"
     created:               "**建立時間：** {timestamp}"
     last_activity:         "**最近活動：** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Token 數：** {tokens}"
     agent_running:         "**代理執行中：** {state}"
     state_yes:             "是 ⚡"
@@ -290,7 +325,8 @@ gateway:
 
   undo:
     nothing:               "沒有可復原的內容。"
-    removed:               "↩️ 已復原 {count} 則訊息。\n已移除：「{preview}」"
+    removed:               "↩️ 已復原 {turns} 個回合（{count} 則訊息）。\n已備份至：「{preview}」\n複製/編輯上方的文字並傳送，即可從此處重新提問。"
+    invalid_count:         "無效的數量「{arg}」—— 請使用 /undo 或 /undo N。"
 
   update:
     platform_not_messaging:  "✗ /update 僅在訊息平台上可用。請在終端機執行 `hermes update`。"
@@ -313,11 +349,26 @@ gateway:
     label_cost_included:      "費用：已包含"
     label_context:            "上下文：{used} / {total}（{pct}%）"
     label_compressions:       "壓縮次數：{count}"
+    breakdown_header: "🧩 **上下文明細** _(估算)_"
+    breakdown_line: "• {label}：約 {count} ({pct}%)"
+    breakdown_cat_system_prompt: "系統提示詞"
+    breakdown_cat_tool_definitions: "工具定義"
+    breakdown_cat_rules: "規則"
+    breakdown_cat_skills: "技能"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "子代理定義"
+    breakdown_cat_memory: "記憶"
+    breakdown_cat_conversation: "對話"
     header_session_info:      "📊 **工作階段資訊**"
     label_messages:           "訊息數：{count}"
     label_estimated_context:  "預估上下文：~{count} 個 token"
     detailed_after_first:     "_（首次代理回應後可檢視詳細使用情況）_"
     no_data:                  "此工作階段沒有可用的使用資料。"
+    unknown_subcommand:       "未知的 /usage 子命令:`{args}`。請嘗試 `/usage` 或 `/usage reset [--force]`。"
+    reset_wrong_provider:     "儲存的用量重設僅在 openai-codex 提供者上可用。請先使用 `/model` 切換。"
+
+  credits:
+    not_logged_in:            "未登入 Nous Portal。登入後即可查看額度餘額並儲值。"
 
   verbose:
     not_enabled:           "`/verbose` 指令未在訊息平台上啟用。\n\n請在 `config.yaml` 中啟用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -325,6 +376,7 @@ gateway:
     mode_new:              "⚙️ 工具進度：**NEW** — 工具變更時顯示（預覽長度：`display.tool_preview_length`，預設 40）。"
     mode_all:              "⚙️ 工具進度：**ALL** — 顯示每次工具呼叫（預覽長度：`display.tool_preview_length`，預設 40）。"
     mode_verbose:          "⚙️ 工具進度：**VERBOSE** — 顯示每次工具呼叫及完整參數。"
+    mode_log:              "⚙️ 工具進度：**LOG** — 聊天中保持靜默；工具呼叫寫入 ~/.hermes/logs/tool_calls.log。"
     saved_suffix:          "_（已為 **{platform}** 儲存 — 下一則訊息生效）_"
     save_failed:           "_（無法儲存到設定：{error}）_"
 
@@ -342,6 +394,8 @@ gateway:
     label_off:             "關閉（僅文字）"
     label_voice_only:      "開啟（僅對語音訊息進行語音回覆）"
     label_all:             "TTS（對所有訊息進行語音回覆）"
+    help:                  "{toggle}\n\n**/voice 用法**\n• `/voice on` — 當你傳送語音訊息時以語音回覆\n• `/voice tts` — 對*每則*訊息都以語音回覆\n• `/voice off` — 恢復為純文字回覆\n• `/voice status` — 顯示目前模式\n• `/voice`（無參數）— 在開啟和關閉之間快速切換{channels}"
+    help_channels:         "\n\n**即時語音頻道 (Discord)**\n• 先加入一個語音頻道，然後 `/voice channel` — 我會加入、聆聽並以語音回覆\n• `/voice leave` — 中斷語音頻道"
 
   yolo:
     disabled:                   "⚠️ 本工作階段 YOLO 模式 **已關閉** — 危險指令將需要批准。"

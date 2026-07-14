@@ -1302,3 +1302,37 @@ def test_tenki_sudo_without_nopasswd_fails_fast_without_host_password(monkeypatc
     assert "sudo -S" not in command
     assert "host-secret" not in command
     env.cleanup()
+
+def test_exec_survives_cancel_clearing_sandbox_mid_operation(monkeypatch, tmp_path):
+    """cancel() nulling self._sandbox between _ensure_sandbox() and the exec
+    call must not crash the in-flight command: operations run against the
+    reference captured by _require_sandbox(), and a genuinely torn-down
+    sandbox surfaces a clean RuntimeError instead of an AttributeError."""
+    _install_fake_tenki(monkeypatch)
+    _clear_tenki_auth_env(monkeypatch)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TENKI_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+    monkeypatch.setenv("TENKI_API_KEY", "sk-test-key")
+
+    from tools.environments.tenki import TenkiEnvironment
+
+    monkeypatch.setattr(TenkiEnvironment, "init_session", lambda self: None)
+    env = TenkiEnvironment(task_id="cancel-race")
+
+    sandbox = _FakeSandboxFactory.sandboxes[0]
+    orig_exec = sandbox.exec
+
+    def exec_and_teardown(*args, **kwargs):
+        env._sandbox = None  # what cancel() does concurrently
+        return orig_exec(*args, **kwargs)
+
+    monkeypatch.setattr(sandbox, "exec", exec_and_teardown)
+    output, exit_code = env._exec_raw("echo ok", timeout=5)
+    assert exit_code == 0
+
+    # After the teardown a fruitless ensure must fail loud and typed.
+    monkeypatch.setattr(env, "_ensure_sandbox", lambda: None)
+    env._sandbox = None
+    with pytest.raises(RuntimeError, match="torn down"):
+        env._exec_raw("echo ok", timeout=5)

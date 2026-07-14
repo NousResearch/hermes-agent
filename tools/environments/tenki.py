@@ -630,6 +630,17 @@ class TenkiEnvironment(BaseEnvironment):
             sandbox_id = getattr(self._sandbox, "id", None) or getattr(self._sandbox, "sandbox_id", None)
             logger.info("Tenki: created sandbox %s for task %s", sandbox_id or "<unknown>", self._task_id)
 
+    def _require_sandbox(self) -> Any:
+        # Capture the reference under the lock: cancel() may null out
+        # self._sandbox between _ensure_sandbox() and the caller's use of it,
+        # and the operation must run against the sandbox that ensure produced.
+        self._ensure_sandbox()
+        with self._lock:
+            sandbox = self._sandbox
+        if sandbox is None:
+            raise RuntimeError("Tenki sandbox was torn down mid-operation")
+        return sandbox
+
     def _create_sandbox_from_kwargs(self, kwargs: dict[str, Any]):
         if self._persistent:
             client = self._create_client()
@@ -810,8 +821,7 @@ class TenkiEnvironment(BaseEnvironment):
     def _transfer_sandbox(self):
         if self._cleanup_in_progress and self._cleanup_sandbox is not None:
             return self._cleanup_sandbox
-        self._ensure_sandbox()
-        return self._sandbox
+        return self._require_sandbox()
 
     def _tenki_delete(self, remote_paths: list[str]) -> None:
         if not remote_paths:
@@ -819,8 +829,7 @@ class TenkiEnvironment(BaseEnvironment):
         self._exec_raw(quoted_rm_command(remote_paths), timeout=30)
 
     def _exec_raw(self, command: str, *, login: bool = False, timeout: int = 120) -> tuple[str, int]:
-        self._ensure_sandbox()
-        return self._exec_raw_on_sandbox(self._sandbox, command, login=login, timeout=timeout)
+        return self._exec_raw_on_sandbox(self._require_sandbox(), command, login=login, timeout=timeout)
 
     def _exec_raw_on_sandbox(
         self,
@@ -857,14 +866,14 @@ class TenkiEnvironment(BaseEnvironment):
         stdin_data: str | None,
         process_ref: dict[str, Any] | None = None,
     ) -> tuple[str, int]:
-        self._ensure_sandbox()
+        sandbox = self._require_sandbox()
         flag = "-lc" if login else "-c"
-        start = getattr(self._sandbox, "start", None)
+        start = getattr(sandbox, "start", None)
         if not callable(start):
             kwargs: dict[str, Any] = {"timeout": timeout, "env": self._sandbox_env()}
             if stdin_data is not None:
                 kwargs["input"] = stdin_data
-            result = self._sandbox.exec("bash", flag, cmd_string, **kwargs)
+            result = sandbox.exec("bash", flag, cmd_string, **kwargs)
             return self._result_to_output(result)
 
         process = start(

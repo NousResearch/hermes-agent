@@ -161,6 +161,12 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    # CLI session-switch hooks.
+    # on_session_pre_switch: fires in new_session() before session rotation.
+    # on_session_post_switch: fires after session rotation completes.
+    # Plugins receive old_session_id, new_session_id (post only), and CLI ref.
+    "on_session_pre_switch",
+    "on_session_post_switch",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent

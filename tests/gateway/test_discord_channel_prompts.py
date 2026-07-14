@@ -30,9 +30,9 @@ def _ensure_discord_mock():
 
 
 import gateway.run as gateway_run
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from gateway.session import SessionSource, SessionStore
 
 
 class _CapturingAgent:
@@ -347,3 +347,85 @@ def test_channel_context_file_snapshot_resolves_relative_to_hermes_home(monkeypa
 
     assert snapshot is not None
     assert "relative context" in snapshot
+
+
+def _make_snapshot_runner(monkeypatch, tmp_path, store):
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner.adapters = {}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._handle_active_session_busy_message = AsyncMock(return_value=False)
+    runner._session_db = None
+    runner._recover_telegram_topic_thread_id = lambda _source: None
+    runner._cache_session_source = lambda _key, _source: None
+    runner._is_session_run_current = lambda _key, _generation: True
+    runner._reply_anchor_for_event = lambda _event: None
+    runner._get_guild_id = lambda _event: None
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.session_store = store
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100_000,
+    )
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_channel_context_snapshot_persists_without_drift(monkeypatch, tmp_path):
+    sessions_dir = tmp_path / "sessions"
+    context_file = tmp_path / "channel-state.md"
+    context_file.write_text("version one", encoding="utf-8")
+    source = _make_source()
+    session_key = "agent:main:discord:thread:12345"
+
+    first_store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
+    first_store._db = None
+    first_runner = _make_snapshot_runner(monkeypatch, tmp_path, first_store)
+    first_event = MessageEvent(
+        text="hello",
+        source=source,
+        message_id="m1",
+        channel_context_file=str(context_file),
+    )
+
+    await first_runner._handle_message_with_agent(first_event, source, session_key, 1)
+    first_prompt = first_runner._run_agent.await_args.kwargs["context_prompt"]
+    assert "version one" in first_prompt
+
+    context_file.write_text("version two", encoding="utf-8")
+    reloaded_store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
+    reloaded_store._db = None
+    second_runner = _make_snapshot_runner(monkeypatch, tmp_path, reloaded_store)
+    second_event = MessageEvent(
+        text="hello again",
+        source=source,
+        message_id="m2",
+        channel_context_file=str(context_file),
+    )
+
+    await second_runner._handle_message_with_agent(second_event, source, session_key, 1)
+    second_prompt = second_runner._run_agent.await_args.kwargs["context_prompt"]
+    assert "version one" in second_prompt
+    assert "version two" not in second_prompt

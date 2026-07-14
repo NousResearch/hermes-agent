@@ -248,8 +248,8 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
-  cost: boolean
   duration: boolean
+  subagents: boolean
   voice: boolean
 }
 
@@ -263,7 +263,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
-    cost: w >= 96
+    subagents: w >= 92
   }
 }
 
@@ -393,7 +393,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -418,7 +418,6 @@ export function StatusRule({
   lastTurnEndedAt,
   liveSessionCount,
   sessionStartedAt,
-  showCost,
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
@@ -480,6 +479,7 @@ export function StatusRule({
   // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
+
   const fits = (w: number) => {
     if (tailBudget >= w) {
       tailBudget -= w
@@ -492,7 +492,7 @@ export function StatusRule({
 
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-  const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -504,16 +504,31 @@ export function StatusRule({
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
+
   // Idle clock — time since the last final agent response. Hidden while busy
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
-  const showIdle = segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+  const showIdle =
+    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
-  const showCostSeg = segs.cost && showCost && !!costText && fits(SEP + stringWidth(costText))
-  // No segs flag / no showCost coupling — it's a server-gated dev readout, lowest priority,
+  const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
+  const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
+
+  // Parked-background reassurance: a top-level delegate_task runs in the
+  // background, so the turn ends (idle) while the subagent keeps working and its
+  // result re-enters as a fresh turn later. When idle with work still in flight,
+  // spell out that the agent resumes on its own — no spinner, nothing to poll.
+  // Width-budgeted like every tail segment, so it drops first on a tight
+  // terminal where ⛓ already carries the signal.
+  const resumeHintText =
+    subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
+
+  const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
@@ -619,10 +634,15 @@ export function StatusRule({
             {bgCount} bg
           </Text>
         ) : null}
-        {showCostSeg ? (
+        {showSubagents ? (
           <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}⛓ {subagentCount}
+          </Text>
+        ) : null}
+        {showResumeHint ? (
+          <Text color={t.color.muted} dim wrap="truncate-end">
             {' │ '}
-            {costText}
+            {resumeHintText}
           </Text>
         ) : null}
         {showDevCredits ? (
@@ -762,7 +782,6 @@ interface StatusRuleProps {
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number
-  showCost: boolean
   status: string
   statusColor: string
   t: Theme

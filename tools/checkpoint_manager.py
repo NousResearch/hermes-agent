@@ -58,6 +58,7 @@ import subprocess
 import time
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int
@@ -321,6 +322,7 @@ def _run_git(
     env = _git_env(store, str(normalized_working_dir), index_file=index_file)
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()
+
     try:
         result = subprocess.run(
             cmd,
@@ -330,6 +332,10 @@ def _run_git(
             env=env,
             cwd=str(normalized_working_dir),
             stdin=subprocess.DEVNULL,
+            # Checkpoints fire several bare git calls per turn from the
+            # console-less desktop/gateway backend; suppress the per-call
+            # conhost flash on Windows (no-op on POSIX).
+            creationflags=windows_hide_flags(),
         )
         ok = result.returncode == 0
         stdout = result.stdout.strip()
@@ -450,6 +456,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             capture_output=True, text=True,
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             return f"Shadow store init failed: {result.stderr.strip()}"
@@ -690,7 +697,7 @@ class CheckpointManager:
 
         ref = _ref_name(_project_hash(abs_dir))
         ok, stdout, _ = _run_git(
-            ["log", ref, f"--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
             store, abs_dir,
             allowed_returncodes={128, 129},
         )

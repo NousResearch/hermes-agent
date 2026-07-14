@@ -179,49 +179,6 @@ class TestCmdSetupLocalJwt:
         assert not host_block.get("apiKey")
 
 
-class TestCmdResolveSession:
-    def test_reports_primary_and_compatibility_candidates(self, monkeypatch, capsys):
-        import plugins.memory.honcho.cli as honcho_cli
-
-        class FakeConfig:
-            session_strategy = "per-session"
-
-            def resolve_session_name(self, cwd=None, session_title=None, session_id=None, gateway_session_key=None):
-                assert cwd == "/some/dir"
-                assert session_title == "pretty title"
-                assert session_id == "20260309_175514_9797dd"
-                assert gateway_session_key == "webui:session:abc123"
-                return "webui-session-abc123"
-
-            def resolve_session_name_candidates(self, cwd=None, session_title=None, session_id=None, gateway_session_key=None):
-                return [
-                    ("gateway_session_key", "webui-session-abc123"),
-                    ("session_title", "pretty-title"),
-                    ("session_id", "20260309_175514_9797dd"),
-                    ("directory", "dir"),
-                ]
-
-        monkeypatch.setattr(honcho_cli, "_host_key", lambda: "hermes")
-        monkeypatch.setattr(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            lambda host=None: FakeConfig(),
-        )
-
-        honcho_cli.cmd_resolve_session(SimpleNamespace(
-            cwd="/some/dir",
-            session_title="pretty title",
-            session_id="20260309_175514_9797dd",
-            gateway_session_key="webui:session:abc123",
-        ))
-
-        out = capsys.readouterr().out
-        assert "Primary:        webui-session-abc123" in out
-        assert "gateway_session_key" in out
-        assert "session_title" in out
-        assert "pretty-title" in out
-        assert "20260309_175514_9797dd" in out
-
-
 class TestCmdStatus:
     def test_reports_connection_failure_when_session_setup_fails(self, monkeypatch, capsys, tmp_path):
         import plugins.memory.honcho.cli as honcho_cli
@@ -276,6 +233,66 @@ class TestCmdStatus:
         out = capsys.readouterr().out
         assert "FAILED (Invalid API key)" in out
         assert "Connection... OK" not in out
+
+    def test_auth_line_detects_oauth_grant(self, monkeypatch, capsys, tmp_path):
+        import plugins.memory.honcho.cli as honcho_cli
+
+        cfg_path = tmp_path / "honcho.json"
+        cfg_path.write_text("{}")
+
+        class FakeConfig:
+            enabled = True
+            api_key = "hch-at-deadbeef"
+            workspace_id = "claude-code"
+            host = "hermes"
+            base_url = None
+            ai_peer = "hermes"
+            peer_name = "eri"
+            recall_mode = "hybrid"
+            user_observe_me = True
+            user_observe_others = False
+            ai_observe_me = False
+            ai_observe_others = True
+            write_frequency = "async"
+            session_strategy = "per-session"
+            context_tokens = None
+            dialectic_reasoning_level = "low"
+            reasoning_level_cap = "high"
+            reasoning_heuristic = True
+            raw = {
+                "hosts": {
+                    "hermes": {
+                        "apiKey": "hch-at-deadbeef",
+                        "oauth": {
+                            "refreshToken": "hch-rt-x",
+                            "clientId": "hermes-agent",
+                            "tokenEndpoint": "https://api.honcho.dev/oauth/token",
+                            "expiresAt": 9999999999,
+                        },
+                    }
+                }
+            }
+
+            def resolve_session_name(self):
+                return "hermes"
+
+        monkeypatch.setattr(honcho_cli, "_read_config", lambda: {})
+        monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
+        monkeypatch.setattr(honcho_cli, "_active_profile_name", lambda: "default")
+        monkeypatch.setattr(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            lambda host=None: FakeConfig(),
+        )
+        monkeypatch.setattr("plugins.memory.honcho.client.get_honcho_client", lambda cfg: object())
+        monkeypatch.setattr(honcho_cli, "_show_peer_cards", lambda hcfg, client: None)
+        monkeypatch.setitem(__import__("sys").modules, "honcho", SimpleNamespace())
+
+        honcho_cli.cmd_status(SimpleNamespace(all=False))
+
+        out = capsys.readouterr().out
+        assert "Auth:           OAuth (hermes-agent" in out
+        assert "API key:" not in out
 
 
 class TestCloneHonchoForProfile:
@@ -432,6 +449,9 @@ class TestSetupWizardDeploymentShape:
         # Scripted _prompt: pop answers in order. Default-return for unconsumed prompts.
         answer_iter = iter(answers)
         def _scripted_prompt(label, default=None, secret=False):
+            # Auth-method prompt is orthogonal to shape; auto-answer apikey so the answer lists stay shape-only.
+            if "OAuth" in label:
+                return "apikey"
             try:
                 return next(answer_iter)
             except StopIteration:

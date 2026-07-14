@@ -17,7 +17,6 @@ import json
 import os
 import logging
 import hashlib
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -670,76 +669,6 @@ class HonchoClientConfig:
         prefix = sanitized[:prefix_len].rstrip("-")
         return f"{prefix}-{digest}"
 
-    @staticmethod
-    def _sanitize_session_component(value: str | None) -> str | None:
-        """Return a Honcho-safe session component, or None if it sanitizes empty."""
-        if not value:
-            return None
-        sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', value).strip('-')
-        return sanitized or None
-
-    def _with_session_peer_prefix(self, session_name: str) -> str:
-        if self.session_peer_prefix and self.peer_name:
-            return f"{self.peer_name}-{session_name}"
-        return session_name
-
-    def _gateway_session_name(self, gateway_session_key: str | None) -> str | None:
-        """Return the canonical Honcho key for a gateway session key."""
-        sanitized = self._sanitize_session_component(gateway_session_key)
-        if not sanitized:
-            return None
-        original = gateway_session_key or sanitized
-        if self.session_peer_prefix and self.peer_name:
-            sanitized = f"{self.peer_name}-{sanitized}"
-            original = f"{self.peer_name}:{original}"
-        return self._enforce_session_id_limit(sanitized, original)
-
-    def _title_session_name(self, session_title: str | None) -> str | None:
-        sanitized = self._sanitize_session_component(session_title)
-        if not sanitized:
-            return None
-        return self._with_session_peer_prefix(sanitized)
-
-    def _session_id_session_name(self, session_id: str | None) -> str | None:
-        if not session_id:
-            return None
-        return self._with_session_peer_prefix(session_id)
-
-    def resolve_session_name_candidates(
-        self,
-        cwd: str | None = None,
-        session_title: str | None = None,
-        session_id: str | None = None,
-        gateway_session_key: str | None = None,
-    ) -> list[tuple[str, str]]:
-        """Return ordered plausible Honcho session keys for diagnostics/readback.
-
-        Explicit sources (manual map, gateway key, display title, raw session ID)
-        appear first in resolver precedence order, followed by strategy fallback
-        handles (repo, directory, global). ``resolve_session_name()`` still
-        applies ``session_strategy`` when choosing among those fallback handles.
-        """
-        if not cwd:
-            cwd = os.getcwd()
-
-        candidates: list[tuple[str, str]] = []
-
-        def add(source: str, key: str | None) -> None:
-            if key:
-                candidates.append((source, key))
-
-        add("manual_override", self.sessions.get(cwd))
-        add("gateway_session_key", self._gateway_session_name(gateway_session_key))
-        add("session_title", self._title_session_name(session_title))
-        add("session_id", self._session_id_session_name(session_id))
-
-        repo_name = self._git_repo_name(cwd)
-        if repo_name:
-            add("repo", self._with_session_peer_prefix(repo_name))
-        add("directory", self._with_session_peer_prefix(Path(cwd).name))
-        add("global", self.workspace_id)
-        return candidates
-
     def resolve_session_name(
         self,
         cwd: str | None = None,
@@ -750,43 +679,100 @@ class HonchoClientConfig:
         """Resolve Honcho session name.
 
         Resolution order:
-          1. Manual directory override from sessions map
-          2. Gateway session key (stable per-chat identifier from gateway platforms)
-          3. Hermes session title (display label / legacy non-gateway remap)
-          4. per-session strategy — Hermes session_id ({timestamp}_{hex})
+          1. Gateway session key (stable per-chat identifier from gateway platforms)
+          2. per-session strategy — Hermes session_id ({timestamp}_{hex}); authoritative,
+             so a generated title never remaps a live conversation
+          3. Manual directory override from sessions map
+          4. Hermes session title (from /title command; non-per-session)
           5. per-repo strategy — git repo root directory name
           6. per-directory strategy — directory basename
           7. global strategy — workspace name
         """
+        import re
+
         if not cwd:
             cwd = os.getcwd()
 
-        candidate_map = dict(self.resolve_session_name_candidates(
-            cwd=cwd,
-            session_title=session_title,
-            session_id=session_id,
-            gateway_session_key=gateway_session_key,
-        ))
+        # Gateway per-chat key wins everywhere — gateways (telegram/discord/…)
+        # need per-chat isolation no cwd/strategy name can provide.
+        if gateway_session_key:
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
+            if sanitized:
+                return self._enforce_session_id_limit(sanitized, gateway_session_key)
 
-        # Explicit/manual keys and gateway keys are source-level overrides that
-        # beat presentation metadata and strategy-based fallback resolution.
-        if candidate_map.get("manual_override"):
-            return candidate_map["manual_override"]
-        if candidate_map.get("gateway_session_key"):
-            return candidate_map["gateway_session_key"]
-        if candidate_map.get("session_title"):
-            return candidate_map["session_title"]
+        # per-session: the run's session_id IS the identity — resolve before the
+        # cwd map / title so an auto-generated title can't remap a live
+        # conversation onto a second Honcho session mid-stream.
+        if self.session_strategy == "per-session" and session_id:
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{session_id}"
+            return session_id
 
-        if self.session_strategy == "per-session" and candidate_map.get("session_id"):
-            return candidate_map["session_id"]
-        if self.session_strategy == "per-repo" and candidate_map.get("repo"):
-            return candidate_map["repo"]
-        if self.session_strategy in {"per-directory", "per-session", "per-repo"}:
-            return candidate_map.get("directory")
-        return candidate_map.get("global")
+        # Manual override (cwd → name), for non-per-session strategies.
+        manual = self.sessions.get(cwd)
+        if manual:
+            return manual
+
+        # /title mid-session remap (non-per-session).
+        if session_title:
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', session_title).strip('-')
+            if sanitized:
+                if self.session_peer_prefix and self.peer_name:
+                    return f"{self.peer_name}-{sanitized}"
+                return sanitized
+
+        # per-repo: one Honcho session per git repository
+        if self.session_strategy == "per-repo":
+            base = self._git_repo_name(cwd) or Path(cwd).name
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{base}"
+            return base
+
+        # per-directory: one Honcho session per working directory (default)
+        if self.session_strategy in {"per-directory", "per-session"}:
+            base = Path(cwd).name
+            if self.session_peer_prefix and self.peer_name:
+                return f"{self.peer_name}-{base}"
+            return base
+
+        # global: single session across all directories
+        return self.workspace_id
 
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
+
+
+def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
+    """Refresh a near-expiry OAuth grant and point ``config.api_key`` at it.
+
+    No-op for static API keys or when refresh fails (fail-open: the stale token
+    is left in place and the existing 401 handling degrades gracefully).
+    """
+    try:
+        from plugins.memory.honcho import oauth
+
+        token, _ = oauth.ensure_fresh_token(resolve_config_path(), config.host)
+        if token:
+            config.api_key = token
+    except Exception:
+        logger.warning("Honcho OAuth pre-build refresh failed", exc_info=True)
+
+
+def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -> None:
+    """Rotate the cached client's Bearer in place when its OAuth token is stale.
+
+    If the SDK shape changed and the in-place rotation can't apply, the slot is
+    reset so the next acquisition rebuilds with the fresh token.
+    """
+    try:
+        from plugins.memory.honcho import oauth
+
+        host = config.host if config is not None else resolve_active_host()
+        token, refreshed = oauth.ensure_fresh_token(resolve_config_path(), host)
+        if refreshed and token and not oauth.apply_token_to_client(client, token):
+            _honcho_client_slot.reset()
+    except Exception:
+        logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
@@ -801,10 +787,15 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """
     cached = _honcho_client_slot.peek()
     if cached is not None:
+        _refresh_cached_oauth(cached, config)
         return cached
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
+
+    # Refresh a near-expiry OAuth grant before the first build so the client
+    # starts with a live access token rather than 401ing an hour in.
+    _apply_fresh_oauth_token(config)
 
     if not config.api_key and not config.base_url:
         raise ValueError(

@@ -191,13 +191,23 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    def backup_paths(self) -> List[str]:
+        """Honcho keeps its peer/session config under ~/.honcho when no
+        profile-local honcho.json exists (see client.resolve_config_path)."""
+        paths: List[str] = []
+        try:
+            from .client import resolve_global_config_path
+            global_cfg = resolve_global_config_path()
+            # Capture the whole ~/.honcho dir so sibling state travels with it.
+            paths.append(str(global_cfg.parent))
+        except Exception:
+            pass
+        return paths
+
     def __init__(self):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
         self._session_key = ""
-        # Monotonic generation used to discard background initialization work
-        # that was started for a previous Hermes session_id.
-        self._session_generation = 0
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
@@ -396,27 +406,10 @@ class HonchoMemoryProvider(MemoryProvider):
             cfg = self._config
             init_kwargs = dict(self._lazy_init_kwargs)
             init_session_id = self._lazy_init_session_id or "hermes-default"
-            init_generation = self._session_generation
 
             def _run() -> None:
                 try:
                     self._do_session_init(cfg, init_session_id, **init_kwargs)
-                    if init_generation != self._session_generation:
-                        # A session switch happened while this background init
-                        # was resolving the old Honcho session. Discard the
-                        # partially initialized old session so the next turn can
-                        # initialize the current key instead of writing stale.
-                        self._manager = None
-                        self._session_initialized = False
-                        if self._config and self._lazy_init_kwargs is not None:
-                            self._session_key = self._resolve_session_key(
-                                self._config,
-                                self._lazy_init_session_id or "hermes-default",
-                                **self._lazy_init_kwargs,
-                            )
-                        self._init_error = ""
-                        logger.debug("Honcho background session init discarded after session switch")
-                        return
                     self._lazy_init_kwargs = None
                     self._lazy_init_session_id = None
                     self._init_error = ""
@@ -1116,78 +1109,6 @@ class HonchoMemoryProvider(MemoryProvider):
         """Track turn count for cadence and injection_frequency logic."""
         self._turn_count = turn_number
 
-    def on_session_switch(
-        self,
-        new_session_id: str,
-        *,
-        parent_session_id: str = "",
-        reset: bool = False,
-        rewound: bool = False,
-        **kwargs,
-    ) -> None:
-        """Rebind cached Honcho state after Hermes changes session_id.
-
-        Honcho resolves a storage key during provider initialization and keeps
-        that key in ``self._session_key`` for later writes, prefetches, and tool
-        calls.  Compression, /resume, /branch, and gateway session rotation can
-        change ``AIAgent.session_id`` without rebuilding the provider, so the
-        cached key must be refreshed here or future writes can land in the old
-        Honcho session.
-        """
-        if self._cron_skipped or not new_session_id:
-            return
-
-        # Invalidate any background initialization that was started for the
-        # previous session id.  The worker checks this generation when it
-        # finishes and discards stale manager/key state.
-        self._session_generation += 1
-
-        switch_kwargs = dict(self._lazy_init_kwargs or {})
-        switch_kwargs.update(kwargs)
-        if parent_session_id:
-            switch_kwargs["parent_session_id"] = parent_session_id
-        if reset:
-            switch_kwargs["reset"] = reset
-        if rewound:
-            switch_kwargs["rewound"] = rewound
-
-        self._lazy_init_session_id = new_session_id
-        if self._lazy_init_kwargs is not None or not self._session_initialized:
-            self._lazy_init_kwargs = switch_kwargs
-
-        if self._config:
-            self._session_key = self._resolve_session_key(
-                self._config,
-                new_session_id,
-                **switch_kwargs,
-            )
-        else:
-            self._session_key = new_session_id or "hermes-default"
-
-        # Clear context/dialectic caches that belong to the previous session.
-        with self._base_context_lock:
-            self._base_context_cache = None
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-            self._prefetch_result_fired_at = -999
-        self._last_context_turn = -999
-        self._last_dialectic_turn = -999
-        self._dialectic_empty_streak = 0
-        self._prefetch_thread_started_at = 0.0
-        if reset:
-            self._turn_count = 0
-
-        # If session initialization is still in flight, do not treat the old
-        # partially initialized manager as ready for the new key.  Once the old
-        # worker exits, the next prefetch/tool/write call will initialize the
-        # updated lazy session id.
-        if self._init_thread and self._init_thread.is_alive():
-            self._manager = None
-            self._session_initialized = False
-
-        self._init_error = ""
-        logger.debug("Honcho session switched: %s", self._session_key)
-
     @staticmethod
     def _chunk_message(content: str, limit: int) -> list[str]:
         """Split content into chunks that fit within the Honcho message limit.
@@ -1307,11 +1228,10 @@ class HonchoMemoryProvider(MemoryProvider):
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
-        session_key = self._session_key
 
         def _sync():
             try:
-                session = self._manager.get_or_create(session_key)
+                session = self._manager.get_or_create(self._session_key)
                 for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
                 for chunk in self._chunk_message(clean_assistant_content, msg_limit):
@@ -1351,11 +1271,9 @@ class HonchoMemoryProvider(MemoryProvider):
             self._start_session_init_background()
             return
 
-        session_key = self._session_key
-
         def _write():
             try:
-                self._manager.create_conclusion(session_key, content)
+                self._manager.create_conclusion(self._session_key, content)
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 

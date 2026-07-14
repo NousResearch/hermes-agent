@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from agent.context_compressor import ContextCompressor
 from hermes_state import SessionDB
 
 
@@ -54,6 +55,9 @@ def _build_agent_with_db(db: SessionDB, session_id: str, platform: str = "telegr
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # ROTATION fallback path — pin in_place=False so these keep covering fork
+    # rotation regardless of the global default (flipped to True in #38763).
+    agent.compression_in_place = False
     return agent
 
 
@@ -127,3 +131,96 @@ class TestPlatformForwardedAtBoundary:
         kwargs = calls[-1].kwargs
         assert kwargs.get("platform") == "telegram"
         assert kwargs.get("boundary_reason") == "compression"
+
+
+class TestFallbackStreakFollowsRotation:
+    def test_fallback_boundary_persists_on_child_session(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_FALLBACK_ROT"
+        db.create_session(parent, source="telegram")
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            compressor = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        compressor.bind_session_state(db, parent)
+
+        # A fallback streak must survive the session-id rotation itself. The
+        # boundary then records the just-completed fallback on the child row.
+        compressor.record_completed_compaction(used_fallback=True)
+        assert db.get_compression_fallback_streak(parent) == 1
+        db.create_session(
+            "CHILD_FALLBACK_ROT",
+            source="telegram",
+            parent_session_id=parent,
+        )
+        compressor.on_session_start(
+            "CHILD_FALLBACK_ROT",
+            session_db=db,
+            boundary_reason="compression",
+            old_session_id=parent,
+        )
+        assert compressor._fallback_compression_streak == 1
+
+        compressor.record_completed_compaction(used_fallback=True)
+        assert compressor._fallback_compression_streak == 2
+        assert db.get_compression_fallback_streak("CHILD_FALLBACK_ROT") == 2
+
+        resumed = ContextCompressor(
+            model="test/model",
+            threshold_percent=0.85,
+            protect_first_n=2,
+            protect_last_n=2,
+            quiet_mode=True,
+        )
+        resumed.bind_session_state(db, "CHILD_FALLBACK_ROT")
+        assert resumed._fallback_compression_streak == 2
+
+    def test_real_rotation_records_fallback_after_lifecycle_rebind(self, tmp_path: Path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_REAL_FALLBACK_ROT"
+        db.create_session(parent, source="telegram")
+        agent = _build_agent_with_db(db, parent, platform="telegram")
+
+        with patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=100_000,
+        ):
+            compressor = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+        compressor.bind_session_state(db, parent)
+        compressed = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] fallback"},
+            {"role": "assistant", "content": "tail"},
+        ]
+
+        def _fallback_compress(*_args, **_kwargs):
+            compressor._last_summary_error = "empty summary"
+            compressor._last_summary_fallback_used = True
+            compressor._last_compression_made_progress = True
+            return compressed
+
+        with patch.object(
+            compressor,
+            "compress",
+            side_effect=_fallback_compress,
+        ):
+            compressor.compression_count = 1
+            setattr(agent, "context_compressor", compressor)
+            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = getattr(agent, "session_id")
+
+        assert child != parent
+        assert compressor._fallback_compression_streak == 1
+        assert db.get_compression_fallback_streak(child) == 1

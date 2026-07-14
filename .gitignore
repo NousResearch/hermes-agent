@@ -8,6 +8,7 @@ __pycache__/
 .venv
 .vscode/
 .env
+.op.env
 .env.local
 .env.development.local
 .env.test.local
@@ -68,7 +69,7 @@ hermes_cli/web_dist/
 apps/desktop/build/
 apps/desktop/dist/
 apps/desktop/release/
-apps/desktop/*.tsbuildinfo
+*.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).
@@ -118,6 +119,9 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
+.hermes-sandbox/
+
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change
 # — ignore so `git status` stays clean and update's autostash skips them.
@@ -137,3 +141,9 @@ RELEASE_v*.md
 # Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
+
+# PR infographics are rendered locally and embedded in PR descriptions via the
+# image-provider (fal.media) URL — they are NEVER committed to the repo. The
+# PR body is the archive. See the hermes-agent-dev skill's
+# pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+infographic/

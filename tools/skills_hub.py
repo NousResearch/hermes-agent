@@ -26,9 +26,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
 import yaml
@@ -45,18 +46,78 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
+# Resolved per-call (not frozen at import) so the profile override is honored;
+# import-time constants leaked across profiles in single-process multi-profile
+# runtimes. Legacy names (SKILLS_DIR, ...) are re-exposed via __getattr__ below
+# so external `from tools.skills_hub import SKILLS_DIR` callers still work.
 
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
-HUB_DIR = SKILLS_DIR / ".hub"
-LOCK_FILE = HUB_DIR / "lock.json"
-QUARANTINE_DIR = HUB_DIR / "quarantine"
-AUDIT_LOG = HUB_DIR / "audit.log"
-TAPS_FILE = HUB_DIR / "taps.json"
-INDEX_CACHE_DIR = HUB_DIR / "index-cache"
-
-# Cache duration for remote index fetches
 INDEX_CACHE_TTL = 3600  # 1 hour
+
+
+# _override lets a test-injected real module attribute (patch.object/monkeypatch
+# on SKILLS_DIR etc.) win over dynamic resolution; None means resolve live.
+def _override(name: str):
+    return globals().get(name)
+
+
+def _hermes_home() -> Path:
+    return get_hermes_home()
+
+
+def _skills_dir() -> Path:
+    forced = _override("SKILLS_DIR")
+    return Path(forced) if forced is not None else _hermes_home() / "skills"
+
+
+def _hub_dir() -> Path:
+    forced = _override("HUB_DIR")
+    return Path(forced) if forced is not None else _skills_dir() / ".hub"
+
+
+def _lock_file() -> Path:
+    forced = _override("LOCK_FILE")
+    return Path(forced) if forced is not None else _hub_dir() / "lock.json"
+
+
+def _quarantine_dir() -> Path:
+    forced = _override("QUARANTINE_DIR")
+    return Path(forced) if forced is not None else _hub_dir() / "quarantine"
+
+
+def _audit_log() -> Path:
+    forced = _override("AUDIT_LOG")
+    return Path(forced) if forced is not None else _hub_dir() / "audit.log"
+
+
+def _taps_file() -> Path:
+    forced = _override("TAPS_FILE")
+    return Path(forced) if forced is not None else _hub_dir() / "taps.json"
+
+
+def _index_cache_dir() -> Path:
+    forced = _override("INDEX_CACHE_DIR")
+    return Path(forced) if forced is not None else _hub_dir() / "index-cache"
+
+
+_DYNAMIC_PATH_RESOLVERS = {
+    "HERMES_HOME": _hermes_home,
+    "SKILLS_DIR": _skills_dir,
+    "HUB_DIR": _hub_dir,
+    "LOCK_FILE": _lock_file,
+    "QUARANTINE_DIR": _quarantine_dir,
+    "AUDIT_LOG": _audit_log,
+    "TAPS_FILE": _taps_file,
+    "INDEX_CACHE_DIR": _index_cache_dir,
+}
+
+
+def __getattr__(name: str):
+    """Resolve legacy path constants dynamically (PEP 562) so they reflect the
+    active profile override; a test's patch.object-set real attribute shadows it."""
+    resolver = _DYNAMIC_PATH_RESOLVERS.get(name)
+    if resolver is not None:
+        return resolver()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
@@ -89,6 +150,46 @@ class SkillBundle:
     identifier: str
     trust_level: str
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+_ALLOWED_SUPPORT_DIRS = frozenset({"references", "templates", "scripts", "assets", "examples"})
+_LOCAL_LINK_RE = re.compile(
+    r"(?:\]\(|`|(?:^|[\s\"']))((?:references|templates|scripts|assets|examples)/[^\s)`\"'<>]+)",
+    re.MULTILINE,
+)
+_SUSPICIOUS_LOCAL_REF_RE = re.compile(
+    r"(?:references|templates|scripts|assets|examples)/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)"
+)
+
+
+def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
+    """Extract safe referenced paths; return None on a traversal attempt."""
+    normalized = skill_md.replace("\\", "/")
+    if _SUSPICIOUS_LOCAL_REF_RE.search(normalized):
+        return None
+    paths: set[str] = set()
+    for match in _LOCAL_LINK_RE.finditer(normalized):
+        raw = unquote(urlsplit(match.group(1).rstrip(".,;:")).path)
+        try:
+            safe = _validate_bundle_rel_path(raw)
+        except ValueError:
+            return None
+        if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
+            paths.add(safe)
+    return paths
+
+
+def source_url_for_bundle(bundle: SkillBundle) -> str:
+    """Best available human-facing immutable-source provenance URL."""
+    explicit = bundle.metadata.get("source_url") or bundle.metadata.get("url")
+    if explicit:
+        return str(explicit)
+    if bundle.source == "github":
+        parts = bundle.identifier.split("/", 2)
+        if len(parts) >= 2:
+            suffix = f"/tree/main/{parts[2]}" if len(parts) == 3 else ""
+            return f"https://github.com/{parts[0]}/{parts[1]}{suffix}"
+    return bundle.identifier
 
 
 def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bool) -> str:
@@ -175,9 +276,10 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
        and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
     """
     normalized = _normalize_lock_install_path(install_path, skill_name)
-    skills_root = SKILLS_DIR.resolve()
+    skills_dir = _skills_dir()
+    skills_root = skills_dir.resolve()
 
-    target = SKILLS_DIR
+    target = skills_dir
     for part in normalized.split("/"):
         target = target / part
         if _is_path_redirect(target):
@@ -302,6 +404,7 @@ class GitHubAuth:
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()
@@ -390,6 +493,57 @@ class SkillSource(ABC):
 # GitHub source adapter
 # ---------------------------------------------------------------------------
 
+# Map a GitHub tap repo (owner/repo) to the human-facing provider label used
+# in the docs-site catalog (website/scripts/extract-skills.py::GITHUB_TAP_LABELS).
+# The runtime index collapses every GitHub tap into source="github"; stamping
+# this provider label onto each skill's ``extra`` keeps the per-tap identity
+# (NVIDIA / OpenAI / Anthropic / HuggingFace / gstack / ...) searchable and
+# filterable at the CLI without disturbing the source="github" dedup / floor /
+# index-skip logic that keys off the bare source id.
+GITHUB_TAP_PROVIDERS = {
+    "openai/skills": "OpenAI",
+    "anthropics/skills": "Anthropic",
+    "huggingface/skills": "HuggingFace",
+    "nvidia/skills": "NVIDIA",
+    "voltagent/awesome-agent-skills": "VoltAgent",
+    "garrytan/gstack": "gstack",
+    "minimax-ai/cli": "MiniMax",
+}
+
+
+def github_provider_for(repo: str) -> Optional[str]:
+    """Return the provider label for a GitHub tap repo, or None.
+
+    ``repo`` is ``owner/repo``; matched case-insensitively so ``NVIDIA/skills``
+    and ``nvidia/skills`` both resolve to ``"NVIDIA"``.
+    """
+    if not repo:
+        return None
+    return GITHUB_TAP_PROVIDERS.get(repo.strip().lower())
+
+
+# Lowercased set of accepted ``--source`` provider filters. These are not real
+# source ids — they narrow the merged results to GitHub-tap skills carrying the
+# matching ``extra.provider`` label (see ``_filter_results_by_provider``).
+_PROVIDER_FILTER_VALUES = frozenset(v.lower() for v in GITHUB_TAP_PROVIDERS.values())
+
+
+def _filter_results_by_provider(
+    results: List["SkillMeta"], provider: str
+) -> List["SkillMeta"]:
+    """Keep only results whose ``extra.provider`` matches ``provider``.
+
+    An explicit provider filter (e.g. ``--source nvidia``) means "show me that
+    provider's skills" — so it narrows to exactly those, without injecting the
+    official catalog the unfiltered browse/search would lead with.
+    """
+    want = provider.strip().lower()
+    return [
+        r for r in results
+        if str((r.extra or {}).get("provider", "")).lower() == want
+    ]
+
+
 class GitHubSource(SkillSource):
     """Fetch skills from GitHub repos via the Contents API."""
 
@@ -421,6 +575,7 @@ class GitHubSource(SkillSource):
         # Per-instance cache: repo -> (default_branch, tree_entries)
         # Survives within a single search/install flow, avoiding redundant API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        self._tree_revisions: Dict[str, str] = {}
         # Per-repo cache of the optional skills.sh.json grouping sidecar,
         # mapping skill_name -> human-readable grouping title. ``None`` means
         # "fetched, no sidecar"; a missing key means "not fetched yet".
@@ -487,9 +642,40 @@ class GitHubSource(SkillSource):
         repo = f"{parts[0]}/{parts[1]}"
         skill_path = parts[2]
 
-        files = self._download_directory(repo, skill_path)
-        if not files or "SKILL.md" not in files:
+        skill_md = self._fetch_file_content(repo, f"{skill_path.rstrip('/')}/SKILL.md")
+        if skill_md is None:
             return None
+        referenced = _referenced_support_paths(skill_md)
+        if referenced is None:
+            return None
+
+        files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
+        tree = self._get_repo_tree(repo)
+        if tree is not None:
+            branch, entries = tree
+            prefix = f"{skill_path.rstrip('/')}/"
+            entries_by_path = {item.get("path", ""): item for item in entries}
+            for rel_path in sorted(referenced):
+                item_path = f"{prefix}{rel_path}"
+                item = entries_by_path.get(item_path)
+                if item is None:
+                    logger.warning("Referenced skill support file is missing: %s", item_path)
+                    return None
+                if item.get("type") != "blob" or item.get("mode") == "120000":
+                    logger.warning("Rejected non-regular file in skill bundle: %s", item_path)
+                    return None
+                content = self._fetch_file_bytes(repo, item_path)
+                if content is None:
+                    return None
+                files[rel_path] = content
+            revision = self._tree_revisions.get(repo) or branch
+        else:
+            for rel_path in referenced:
+                content = self._fetch_file_bytes(repo, f"{skill_path.rstrip('/')}/{rel_path}")
+                if content is None:
+                    return None
+                files[rel_path] = content
+            revision = ""
 
         skill_name = skill_path.rstrip("/").split("/")[-1]
         trust = self.trust_level_for(identifier)
@@ -500,6 +686,13 @@ class GitHubSource(SkillSource):
             source="github",
             identifier=identifier,
             trust_level=trust,
+            metadata={
+                "source_url": (
+                    f"https://github.com/{repo}/tree/{revision}/{skill_path}"
+                    if revision else f"https://github.com/{repo}/{skill_path}"
+                ),
+                "source_revision": revision,
+            },
         )
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
@@ -530,6 +723,11 @@ class GitHubSource(SkillSource):
             raw_tags = fm.get("tags", [])
             tags = raw_tags if isinstance(raw_tags, list) else []
 
+        provider = github_provider_for(repo)
+        extra: Dict[str, Any] = {}
+        if provider:
+            extra["provider"] = provider
+
         return SkillMeta(
             name=skill_name,
             description=str(description),
@@ -539,6 +737,7 @@ class GitHubSource(SkillSource):
             repo=repo,
             path=skill_path,
             tags=[str(t) for t in tags],
+            extra=extra,
         )
 
     # -- Internal helpers --
@@ -632,6 +831,9 @@ class GitHubSource(SkillSource):
             return None
 
         entries = tree_data.get("tree", [])
+        revision = tree_data.get("sha")
+        if isinstance(revision, str) and revision:
+            self._tree_revisions[repo] = revision
         self._tree_cache[repo] = (default_branch, entries)
         return (default_branch, entries)
 
@@ -789,12 +991,13 @@ class GitHubSource(SkillSource):
     def _download_directory_recursive(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download via Contents API (fallback)."""
         url = f"https://api.github.com/repos/{repo}/contents/{path.rstrip('/')}"
-        try:
-            resp = httpx.get(url, headers=self.auth.get_headers(), timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
-                return {}
-        except httpx.HTTPError:
+        # Route through _github_get so directory listing gets the same
+        # 429/403-rate-limit retry + backoff as file fetches (#3033).
+        resp = self._github_get(url)
+        if resp is None:
+            return {}
+        if resp.status_code != 200:
+            logger.debug("Contents API returned %d for %s/%s", resp.status_code, repo, path)
             return {}
 
         entries = resp.json()
@@ -847,14 +1050,24 @@ class GitHubSource(SkillSource):
         return None
 
     def _fetch_file_content(self, repo: str, path: str) -> Optional[str]:
-        """Fetch a single file's content from GitHub."""
+        """Fetch a single text file from GitHub."""
+        content = self._fetch_file_bytes(repo, path)
+        if content is None:
+            return None
+        try:
+            return content.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
+        """Fetch exact file bytes from GitHub without text decoding."""
         url = f"https://api.github.com/repos/{repo}/contents/{path}"
         resp = self._github_get(
             url,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
         )
         if resp is not None and resp.status_code == 200:
-            return resp.text
+            return resp.content
         return None
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:
@@ -914,7 +1127,7 @@ class GitHubSource(SkillSource):
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
-        cache_file = INDEX_CACHE_DIR / f"{key}.json"
+        cache_file = _index_cache_dir() / f"{key}.json"
         if not cache_file.exists():
             return None
         try:
@@ -927,8 +1140,9 @@ class GitHubSource(SkillSource):
 
     def _write_cache(self, key: str, data: list) -> None:
         """Write index data to cache."""
-        INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file = INDEX_CACHE_DIR / f"{key}.json"
+        index_cache_dir = _index_cache_dir()
+        index_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = index_cache_dir / f"{key}.json"
         try:
             cache_file.write_text(json.dumps(data, ensure_ascii=False))
         except OSError as e:
@@ -1196,12 +1410,12 @@ class WellKnownSkillSource(SkillSource):
 # ---------------------------------------------------------------------------
 
 class UrlSource(SkillSource):
-    """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
+    """Fetch SKILL.md plus explicitly referenced, allowlisted support files.
 
     The identifier IS the URL (e.g. ``https://example.com/path/SKILL.md``).
-    Only single-file skills are supported — multi-file skills with
-    ``references/`` or ``scripts/`` subfolders need a manifest we can't
-    discover from a bare URL.
+    Bare URLs cannot safely enumerate a repository, so only exact references
+    below references/templates/scripts/assets are fetched. Other repository
+    files are never copied.
 
     The skill name is read from the ``name:`` field in the SKILL.md YAML
     frontmatter (with a URL-slug fallback). Trust level is always
@@ -1280,6 +1494,19 @@ class UrlSource(SkillSource):
 
         fm = GitHubSource._parse_frontmatter_quick(text)
         name = self._resolve_skill_name(fm, url)
+        referenced = _referenced_support_paths(text)
+        if referenced is None:
+            return None
+        files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
+        base_url = url.rsplit("/", 1)[0] + "/"
+        for rel_path in sorted(referenced):
+            support_url = urljoin(base_url, rel_path)
+            if urlparse(support_url).netloc != urlparse(url).netloc:
+                return None
+            content = self._fetch_bytes(support_url)
+            if content is None:
+                return None
+            files[rel_path] = content
 
         # When auto-resolution fails, return a bundle with an empty name and
         # ``awaiting_name=True`` in metadata. The install flow (``do_install``)
@@ -1296,11 +1523,11 @@ class UrlSource(SkillSource):
 
         return SkillBundle(
             name=skill_name,
-            files={"SKILL.md": text},
+            files=files,
             source="url",
             identifier=url,
             trust_level="community",
-            metadata={"url": url, "awaiting_name": not skill_name},
+            metadata={"url": url, "source_url": url, "awaiting_name": not skill_name},
         )
 
     @staticmethod
@@ -1308,6 +1535,13 @@ class UrlSource(SkillSource):
         resp = _guarded_http_get(url, timeout=20)
         if resp is not None and resp.status_code == 200:
             return resp.text
+        return None
+
+    @staticmethod
+    def _fetch_bytes(url: str) -> Optional[bytes]:
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.content
         return None
 
     # Skill names must look like identifiers: lowercase letters/digits with
@@ -2931,6 +3165,8 @@ class OptionalSkillSource(SkillSource):
     (search / install / inspect) and labelled "official" with "builtin" trust.
     """
 
+    OFFICIAL_REPO = "NousResearch/hermes-agent"
+
     def __init__(self):
         from hermes_constants import get_optional_skills_dir
 
@@ -2969,7 +3205,8 @@ class OptionalSkillSource(SkillSource):
         # Guard against path traversal (e.g. "official/../../etc")
         try:
             resolved = skill_dir.resolve()
-            if not str(resolved).startswith(str(self._optional_dir.resolve())):
+            optional_root = self._optional_dir.resolve()
+            if not resolved.is_relative_to(optional_root):
                 return None
         except (OSError, ValueError):
             return None
@@ -3061,7 +3298,7 @@ class OptionalSkillSource(SkillSource):
                 if isinstance(hermes_meta, dict):
                     tags = hermes_meta.get("tags", [])
 
-            rel_path = str(parent.relative_to(self._optional_dir))
+            rel_path = parent.relative_to(self._optional_dir).as_posix()
 
             results.append(SkillMeta(
                 name=name,
@@ -3069,7 +3306,9 @@ class OptionalSkillSource(SkillSource):
                 source="official",
                 identifier=f"official/{rel_path}",
                 trust_level="builtin",
-                path=rel_path,
+                repo=self.OFFICIAL_REPO,
+                # The centralized skills index consumes repo-root-relative paths.
+                path=f"optional-skills/{rel_path}",
                 tags=tags if isinstance(tags, list) else [],
             ))
 
@@ -3097,7 +3336,7 @@ class OptionalSkillSource(SkillSource):
 
 def _read_index_cache(key: str) -> Optional[Any]:
     """Read cached data if not expired."""
-    cache_file = INDEX_CACHE_DIR / f"{key}.json"
+    cache_file = _index_cache_dir() / f"{key}.json"
     if not cache_file.exists():
         return None
     try:
@@ -3111,17 +3350,18 @@ def _read_index_cache(key: str) -> Optional[Any]:
 
 def _write_index_cache(key: str, data: Any) -> None:
     """Write data to cache."""
-    INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    index_cache_dir = _index_cache_dir()
+    index_cache_dir.mkdir(parents=True, exist_ok=True)
     # Ensure .ignore exists so ripgrep (and tools respecting .ignore) skip
     # this directory.  Cache files contain unvetted community content that
     # could include adversarial text (prompt injection via catalog entries).
-    ignore_file = HUB_DIR / ".ignore"
+    ignore_file = _hub_dir() / ".ignore"
     if not ignore_file.exists():
         try:
             ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
         except OSError:
             pass
-    cache_file = INDEX_CACHE_DIR / f"{key}.json"
+    cache_file = index_cache_dir / f"{key}.json"
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
     except OSError as e:
@@ -3150,8 +3390,8 @@ def _skill_meta_to_dict(meta: SkillMeta) -> dict:
 class HubLockFile:
     """Manages skills/.hub/lock.json — tracks provenance of installed hub skills."""
 
-    def __init__(self, path: Path = LOCK_FILE):
-        self.path = path
+    def __init__(self, path: Optional[Path] = None):
+        self.path = path if path is not None else _lock_file()
 
     def load(self) -> dict:
         if not self.path.exists():
@@ -3176,6 +3416,7 @@ class HubLockFile:
         install_path: str,
         files: List[str],
         metadata: Optional[Dict[str, Any]] = None,
+        scan_provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         # Validate both the skill name and the install path SHAPE before
         # writing into lock.json. A poisoned lock entry is the precondition
@@ -3193,6 +3434,7 @@ class HubLockFile:
             "install_path": safe_install_path,
             "files": files,
             "metadata": metadata or {},
+            "scan_provenance": scan_provenance or {},
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -3222,8 +3464,8 @@ class HubLockFile:
 class TapsManager:
     """Manages the taps.json file — custom GitHub repo sources."""
 
-    def __init__(self, path: Path = TAPS_FILE):
-        self.path = path
+    def __init__(self, path: Optional[Path] = None):
+        self.path = path if path is not None else _taps_file()
 
     def load(self) -> List[dict]:
         if not self.path.exists():
@@ -3267,14 +3509,15 @@ class TapsManager:
 def append_audit_log(action: str, skill_name: str, source: str,
                      trust_level: str, verdict: str, extra: str = "") -> None:
     """Append a line to the audit log."""
-    AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    audit_log = _audit_log()
+    audit_log.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [timestamp, action, skill_name, f"{source}:{trust_level}", verdict]
     if extra:
         parts.append(extra)
     line = " ".join(parts) + "\n"
     try:
-        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+        with open(audit_log, "a", encoding="utf-8") as f:
             f.write(line)
     except OSError as e:
         logger.debug("Could not write audit log: %s", e)
@@ -3286,15 +3529,19 @@ def append_audit_log(action: str, skill_name: str, source: str,
 
 def ensure_hub_dirs() -> None:
     """Create the .hub directory structure if it doesn't exist."""
-    HUB_DIR.mkdir(parents=True, exist_ok=True)
-    QUARANTINE_DIR.mkdir(exist_ok=True)
-    INDEX_CACHE_DIR.mkdir(exist_ok=True)
-    if not LOCK_FILE.exists():
-        LOCK_FILE.write_text('{"version": 1, "installed": {}}\n')
-    if not AUDIT_LOG.exists():
-        AUDIT_LOG.touch()
-    if not TAPS_FILE.exists():
-        TAPS_FILE.write_text('{"taps": []}\n')
+    hub_dir = _hub_dir()
+    lock_file = _lock_file()
+    audit_log = _audit_log()
+    taps_file = _taps_file()
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    _quarantine_dir().mkdir(exist_ok=True)
+    _index_cache_dir().mkdir(exist_ok=True)
+    if not lock_file.exists():
+        lock_file.write_text('{"version": 1, "installed": {}}\n')
+    if not audit_log.exists():
+        audit_log.touch()
+    if not taps_file.exists():
+        taps_file.write_text('{"taps": []}\n')
 
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
@@ -3306,7 +3553,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = QUARANTINE_DIR / skill_name
+    dest = _quarantine_dir() / skill_name
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
@@ -3328,12 +3575,13 @@ def install_from_quarantine(
     category: str,
     bundle: SkillBundle,
     scan_result: ScanResult,
+    scan_provenance: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
-    quarantine_root = QUARANTINE_DIR.resolve()
+    quarantine_root = _quarantine_dir().resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
@@ -3393,9 +3641,10 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=str(install_dir.relative_to(_skills_dir())),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
+        scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
     )
 
     append_audit_log(
@@ -3522,8 +3771,11 @@ def check_for_skill_updates(
 # ---------------------------------------------------------------------------
 
 HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
-HERMES_INDEX_CACHE_FILE = INDEX_CACHE_DIR / "hermes-index.json"
 HERMES_INDEX_TTL = 6 * 3600  # 6 hours
+
+
+def _hermes_index_cache_file() -> Path:
+    return _index_cache_dir() / "hermes-index.json"
 
 
 def _load_hermes_index() -> Optional[dict]:
@@ -3534,23 +3786,56 @@ def _load_hermes_index() -> Optional[dict]:
     downloads within a session.
     """
     # Check local cache
-    if HERMES_INDEX_CACHE_FILE.exists():
+    hermes_index_cache_file = _hermes_index_cache_file()
+    if hermes_index_cache_file.exists():
         try:
-            age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
+            age = time.time() - hermes_index_cache_file.stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+                return json.loads(hermes_index_cache_file.read_text())
         except (OSError, json.JSONDecodeError):
             pass
 
-    # Fetch from docs site
-    try:
-        resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
-        if resp.status_code != 200:
-            logger.debug("Hermes index fetch returned %d", resp.status_code)
+    # Fetch from docs site.
+    #
+    # We deliberately DON'T let httpx negotiate Brotli here.  The index is a
+    # large body (tens of MB); httpx's streaming Brotli decoder, backed by
+    # brotlicffi 1.2.0.1 (pinned for Discord attachment decoding), trips over
+    # its own output_buffer_limit on payloads this size and raises
+    # DecodingError("brotli: decoder process called with data when
+    # 'can_accept_more_data()' is False").  That surfaces as an empty Skills
+    # Hub (blank Browse-hub landing, index contributes 0 search hits) because
+    # the error is caught below and we silently fall back to a (often absent)
+    # stale cache.  Requesting gzip/deflate sidesteps the broken decoder while
+    # still compressing the transfer.  The identity retry is belt-and-braces
+    # for any future proxy that ignores the header and returns Brotli anyway.
+    data = None
+    for accept_encoding in ("gzip, deflate", "identity"):
+        try:
+            resp = httpx.get(
+                HERMES_INDEX_URL,
+                timeout=15,
+                follow_redirects=True,
+                headers={"Accept-Encoding": accept_encoding},
+            )
+            if resp.status_code != 200:
+                logger.debug("Hermes index fetch returned %d", resp.status_code)
+                return _load_stale_index_cache()
+            data = resp.json()
+            break
+        except httpx.DecodingError as e:
+            # Content-Encoding decode failed — retry once uncompressed before
+            # giving up on the network path entirely.
+            logger.debug(
+                "Hermes index decode failed (Accept-Encoding=%s): %s",
+                accept_encoding,
+                e,
+            )
+            continue
+        except (httpx.HTTPError, json.JSONDecodeError) as e:
+            logger.debug("Hermes index fetch failed: %s", e)
             return _load_stale_index_cache()
-        data = resp.json()
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
-        logger.debug("Hermes index fetch failed: %s", e)
+
+    if data is None:
         return _load_stale_index_cache()
 
     # Validate structure
@@ -3559,8 +3844,8 @@ def _load_hermes_index() -> Optional[dict]:
 
     # Cache locally
     try:
-        HERMES_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HERMES_INDEX_CACHE_FILE.write_text(json.dumps(data))
+        hermes_index_cache_file.parent.mkdir(parents=True, exist_ok=True)
+        hermes_index_cache_file.write_text(json.dumps(data))
     except OSError:
         pass
 
@@ -3569,9 +3854,10 @@ def _load_hermes_index() -> Optional[dict]:
 
 def _load_stale_index_cache() -> Optional[dict]:
     """Fall back to stale cache when the network fetch fails."""
-    if HERMES_INDEX_CACHE_FILE.exists():
+    hermes_index_cache_file = _hermes_index_cache_file()
+    if hermes_index_cache_file.exists():
         try:
-            return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+            return json.loads(hermes_index_cache_file.read_text())
         except (OSError, json.JSONDecodeError):
             pass
     return None
@@ -3625,25 +3911,58 @@ class HermesIndexSource(SkillSource):
         return "community"
 
     def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
-        """Search the cached index.  Zero API calls."""
+        """Search the cached index.  Zero API calls.
+
+        Matches against name, description, tags, identifier, and the per-tap
+        ``extra.provider`` label (so a query like ``nvidia`` surfaces the
+        ``NVIDIA/skills/...`` entries even though their ``source`` is the bare
+        ``github``).  Results are scored and ranked (exact name > name prefix >
+        whole-word > substring) rather than returned in raw index order and
+        truncated at the first ``limit`` hits — that earlier break-at-limit
+        behaviour returned an arbitrary file-order slice and buried the most
+        relevant skills.
+        """
         index = self._ensure_loaded()
         skills = index.get("skills", [])
         if not skills:
             return []
 
         if not query.strip():
-            # No query — return featured/popular
+            # No query — return featured/popular (index order)
             return [self._to_meta(s) for s in skills[:limit]]
 
         query_lower = query.lower()
-        results: List[SkillMeta] = []
-        for s in skills:
-            searchable = f"{s.get('name', '')} {s.get('description', '')} {' '.join(s.get('tags', []))}".lower()
-            if query_lower in searchable:
-                results.append(self._to_meta(s))
-                if len(results) >= limit:
-                    break
-        return results
+        scored: List[Tuple[int, int, dict]] = []
+        for i, s in enumerate(skills):
+            name = str(s.get("name", "")).lower()
+            provider = str((s.get("extra") or {}).get("provider", "")).lower()
+            haystack = " ".join([
+                name,
+                str(s.get("description", "")).lower(),
+                " ".join(str(t).lower() for t in s.get("tags", [])),
+                str(s.get("identifier", "")).lower(),
+                provider,
+            ])
+            if query_lower not in haystack:
+                continue
+            # Lower score sorts first.
+            if name == query_lower:
+                score = 0
+            elif name.startswith(query_lower):
+                score = 1
+            elif provider == query_lower:
+                score = 2
+            elif query_lower in name.split() or query_lower in provider.split():
+                score = 3
+            elif query_lower in name:
+                score = 4
+            else:
+                score = 5
+            # i (original index order) is the stable tiebreaker.
+            scored.append((score, i, s))
+
+        scored.sort(key=lambda x: (x[0], x[1]))
+        return [self._to_meta(s) for _, _, s in scored[:limit]]
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """Fetch a skill using the resolved path from the index.
@@ -3790,6 +4109,15 @@ def parallel_search_sources(
 
     per_source_limits = per_source_limits or {}
 
+    # A provider filter (e.g. "nvidia", "openai") targets GitHub-tap skills
+    # that the runtime index stores under source="github" with an
+    # ``extra.provider`` label. It is NOT a real source id, so source-level
+    # selection must treat it like "all" (the index / github source carries
+    # the data); the per-provider narrowing happens downstream on the merged
+    # results (see ``_filter_results_by_provider``).
+    _provider_filter = source_filter.strip().lower() in _PROVIDER_FILTER_VALUES
+    _effective_filter = "all" if _provider_filter else source_filter
+
     active: List[SkillSource] = []
     # When the centralized index is available and the user hasn't filtered
     # to a specific source, skip external API sources (github, skills-sh,
@@ -3798,7 +4126,7 @@ def parallel_search_sources(
     _index_available = False
     _api_source_ids = frozenset({"github", "skills-sh", "clawhub",
                                   "claude-marketplace", "lobehub", "well-known"})
-    if source_filter == "all":
+    if _effective_filter == "all":
         for src in sources:
             if (src.source_id() == "hermes-index"
                     and getattr(src, "is_available", False)):
@@ -3807,7 +4135,7 @@ def parallel_search_sources(
 
     for src in sources:
         sid = src.source_id()
-        if source_filter != "all" and sid != source_filter and sid != "official":
+        if _effective_filter != "all" and sid != _effective_filter and sid != "official":
             continue
         # Skip external API sources when the index covers them
         if _index_available and sid in _api_source_ids:
@@ -3826,8 +4154,11 @@ def parallel_search_sources(
     # worker finishes — so a single slow source (e.g. ClawHub) keeps the
     # caller blocked for minutes and renders ``overall_timeout`` a no-op.
     # Manage the executor manually and shut it down with ``wait=False`` so
-    # the timeout is actually honoured.
-    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    # the timeout is actually honoured.  Daemon workers (tools.daemon_pool):
+    # an abandoned slow source must not block interpreter exit either —
+    # stdlib workers are joined unconditionally by the atexit hook.
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+    pool = DaemonThreadPoolExecutor(max_workers=min(len(active), 8))
     futures = {}
     for src in active:
         lim = per_source_limits.get(src.source_id(), 50)
@@ -3871,6 +4202,12 @@ def unified_search(query: str, sources: List[SkillSource],
         source_filter=source_filter,
         overall_timeout=30,
     )
+
+    # A provider filter (nvidia/openai/...) is applied here, on the merged set,
+    # because it targets the per-tap ``extra.provider`` label rather than a real
+    # source id (the runtime index stores every GitHub tap as source="github").
+    if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES:
+        all_results = _filter_results_by_provider(all_results, source_filter)
 
     # Deduplicate by identifier, preferring higher trust levels.
     # identifier is always unique per skill (e.g. "browse-sh/airbnb.com/search-listings-ddgioa").

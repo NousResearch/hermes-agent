@@ -711,8 +711,10 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
 
-    def test_gateway_key_wins_over_session_title(self):
-        """Gateway/WebUI keys are canonical even when a display title is set."""
+    def test_gateway_key_not_remapped_by_title(self):
+        """A title never remaps a stable identifier — the gateway per-chat key
+        wins over the title so a generated title can't split a live conversation
+        onto a new Honcho session."""
         config = HonchoClientConfig(session_strategy="per-session")
         result = config.resolve_session_name(
             session_title="my-custom-title",

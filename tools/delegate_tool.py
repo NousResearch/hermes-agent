@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import re
 import enum
 import json
 import logging
@@ -2049,10 +2050,48 @@ def _run_single_child(
         if interrupted:
             status = "interrupted"
         elif summary and not _empty_sentinel:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
-            status = "completed"
+            # ACP child agents can return summaries that are unrelated to the
+            # task (e.g. a bare model identifier string like
+            # "Claude Sonnet 4.6 (...)") or ACP-specific abort markers when
+            # requestPermission() is cancelled (issue #20807). These must be
+            # classified as failed, not completed.
+
+            # Gate ACP-specific abort detection on the ACP transport so a
+            # non-ACP child summary that quotes an abort phrase is not
+            # misclassified as failed.
+            _acp_abort_markers = (
+                "tool use aborted", "tool_use aborted",
+                "requestpermission", "permission cancelled", "signal.aborted",
+            )
+            _summary_lower = summary.strip().lower()
+            # Derive ACP context from the child agent attribute so this
+            # function does not need effective_acp_command from the outer scope.
+            _child_acp_command = getattr(child, "acp_command", None)
+            _is_acp_abort = (
+                bool(_child_acp_command)
+                and any(m in _summary_lower for m in _acp_abort_markers)
+            )
+
+            # Detect bare model-identifier summaries (e.g. "Claude Sonnet 4.6
+            # (...)"). These are produced when the ACP sub-agent's first
+            # message is an auto-generated model disclosure rather than actual
+            # task output. The pattern must cover multi-word model names
+            # including parenthesised qualifiers: allow any non-empty content
+            # after the model family name.
+            _MODEL_ID_RE = re.compile(
+                r"^(claude|gpt|gemini|sonnet|opus|haiku|mistral|deepseek|llama)"
+                r"[\s:_/-].+$",
+                re.IGNORECASE,
+            )
+            _is_bare_model_id = bool(_MODEL_ID_RE.match(summary.strip()))
+
+            if _is_acp_abort or _is_bare_model_id:
+                status = "failed"
+            else:
+                # A summary means the subagent produced usable output.
+                # exit_reason ("completed" vs "max_iterations") already
+                # tells the parent *how* the task ended.
+                status = "completed"
         else:
             status = "failed"
 

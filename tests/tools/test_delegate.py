@@ -3032,3 +3032,127 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAcpResultClassification(unittest.TestCase):
+    """Regression tests for ACP result classification (issue #20807).
+
+    ACP child agents can return summaries that are unrelated to the task:
+    - Bare model identifier strings ("Claude Sonnet 4.6 (...)")
+    - ACP abort markers ("tool use aborted", "signal.aborted", etc.)
+    These must be classified as failed, not completed.
+    Non-ACP summaries that happen to quote abort phrases must NOT be
+    reclassified as failed.
+    """
+
+    def _run_with_summary(self, summary: str, acp_command: str | None = None) -> dict:
+        """Run delegate_task and return the first result dict."""
+        import sys
+        # Stub dotenv if not installed (sandbox environment)
+        if "dotenv" not in sys.modules:
+            import types
+            sys.modules["dotenv"] = types.ModuleType("dotenv")
+            sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
+        parent = _make_mock_parent(depth=0)
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": summary,
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+            kwargs = dict(goal="test", parent_agent=parent)
+            if acp_command:
+                kwargs["override_acp_command"] = acp_command
+            result = json.loads(delegate_task(**kwargs))
+        return result["results"][0]
+
+    def test_bare_model_identifier_is_failed(self):
+        """'Claude Sonnet 4.6 (...)' is a bare model ID, not task output."""
+        result = self._run_with_summary("Claude Sonnet 4.6 (...)")
+        self.assertEqual(result["status"], "failed", (
+            "A bare model identifier summary must be classified as failed, "
+            "not completed. The ACP sub-agent returned its model disclosure "
+            "instead of actual task output."
+        ))
+
+    def test_bare_model_identifier_with_colon_is_failed(self):
+        """'claude: something-version' style is also a bare model ID."""
+        result = self._run_with_summary("claude: claude-opus-4-5")
+        self.assertEqual(result["status"], "failed")
+
+    def test_real_task_output_is_completed(self):
+        """A real multi-sentence task summary must be classified as completed."""
+        result = self._run_with_summary(
+            "I completed the analysis. Found 3 issues and fixed them. "
+            "All tests pass."
+        )
+        self.assertEqual(result["status"], "completed")
+
+    def test_acp_abort_marker_in_acp_context_is_failed(self):
+        """ACP abort marker in ACP context must be classified as failed."""
+        parent = _make_mock_parent(depth=0)
+        import sys
+        if "dotenv" not in sys.modules:
+            import types
+            sys.modules["dotenv"] = types.ModuleType("dotenv")
+            sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            # Set acp_command so the ACP gate fires.
+            mock_child.acp_command = "some_acp_tool"
+            mock_child.run_conversation.return_value = {
+                "final_response": "tool use aborted by user",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            # Set acp_command on parent so it propagates to child.
+            parent.acp_command = "some_acp_tool"
+            MockAgent.return_value = mock_child
+            result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertEqual(result["results"][0]["status"], "failed")
+
+    def test_acp_abort_marker_in_non_acp_context_is_completed(self):
+        """An abort phrase in a non-ACP summary must NOT trigger failed status.
+        A real task output that mentions 'tool use aborted' (e.g. reporting
+        on a prior failure) should not be misclassified."""
+        parent = _make_mock_parent(depth=0)
+        import sys
+        if "dotenv" not in sys.modules:
+            import types
+            sys.modules["dotenv"] = types.ModuleType("dotenv")
+            sys.modules["dotenv"].load_dotenv = lambda *a, **k: None
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            # No acp_command — non-ACP context.
+            mock_child.acp_command = None
+            mock_child.run_conversation.return_value = {
+                "final_response": (
+                    "The previous tool use aborted unexpectedly. I recovered and "
+                    "completed the task successfully by using an alternative approach."
+                ),
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+            result = json.loads(delegate_task(goal="test", parent_agent=parent))
+        self.assertEqual(result["results"][0]["status"], "completed", (
+            "Non-ACP summaries quoting abort phrases must not be reclassified "
+            "as failed -- the ACP gate must be checked first."
+        ))

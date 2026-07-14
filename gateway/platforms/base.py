@@ -66,12 +66,15 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     if thread_id is None:
         return None
     metadata = {"thread_id": thread_id}
-    if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
+    anchor = reply_to_message_id or getattr(source, "message_id", None)
+    platform = _platform_name(getattr(source, "platform", None))
+    if anchor is not None and platform == "feishu":
+        metadata["reply_to_message_id"] = str(anchor)
+    if platform == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
         if tid and tid not in {"", "1"}:
             metadata["direct_messages_topic_id"] = tid
-        anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
     return metadata
@@ -102,8 +105,11 @@ def _reply_anchor_for_event(event) -> str | None:
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "telegram" and thread_id:
         return None
-    if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
-        return getattr(event, "reply_to_message_id", None)
+    if platform == "feishu" and thread_id:
+        # Feishu topic replies must target the triggering message and set
+        # reply_in_thread=true. Replying to the parent/root can be rejected
+        # with 99992402 and must never spill into the parent chat.
+        return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
 
 

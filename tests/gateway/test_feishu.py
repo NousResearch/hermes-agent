@@ -483,6 +483,59 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
                          "extra_ua_tags must be ['channel'] to enable group event routing")
 
+    def test_topic_reply_field_validation_never_falls_back_to_parent_chat(self):
+        """A rejected topic reply must fail instead of leaking into the parent chat."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._send_raw_message = AsyncMock(
+            side_effect=RuntimeError("[99992402] field validation failed")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "99992402"):
+            asyncio.run(
+                adapter._feishu_send_with_retry(
+                    chat_id="oc_chat",
+                    msg_type="text",
+                    payload=json.dumps({"text": "hello"}),
+                    reply_to="om_message",
+                    metadata={
+                        "thread_id": "omt_topic",
+                        "reply_to_message_id": "om_message",
+                    },
+                )
+            )
+
+        adapter._send_raw_message.assert_awaited_once()
+
+    def test_topic_reply_anchor_prefers_triggering_message(self):
+        from gateway.platforms.base import _reply_anchor_for_event
+
+        event = SimpleNamespace(
+            source=SimpleNamespace(platform="feishu", thread_id="omt_topic"),
+            message_id="om_current",
+            reply_to_message_id="om_parent",
+        )
+
+        self.assertEqual(_reply_anchor_for_event(event), "om_current")
+
+    def test_topic_send_without_reply_anchor_refuses_parent_chat(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._client = object()
+
+        with self.assertRaisesRegex(RuntimeError, "refusing to fall back"):
+            asyncio.run(
+                adapter._send_raw_message(
+                    chat_id="oc_chat",
+                    msg_type="text",
+                    payload=json.dumps({"text": "hello"}),
+                    reply_to=None,
+                    metadata={"thread_id": "omt_topic"},
+                )
+            )
+
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_updates_existing_feishu_message(self):
         from gateway.config import PlatformConfig

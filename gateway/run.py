@@ -14464,6 +14464,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if thread_id is None:
             return None
         metadata: Dict[str, Any] = {"thread_id": thread_id}
+        platform_name = str(getattr(platform, "value", platform) or "").lower()
+        if reply_to_message_id is not None and platform_name != "telegram":
+            metadata["reply_to_message_id"] = str(reply_to_message_id)
         if self._is_telegram_dm_topic_target(
             platform,
             chat_id,

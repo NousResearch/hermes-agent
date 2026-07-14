@@ -171,7 +171,6 @@ VALID_HOOKS: Set[str] = {
     "pre_command",
     "post_command",
     "on_quit",
-    "on_quit",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

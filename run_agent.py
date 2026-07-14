@@ -565,6 +565,39 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+        self._pin_initial_credential_identity()
+
+    def _pin_initial_credential_identity(self) -> None:
+        """Pin non-secret metadata for the pool credential backing ``api_key``."""
+        self.credential_id = None
+        self.credential_label = None
+        pool = getattr(self, "_credential_pool", None)
+        active_key = str(getattr(self, "api_key", None) or "")
+        if pool is None or not active_key:
+            return
+
+        candidates = []
+        try:
+            current = pool.current()
+            if current is not None:
+                candidates.append(current)
+        except Exception:
+            pass
+        try:
+            candidates.extend(pool.entries())
+        except Exception:
+            candidates.extend(list(getattr(pool, "_entries", None) or []))
+
+        for entry in candidates:
+            entry_key = str(
+                getattr(entry, "runtime_api_key", None)
+                or getattr(entry, "access_token", None)
+                or ""
+            )
+            if entry_key == active_key:
+                self.credential_id = getattr(entry, "id", None)
+                self.credential_label = getattr(entry, "label", None)
+                return
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -4557,32 +4590,39 @@ class AIAgent:
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        credential_id = getattr(entry, "id", None)
+        credential_label = getattr(entry, "label", None)
 
-        if self.api_mode == "anthropic_messages":
-            from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
+        with self._client_lock:
+            if self.api_mode == "anthropic_messages":
+                from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 
-            try:
-                self._anthropic_client.close()
-            except Exception:
-                pass
+                try:
+                    self._anthropic_client.close()
+                except Exception:
+                    pass
 
-            self._anthropic_api_key = runtime_key
-            self._anthropic_base_url = runtime_base
-            self._anthropic_client = build_anthropic_client(
-                runtime_key, runtime_base,
-                timeout=get_provider_request_timeout(self.provider, self.model),
-            )
-            self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+                self._anthropic_api_key = runtime_key
+                self._anthropic_base_url = runtime_base
+                self._anthropic_client = build_anthropic_client(
+                    runtime_key, runtime_base,
+                    timeout=get_provider_request_timeout(self.provider, self.model),
+                )
+                self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
+                self.api_key = runtime_key
+                self.base_url = runtime_base
+                self.credential_id = credential_id
+                self.credential_label = credential_label
+                return
+
             self.api_key = runtime_key
-            self.base_url = runtime_base
-            return
-
-        self.api_key = runtime_key
-        self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
-        self._client_kwargs["api_key"] = self.api_key
-        self._client_kwargs["base_url"] = self.base_url
-        self._apply_client_headers_for_base_url(self.base_url)
-        self._replace_primary_openai_client(reason="credential_rotation")
+            self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
+            self.credential_id = credential_id
+            self.credential_label = credential_label
+            self._client_kwargs["api_key"] = self.api_key
+            self._client_kwargs["base_url"] = self.base_url
+            self._apply_client_headers_for_base_url(self.base_url)
+            self._replace_primary_openai_client(reason="credential_rotation")
 
     def _recover_with_credential_pool(
         self,

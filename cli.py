@@ -24,6 +24,7 @@ except ModuleNotFoundError:
     pass
 
 import logging
+import hashlib
 import os
 import shutil
 import sys
@@ -4496,6 +4497,197 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     @staticmethod
+    def _account_limit_provider_label(provider: Optional[str]) -> str:
+        normalized = str(provider or "").strip().lower()
+        return {
+            "openai-codex": "Codex",
+            "anthropic": "Claude",
+            "openrouter": "OpenRouter",
+        }.get(normalized, normalized.replace("_", "-").replace("-", " ").title().replace(" ", "") or "Account")
+
+    @staticmethod
+    def _compact_account_limit_credential_label(label: Optional[str], max_width: int = 10) -> str:
+        cleaned = re.sub(r"\s+", "-", str(label or "").strip())
+        cleaned = re.sub(r"[^A-Za-z0-9._@+-]+", "-", cleaned).strip("-")
+        return cleaned if len(cleaned) <= max_width else cleaned[: max(1, max_width - 1)] + "…"
+
+    def _account_limit_credential_label(self, agent, api_key: Optional[str] = None) -> str:
+        """Return a pool label only after an exact active-token match."""
+        active_key = str(
+            api_key
+            if api_key is not None
+            else getattr(agent, "api_key", None) or getattr(self, "api_key", None) or ""
+        )
+        pool = getattr(agent, "_credential_pool", None) or getattr(self, "_credential_pool", None)
+        if pool is None or not active_key:
+            return ""
+        candidates = []
+        try:
+            entries = getattr(pool, "entries", None)
+            if callable(entries):
+                candidates.extend(entries())
+        except Exception:
+            pass
+        candidates.extend(list(getattr(pool, "_entries", None) or []))
+        for method_name in ("current", "peek"):
+            try:
+                method = getattr(pool, method_name, None)
+                entry = method() if callable(method) else None
+                if entry is not None:
+                    candidates.append(entry)
+            except Exception:
+                pass
+        for entry in candidates:
+            entry_api_key = str(
+                getattr(entry, "runtime_api_key", None)
+                or getattr(entry, "access_token", None)
+                or getattr(entry, "api_key", None)
+                or ""
+            )
+            if entry_api_key == active_key:
+                label = getattr(entry, "label", None) or getattr(entry, "id", None)
+                return self._compact_account_limit_credential_label(label)
+        return ""
+
+    @staticmethod
+    def _account_limit_window_label(label: str) -> str:
+        normalized = str(label or "").strip().lower()
+        if "session" in normalized or "five hour" in normalized:
+            return "5h"
+        if "opus" in normalized and "week" in normalized:
+            return "opus wk"
+        if "sonnet" in normalized and "week" in normalized:
+            return "sonnet wk"
+        if "week" in normalized:
+            return "weekly"
+        if "quota" in normalized:
+            return "quota"
+        cleaned = re.sub(r"[^A-Za-z0-9]+", "-", normalized).strip("-")
+        return cleaned[:10] if cleaned else "limit"
+
+    @classmethod
+    def _format_account_limit_status(cls, snapshot, credential_label: Optional[str] = None) -> Optional[Dict[str, str]]:
+        if not snapshot or not getattr(snapshot, "windows", None):
+            return None
+        parts: list[str] = []
+        lowest_remaining: Optional[int] = None
+        for window in list(snapshot.windows)[:3]:
+            try:
+                remaining = max(0, min(100, round(100 - float(window.used_percent))))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            lowest_remaining = remaining if lowest_remaining is None else min(lowest_remaining, remaining)
+            parts.append(f"{cls._account_limit_window_label(getattr(window, 'label', ''))} {remaining}%")
+        if not parts:
+            return None
+        level = "critical" if lowest_remaining is not None and lowest_remaining <= 10 else "warn" if lowest_remaining is not None and lowest_remaining <= 25 else "ok"
+        prefix = cls._account_limit_provider_label(getattr(snapshot, "provider", None))
+        label = cls._compact_account_limit_credential_label(credential_label)
+        if label:
+            prefix += f" {label}"
+        return {"text": f"{prefix} {' • '.join(parts)}", "level": level}
+
+    @staticmethod
+    def _status_bar_account_limit_style(level: Optional[str]) -> str:
+        if level == "critical":
+            return "class:status-bar-critical"
+        if level == "warn":
+            return "class:status-bar-warn"
+        return "class:status-bar-dim"
+
+    def _ensure_account_limit_status_state(self) -> None:
+        if not hasattr(self, "_account_limit_status_lock"):
+            self._account_limit_status_lock = threading.Lock()
+        if not isinstance(getattr(self, "_account_limit_status_cache", None), dict):
+            self._account_limit_status_cache = {}
+        if not hasattr(self, "_account_limit_status_refreshing"):
+            self._account_limit_status_refreshing = set()
+        if not hasattr(self, "_account_limit_status_ttl"):
+            self._account_limit_status_ttl = 300.0
+        if not hasattr(self, "_account_limit_status_retry"):
+            self._account_limit_status_retry = 60.0
+        if not hasattr(self, "_account_limit_status_enabled"):
+            self._account_limit_status_enabled = True
+
+    def _account_limit_status_request_snapshot(self, agent) -> Optional[tuple]:
+        provider = str(getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip().lower()
+        if provider in {"", "auto", "custom"}:
+            return None
+        base_url = str(getattr(agent, "base_url", None) or getattr(self, "base_url", None) or "").strip().rstrip("/")
+        api_key = str(getattr(agent, "api_key", None) or getattr(self, "api_key", None) or "")
+        fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest() if api_key else ""
+        key = (provider, base_url, fingerprint)
+        return key, provider, base_url, api_key, self._account_limit_credential_label(agent, api_key)
+
+    def _account_limit_status_cache_key(self, agent) -> Optional[tuple[str, str, str]]:
+        snapshot = self._account_limit_status_request_snapshot(agent)
+        return snapshot[0] if snapshot else None
+
+    def _refresh_account_limit_status(self, request: tuple) -> None:
+        key, provider, base_url, api_key, credential_label = request
+        formatted = None
+        try:
+            from agent.account_usage import fetch_account_usage
+
+            formatted = self._format_account_limit_status(
+                fetch_account_usage(provider, base_url=base_url, api_key=api_key or None),
+                credential_label=credential_label,
+            )
+        except Exception:
+            formatted = None
+        finally:
+            now = time.monotonic()
+            ttl = float(getattr(self, "_account_limit_status_ttl", 300.0) or 300.0)
+            retry = float(getattr(self, "_account_limit_status_retry", 60.0) or 60.0)
+            with self._account_limit_status_lock:
+                previous = self._account_limit_status_cache.get(key) or {}
+                if formatted is not None:
+                    self._account_limit_status_cache[key] = {
+                        "payload": dict(formatted),
+                        "fresh_until": now + ttl,
+                        "retry_after": now + ttl,
+                    }
+                else:
+                    self._account_limit_status_cache[key] = {
+                        "payload": previous.get("payload"),
+                        "fresh_until": float(previous.get("fresh_until") or 0.0),
+                        "retry_after": now + min(ttl, retry),
+                    }
+                self._account_limit_status_refreshing.discard(key)
+            self._invalidate()
+
+    def _get_account_limit_status_for_status_bar(self, agent):
+        if not agent:
+            return None
+        self._ensure_account_limit_status_state()
+        request = self._account_limit_status_request_snapshot(agent)
+        if not request:
+            return None
+        key = request[0]
+        now = time.monotonic()
+        with self._account_limit_status_lock:
+            cached = self._account_limit_status_cache.get(key) or {}
+            stale = cached.get("payload")
+            if float(cached.get("fresh_until") or 0.0) > now:
+                return stale
+            if float(cached.get("retry_after") or 0.0) > now:
+                return stale
+            if not self._account_limit_status_enabled or key in self._account_limit_status_refreshing:
+                return stale
+            self._account_limit_status_refreshing.add(key)
+        try:
+            threading.Thread(
+                target=self._refresh_account_limit_status,
+                args=(request,),
+                daemon=True,
+                name="cli-account-limits-refresh",
+            ).start()
+        except Exception:
+            with self._account_limit_status_lock:
+                self._account_limit_status_refreshing.discard(key)
+        return stale
+
+    @staticmethod
     def _format_prompt_elapsed(prompt_start_time: Optional[float], prompt_duration: float, live: bool = False) -> str:
         """Format per-prompt elapsed time for the status bar.
 
@@ -5124,6 +5316,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 parts.append(idle_since)
             if yolo_active:
                 parts.append("⚠ YOLO")
+            account_limit_status = self._get_account_limit_status_for_status_bar(getattr(self, "agent", None))
+            if account_limit_status and account_limit_status.get("text"):
+                parts.append(str(account_limit_status["text"]))
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -5239,6 +5434,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
+                    account_limit_status = self._get_account_limit_status_for_status_bar(getattr(self, "agent", None))
+                    if account_limit_status and account_limit_status.get("text"):
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((
+                            self._status_bar_account_limit_style(account_limit_status.get("level")),
+                            str(account_limit_status["text"]),
+                        ))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)

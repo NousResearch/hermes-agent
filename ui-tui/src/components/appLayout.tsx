@@ -466,6 +466,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
+        accountLimits={ui.info?.account_limits}
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
         cols={composer.cols}

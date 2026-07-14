@@ -3,6 +3,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import copy
+import hashlib
 import inspect
 import json
 import logging
@@ -129,6 +130,11 @@ _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
+_ACCOUNT_LIMIT_CACHE_TTL_SECONDS = 300.0
+_ACCOUNT_LIMIT_CACHE_RETRY_SECONDS = 60.0
+_ACCOUNT_LIMIT_CACHE: dict[tuple[str, str, str], dict] = {}
+_ACCOUNT_LIMIT_REFRESHING: set[tuple[str, str, str]] = set()
+_ACCOUNT_LIMIT_CACHE_LOCK = threading.Lock()
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
@@ -3282,6 +3288,182 @@ def _get_usage(agent) -> dict:
     return usage
 
 
+def _account_limit_level(remaining: int) -> str:
+    return "critical" if remaining <= 10 else "warn" if remaining <= 25 else "ok"
+
+
+def _account_limit_provider_label(provider: Optional[str]) -> str:
+    normalized = str(provider or "").strip().lower()
+    return {"openai-codex": "Codex", "anthropic": "Claude", "openrouter": "OpenRouter"}.get(
+        normalized, normalized.replace("_", "-").replace("-", " ").title().replace(" ", "") or "Account"
+    )
+
+
+def _account_limit_window_label(label: str) -> str:
+    normalized = str(label or "").strip().lower()
+    if "session" in normalized or "five hour" in normalized:
+        return "5h"
+    if "opus" in normalized and "week" in normalized:
+        return "opus wk"
+    if "sonnet" in normalized and "week" in normalized:
+        return "sonnet wk"
+    if "week" in normalized:
+        return "weekly"
+    if "quota" in normalized:
+        return "quota"
+    return normalized[:10] or "limit"
+
+
+def _active_credential_label(agent, api_key: Optional[str] = None) -> Optional[str]:
+    """Return a pool label only after an exact active-token match."""
+    active_key = str(api_key if api_key is not None else getattr(agent, "api_key", None) or "")
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None or not active_key:
+        return None
+    candidates = []
+    try:
+        entries = getattr(pool, "entries", None)
+        if callable(entries):
+            candidates.extend(entries())
+    except Exception:
+        pass
+    candidates.extend(list(getattr(pool, "_entries", None) or []))
+    for method_name in ("current", "peek"):
+        try:
+            method = getattr(pool, method_name, None)
+            entry = method() if callable(method) else None
+            if entry is not None:
+                candidates.append(entry)
+        except Exception:
+            pass
+    for entry in candidates:
+        entry_key = str(
+            getattr(entry, "runtime_api_key", None)
+            or getattr(entry, "access_token", None)
+            or getattr(entry, "api_key", None)
+            or ""
+        )
+        if entry_key == active_key:
+            return str(
+                getattr(entry, "label", None) or getattr(entry, "id", None) or ""
+            ).strip() or None
+    return None
+
+
+def _account_limit_request_snapshot(agent) -> Optional[tuple]:
+    """Capture immutable cache/fetch inputs before a background thread starts."""
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider in {"", "auto", "custom"}:
+        return None
+    base_url = str(getattr(agent, "base_url", "") or "").strip().rstrip("/")
+    api_key = str(getattr(agent, "api_key", "") or "")
+    fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest() if api_key else ""
+    key = (provider, base_url, fingerprint)
+    return key, provider, base_url, api_key, _active_credential_label(agent, api_key)
+
+
+def _account_limit_cache_key(agent) -> Optional[tuple[str, str, str]]:
+    snapshot = _account_limit_request_snapshot(agent)
+    return snapshot[0] if snapshot else None
+
+
+def _format_account_limit_status(snapshot, credential_label: Optional[str] = None) -> Optional[dict]:
+    if not snapshot or not getattr(snapshot, "windows", None):
+        return None
+    windows = []
+    lowest_remaining = 100
+    for window in list(snapshot.windows)[:4]:
+        try:
+            used = max(0, min(100, round(float(window.used_percent))))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        remaining = max(0, min(100, round(100 - float(window.used_percent))))
+        lowest_remaining = min(lowest_remaining, remaining)
+        item = {
+            "label": _account_limit_window_label(getattr(window, "label", "")),
+            "full_label": str(getattr(window, "label", "") or ""),
+            "used_percent": used,
+            "remaining_percent": remaining,
+            "level": _account_limit_level(remaining),
+        }
+        reset_at = getattr(window, "reset_at", None)
+        if reset_at:
+            item["reset_at"] = reset_at.isoformat()
+        windows.append(item)
+    if not windows:
+        return None
+    payload = {
+        "provider": getattr(snapshot, "provider", "") or "",
+        "label": _account_limit_provider_label(getattr(snapshot, "provider", None)),
+        "level": _account_limit_level(lowest_remaining),
+        "windows": windows,
+    }
+    if credential_label:
+        payload["credential_label"] = credential_label
+    return payload
+
+
+def _refresh_account_limit_status(request: tuple) -> None:
+    key, provider, base_url, api_key, credential_label = request
+    payload = None
+    try:
+        from agent.account_usage import fetch_account_usage
+
+        payload = _format_account_limit_status(
+            fetch_account_usage(provider, base_url=base_url, api_key=api_key or None),
+            credential_label=credential_label,
+        )
+    except Exception:
+        payload = None
+    finally:
+        now = time.monotonic()
+        with _ACCOUNT_LIMIT_CACHE_LOCK:
+            previous = _ACCOUNT_LIMIT_CACHE.get(key) or {}
+            if payload is not None:
+                _ACCOUNT_LIMIT_CACHE[key] = {
+                    "payload": copy.deepcopy(payload),
+                    "fresh_until": now + _ACCOUNT_LIMIT_CACHE_TTL_SECONDS,
+                    "retry_after": now + _ACCOUNT_LIMIT_CACHE_TTL_SECONDS,
+                }
+            else:
+                _ACCOUNT_LIMIT_CACHE[key] = {
+                    "payload": copy.deepcopy(previous.get("payload")),
+                    "fresh_until": float(previous.get("fresh_until") or 0.0),
+                    "retry_after": now + _ACCOUNT_LIMIT_CACHE_RETRY_SECONDS,
+                }
+            _ACCOUNT_LIMIT_REFRESHING.discard(key)
+
+
+def _get_account_limit_status(agent) -> Optional[dict]:
+    """Return cached/stale limits immediately and refresh single-flight."""
+    request = _account_limit_request_snapshot(agent)
+    if not request:
+        return None
+    key = request[0]
+    now = time.monotonic()
+    with _ACCOUNT_LIMIT_CACHE_LOCK:
+        cached = _ACCOUNT_LIMIT_CACHE.get(key) or {}
+        stale = copy.deepcopy(cached.get("payload"))
+        if float(cached.get("fresh_until") or 0.0) > now:
+            return stale
+        if float(cached.get("retry_after") or 0.0) > now:
+            return stale
+        if key in _ACCOUNT_LIMIT_REFRESHING:
+            return stale
+        _ACCOUNT_LIMIT_REFRESHING.add(key)
+    try:
+        threading.Thread(
+            target=_refresh_account_limit_status,
+            args=(request,),
+            daemon=True,
+            name="tui-account-limits-refresh",
+        ).start()
+    except Exception:
+        with _ACCOUNT_LIMIT_CACHE_LOCK:
+            _ACCOUNT_LIMIT_REFRESHING.discard(key)
+    return stale
+
+
 def _probe_credentials(agent) -> str:
     """Light credential check at session creation — returns warning or ''."""
     try:
@@ -3409,6 +3591,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
         "profile_name": _current_profile_name(),
+        "account_limits": _get_account_limit_status(agent),
     }
     try:
         from hermes_cli.config import (
@@ -9197,7 +9380,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload = {
+                "text": raw,
+                "usage": _get_usage(agent),
+                "account_limits": _get_account_limit_status(agent),
+                "status": status,
+            }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

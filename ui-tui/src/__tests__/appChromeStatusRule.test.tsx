@@ -104,6 +104,63 @@ const baseProps = {
   voiceLabel: ''
 }
 
+const accountLimits = {
+  credential_label: 'work-account-with-a-very-long-credential-label',
+  label: 'OpenAI Codex',
+  level: 'warn' as const,
+  provider: 'openai-codex',
+  windows: [
+    {
+      full_label: 'five-hour window',
+      label: '5h',
+      level: 'warn' as const,
+      remaining_percent: 18,
+      used_percent: 82
+    },
+    {
+      full_label: 'weekly window',
+      label: 'weekly',
+      level: 'ok' as const,
+      remaining_percent: 64,
+      used_percent: 36
+    }
+  ]
+}
+
+describe('StatusRule account-limit segment', () => {
+  it('renders the provider, credential, and every compact window on a wide terminal', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, accountLimits, cols: 240, cwdLabel: '' }))
+
+    expect(rendered).toContain('OpenAI Codex')
+    expect(rendered).toContain('work-account-with-a-very-long-credential-label')
+    expect(rendered).toContain('5h 18%')
+    expect(rendered).toContain('weekly 64%')
+    expect(rendered).not.toContain('five-hour window')
+    expect(rendered).not.toContain('weekly window')
+  })
+
+  it('keeps account limits ahead of lower-priority tail segments', () => {
+    const rendered = textContent(
+      StatusRule({ ...baseProps, accountLimits, cols: 140, cwdLabel: '', voiceLabel: 'voice available' })
+    )
+
+    expect(rendered).toContain('weekly 64%')
+    expect(rendered).not.toContain('voice available')
+  })
+
+  it('hides the whole segment on a narrow terminal while preserving essentials', () => {
+    const rendered = textContent(StatusRule({ ...baseProps, accountLimits, cols: 64, cwdLabel: '' }))
+
+    expect(rendered).toContain('ready')
+    expect(rendered).toContain('opus 4.8')
+    expect(rendered).toContain('50k tok')
+    expect(rendered).not.toContain('OpenAI Codex')
+    expect(rendered).not.toContain('work-account')
+    expect(rendered).not.toContain('5h 18%')
+    expect(rendered).not.toContain('weekly 64%')
+  })
+})
+
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {
     const element = StatusRule({

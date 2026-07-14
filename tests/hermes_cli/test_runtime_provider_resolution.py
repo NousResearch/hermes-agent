@@ -64,6 +64,8 @@ def _fake_invoke_jwt(ttl_seconds=3600):
 
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
+        id = "codex-cred-1"
+        label = "work-codex"
         access_token = "pool-token"
         source = "manual"
         base_url = "https://chatgpt.com/backend-api/codex"
@@ -84,6 +86,8 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["api_key"] == "pool-token"
     assert resolved["credential_pool"] is not None
     assert resolved["source"] == "manual"
+    assert resolved["credential_id"] == "codex-cred-1"
+    assert resolved["credential_label"] == "work-codex"
 
 
 def test_resolve_runtime_provider_nous_pool_uses_env_base_url_override(monkeypatch):

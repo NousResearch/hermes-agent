@@ -15,7 +15,7 @@ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { AccountLimitStatus, AccountLimitWindow, Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -213,6 +213,55 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+function accountLimitColor(level: AccountLimitWindow['level'], t: Theme) {
+  if (level === 'critical') {
+    return t.color.statusCritical
+  }
+
+  if (level === 'warn') {
+    return t.color.statusWarn
+  }
+
+  return t.color.statusGood
+}
+
+const accountLimitWindowLabel = (window: AccountLimitWindow) => String(window.label).trim()
+
+export const formatAccountLimitHud = (accountLimits: AccountLimitStatus): string => {
+  const providerLabel = accountLimits.label.trim() || accountLimits.provider.trim()
+  const credentialLabel = String(accountLimits.credential_label ?? '').trim()
+  const prefix = [providerLabel, credentialLabel].filter(Boolean).join(' ')
+
+  const windows = accountLimits.windows
+    .map(window => `${accountLimitWindowLabel(window)} ${window.remaining_percent}%`)
+    .join(' • ')
+
+  return [prefix, windows].filter(Boolean).join(' ')
+}
+
+export function AccountLimitHud({ accountLimits, t }: { accountLimits: AccountLimitStatus; t: Theme }) {
+  const providerLabel = accountLimits.label.trim() || accountLimits.provider.trim()
+  const credentialLabel = String(accountLimits.credential_label ?? '').trim()
+
+  return (
+    <Box flexShrink={0}>
+      <Text color={t.color.muted}>
+        {' │ '}
+        {providerLabel}
+        {credentialLabel ? ` ${credentialLabel}` : ''}
+        {accountLimits.windows.length ? ' ' : ''}
+        {accountLimits.windows.map((window, index) => (
+          <Text color={t.color.muted} key={`${window.label}-${window.full_label ?? ''}-${index}`}>
+            {index > 0 ? ' • ' : ''}
+            {accountLimitWindowLabel(window)}{' '}
+            <Text color={accountLimitColor(window.level, t)}>{window.remaining_percent}%</Text>
+          </Text>
+        ))}
+      </Text>
+    </Box>
+  )
+}
+
 // `minLeftContent` is the display width of the high-priority left segments
 // (status indicator + model + context). Reserving it makes the cwd/branch
 // segment on the right yield FIRST on narrow terminals, instead of squeezing
@@ -403,6 +452,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  accountLimits,
   cwdLabel,
   cols,
   busy,
@@ -474,9 +524,8 @@ export function StatusRule({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
-  // mid-segment, so status/model/context are never crushed.
+  // descending priority order — bar, account limits, duration, compressions,
+  // voice, session count, bg, subagents, resume hint, dev credits.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -503,6 +552,8 @@ export function StatusRule({
       : ''
 
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
+  const accountLimitText = accountLimits?.windows.length ? formatAccountLimitHud(accountLimits) : ''
+  const showAccountLimits = !!accountLimits && !!accountLimitText && fits(SEP + stringWidth(accountLimitText))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
@@ -596,6 +647,7 @@ export function StatusRule({
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
           </Text>
         ) : null}
+        {showAccountLimits ? AccountLimitHud({ accountLimits: accountLimits!, t }) : null}
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
@@ -770,6 +822,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  accountLimits?: AccountLimitStatus
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number

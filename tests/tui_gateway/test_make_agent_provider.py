@@ -60,6 +60,55 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
 
 
+def test_make_agent_pins_selected_pool_credential_identity():
+    entry = MagicMock(
+        id="codex-cred-1",
+        label="work-codex",
+        runtime_api_key="pool-token",
+    )
+    pool = MagicMock()
+    pool.current.return_value = entry
+    pool.entries.return_value = [entry]
+    pool._entries = [entry]
+    fake_runtime = {
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "pool-token",
+        "api_mode": "codex_responses",
+        "credential_pool": pool,
+        "credential_id": "codex-cred-1",
+        "credential_label": "work-codex",
+    }
+    fake_cfg = {
+        "model": {"default": "gpt-5.3-codex", "provider": "openai-codex"},
+        "agent": {"system_prompt": "test"},
+    }
+
+    def fake_init(agent, **kwargs):
+        agent.api_key = kwargs["api_key"]
+        agent.base_url = kwargs["base_url"]
+        agent._credential_pool = kwargs["credential_pool"]
+
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("agent.agent_init.init_agent", side_effect=fake_init),
+    ):
+        from tui_gateway.server import _make_agent
+
+        agent = _make_agent("sid-identity", "key-identity")
+
+    assert agent.credential_id == "codex-cred-1"
+    assert agent.credential_label == "work-codex"
+
+
 def test_make_agent_forwards_provider_routing():
     """Parity with the messaging gateway + CLI: ``provider_routing`` in
     config.yaml must reach AIAgent so OpenRouter honors the user's sort /

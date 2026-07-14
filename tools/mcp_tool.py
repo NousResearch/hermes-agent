@@ -832,7 +832,11 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
             details += f", name={name}"
         if mime:
             details += f", mimeType={mime}"
-        reader = f"{server_name}_read_resource" if server_name else "the MCP server's read_resource tool"
+        reader = (
+            mcp_prefixed_tool_name(server_name, "read_resource")
+            if server_name
+            else "the MCP server's read_resource tool"
+        )
         return f"[MCP resource link: {details} — fetch it with {reader}]"
 
     resource = getattr(block, "resource", None)
@@ -4107,8 +4111,15 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if result.isError:
                 error_text = ""
                 for block in (result.content or []):
-                    if hasattr(block, "text"):
+                    if getattr(block, "text", None):
                         error_text += block.text
+                        continue
+                    # EmbeddedResource blocks inside error payloads carry
+                    # their text under .resource.text — previously dropped,
+                    # leaving a bare "MCP tool returned an error".
+                    res_text = getattr(getattr(block, "resource", None), "text", None)
+                    if res_text:
+                        error_text += str(res_text)
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"

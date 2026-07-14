@@ -13,7 +13,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { setActiveSessionId, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -365,6 +365,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             const recoveredId = resumed?.session_id
 
             if (recoveredId) {
+              setActiveSessionId(recoveredId)
               activeSessionIdRef.current = recoveredId
               await withSessionBusyRetry(() =>
                 requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)

@@ -21,7 +21,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import { $busy, $connection, $messages, setActiveSessionId, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
@@ -556,6 +556,7 @@ export function usePromptActions({
           const recoveredId = resumed?.session_id
 
           if (recoveredId) {
+            setActiveSessionId(recoveredId)
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
             releaseBusy()

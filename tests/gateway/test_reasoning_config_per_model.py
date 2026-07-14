@@ -109,3 +109,68 @@ class TestGatewayPerModelReasoningConfig:
         result = gateway_run.GatewayRunner._load_reasoning_config()
         assert result is not None
         assert result.get("enabled") is False
+
+
+class TestGatewaySessionEffectiveModel:
+    """The reasoning override must track the SESSION's effective model.
+
+    Regression guard: _load_reasoning_config used to always read
+    model.default from config.yaml, so a session-only /model switch to a
+    different model kept resolving the config default's override.
+    """
+
+    def test_explicit_model_beats_config_default(self, monkeypatch):
+        """_load_reasoning_config(model=...) resolves for that model, not model.default."""
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {
+                    "gpt-5": "low",
+                    "claude-opus-4.5": "xhigh",
+                },
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        # Session switched (session-only) to claude-opus-4.5 — its override
+        # must win over the config default model's override.
+        result = gateway_run.GatewayRunner._load_reasoning_config("claude-opus-4.5")
+        assert result is not None
+        assert result["effort"] == "xhigh"
+
+        # And without a model arg, the config default's override applies.
+        result_default = gateway_run.GatewayRunner._load_reasoning_config()
+        assert result_default is not None
+        assert result_default["effort"] == "low"
+
+    def test_resolve_session_reasoning_forwards_model(self, monkeypatch):
+        """_resolve_session_reasoning_config passes the effective model through
+        (and session-scoped /reasoning overrides still win over it)."""
+        fake_cfg = {
+            "model": {"default": "gpt-5"},
+            "agent": {
+                "reasoning_effort": "medium",
+                "reasoning_overrides": {"claude-opus-4.5": "xhigh"},
+            },
+        }
+        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
+
+        runner = object.__new__(gateway_run.GatewayRunner)
+        runner._session_reasoning_overrides = {}
+
+        # No session override → per-model override for the effective model.
+        result = runner._resolve_session_reasoning_config(
+            session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
+        )
+        assert result is not None
+        assert result["effort"] == "xhigh"
+
+        # Session-scoped /reasoning override still wins over per-model.
+        runner._session_reasoning_overrides = {
+            "agent:main:telegram:private:1": {"enabled": True, "effort": "minimal"}
+        }
+        result = runner._resolve_session_reasoning_config(
+            session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
+        )
+        assert result == {"enabled": True, "effort": "minimal"}

@@ -2074,40 +2074,19 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
 
     # ── Re-resolve reasoning_config from per-model override ──
     # The new model may have a different reasoning_effort override. Re-read
-    # config so the override takes effect immediately on /model switch.
-    # Try both agent.model (normalized, e.g. "claude-opus-4-5") AND the raw
-    # config default (user's original spelling, e.g. "claude-opus-4.5") so
-    # override keys match regardless of how downstream consumers normalized
-    # the input. See plan FINDING #7 + session follow-up.
+    # config so the override takes effect immediately on /model switch —
+    # resolved through the shared chokepoint (per-model > global; YAML
+    # boolean False = disabled).
     try:
-        from hermes_constants import (
-            parse_reasoning_effort,
-            resolve_per_model_reasoning_effort,
-        )
+        from hermes_constants import resolve_reasoning_config
         from hermes_cli.config import load_config as _sm_load_config
 
         _reasoning_cfg = _sm_load_config() or {}
-        _sm_overrides = (_reasoning_cfg.get("agent") or {}).get("reasoning_overrides", {}) or {}
-        # Try the normalized agent.model first, then the raw config default
-        _sm_raw_model_default = str((_reasoning_cfg.get("model") or {}).get("default", "") or "").strip()
-        _sm_per_model = None
-        for _candidate in (agent.model, _sm_raw_model_default):
-            if _candidate:
-                _sm_per_model = resolve_per_model_reasoning_effort(_candidate, _sm_overrides)
-                if _sm_per_model is not None:
-                    break
-        if _sm_per_model is not None:
-            agent.reasoning_config = _sm_per_model
-            logger.info(
-                "switch_model: reasoning_config resolved to per-model override for %s: %s",
-                agent.model, _sm_per_model,
-            )
-        else:
-            # Raw value — a YAML boolean False means thinking disabled,
-            # see parse_reasoning_effort. Do NOT str()/strip() coerce.
-            _sm_global = (_reasoning_cfg.get("agent") or {}).get("reasoning_effort", "")
-            agent.reasoning_config = parse_reasoning_effort(_sm_global)
-            logger.info("switch_model: reasoning_config resolved to global effort: %s", _sm_global or "(none)")
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        logger.info(
+            "switch_model: reasoning_config resolved for %s: %s",
+            agent.model, agent.reasoning_config,
+        )
     except Exception as _reasoning_err:
         logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
 

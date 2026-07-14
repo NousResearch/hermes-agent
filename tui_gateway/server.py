@@ -2562,35 +2562,17 @@ def _display_mouse_tracking(display: dict) -> str:
     return "all"
 
 
-def _load_reasoning_config() -> dict | None:
+def _load_reasoning_config(model: str = "") -> dict | None:
     """Load reasoning effort from config.yaml, respecting per-model overrides.
 
-    Per-model overrides (agent.reasoning_overrides) take precedence
-    over the global value when the current model matches a key
-    (spelling-tolerant). Closes #21256.
+    Thin wrapper over the shared chokepoint
+    :func:`hermes_constants.resolve_reasoning_config` (per-model override >
+    global ``agent.reasoning_effort``; YAML boolean False = disabled).
+    Closes #21256.
     """
-    from hermes_constants import parse_reasoning_effort, resolve_per_model_reasoning_effort
+    from hermes_constants import resolve_reasoning_config
 
-    cfg = _load_cfg()
-
-    # Per-model override first
-    model_cfg = cfg.get("model") or {}
-    model = str(
-        (model_cfg.get("default", "") if isinstance(model_cfg, dict) else "")
-        or (model_cfg.get("model", "") if isinstance(model_cfg, dict) else "")
-        or ""
-    ).strip()
-    overrides = (cfg.get("agent") or {}).get("reasoning_overrides", {}) or {}
-    per_model = resolve_per_model_reasoning_effort(model, overrides)
-    if per_model is not None:
-        return per_model
-
-    # Global fallback — pass the raw value through; ``or ""`` would coerce
-    # a YAML boolean False (``reasoning_effort: false``/``off``/``no``) to
-    # "", silently re-enabling thinking for users who explicitly turned it off.
-    return parse_reasoning_effort(
-        (cfg.get("agent") or {}).get("reasoning_effort", "")
-    )
+    return resolve_reasoning_config(_load_cfg(), model)
 
 
 def _load_service_tier() -> str | None:
@@ -4231,7 +4213,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
-        or _load_reasoning_config(),
+        or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
@@ -4660,7 +4642,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override
             if reasoning_config_override is not None
-            else _load_reasoning_config()
+            else _load_reasoning_config(str(model or ""))
         ),
         service_tier=(
             service_tier_override

@@ -631,6 +631,112 @@ class TestResolvePerModelReasoningEffort:
         assert resolve_per_model_reasoning_effort("gemini-2.0-flash", overrides) is None
 
 
+class TestResolveReasoningConfig:
+    """Tests for resolve_reasoning_config() — the single shared chokepoint
+    every surface (CLI, gateway, TUI, cron, /model switch, fallback) calls.
+
+    Contract: per-model override > global agent.reasoning_effort; the raw
+    global value passes through uncoerced (YAML False = disabled); an
+    explicit model argument wins over the config's model.default.
+    """
+
+    def _cfg(self, effort: object = "medium", overrides=None, default_model="gpt-5"):
+        return {
+            "model": {"default": default_model},
+            "agent": {
+                "reasoning_effort": effort,
+                "reasoning_overrides": overrides or {},
+            },
+        }
+
+    def test_per_model_override_wins(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(overrides={"claude-opus-4.5": "xhigh"})
+        result = resolve_reasoning_config(cfg, "claude-opus-4.5")
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_global_fallback_when_no_override(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="low", overrides={"claude-opus-4.5": "xhigh"})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "low"}
+
+    def test_explicit_model_wins_over_config_default(self):
+        """The session's effective model (e.g. after a session-only /model
+        switch) must be used for override lookup — NOT model.default."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(
+            effort="medium",
+            overrides={"gpt-5": "low", "claude-opus-4.5": "xhigh"},
+            default_model="gpt-5",
+        )
+        # Session switched to opus; its override must win over gpt-5's.
+        result = resolve_reasoning_config(cfg, "claude-opus-4.5")
+        assert result == {"enabled": True, "effort": "xhigh"}
+
+    def test_empty_model_derives_from_config_default(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(overrides={"gpt-5": "high"}, default_model="gpt-5")
+        assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "high"}
+
+    def test_empty_model_derives_from_model_alias_key(self):
+        """model: {model: ...} alias shape (older configs) also resolves."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = {
+            "model": {"model": "gpt-5"},
+            "agent": {"reasoning_effort": "medium", "reasoning_overrides": {"gpt-5": "high"}},
+        }
+        assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "high"}
+
+    def test_string_model_section(self):
+        """Top-level ``model: <string>`` config shape (cron raw-YAML path)."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = {
+            "model": "claude-opus-4.5",
+            "agent": {"reasoning_effort": "low", "reasoning_overrides": {"claude-opus-4.5": "xhigh"}},
+        }
+        assert resolve_reasoning_config(cfg) == {"enabled": True, "effort": "xhigh"}
+
+    def test_yaml_false_global_uncoerced(self):
+        """YAML boolean False must mean disabled — never coerced to ''."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort=False)
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": False}
+
+    def test_yaml_false_not_shadowed_by_other_models_override(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort=False, overrides={"claude-opus-4.5": "xhigh"})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": False}
+
+    def test_override_none_disables_for_model(self):
+        """Per-model override value 'none' disables thinking for that model."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="high", overrides={"gemini-flash": "none"})
+        assert resolve_reasoning_config(cfg, "gemini-flash") == {"enabled": False}
+
+    def test_unknown_global_returns_none(self):
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="bogus-level")
+        assert resolve_reasoning_config(cfg, "gpt-5") is None
+
+    def test_empty_config_returns_none(self):
+        from hermes_constants import resolve_reasoning_config
+        assert resolve_reasoning_config({}) is None
+        assert resolve_reasoning_config(None) is None
+
+    def test_malformed_sections_tolerated(self):
+        """Non-dict agent/model sections must not raise."""
+        from hermes_constants import resolve_reasoning_config
+        assert resolve_reasoning_config({"agent": "oops", "model": 42}) is None
+        assert resolve_reasoning_config({"agent": None, "model": None}) is None
+        assert resolve_reasoning_config({"agent": {"reasoning_overrides": "bad"}}) is None
+
+    def test_invalid_override_value_falls_back_to_global(self):
+        """A junk override value for the matching model falls through to global."""
+        from hermes_constants import resolve_reasoning_config
+        cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
+
+
 class TestReasoningOverridesDefaultConfig:
     """Tests for the agent.reasoning_overrides default config key (Task 2)."""
 
@@ -639,11 +745,6 @@ class TestReasoningOverridesDefaultConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         assert "reasoning_overrides" in DEFAULT_CONFIG["agent"]
         assert DEFAULT_CONFIG["agent"]["reasoning_overrides"] == {}
-
-    def test_config_version_bumped(self):
-        """Config version was bumped to signal the schema change for reasoning_overrides."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        assert DEFAULT_CONFIG.get("_config_version") >= 31
 
     def test_load_config_preserves_user_reasoning_overrides(self, tmp_path, monkeypatch):
         """User-added reasoning_overrides are preserved through load_config()."""

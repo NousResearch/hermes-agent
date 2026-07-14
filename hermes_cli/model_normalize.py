@@ -67,7 +67,6 @@ _VENDOR_PREFIXES: dict[str, str] = {
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
-    "ai-gateway",
     "kilocode",
 })
 
@@ -85,7 +84,6 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers whose native naming is authoritative -- pass through unchanged.
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
-    "gemini",
     "huggingface",
 })
 
@@ -104,6 +102,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "arcee",
     "ollama-cloud",
     "custom",
+    "gemini",
+    "xai",
 })
 
 # Providers whose APIs require lowercase model IDs.  Xiaomi's

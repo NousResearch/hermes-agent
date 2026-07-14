@@ -1,4 +1,5 @@
 from argparse import Namespace
+import os
 from pathlib import Path
 import sys
 import types
@@ -283,6 +284,293 @@ def test_fast_tui_launch_is_termux_only(monkeypatch, main_mod):
     assert main_mod._try_termux_fast_tui_launch() is False
 
 
+def test_termux_fast_cli_launch_chat_uses_light_parser(monkeypatch, main_mod):
+    captured = {}
+    prepared = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["hermes", "chat", "-q", "hello", "--toolsets", "web,terminal"]
+    )
+    monkeypatch.setattr(
+        main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update(
+            {"query": args.query, "toolsets": args.toolsets, "command": args.command}
+        ),
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert prepared == ["chat"]
+    assert captured == {
+        "query": "hello",
+        "toolsets": "web,terminal",
+        "command": "chat",
+    }
+
+
+def test_termux_fast_cli_launch_bare_defers_agent_startup(monkeypatch, main_mod):
+    captured = {}
+    prepared = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.delenv("HERMES_DEFER_AGENT_STARTUP", raising=False)
+    monkeypatch.delenv("HERMES_FAST_STARTUP_BANNER", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes"])
+    monkeypatch.setattr(
+        main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
+    )
+    monkeypatch.setattr(
+        main_mod,
+        "cmd_chat",
+        lambda args: captured.update(
+            {
+                "query": args.query,
+                "command": args.command,
+                "compact": getattr(args, "compact", False),
+            }
+        ),
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert prepared == []
+    assert captured == {"query": None, "command": None, "compact": True}
+    assert os.environ["HERMES_DEFER_AGENT_STARTUP"] == "1"
+    assert os.environ["HERMES_FAST_STARTUP_BANNER"] == "1"
+
+
+def test_termux_fast_cli_launch_oneshot_uses_light_parser(monkeypatch, main_mod):
+    captured = {}
+    prepared = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "-z", "hello", "--model", "gpt-test", "--provider", "openai"],
+    )
+    monkeypatch.setattr(
+        main_mod, "_prepare_agent_startup", lambda args: prepared.append(args.command)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.oneshot",
+        types.SimpleNamespace(
+            run_oneshot=lambda prompt, **kwargs: captured.update(
+                {"prompt": prompt, **kwargs}
+            )
+            or 17
+        ),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._try_termux_fast_cli_launch()
+
+    assert exc.value.code == 17
+    assert prepared == [None]
+    assert captured == {
+        "prompt": "hello",
+        "model": "gpt-test",
+        "provider": "openai",
+        "toolsets": None,
+        "usage_file": None,
+    }
+
+
+def test_termux_fast_cli_launch_version_skips_update_check(monkeypatch, main_mod):
+    captured = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "version"])
+    monkeypatch.setattr(
+        main_mod, "_print_version_info", lambda *, check_updates: captured.append(check_updates)
+    )
+
+    assert main_mod._try_termux_fast_cli_launch() is True
+    assert captured == [False]
+
+
+def test_termux_ultrafast_version_runs_before_heavy_startup(
+    monkeypatch, capsys, main_mod
+):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_termux_ultrafast_version() is True
+
+    out = capsys.readouterr().out
+    assert "Hermes Agent v" in out
+    assert "Install directory:" in out
+    assert "Python:" in out
+    assert "OpenAI SDK:" in out
+
+
+def test_read_openai_version_fast(monkeypatch, tmp_path, main_mod):
+    package_dir = tmp_path / "openai"
+    package_dir.mkdir()
+    (package_dir / "_version.py").write_text(
+        '__version__ = "9.8.7"  # x-release-please-version\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", [str(tmp_path)])
+
+    assert main_mod._read_openai_version_fast() == "9.8.7"
+
+
+def test_termux_fast_cli_launch_skips_help(monkeypatch, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "chat", "--help"])
+
+    assert main_mod._try_termux_fast_cli_launch() is False
+
+
+def test_termux_fast_cli_launch_can_be_disabled(monkeypatch, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setenv("HERMES_TERMUX_DISABLE_FAST_CLI", "1")
+    monkeypatch.delenv("HERMES_TUI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "version"])
+
+    assert main_mod._try_termux_fast_cli_launch() is False
+
+
+def test_termux_bundled_skills_stamp_controls_sync(monkeypatch, tmp_path, main_mod):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
+
+    assert main_mod._termux_bundled_skills_sync_needed() is True
+    main_mod._mark_termux_bundled_skills_synced()
+    assert main_mod._termux_bundled_skills_sync_needed() is False
+
+    monkeypatch.setenv("HERMES_TERMUX_FORCE_SKILLS_SYNC", "1")
+    assert main_mod._termux_bundled_skills_sync_needed() is True
+
+
+def test_termux_skips_bundled_skill_sync_when_stamp_fresh(monkeypatch, tmp_path, main_mod):
+    calls = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
+    main_mod._mark_termux_bundled_skills_synced()
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.skills_sync",
+        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
+    )
+
+    assert main_mod._sync_bundled_skills_for_startup() is False
+    assert calls == []
+
+
+def test_termux_forced_bundled_skill_sync_runs(monkeypatch, tmp_path, main_mod):
+    calls = []
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setenv("HERMES_TERMUX_FORCE_SKILLS_SYNC", "1")
+    monkeypatch.setattr(main_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(main_mod, "_termux_bundled_skills_fingerprint", lambda: "fp1")
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.skills_sync",
+        types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
+    )
+
+    assert main_mod._sync_bundled_skills_for_startup() is True
+    assert calls == [True]
+
+
+def test_read_git_revision_fingerprint_resolves_packed_refs(tmp_path, main_mod):
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    packed_sha = "1234567890abcdef1234567890abcdef12345678"
+    (git_dir / "packed-refs").write_text(
+        "# pack-refs with: peeled fully-peeled sorted\n"
+        f"{packed_sha} refs/heads/main\n"
+        "abcdef0000000000000000000000000000000000 refs/tags/v1.0\n"
+        "^99999999aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+        encoding="utf-8",
+    )
+
+    fingerprint = main_mod._read_git_revision_fingerprint(repo)
+
+    assert fingerprint == f"git:refs/heads/main:{packed_sha}"
+
+
+def test_read_git_revision_fingerprint_packed_refs_in_worktree_common_dir(
+    tmp_path, main_mod
+):
+    main_repo = tmp_path / "repo"
+    common_git = main_repo / ".git"
+    common_git.mkdir(parents=True)
+    packed_sha = "fedcba9876543210fedcba9876543210fedcba98"
+    (common_git / "packed-refs").write_text(
+        f"{packed_sha} refs/heads/main\n",
+        encoding="utf-8",
+    )
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    wt_gitdir = common_git / "worktrees" / "wt"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+
+    fingerprint = main_mod._read_git_revision_fingerprint(worktree)
+
+    assert fingerprint == f"git:refs/heads/main:{packed_sha}"
+
+
+def test_read_git_revision_fingerprint_loose_ref_in_worktree_common_dir(
+    tmp_path, main_mod
+):
+    """`git worktree add -b NAME` writes the new branch ref to the common dir,
+    not the per-worktree gitdir. The fingerprint must still resolve it."""
+    main_repo = tmp_path / "repo"
+    common_git = main_repo / ".git"
+    common_git.mkdir(parents=True)
+    loose_sha = "0123456789abcdef0123456789abcdef01234567"
+    (common_git / "refs" / "heads").mkdir(parents=True)
+    (common_git / "refs" / "heads" / "feature").write_text(
+        loose_sha + "\n", encoding="utf-8"
+    )
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    wt_gitdir = common_git / "worktrees" / "wt"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+    (wt_gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+    (worktree / ".git").write_text(f"gitdir: {wt_gitdir}\n", encoding="utf-8")
+
+    fingerprint = main_mod._read_git_revision_fingerprint(worktree)
+
+    assert fingerprint == f"git:refs/heads/feature:{loose_sha}"
+
+
+def test_read_git_revision_fingerprint_unresolved_ref_is_stable(tmp_path, main_mod):
+    repo = tmp_path / "repo"
+    git_dir = repo / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "HEAD").write_text("ref: refs/heads/missing\n", encoding="utf-8")
+
+    fingerprint = main_mod._read_git_revision_fingerprint(repo)
+
+    assert fingerprint == "git:refs/heads/missing:unresolved"
+
+
 def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
     captured = {}
 
@@ -330,6 +618,7 @@ def test_main_top_level_oneshot_accepts_toolsets(monkeypatch, main_mod):
         "model": None,
         "provider": None,
         "toolsets": "web,terminal",
+        "usage_file": None,
     }
 
 
@@ -349,6 +638,84 @@ def test_oneshot_rejects_invalid_only_toolsets(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "nope" in err
     assert "did not contain any valid toolsets" in err
+
+
+def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("", {}))
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no final response" in captured.err
+
+
+def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", lambda *_args, **_kwargs: ("done", {}))
+
+    assert oneshot_mod.run_oneshot("hello") == 0
+    captured = capsys.readouterr()
+    assert captured.out == "done\n"
+    assert captured.err == ""
+
+
+def test_oneshot_fails_closed_on_agent_exception(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("not a TTY")
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _boom)
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "agent failed" in captured.err
+    assert "not a TTY" in captured.err
+
+
+def test_oneshot_exit_code_when_failed_without_response(monkeypatch):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: ("", {"failed": True, "partial": False}),
+    )
+    assert run_oneshot("hi") == 2
+
+
+def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys):
+    from hermes_cli.oneshot import run_oneshot
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._run_agent",
+        lambda *_a, **_k: (
+            "API call failed after 3 retries: HTTP 404: model not found",
+            {"failed": True, "partial": False},
+        ),
+    )
+    assert run_oneshot("hi") == 0
+    assert "HTTP 404" in capsys.readouterr().out
+
+
+def test_oneshot_reraises_keyboard_interrupt(monkeypatch):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+    import pytest as _pytest
+
+    def _interrupt(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _interrupt)
+
+    with _pytest.raises(KeyboardInterrupt):
+        oneshot_mod.run_oneshot("hello")
 
 
 def test_oneshot_filters_invalid_toolsets_before_redirect(monkeypatch, capsys):
@@ -465,9 +832,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             self.stream_delta_callback = object()
             self.tool_gen_callback = object()
 
-        def chat(self, prompt):
+        def run_conversation(self, prompt, **_kwargs):
             captured["prompt"] = prompt
-            return "ok"
+            return {"final_response": "ok", "failed": False, "partial": False}
 
     class FakeSessionDB:
         def __new__(cls):
@@ -511,7 +878,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: {"session_search"}),
     )
 
-    assert _run_agent("recall this") == "ok"
+    text, result = _run_agent("recall this")
+    assert text == "ok"
+    assert not result.get("failed")
     assert captured["session_db"] is sentinel_db
     assert captured["enabled_toolsets"] == ["session_search"]
     assert captured["prompt"] == "recall this"
@@ -553,6 +922,46 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
+
+
+def test_launch_tui_applies_terminal_backend_config(
+    monkeypatch, main_mod, _isolate_hermes_home
+):
+    captured = {}
+    config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "terminal:",
+                "  backend: docker",
+                "  docker_image: example/hermes-tools:latest",
+                "  docker_extra_args:",
+                "    - --network=host",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_IMAGE", raising=False)
+    monkeypatch.delenv("TERMINAL_DOCKER_EXTRA_ARGS", raising=False)
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"env": env}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["env"]["TERMINAL_ENV"] == "docker"
+    assert captured["env"]["TERMINAL_DOCKER_IMAGE"] == "example/hermes-tools:latest"
+    assert captured["env"]["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
 
 
 def test_launch_tui_exit_code_42_relaunches_update(monkeypatch, main_mod):

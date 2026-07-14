@@ -56,6 +56,22 @@ class ProviderProfile:
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
+    # ── Vision support ────────────────────────────────────────
+    # True when the provider's API accepts image content inside
+    # tool-result messages natively.  Set on providers that expose
+    # multimodal models via tool results (Anthropic Messages API,
+    # OpenAI Chat Completions, Gemini, MiniMax, etc.).
+    # Falls back to model-catalog lookup when False and the provider
+    # has no registered profile.
+    supports_vision: bool = False
+
+    # True when the provider's API accepts list-type tool message
+    # content (multipart with image_url parts).  Defaults to True for
+    # backward compatibility.  Set to False for providers that accept
+    # multimodal user messages but reject list-type tool content
+    # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
+    supports_vision_tool_messages: bool = True
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
@@ -129,10 +145,38 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def default_vision_model(self) -> str | None:
+        """Return a default vision model id for this provider, or None.
+
+        Overrideable hook for providers that discover their vision default at
+        runtime (e.g. from a live catalog) rather than pinning one in code.
+        Keeps provider-specific vision discovery inside the provider's plugin
+        instead of a name-check branch in shared vision resolution.
+
+        Default: None (no provider-specific vision model — the caller falls
+        back to the user's chat model or the aggregator chain).
+        """
+        return None
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return the default max_tokens cap for *model*.
+
+        Overrideable hook for providers that need per-model output caps —
+        e.g. a relay that fronts several upstream backends, each with a
+        different completion-token limit. The transport calls this when
+        the user hasn't set an explicit max_tokens.
+
+        Default: return self.default_max_tokens (the static profile field),
+        ignoring the model name. Override in a subclass to vary the cap
+        per-model.
+        """
+        return self.default_max_tokens
+
     def fetch_models(
         self,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Fetch the live model list from the provider's models endpoint.
@@ -145,7 +189,8 @@ class ProviderProfile:
              endpoint differs from the inference base URL, e.g. OpenRouter
              exposes a public catalog at /api/v1/models while inference is
              at /api/v1)
-          2. self.base_url + "/models"  (standard OpenAI-compat fallback)
+          2. base_url (caller override — user-configured model.base_url)
+          3. self.base_url + "/models"  (standard OpenAI-compat fallback)
 
         The default implementation sends Bearer auth when api_key is given
         and forwards self.default_headers. Override to customise auth, path,
@@ -154,14 +199,17 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
+        effective_base = base_url or self.base_url
         url = (self.models_url or "").strip()
         if not url:
-            if not self.base_url:
+            if not effective_base:
                 return None
-            url = self.base_url.rstrip("/") + "/models"
+            url = effective_base.rstrip("/") + "/models"
 
         import json
         import urllib.request
+
+        from hermes_cli.urllib_security import open_credentialed_url
 
         req = urllib.request.Request(url)
         if api_key:
@@ -175,7 +223,7 @@ class ProviderProfile:
             req.add_header(k, v)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]

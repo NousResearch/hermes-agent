@@ -1114,7 +1114,7 @@ def _run_chrome_fallback_command(
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            proc.wait(timeout=10)
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
             with open(stdout_path, "r", encoding="utf-8") as f:
@@ -2457,7 +2457,7 @@ def _run_browser_command(
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.wait()
+            proc.wait(timeout=10)
             stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
             _unlink_command_output_files(stdout_path, stderr_path)
             if stderr and stderr.strip():

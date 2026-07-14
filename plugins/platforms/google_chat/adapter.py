@@ -927,19 +927,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
             try:
                 await asyncio.wait_for(self._supervisor_task, timeout=5.0)
             except (asyncio.CancelledError, asyncio.TimeoutError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if self._streaming_pull_future is not None:
             try:
                 self._streaming_pull_future.cancel()
                 await asyncio.to_thread(self._streaming_pull_future.result, 10.0)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._streaming_pull_future = None
         if self._subscriber is not None:
             try:
                 await asyncio.to_thread(self._subscriber.close)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._subscriber = None
         self._mark_disconnected()
         logger.info("[GoogleChat] Disconnected")
@@ -1260,7 +1260,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             try:
                 message.ack()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     async def _dispatch_message(self, msg: Dict[str, Any], envelope: Dict[str, Any]) -> None:
         """Translate a Chat message payload to a MessageEvent and hand off.
@@ -2290,7 +2290,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     timeout=5.0,
                 )
             except (asyncio.TimeoutError, KeyError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return
 
         thread_id = self._resolve_thread_id(

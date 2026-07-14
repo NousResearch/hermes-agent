@@ -248,7 +248,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 await self._listen_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._listen_task = None
 
         if self._heartbeat_task:
@@ -256,7 +256,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 await self._heartbeat_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._heartbeat_task = None
 
         self._fail_pending_responses(RuntimeError("WeCom adapter disconnected"))
@@ -391,7 +391,7 @@ class WeComAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("[%s] Heartbeat send failed: %s", self.name, exc)
         except asyncio.CancelledError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound websocket payloads."""
@@ -1599,9 +1599,9 @@ def qr_scan_for_bot_info(
         qr.print_ascii(invert=True)
         qr_rendered = True
     except ImportError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     page_url = f"{_QR_CODE_PAGE}{urllib.parse.quote(scode)}"
     if qr_rendered:

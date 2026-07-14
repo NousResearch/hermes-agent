@@ -14,6 +14,9 @@ Import discipline (mirrors gateway/slash_commands.py, PR #41886):
 
 from __future__ import annotations
 
+import logging
+logger = logging.getLogger(__name__)
+
 import json
 import os
 import sys
@@ -203,7 +206,7 @@ class CLICommandsMixin:
                     print(f"  Invalid snapshot number. Use 1-{len(snaps)}.")
                     return
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if restore_quick_snapshot(snap_id):
                 print(f"  Restored state from: {snap_id}")
                 print("  Restart recommended for state.db changes to take effect.")
@@ -586,7 +589,7 @@ class CLICommandsMixin:
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if not self._session_db:
             _cprint(f"  {format_session_db_unavailable()}")
             return True
@@ -615,7 +618,7 @@ class CLICommandsMixin:
             if row:
                 session_title = row.get("title") or ""
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if not session_title:
             session_title = self.session_id[:8]
 
@@ -661,7 +664,7 @@ class CLICommandsMixin:
         try:
             self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         _cprint("  Timed out waiting for the gateway. Is `hermes gateway` running?")
         _cprint("  Your CLI session is intact.")
         return True
@@ -757,12 +760,12 @@ class CLICommandsMixin:
                     self.conversation_history
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Switch to the target session
         self.session_id = target_id
@@ -779,7 +782,7 @@ class CLICommandsMixin:
         try:
             self._session_db.reopen_session(target_id)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Sync the agent if already initialised
         if self.agent:
@@ -792,7 +795,7 @@ class CLICommandsMixin:
                     from tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
@@ -810,7 +813,7 @@ class CLICommandsMixin:
                         reason="resume",
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
@@ -904,13 +907,13 @@ class CLICommandsMixin:
                     self.conversation_history
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # End the old session
         try:
             self._session_db.end_session(self.session_id, "branched")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
@@ -946,13 +949,13 @@ class CLICommandsMixin:
                     reasoning=msg.get("reasoning"),
                 )
             except Exception:
-                pass  # Best-effort copy
+                logger.debug("Suppressed exception", exc_info=True)  # Best-effort copy
 
         # Set title on the branch
         try:
             self._session_db.set_session_title(new_session_id, branch_title)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Switch to the new session
         self._transfer_session_yolo(self.session_id, new_session_id)
@@ -974,7 +977,7 @@ class CLICommandsMixin:
                     from tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
@@ -992,7 +995,7 @@ class CLICommandsMixin:
                         reason="branch",
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
         _cprint(
@@ -1489,7 +1492,7 @@ class CLICommandsMixin:
         except SystemExit:
             # argparse calls sys.exit() on --help or errors; swallow so we
             # don't kill the interactive session.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except Exception as exc:
             print(f"(._.) curator: {exc}")
 
@@ -1631,7 +1634,7 @@ class CLICommandsMixin:
             try:
                 set_secret_capture_callback(self._secret_capture_callback)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -1737,7 +1740,7 @@ class CLICommandsMixin:
                     set_approval_callback(None)
                     set_secret_capture_callback(None)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 self._background_tasks.pop(task_id, None)
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
@@ -1839,7 +1842,7 @@ class CLICommandsMixin:
                 from tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             print()
 
@@ -1892,7 +1895,7 @@ class CLICommandsMixin:
                 from tools.browser_tool import _ensure_cdp_supervisor  # type: ignore[import-not-found]
                 _ensure_cdp_supervisor("default")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             print()
             print("🌐 Browser connected to live Chromium-family browser via CDP")
             print(f"   Endpoint: {cdp_url}")
@@ -1921,7 +1924,7 @@ class CLICommandsMixin:
                     _stop_cdp_supervisor("default")
                     cleanup_all_browsers()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 print()
                 print("🌐 Browser disconnected from live Chromium-family browser")
                 print("   Browser tools reverted to default mode (local headless or cloud provider)")
@@ -1947,7 +1950,7 @@ class CLICommandsMixin:
                 try:
                     _port = int(current.rsplit(":", 1)[-1].split("/")[0])
                 except (ValueError, IndexError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 try:
                     import socket
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -2123,7 +2126,7 @@ class CLICommandsMixin:
         try:
             self._pending_input.put(state.goal)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _handle_goal_draft(self, objective: str) -> None:
         """Draft a structured completion contract from a plain objective and
@@ -2169,7 +2172,7 @@ class CLICommandsMixin:
         try:
             self._pending_input.put(state.goal)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.
@@ -2331,7 +2334,7 @@ class CLICommandsMixin:
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         lines = [ln for ln in raw.splitlines() if not ln.startswith("#!")]
         return "\n".join(lines).strip()

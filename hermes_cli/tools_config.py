@@ -133,14 +133,14 @@ def _xai_credentials_present() -> bool:
         _read_xai_oauth_tokens()
         return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from tools.xai_http import get_env_value as _xai_get_env_value
 
         if str(_xai_get_env_value("XAI_API_KEY") or "").strip():
             return True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return bool(str(os.environ.get("XAI_API_KEY") or "").strip())
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
@@ -187,7 +187,7 @@ def _get_effective_configurable_toolsets():
             seen.add(entry[0])
             result.append(entry)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return result
 
 
@@ -656,7 +656,7 @@ def _pip_install(
             # Fall through to pip — uv may have failed for an unrelated reason
             # (resolution conflict, network), and pip might handle it.
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     pip_cmd = [sys.executable, "-m", "pip"]
     try:
@@ -841,7 +841,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
                 )
                 return True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
@@ -867,7 +867,7 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             elif after:
                 _print_info(f"    {driver_cmd} up to date: {after}")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return ok
 
 
@@ -929,7 +929,7 @@ def _clear_stale_cua_install_lock() -> None:
                 # Holder alive → a concurrent install is running; don't touch.
                 return
             except ProcessLookupError:
-                pass  # dead holder → stale, clear below
+                logger.debug("Suppressed exception", exc_info=True)  # dead holder → stale, clear below
             except PermissionError:
                 # Alive but owned by someone else — treat as live.
                 return
@@ -1011,7 +1011,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
             try:
                 os.remove(script_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return False
         if dl.returncode != 0:
             _print_warning(
@@ -1021,7 +1021,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
             try:
                 os.remove(script_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return False
         install_cmd = ["/bin/bash", script_path]
     use_shell = False
@@ -1105,7 +1105,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
                         )
                         _update_log.flush()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 if result.returncode != 0:
                     logger.debug("cua-driver installer output:\n%s", result.stdout)
         if result.returncode == 0 and shutil.which(driver_cmd):
@@ -1145,7 +1145,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
             try:
                 os.remove(script_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _run_post_setup(post_setup_key: str):
@@ -1298,7 +1298,7 @@ def _run_post_setup(post_setup_key: str):
             _print_success("    kittentts is already installed")
             return
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         _print_info("    Installing kittentts (~25-80MB model, CPU-only)...")
         wheel_url = (
             "https://github.com/KittenML/KittenTTS/releases/download/"
@@ -2633,7 +2633,7 @@ def _toolset_needs_configuration_prompt(
                 except Exception:
                     continue
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True
     if ts_key == "video_gen":
         # Satisfied when any plugin-registered video gen provider reports
@@ -2650,7 +2650,7 @@ def _toolset_needs_configuration_prompt(
                 except Exception:
                     continue
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True
 
     return not _toolset_has_keys(ts_key, config, force_fresh=force_fresh)

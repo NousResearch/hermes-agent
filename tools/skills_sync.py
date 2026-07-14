@@ -143,7 +143,7 @@ def _read_suppressed_names() -> set:
                 if line and not line.startswith("#"):
                     names.add(line)
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return names
 
 
@@ -174,7 +174,7 @@ def _write_manifest(entries: Dict[str, str]):
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
     except Exception as e:
         logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
@@ -239,7 +239,7 @@ def _dir_hash(directory: Path) -> str:
                 hasher.update(str(rel).encode("utf-8"))
                 hasher.update(fpath.read_bytes())
     except (OSError, IOError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return hasher.hexdigest()
 
 
@@ -475,7 +475,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
             try:
                 os.unlink(tmp_path)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise
     return backfilled
 
@@ -763,7 +763,7 @@ def _rmtree_writable(path: Path) -> None:
             try:
                 os.chmod(target, stat.S_IRWXU)
             except OSError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         func(fpath)
 
     shutil.rmtree(path, onerror=_on_error)

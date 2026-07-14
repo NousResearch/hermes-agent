@@ -69,7 +69,7 @@ def _panic_hook(exc_type, exc_value, exc_tb):
             )
             f.write(trace)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Stderr goes through to the TUI as a gateway.stderr Activity line —
     # the first line here is what the user will see without opening any
     # log files.  Rest of the stack is still in the log for full context.
@@ -102,7 +102,7 @@ def _thread_panic_hook(args):
             )
             f.write(trace)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     first_line = (
         str(args.exc_value).strip().splitlines()[0]
         if str(args.exc_value).strip()
@@ -122,7 +122,7 @@ try:
 
     prefetch_update_check()
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
@@ -382,19 +382,19 @@ class _SlashWorker:
                     try:
                         proc.wait(timeout=1)  # reap the zombie SIGKILL leaves behind
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
         except Exception:
             try:
                 proc.kill()
                 proc.wait(timeout=1)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         finally:
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 try:
                     stream.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
 
 def _load_busy_input_mode() -> str:
@@ -418,7 +418,7 @@ def _notify_session_boundary(
             platform=_resolve_agent_platform(platform),
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _claim_active_session_slot(
@@ -585,7 +585,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             try:
                 agent._persist_session(snapshot)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     # ── Plugin hook: on_session_end ────────────────────────────────────
     # Signals every plugin that the session is closing, with
@@ -607,13 +607,13 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                 platform=getattr(agent, "platform", None) or "tui",
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         try:
             agent.commit_memory_session(history)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
@@ -641,7 +641,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                 if _tui_owns_lifecycle:
                     db.end_session(session_id, end_reason)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # A session's in-flight async delegations end WITH the session (#55578):
     # once nobody owns the return address, a still-running background subagent
@@ -669,7 +669,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             reason=end_reason,
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Close the slash-worker subprocess as part of finalize itself, not just
     # in the callers. Defense-in-depth: every session-end path goes through
@@ -684,7 +684,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         if worker:
             worker.close()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
@@ -706,13 +706,13 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
         if key := session.get("session_key"):
             unregister_gateway_notify(key)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         agent = session.get("agent")
         if agent is not None and hasattr(agent, "close"):
             agent.close()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # NOTE: the slash-worker is closed inside _finalize_session (the single
     # _finalized-guarded chokepoint that main folded it into), exactly once.
     # We deliberately do NOT re-close it here — _teardown_session's job beyond
@@ -826,7 +826,7 @@ def _close_sessions_for_transport(
             try:
                 _schedule_ws_orphan_reap(sid)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     return reaped, detached
 
 
@@ -958,7 +958,7 @@ def _start_idle_reaper() -> None:
             try:
                 _reap_idle_sessions()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     threading.Thread(target=_loop, daemon=True).start()
 
@@ -1205,7 +1205,7 @@ def _image_meta(path: Path) -> dict:
         meta["height"] = int(height)
         meta["token_estimate"] = _estimate_image_tokens(int(width), int(height))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return meta
 
 
@@ -1406,7 +1406,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
                 _attach_worker(sid, current, worker)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             try:
                 from tools.approval import (
@@ -1420,7 +1420,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 notify_registered = True
                 load_permanent_allowlist()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             _wire_callbacks(sid)
             # Surface the self-improvement review's "💾 …" summary as an event
@@ -1435,7 +1435,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
                 agent.memory_notifications = _load_memory_notifications()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Hydrate credits notices at session OPEN (not just on the first
             # message), so depletion / usage-band warnings show at "ready". Runs
             # off the build thread, after the notice_callback is wired. Fail-open.
@@ -1444,7 +1444,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
                 seed_credits_at_session_start(agent)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
@@ -1478,7 +1478,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
                     unregister_gateway_notify(key)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             ready.set()
 
     threading.Thread(target=_build, daemon=True).start()
@@ -1532,7 +1532,7 @@ def _completion_cwd(params: dict | None = None) -> str:
         if os.path.isdir(resolved):
             return resolved
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return os.getcwd()
 
 
@@ -1663,7 +1663,7 @@ def _register_session_cwd(session: dict | None) -> None:
             session["session_key"], {"cwd": _terminal_task_cwd(session)}
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _ensure_session_db_row(session: dict) -> None:
@@ -1771,7 +1771,7 @@ def _ensure_session_db_row(session: dict) -> None:
             try:
                 db.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 def _persist_branch_seed(session: dict) -> None:
@@ -1891,7 +1891,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
 
         cleanup_vm(session["session_key"])
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return resolved
 
 
@@ -1936,7 +1936,7 @@ def _load_cfg() -> dict:
             _cfg_path = p
         return _apply_managed(data)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return {}
 
 
@@ -2026,7 +2026,7 @@ def _clear_session_context(tokens: list) -> None:
 
         clear_session_vars(tokens)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _enable_gateway_prompts() -> None:
@@ -2227,7 +2227,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
             provider, detected_model = detected
             return detected_model, provider
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return model, None
 
 
@@ -2663,7 +2663,7 @@ def _load_enabled_toolsets() -> list[str] | None:
                 # project tools exactly when sitting in a repo (see below).
                 return sorted({*selection, "project"})
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from toolsets import validate_toolset
@@ -2807,7 +2807,7 @@ def _restart_slash_worker(sid: str, session: dict):
         try:
             worker.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         new_worker = _SlashWorker(
             session["session_key"],
@@ -2915,7 +2915,7 @@ def _apply_model_switch(
         user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     result = switch_model(
         raw_input=model_input,
@@ -3189,7 +3189,7 @@ def _sync_session_key_after_compress(
         try:
             unregister_gateway_notify(old_key)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         session["session_key"] = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
@@ -3200,14 +3200,14 @@ def _sync_session_key_after_compress(
                 enable_session_yolo(new_session_id)
                 disable_session_yolo(old_key)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             register_gateway_notify(
                 new_session_id,
                 lambda data: _emit_approval_request(sid, data),
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     except Exception:
         # Even if the approval module fails to import, still anchor the
         # session_key on the new continuation id so downstream lookups
@@ -3220,7 +3220,7 @@ def _sync_session_key_after_compress(
         try:
             _restart_slash_worker(sid, session)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _get_usage(agent) -> dict:
@@ -3270,7 +3270,7 @@ def _get_usage(agent) -> dict:
         from tools.async_delegation import active_count as _async_active_count
         usage["active_subagents"] = _async_active_count()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Dev-only live credits-spent readout (L0 usage-aware-credits). Gated on
     # HERMES_DEV_CREDITS so the payload stays clean when the flag is off.
     if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):
@@ -3279,7 +3279,7 @@ def _get_usage(agent) -> dict:
             if spent is not None:
                 usage["dev_credits_spent_micros"] = int(spent)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return usage
 
 
@@ -3291,7 +3291,7 @@ def _probe_credentials(agent) -> str:
         if not key or key == "no-key-required":
             return f"No API key configured for provider '{provider}'. First message will fail."
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -3422,14 +3422,14 @@ def _session_info(agent, session: dict | None = None) -> dict:
         if is_unsupported_install_method(_install_method):
             info["install_warning"] = format_unsupported_install_warning(_install_method)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli import __version__, __release_date__
 
         info["version"] = __version__
         info["release_date"] = __release_date__
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from model_tools import get_toolset_for_tool
 
@@ -3439,13 +3439,13 @@ def _session_info(agent, session: dict | None = None) -> dict:
                 name
             )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli.banner import get_available_skills
 
         info["skills"] = get_available_skills()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from tools.mcp_tool import get_mcp_status
 
@@ -3455,7 +3455,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     try:
         info["system_prompt"] = getattr(agent, "_cached_system_prompt", "") or ""
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
@@ -3463,7 +3463,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["update_behind"] = get_update_result(timeout=0.5)
         info["update_command"] = recommended_update_command()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     warn = _probe_credentials(agent)
     if warn:
         info["credential_warning"] = warn
@@ -3486,7 +3486,7 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
     try:
         _emit("session.info", sid, _session_info(agent, session))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # Tool Args/Result text shipped to the TUI for the verbose trail line. The TUI
@@ -3622,7 +3622,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
         payload = {
@@ -3667,7 +3667,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             if isinstance(data, dict) and isinstance(data.get("todos"), list):
                 payload["todos"] = data.get("todos")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -3681,7 +3681,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         ):
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
 
@@ -3772,7 +3772,7 @@ def _on_tool_progress(
                 try:
                     payload[int_key] = int(val)
                 except (TypeError, ValueError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         if _kwargs.get("files_read"):
             payload["files_read"] = [str(p) for p in _kwargs["files_read"]]
         if _kwargs.get("files_written"):
@@ -4143,7 +4143,7 @@ def _cfg_max_turns(cfg: dict, default: int) -> int:
         if env_max > 0:
             return env_max
     except (TypeError, ValueError):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     agent_cfg = cfg.get("agent") or {}
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
 
@@ -4530,13 +4530,13 @@ def _make_agent(
 
         wait_for_mcp_discovery()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from tui_gateway.entry import wait_for_mcp_discovery
 
         wait_for_mcp_discovery()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}
@@ -4746,7 +4746,7 @@ def _init_session(
         register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
         load_permanent_allowlist()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Surface the self-improvement background review's "💾 …" summary as a
     # review.summary event so Ink can render it as a persistent system line
     # in the transcript. In the CLI path this message is printed via
@@ -4763,7 +4763,7 @@ def _init_session(
     except Exception:
         # Bare AIAgents that don't expose the attribute (unlikely, but keep
         # session startup resilient).
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     _wire_callbacks(sid)
     with _sessions_lock:
         if sid in _sessions:
@@ -5135,12 +5135,12 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
                 session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
-            pass  # fall through to queue
+            logger.debug("Suppressed exception", exc_info=True)  # fall through to queue
     if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
         try:
             agent.interrupt()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     _enqueue_prompt(session, text, transport)
     session["last_active"] = time.time()
     return _ok(rid, {"status": "queued"})
@@ -5878,7 +5878,7 @@ def _(rid, params: dict) -> dict:
                 if hasattr(agent, "close"):
                     agent.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if lease is not None:
                 lease.release()
             other_sid, other_session = live
@@ -6006,7 +6006,7 @@ def _session_live_title(session: dict, key: str) -> str:
         try:
             title = str(db.get_session_title(key) or title or "").strip()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return title
 
 
@@ -6529,7 +6529,7 @@ def _(rid, params: dict) -> dict:
         if credits:
             usage["credits_lines"] = credits
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _ok(rid, usage)
 
 
@@ -7814,7 +7814,7 @@ def _(rid, params: dict) -> dict:
             try:
                 return datetime.fromtimestamp(float(value))
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return fallback or datetime.now()
 
     created = _dt(meta.get("started_at"))
@@ -7861,7 +7861,7 @@ def _(rid, params: dict) -> dict:
                 session["session_key"], include_ancestors=True
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return _ok(
         rid,
         {
@@ -8186,7 +8186,7 @@ def _(rid, params: dict) -> dict:
 
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return _ok(rid, {"status": "interrupted"})
 
 
@@ -8950,7 +8950,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         try:
             agent.clear_interrupt()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     _emit("message.start", sid)
 
     def run():
@@ -9090,7 +9090,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             result = agent.run_conversation(run_message, **run_kwargs)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
@@ -9281,7 +9281,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         )
                     except Exception:
                         # Transient DB failure — keep pending_title for retry.
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
             if (
                 status == "complete"
@@ -9308,7 +9308,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         ),
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # CLI parity: when voice-mode TTS is on, speak the agent reply
             # (cli.py:_voice_speak_response).  Only the final text — tool
@@ -9344,7 +9344,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     )
                     f.write(trace)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
@@ -9354,7 +9354,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
@@ -10212,7 +10212,7 @@ def _(rid, params: dict) -> dict:
 
                 clear_task_env_overrides(task_id)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             _clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()
@@ -11977,7 +11977,7 @@ def _(rid, params: dict) -> dict:
             result = resolve_plugin_command_result(handler(arg))
             return _ok(rid, {"type": "plugin", "output": str(result or "")})
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from agent.skill_bundles import (
@@ -12047,7 +12047,7 @@ def _(rid, params: dict) -> dict:
                     },
                 )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,
@@ -12179,7 +12179,7 @@ def _(rid, params: dict) -> dict:
                         },
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
 
@@ -12322,17 +12322,17 @@ def _(rid, params: dict) -> dict:
                         rewound=True,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(agent, "_invalidate_system_prompt"):
                 try:
                     agent._invalidate_system_prompt()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(agent, "_last_flushed_db_idx"):
                 try:
                     agent._last_flushed_db_idx = len(active)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         target_msg = result.get("target_message") or {}
         target_text = target_msg.get("content") or ""
         if isinstance(target_text, list):
@@ -12563,7 +12563,7 @@ def _list_repo_files(root: str) -> list[str]:
                     if len(files) >= _FUZZY_CACHE_MAX_FILES:
                         break
     except (OSError, subprocess.TimeoutExpired):
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not files:
         # Fallback walk: skip vendor/build dirs + dot-dirs so the walk stays
@@ -12585,7 +12585,7 @@ def _list_repo_files(root: str) -> list[str]:
                 if len(files) >= _FUZZY_CACHE_MAX_FILES:
                     break
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     with _fuzzy_cache_lock:
         _fuzzy_cache[root] = (now, files)
@@ -13279,7 +13279,7 @@ def _(rid, params: dict) -> dict:
                 },
             )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from agent.skill_commands import get_skill_commands
@@ -13290,7 +13290,7 @@ def _(rid, params: dict) -> dict:
                 rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
             )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     plugin_handler = None
     resolve_plugin_command_result = None
@@ -13336,7 +13336,7 @@ def _(rid, params: dict) -> dict:
         try:
             worker.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         session["slash_worker"] = None
         return _err(rid, 5030, str(e))
 
@@ -13459,7 +13459,7 @@ def _(rid, params: dict) -> dict:
 
                 stop_continuous()
             except ImportError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
 
@@ -13753,7 +13753,7 @@ def _resolve_browser_cdp_url() -> str:
         if isinstance(browser_cfg, dict):
             return str(browser_cfg.get("cdp_url", "") or "").strip()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return ""
 
 
@@ -13959,7 +13959,7 @@ def _browser_disconnect(rid) -> dict:
 
             cleanup_all_browsers()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     reap()
     os.environ.pop("BROWSER_CDP_URL", None)

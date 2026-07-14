@@ -248,7 +248,7 @@ async def download_url(
                     f"文件过大: {content_length / 1024 / 1024:.1f} MB > {max_size_mb} MB"
                 )
         except httpx.HTTPStatusError:
-            pass  # 部分服务器不支持 HEAD，忽略
+            logger.debug("Suppressed exception", exc_info=True)  # 部分服务器不支持 HEAD，忽略
 
         # GET 下载（流式读取，防止超限）
         async with client.stream("GET", url) as resp:

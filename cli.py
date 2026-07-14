@@ -21,7 +21,9 @@ except ModuleNotFoundError:
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+    import logging as _logging
+
+    _logging.debug("Suppressed exception", exc_info=True)
 
 import logging
 import os
@@ -88,7 +90,7 @@ try:
     install_ignored_terminal_sequences()
     del install_shift_enter_alias, install_ctrl_enter_alias, install_ignored_terminal_sequences
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 import threading
 import queue
 
@@ -738,21 +740,21 @@ try:
     from hermes_logging import setup_logging
     setup_logging(mode="cli")
 except Exception:
-    pass  # Logging setup is best-effort — don't crash the CLI
+    logger.debug("Suppressed exception", exc_info=True)  # Logging setup is best-effort — don't crash the CLI
 
 # Validate config structure early — print warnings before user hits cryptic errors
 try:
     from hermes_cli.config import print_config_warnings
     print_config_warnings()
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 # Initialize the skin engine from config
 try:
     from hermes_cli.skin_engine import init_skin_from_config
     init_skin_from_config(CLI_CONFIG)
 except Exception:
-    pass  # Skin engine is optional — default skin used if unavailable
+    logger.debug("Suppressed exception", exc_info=True)  # Skin engine is optional — default skin used if unavailable
 
 # Initialize tool preview length from config
 try:
@@ -760,7 +762,7 @@ try:
     _tpl = CLI_CONFIG.get("display", {}).get("tool_preview_length", 0)
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 # Initialize friendly tool labels from config (default on)
 try:
@@ -768,7 +770,7 @@ try:
     _ftl = CLI_CONFIG.get("display", {}).get("friendly_tool_labels", True)
     set_friendly_tool_labels(bool(_ftl))
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
@@ -808,7 +810,7 @@ try:
             try:
                 _httpx_neuter_sys.meta_path.remove(self)
             except ValueError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             spec = _httpx_neuter_imp_util.find_spec(fullname)
             if spec is None or spec.loader is None:
                 return None
@@ -821,14 +823,14 @@ try:
                     if cls is not None:
                         cls.__del__ = lambda self: None  # type: ignore[assignment]
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             spec.loader.exec_module = _patched_exec  # type: ignore[method-assign]
             return spec
 
     _httpx_neuter_sys.meta_path.insert(0, _AsyncHttpxDelNeuter())
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 from rich import box as rich_box
 from rich.console import Console
@@ -1037,17 +1039,17 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
                 timeout_s,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             import logging as _lg
             _lg.shutdown()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         for _stream in (sys.stdout, sys.stderr):
             try:
                 _stream.flush()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         os._exit(0)
 
     try:
@@ -1055,7 +1057,7 @@ def _arm_exit_watchdog(timeout_s: float | None = None) -> None:
             target=_watchdog, daemon=True, name="exit-watchdog"
         ).start()
     except Exception:
-        pass  # best-effort — never block shutdown on watchdog setup
+        logger.debug("Suppressed exception", exc_info=True)  # best-effort — never block shutdown on watchdog setup
 
 
 def _run_cleanup(*, notify_session_finalize: bool = True):
@@ -1079,21 +1081,21 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     try:
         _cleanup_all_terminals()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from tools.async_delegation import interrupt_all as _interrupt_async_delegations
         _interrupt_async_delegations(reason="CLI shutdown")
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         _cleanup_all_browsers()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except BaseException:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
     # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
@@ -1101,7 +1103,7 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     if notify_session_finalize:
@@ -1126,7 +1128,7 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                 try:
                     _mm.flush_pending(timeout=10)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Forward the agent's own transcript so memory providers'
             # ``on_session_end`` hooks see the real conversation instead of
             # an empty list (#15165). ``_session_messages`` is set on
@@ -1174,7 +1176,7 @@ def _notify_session_finalize(
             reason=reason,
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") -> None:
@@ -1186,14 +1188,14 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
     try:
         agent.interrupt(reason.replace("_", " "))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
     if session_id:
         try:
             cli.session_id = session_id
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -1210,7 +1212,7 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
             reason=reason,
         )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> None:
@@ -1273,13 +1275,13 @@ def _reset_terminal_input_modes_on_exit() -> None:
             stream.flush()
             return
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     try:
         with open("/dev/tty", "w", encoding="ascii") as tty:
             tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
             tty.flush()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 # =============================================================================
@@ -1336,7 +1338,7 @@ def _git_repo_root() -> Optional[str]:
         if result.returncode == 0:
             return _normalize_git_bash_path(result.stdout.strip())
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -2001,7 +2003,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
         if current:
             active_branches.add(current)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     active_branches.add("main")
 
     orphaned = [
@@ -2169,7 +2171,7 @@ def _query_osc11_background() -> str | None:
         try:
             termios.tcsetattr(fd, termios.TCSAFLUSH, old)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _detect_light_mode() -> bool:
@@ -2313,7 +2315,7 @@ try:
     if sys.stdin.isatty() and sys.stdout.isatty():
         _detect_light_mode()
 except Exception:
-    pass
+    logger.debug("Suppressed exception", exc_info=True)
 
 
 
@@ -2587,7 +2589,7 @@ def _replay_output_history() -> None:
             # single prompt_toolkit print/redraw.
             _pt_print(_PT_ANSI("\n".join(rendered_lines)))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     finally:
         _OUTPUT_HISTORY_REPLAYING = False
 
@@ -2635,7 +2637,7 @@ def _cprint(text: str):
             try:
                 print(text)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return
 
     try:
@@ -2686,7 +2688,7 @@ def _cprint(text: str):
             # else: run_in_terminal ran the lambda synchronously; nothing more
             # to do (double-scheduling would print twice).
         except Exception:
-            pass  # best-effort; the line may already have been printed
+            logger.debug("Suppressed exception", exc_info=True)  # best-effort; the line may already have been printed
 
     try:
         loop.call_soon_threadsafe(_schedule)
@@ -2694,7 +2696,7 @@ def _cprint(text: str):
         try:
             _pt_print(_PT_ANSI(text))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
 def _prepend_note_to_message(message, note: str):
@@ -3197,7 +3199,7 @@ def _disable_prompt_toolkit_cpr_warning(app) -> None:
     try:
         app.renderer.cpr_not_supported_callback = None
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def _terminal_may_leak_cpr() -> bool:
@@ -3263,7 +3265,7 @@ def _build_cpr_disabled_output(stdout):
             try:
                 rows, columns = _get_size(stdout.fileno())
             except (OSError, _io.UnsupportedOperation, AttributeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return Size(rows=rows or 24, columns=columns or 80)
 
         return Vt100_Output(stdout, _get_term_size, enable_cpr=False)
@@ -3662,7 +3664,7 @@ def save_config_value(key_path: str, value: any) -> bool:
         try:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         
         return True
     except Exception as e:
@@ -3947,7 +3949,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if 0.0 <= _f <= 1.0:
                     self._openrouter_min_coding_score = _f
             except (TypeError, ValueError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         
         # Fallback provider chain — tried in order when primary fails after retries.
         # Merge new ``fallback_providers`` entries with any legacy
@@ -4174,7 +4176,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             atexit.register(self._release_active_session)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True
 
     def _release_active_session(self) -> None:
@@ -4228,7 +4230,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 app.invalidate()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _force_full_redraw(self) -> None:
         """Force a clean full-screen repaint of the prompt_toolkit UI.
@@ -4253,7 +4255,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             app.invalidate()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _recover_terminal_after_interrupt(self) -> None:
         """Recover the terminal after an interrupted agent turn (#33271).
@@ -4278,7 +4280,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.curses_ui import flush_stdin
             flush_stdin()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         self._force_full_redraw()
 
     def _clear_prompt_toolkit_screen(self, app, *, rebuild_scrollback: bool = False) -> None:
@@ -4292,7 +4294,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     out.write_raw("\x1b[3J")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             out.cursor_goto(0, 0)
             out.flush()
             # Drop prompt_toolkit's cached screen + cursor state so the
@@ -4300,7 +4302,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # re-renders every cell rather than diffing against stale.
             renderer.reset(leave_alternate_screen=False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _recover_after_resize(self, app, original_on_resize) -> None:
         """Recover a resized classic CLI without desynchronizing cursor state.
@@ -4379,7 +4381,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._clear_prompt_toolkit_screen(app, rebuild_scrollback=False)
                 _replay_output_history()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if new_width is not None:
             self._last_resize_width = new_width
         original_on_resize()
@@ -4397,14 +4399,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     old_timer.cancel()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             def _clear():
                 self._status_bar_suppressed_after_resize = False
                 try:
                     app.invalidate()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             def _fire():
                 try:
@@ -4416,7 +4418,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         loop.call_soon_threadsafe(_clear)
                         return
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 _clear()
 
             timer = threading.Timer(delay, _fire)
@@ -4454,7 +4456,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         loop.call_soon_threadsafe(_run_recovery)
                         return
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 _run_recovery()
 
             with lock:
@@ -4462,7 +4464,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     try:
                         old_timer.cancel()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 self._resize_recovery_pending = True
                 timer = threading.Timer(delay, lambda: _timer_fired(timer))
                 timer.daemon = True
@@ -4600,7 +4602,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if bg_tasks:
                 snapshot["active_background_tasks"] = len(bg_tasks)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Count live background terminal processes (terminal tool background
         # sessions tracked by tools.process_registry). Cheap O(1) read.
@@ -4608,7 +4610,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from tools.process_registry import process_registry
             snapshot["active_background_processes"] = process_registry.count_running()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Count live background/async subagents (delegate_task batches and
         # background single delegations tracked by tools.async_delegation).
@@ -4618,7 +4620,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from tools.async_delegation import active_count as _async_active_count
             snapshot["active_background_subagents"] = _async_active_count()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
 
         if not agent:
@@ -4991,7 +4993,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     app.invalidate()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     def _pet_start_anim(self) -> None:
         if self._pet_anim_running:
@@ -5274,7 +5276,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     current_model = normalized_model
                     changed = True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if resolved_provider == "copilot":
             try:
@@ -5295,7 +5297,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self.api_mode = resolved_mode
                     changed = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return changed
 
         if resolved_provider in {"opencode-zen", "opencode-go"}:
@@ -5317,7 +5319,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self.api_mode = resolved_mode
                     changed = True
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return changed
 
         if resolved_provider != "openai-codex":
@@ -5347,7 +5349,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if available:
                     fallback_model = available[0]
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             if current_model != fallback_model:
                 self.model = fallback_model
@@ -5381,7 +5383,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_credit_notices = []
             self._pending_credit_notices.append((level, text))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _flush_credit_notices(self) -> None:
         """Print any queued credit notices as level-colored lines. Called at turn end
@@ -5400,7 +5402,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 }.get(level, _DIM)
                 _cprint(f"  {color}{text}{_RST}")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _on_notice_clear(self, key: str) -> None:
         """Notice cleared. The REPL prints lines (no persistent slot to wipe), so
@@ -6100,7 +6102,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 buffer.text = ""
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 
@@ -6116,7 +6118,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             _set_cu_cb(self._computer_use_approval_callback)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         self._tool_callbacks_installed = True
 
     def _ensure_tirith_security(self) -> None:
@@ -6137,7 +6139,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         f"— command scanning will use pattern matching only{_RST}"
                     )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     
     def _show_security_advisories(self):
@@ -6163,7 +6165,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             # Never let the security banner block startup. Failures are
             # logged at DEBUG by the advisory module.
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
@@ -6495,7 +6497,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._console_print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
                 self._console_print("[dim]   Run 'hermes setup' to configure[/]")
         except Exception:
-            pass  # Don't crash on import errors
+            logger.debug("Suppressed exception", exc_info=True)  # Don't crash on import errors
     
     def _show_status(self):
         """Show compact startup status line."""
@@ -6569,7 +6571,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 updated_at = datetime.fromtimestamp(float(value))
                 break
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         agent = getattr(self, "agent", None)
         total_tokens = getattr(agent, "session_total_tokens", 0) or 0
@@ -6948,7 +6950,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 reason="new_session" if event_type == "on_session_reset" else "session_boundary",
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _discard_session_if_empty(self, session_id: Optional[str]) -> bool:
         """Drop a just-ended session row when it never gained content.
@@ -7054,11 +7056,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         self.conversation_history
                     )
                 except Exception:
-                    pass  # best-effort
+                    logger.debug("Suppressed exception", exc_info=True)  # best-effort
             try:
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Don't let immediately-rotated empty sessions pile up in
             # /resume and `hermes sessions list` (gemini-cli#27770 port).
             self._discard_session_if_empty(old_session_id)
@@ -7083,7 +7085,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     from tools.todo_tool import TodoStore
                     self.agent._todo_store = TodoStore()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
@@ -7101,7 +7103,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                     self.agent._session_db_created = True
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if title and self._session_db:
                     from hermes_state import SessionDB
                     try:
@@ -7153,7 +7155,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             reason="new_session",
                         )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._notify_session_boundary("on_session_reset")
 
         if not silent:
@@ -7356,12 +7358,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     self.agent._invalidate_system_prompt()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 try:
                     self.agent._last_flushed_db_idx = len(self.conversation_history)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Notify memory providers — same hook /branch fires, with the
             # rewound flag so per-turn document caches invalidate (#6672, #21910).
             try:
@@ -7374,7 +7376,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         rewound=True,
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         turn_word = "turn" if turns_undone == 1 else "turns"
         msg_count = rewound_rows or removed_count
@@ -7466,7 +7468,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 result[0] = input(prompt_text).strip() or None
             except (KeyboardInterrupt, EOFError):
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         in_main_thread = threading.current_thread() is threading.main_thread()
 
@@ -7495,7 +7497,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     _ask()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             finally:
                 self._status_bar_visible = was_visible
                 self._app.invalidate()
@@ -7938,7 +7940,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if ctx:
                 _cprint(f"    Context: {ctx:,} tokens")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if mi:
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
@@ -7984,7 +7986,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if live:
                         model_list = live
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             state["stage"] = "model"
             state["provider_data"] = provider_data
             state["model_list"] = model_list
@@ -8078,7 +8080,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 clear_provider_models_cache()
                 _cprint("  Cleared model picker cache. Refreshing...")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Single inventory context — replaces the inline config-slice the
         # dashboard / TUI used to duplicate. Overlay live session state
@@ -8546,7 +8548,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _tip_color = "#B8860B"
                     cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             else:
                 self.show_banner()
                 print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
@@ -8561,7 +8563,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _tip_color = "#B8860B"
                     self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         elif canonical == "history":
             self.show_history()
         elif canonical == "title":
@@ -9176,7 +9178,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if stray:
                     self._pending_input.put(stray)
         except Exception:
-            pass  # Non-fatal — never break the main loop
+            logger.debug("Suppressed exception", exc_info=True)  # Non-fatal — never break the main loop
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
@@ -9235,7 +9237,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if has_real_message:
                     return
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # If the turn was user-interrupted (Ctrl+C), auto-pause the goal
         # and bail. The judge call would almost always return "continue"
@@ -10887,7 +10889,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         self.conversation_history,
                     )
                 except Exception:
-                    pass  # Best-effort
+                    logger.debug("Suppressed exception", exc_info=True)  # Best-effort
 
             print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
 
@@ -11025,7 +11027,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 self._flush_reasoning_preview(force=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             _cprint(f"  {_DIM}┊ ◇ {header}{_RST}")
             try:
                 self._emit_reasoning_preview(text)
@@ -11079,7 +11081,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
                     _cprint(f"  {line}")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # First-touch onboarding: on the first tool in this process
                 # that takes longer than the threshold while we're in the
                 # noisiest progress mode, print a one-time hint about
@@ -11104,7 +11106,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
                             CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             self._invalidate()
             return
         if event_type != "tool.started":
@@ -11152,7 +11154,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     _cprint(f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m")
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
             from agent.display import render_edit_diff_with_delta
@@ -11222,7 +11224,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cfg = load_config().get("voice")
             voice_cfg = _cfg if isinstance(_cfg, dict) else {}
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Recorder creation can fail (no input device, PortAudio init error).
         # Reset the flag on failure or _voice_recording stays True forever and
@@ -11268,7 +11270,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 from tools.voice_mode import play_beep
                 play_beep(frequency=880, count=1)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         try:
             self._voice_recorder.start(on_silence_stop=_on_silence)
@@ -11323,7 +11325,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     from tools.voice_mode import play_beep
                     play_beep(frequency=660, count=2)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             if wav_path is None:
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -11341,7 +11343,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 stt_config = load_config().get("stt", {})
                 stt_model = stt_config.get("model")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             from tools.voice_mode import transcribe_recording
             result = transcribe_recording(wav_path, model=stt_model)
@@ -11377,7 +11379,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         os.unlink(wav_path)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # Track consecutive no-speech cycles to avoid infinite restart loops.
             if not submitted:
@@ -11460,7 +11462,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if os.path.isfile(ogg_path):
                         os.unlink(ogg_path)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except Exception as e:
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
@@ -11476,7 +11478,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if isinstance(voice_cfg, dict):
                 return bool(voice_cfg.get("beep_enabled", True))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return True
 
     def _enable_voice_mode(self):
@@ -11522,7 +11524,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 with self._voice_lock:
                     self._voice_tts = True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Voice mode instruction is injected as a user message prefix (not a
         # system prompt change) to avoid invalidating the prompt cache.  See
@@ -11557,7 +11559,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     rec.shutdown()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             threading.Thread(target=_bg_shutdown, daemon=True).start()
             self._voice_recorder = None
 
@@ -11566,7 +11568,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from tools.voice_mode import stop_playback
             stop_playback()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         self._voice_tts_done.set()
 
         _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
@@ -12069,7 +12071,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             buf.text = snapshot.get("text", "")
             buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _clear_active_overlays_for_interrupt(self) -> None:
         """Drain and clear every input-blocking overlay left by an interrupted agent.
@@ -12091,7 +12093,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 self._approval_state["response_queue"].put("deny")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._approval_state = None
         if self._clarify_state:
             try:
@@ -12099,14 +12101,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     "The user cancelled. Use your best judgement to proceed."
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._clarify_state = None
             self._clarify_freetext = False
         if self._sudo_state:
             try:
                 self._sudo_state["response_queue"].put("")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._sudo_state = None
             self._sudo_deadline = 0
             self._restore_modal_input_snapshot()
@@ -12134,7 +12136,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 self._app.current_buffer.reset()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """
@@ -12314,9 +12316,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _import_sounddevice()
                         use_streaming_tts = True
                 except (ImportError, OSError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             if use_streaming_tts:
                 text_queue = queue.Queue()
@@ -12369,7 +12371,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     set_secret_capture_callback(self._secret_capture_callback)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # Bind this turn's approval session key into the contextvar so
                 # ``tools.approval.is_current_session_yolo_enabled()`` resolves
                 # against the same key that ``/yolo`` toggles under (see
@@ -12449,7 +12451,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         set_approval_callback(None)
                         set_secret_capture_callback(None)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     # Release the per-turn approval session key. ``_session_yolo``
                     # state itself is preserved across turns (so /yolo persists
                     # for the whole CLI run); we just unbind the contextvar so a
@@ -12458,7 +12460,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         try:
                             reset_current_session_key(_approval_session_token)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
@@ -12491,7 +12493,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 try:
                                     self._pending_input.put(interrupt_msg)
                                 except Exception:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                                 interrupt_msg = None
                                 continue
                             print("\n⚡ New message detected, interrupting...")
@@ -12515,7 +12517,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                     for _ci, _ch in enumerate(self.agent._active_children):
                                         _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                             break
                     except queue.Empty:
                         # Force prompt_toolkit to flush any pending stdout
@@ -12573,7 +12575,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 from agent.auxiliary_client import cleanup_stale_async_clients
                 cleanup_stale_async_clients()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # Flush any remaining streamed text and close the box
             self._flush_stream()
@@ -12639,7 +12641,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         },
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # Handle failed or partial results (e.g., non-retryable errors, rate limits,
             # truncated output, invalid tool calls). Both "failed" and "partial" with
@@ -12690,7 +12692,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     ):
                         self.agent.clear_interrupt()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             response_previewed = result.get("response_previewed", False) if result else False
 
@@ -12824,7 +12826,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     text_queue.put_nowait(None)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             if stop_event is not None:
                 stop_event.set()
             if tts_thread is not None and tts_thread.is_alive():
@@ -12856,7 +12858,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             stream.flush()
             return
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Fallback: shell clear command (rarely needed — escapes work on every
         # VT-capable terminal, but this covers exotic stdout wrappers).
         try:
@@ -12866,7 +12868,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 subprocess.run(["clear"], check=False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _persist_active_session_before_close(self):
         """Best-effort SQLite/JSON flush before the CLI marks a session closed.
@@ -12940,7 +12942,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     session_title = self._session_db.get_session_title(self.session_id)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             print("Resume this session with:")
             # Session IDs are profile-constrained, so the resume hint must
@@ -12998,7 +13000,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if profile not in {"default", "custom"}:
                 symbol = f"{profile} {symbol}"
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         stripped = symbol.rstrip()
         if not stripped:
             return "❯ ", "❯ "
@@ -13081,7 +13083,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
             style_dict.update(get_prompt_toolkit_style_overrides())
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Light-mode remap on the style strings.  Each value is a pt
         # style string like "bg:#1a1a2e #C0C0C0 bold" — split on space,
         # rewrite any "#XXX" tokens (including "bg:#XXX") through the
@@ -13110,7 +13112,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                 style_dict = {k: _remap_value(v or "") for k, v in style_dict.items()}
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return style_dict
 
     def _apply_tui_skin_style(self) -> bool:
@@ -13206,7 +13208,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             _detect_light_mode()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Push the entire TUI to the bottom of the terminal so the banner,
         # responses, and prompt all appear pinned to the bottom — empty
         # space stays above, not below.  This prints enough blank lines to
@@ -13216,7 +13218,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         self.show_banner()
         # Surface any active supply-chain security advisories right after the
@@ -13246,7 +13248,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             from hermes_cli.model_switch import prewarm_picker_cache_async
             prewarm_picker_cache_async()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Pre-import the agent runtime off-thread during the same idle window.
         # The first turn otherwise pays ~1.5s of module imports on the
@@ -13287,7 +13289,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     "to re-enable."
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # First-time OpenClaw-residue banner — fires once if ~/.openclaw/ exists
         # after an OpenClaw→Hermes migration (especially migrations done by
         # OpenClaw's own tool, which doesn't archive the source directory).
@@ -13309,9 +13311,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     from hermes_cli.config import get_config_path as _get_cfg_path_resid
                     mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
                 except Exception:
-                    pass  # best-effort — banner will fire again next session
+                    logger.debug("Suppressed exception", exc_info=True)  # best-effort — banner will fire again next session
         except Exception:
-            pass  # banner is non-critical — never break startup
+            logger.debug("Suppressed exception", exc_info=True)  # banner is non-critical — never break startup
         # Show a random tip to help users discover features
         try:
             from hermes_cli.tips import get_random_tip
@@ -13322,7 +13324,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _tip_color = "#B8860B"
             self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
         except Exception:
-            pass  # Tips are non-critical — never break startup
+            logger.debug("Suppressed exception", exc_info=True)  # Tips are non-critical — never break startup
 
         # Curator — kick off a background skill-maintenance pass on startup
         # if the schedule says we're due.  Runs in a daemon thread so it
@@ -13337,7 +13339,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 ),
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self._console_print(
@@ -13611,7 +13613,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 _f.write(f"{time.strftime('%H:%M:%S')} ENTER: queued interrupt msg={str(payload)[:60]!r}, "
                                          f"agent_running={self._agent_running}\n")
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     # First-touch onboarding: on the very first busy-while-running
                     # event for this install, print a one-line tip explaining the
                     # /busy knob.  Flag persists to config.yaml and never fires
@@ -13629,7 +13631,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
                             CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -14165,7 +14167,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         stop_playback()
                         cli_ref._voice_tts_done.set()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = True
@@ -15184,7 +15186,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             if previous_screen.height < screen.height:
                                 previous_screen.height = screen.height
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                     return _orig_osd(
                         app, output, screen, current_pos, color_depth,
@@ -15196,7 +15198,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _pt_renderer._output_screen_diff = _patched_output_screen_diff
                 _pt_renderer._hermes_osd_patched = True
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Apply bracketed-paste timeout recovery so torn ESC[201~ end marks
         # don't permanently freeze the input (issue #16263). Idempotent.
@@ -15255,7 +15257,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                     self._pending_input.put(_synth)
                                     complete_event_delivery(_evt, _claim)
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                         continue
                     
                     if not user_input:
@@ -15424,7 +15426,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 self._pending_input.put(_synth)
                                 complete_event_delivery(_evt, _claim)
                         except Exception:
-                            pass  # Non-fatal — don't break the main loop
+                            logger.debug("Suppressed exception", exc_info=True)  # Non-fatal — don't break the main loop
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)
@@ -15469,7 +15471,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 logger.debug("Received signal %s, triggering graceful shutdown", signum)
             except Exception:
-                pass  # never let logging raise from a signal handler (#13710 regression)
+                logger.debug("Suppressed exception", exc_info=True)  # never let logging raise from a signal handler (#13710 regression)
             try:
                 if getattr(self, "agent", None) and getattr(self, "_agent_running", False):
                     self.agent.interrupt(f"received signal {signum}")
@@ -15480,7 +15482,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if _grace > 0:
                         time.sleep(_grace)
             except Exception:
-                pass  # never block signal handling
+                logger.debug("Suppressed exception", exc_info=True)  # never block signal handling
             # Prefer a clean prompt_toolkit exit over `raise KeyboardInterrupt()`.
             # Raising KBI from a signal handler unwinds into whatever Python
             # frame the interpreter happens to be running — typically an
@@ -15504,7 +15506,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         _loop.call_soon_threadsafe(_app.exit)
                         return  # clean unwind — no traceback, no ENTER pause
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
         
         try:
@@ -15543,7 +15545,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     return
                 _signal.signal(_signal.SIGINT, _sigint_absorb)
         except Exception:
-            pass  # Signal handlers may fail in restricted environments
+            logger.debug("Suppressed exception", exc_info=True)  # Signal handlers may fail in restricted environments
         
         # Install a custom asyncio exception handler that suppresses the
         # "Event loop is closed" RuntimeError from httpx transport cleanup
@@ -15613,9 +15615,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _loop = _aio.get_running_loop()
                     _loop.set_exception_handler(_suppress_closed_loop_errors)
                 except RuntimeError:
-                    pass  # No running loop -- nothing to patch
+                    logger.debug("Suppressed exception", exc_info=True)  # No running loop -- nothing to patch
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # The app enables focus reporting + mouse tracking; record that
                 # so _run_cleanup resets them on exit (#36823).
                 _mark_tui_input_modes_active()
@@ -15623,7 +15625,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pet_start_anim()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         except (KeyError, OSError) as _stdin_err:
             # Catch selector registration failures from broken stdin (#6393)
             # and I/O errors from broken stdout during interrupt (#13710).
@@ -15656,7 +15658,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 print(f"{_DIM}Shutting down… (finalizing session){_RST}", flush=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Interrupt the agent immediately so its daemon thread stops making
             # API calls and exits promptly (agent_thread is daemon, so the
             # process will exit once the main thread finishes, but interrupting
@@ -15665,20 +15667,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     self.agent.interrupt()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:
                     self._voice_recorder.shutdown()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 self._voice_recorder = None
             # Clean up old temp voice recordings
             try:
                 from tools.voice_mode import cleanup_temp_recordings
                 cleanup_temp_recordings()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)
@@ -15734,7 +15736,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         reason="shutdown",
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             _run_cleanup()
             self._print_exit_summary()
             self._release_active_session()
@@ -15781,7 +15783,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         try:
             conn.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     if task is None:
         return
 
@@ -15819,7 +15821,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             try:
                 c.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     def _block(reason: str) -> None:
         c = _kb.connect()
@@ -15829,7 +15831,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             try:
                 c.close()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     _run_loop(
         task_id=task_id,
@@ -15910,7 +15912,7 @@ def main(
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
@@ -16085,7 +16087,7 @@ def main(
                 if _grace > 0:
                     time.sleep(_grace)
         except Exception:
-            pass  # never block signal handling
+            logger.debug("Suppressed exception", exc_info=True)  # never block signal handling
         # Kanban worker exit path (#28181): SIGTERM hits a dispatcher-spawned
         # worker that's likely in a non-daemon thread waiting on a child
         # subprocess in _wait_for_process. Raising KeyboardInterrupt only
@@ -16107,17 +16109,17 @@ def main(
                     _sig_mod.signal(_sig_mod.SIGALRM, lambda *_: os._exit(0))
                     _sig_mod.alarm(2)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             try:
                 import logging as _lg
                 _lg.shutdown()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             for _stream in (sys.stdout, sys.stderr):
                 try:
                     _stream.flush()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             os._exit(0)
         raise KeyboardInterrupt()
     try:
@@ -16127,7 +16129,7 @@ def main(
         if hasattr(_signal, "SIGHUP"):
             _signal.signal(_signal.SIGHUP, _signal_handler_q)
     except Exception:
-        pass  # signal handler may fail in restricted environments
+        logger.debug("Suppressed exception", exc_info=True)  # signal handler may fail in restricted environments
     
     # Handle single query mode
     if query or image:
@@ -16156,7 +16158,7 @@ def main(
                         try:
                             _conn.close()
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     _body = getattr(_task, "body", "") if _task is not None else ""
                     if _body:
                         _kb_paths, _kb_urls = _extract_refs(_body)

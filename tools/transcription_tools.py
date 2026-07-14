@@ -517,7 +517,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
             try:
                 child.terminate()
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         parent.terminate()
     except psutil.NoSuchProcess:
         return
@@ -528,7 +528,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
         proc.wait(timeout=2)
         return
     except subprocess.TimeoutExpired:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     try:
         parent = psutil.Process(proc.pid)
@@ -536,7 +536,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
             try:
                 child.kill()
             except psutil.NoSuchProcess:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         parent.kill()
     except psutil.NoSuchProcess:
         return
@@ -875,7 +875,7 @@ def _get_provider(stt_config: dict) -> str:
             logger.info("No local STT available, using xAI Grok STT API")
             return "xai"
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if get_env_value("ELEVENLABS_API_KEY"):
         logger.info("No local STT available, using ElevenLabs Scribe STT API")
         return "elevenlabs"
@@ -1434,7 +1434,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
             from tools.lazy_deps import ensure as _lazy_ensure
             _lazy_ensure("stt.mistral", prompt=False)
         except ImportError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         from mistralai.client import Mistral
 
         with Mistral(api_key=api_key) as client:

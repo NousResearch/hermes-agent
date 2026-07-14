@@ -22,7 +22,9 @@ except ModuleNotFoundError:
     # yet — happens during partial ``hermes update`` where git-reset landed
     # new code but ``uv pip install -e .`` didn't finish.  Missing bootstrap
     # means UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+    import logging as _logging
+
+    _logging.debug("Suppressed exception", exc_info=True)
 
 import asyncio
 import concurrent.futures
@@ -332,7 +334,7 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     except Exception:
         # Fail-soft: fall back to the local pattern pass below rather than
         # letting a redactor import/error leak the raw text to chat.
-        pass
+        logging.debug("Suppressed exception", exc_info=True)
     for pattern in _GATEWAY_SECRET_PATTERNS:
         redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
     return redacted
@@ -643,7 +645,7 @@ def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
             numeric = float(text)
             return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
         except ValueError:
-            pass
+            logging.debug("Suppressed exception", exc_info=True)
         try:
             return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
         except ValueError:
@@ -1263,7 +1265,7 @@ def _ensure_ssl_certs() -> None:
         os.environ["SSL_CERT_FILE"] = certifi.where()
         return
     except ImportError:
-        pass
+        logging.debug("Suppressed exception", exc_info=True)
 
     # 3. Common distro / macOS locations
     for candidate in (
@@ -1388,7 +1390,7 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
             from hermes_cli import managed_scope
             cfg = managed_scope.apply_managed_overlay(cfg)
         except Exception:
-            pass
+            logging.debug("Suppressed exception", exc_info=True)
     except Exception:
         return
 
@@ -1497,7 +1499,7 @@ if _config_path.exists():
             from hermes_cli import managed_scope
             _cfg = managed_scope.apply_managed_overlay(_cfg)
         except Exception:
-            pass
+            logging.debug("Suppressed exception", exc_info=True)
         # Top-level simple values (fallback only — don't override .env)
         for _key, _val in _cfg.items():
             if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
@@ -1584,7 +1586,7 @@ if _config_path.exists():
             except Exception:
                 # Plugin discovery failure must not break gateway startup;
                 # built-in bridging stays intact.
-                pass
+                logging.debug("Suppressed exception", exc_info=True)
 
             for _task_key in _aux_bridged_keys:
                 _task_cfg = _auxiliary_cfg.get(_task_key, {})
@@ -2021,7 +2023,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                 logger.debug("Fallback entry %s failed: %s", entry.get("provider"), fb_exc)
                 continue
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -2141,7 +2143,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             secs = await asyncio.to_thread(_wav_duration)
             return _format_duration(secs)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     if ext in (".ogg", ".opus", ".oga"):
         try:
@@ -2151,7 +2153,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             secs = await asyncio.to_thread(_ogg_duration)
             return _format_duration(secs)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -2163,7 +2165,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
         if proc.returncode == 0:
             return _format_duration(float(stdout.decode().strip()))
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None
 
@@ -2315,7 +2317,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                         f"Install it with: `hermes skills install {install_path}`"
                     )
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -2366,7 +2368,7 @@ def _load_gateway_config() -> dict:
             raw = read_raw_config()
             used_canonical = True
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if not used_canonical:
         try:
@@ -2386,7 +2388,7 @@ def _load_gateway_config() -> dict:
         from hermes_cli import managed_scope
         raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     if not isinstance(raw, dict):
         return {}
     # Canonicalize model-id aliases (model.name / model.model → model.default)
@@ -2399,7 +2401,7 @@ def _load_gateway_config() -> dict:
         from hermes_cli.config import _normalize_root_model_keys
         raw = _normalize_root_model_keys(raw)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     return raw
 
 
@@ -2514,7 +2516,7 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
         if importlib.util.find_spec("hermes_cli") is not None:
             return [sys.executable, "-m", "hermes_cli.main"]
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return None
 
@@ -3045,7 +3047,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from tools.tirith_security import ensure_installed
             ensure_installed(log_failures=False)
         except Exception:
-            pass  # Non-fatal — fail-open at scan time if unavailable
+            logger.debug("Suppressed exception", exc_info=True)  # Non-fatal — fail-open at scan time if unavailable
 
         # Startup heads-up (#30882): a gateway in manual approval mode with no
         # automated risk assessor (tirith disabled AND no auxiliary.approval
@@ -3532,7 +3534,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if isinstance(session_key, str) and session_key:
                     return session_key
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         config = getattr(self, "config", None)
         # Mirror SessionStore._resolve_profile_for_key so this fallback path
         # produces the same namespace as the primary path: None (legacy
@@ -3896,7 +3898,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         model, runtime_kwargs["provider"],
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Final safety net (#35314): if resolution still produced an empty
         # model — e.g. a transient config-cache miss during a post-interrupt
@@ -4233,7 +4235,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if isinstance(rlg.get("window_seconds"), int) and rlg["window_seconds"] > 0:
                     window_seconds = rlg["window_seconds"]
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return max_restarts, window_seconds
 
     def _scale_to_zero_should_arm(self) -> bool:
@@ -4555,7 +4557,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 active_agents=self._active_work_count(),
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
@@ -4577,7 +4579,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from gateway.status import write_runtime_status
             write_runtime_status(active_agents=self._active_work_count())
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # ------------------------------------------------------------------
     # External drain control (NAS-driven quiesce-without-restart, Phase 2).
@@ -4682,7 +4684,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 error_message=error_message,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # ------------------------------------------------------------------
     # Per-platform circuit breaker (pause/resume) — used by the reconnect
@@ -4718,7 +4720,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 error_message=info["pause_reason"],
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         logger.warning(
             "%s paused after %d consecutive failures (%s) — "
             "fix the underlying issue then run `/platform resume %s` "
@@ -4749,7 +4751,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 error_message=None,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         logger.info("%s resumed — retrying on next watcher tick", platform.value)
         return True
 
@@ -5053,7 +5055,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     cfg = _y.safe_load(_f) or {}
                 return cfg.get("provider_routing", {}) or {}
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return {}
 
     @staticmethod
@@ -5074,7 +5076,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if fb:
                     return fb
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         return None
 
     def _refresh_fallback_model(self) -> list | None:
@@ -5566,7 +5568,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 running_agent.interrupt(event.text)
             except Exception:
-                pass  # don't let interrupt failure block the ack
+                logger.debug("Suppressed exception", exc_info=True)  # don't let interrupt failure block the ack
 
         # Check if busy ack is disabled — skip sending but still process the input.
         # Placed before debounce so we don't stamp a "last ack" timestamp that was
@@ -5640,7 +5642,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if current_tool:
                     status_parts.append(f"running: {current_tool}")
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
         if is_steer_mode:
@@ -5869,7 +5871,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if (restart_platform, restart_chat_id, restart_thread_id) == dedup_key:
                             reply_to_message_id = getattr(restart_source, "message_id", None)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 metadata = self._thread_metadata_for_target(
                     platform,
@@ -6019,7 +6021,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             _strip(_session_messages)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     _flush(_session_messages)
             except Exception as _e:
                 logger.debug("Shutdown transcript flush failed: %s", _e)
@@ -6032,7 +6034,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     reason="shutdown",
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Off-loop + bounded: a wedged memory provider here used to hang
             # the whole shutdown so SIGTERM never completed (#53175).
             await self._cleanup_agent_resources_off_loop(
@@ -6088,7 +6090,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 agent._end_session_on_close = False
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         try:
             await asyncio.wait_for(
                 self._run_in_executor_with_context(
@@ -6133,7 +6135,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     agent.shutdown_memory_provider()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Close tool resources (terminal sandboxes, browser daemons,
         # background processes, httpx clients) to prevent zombie
         # process accumulation.
@@ -6141,7 +6143,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if hasattr(agent, "close"):
                 agent.close()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Auxiliary async clients (session_search/web/vision/etc.) live in a
         # process-global cache and are created inside worker threads. Clean up
         # any entries whose event loop is now dead so their httpx transports do
@@ -6150,7 +6152,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from agent.auxiliary_client import cleanup_stale_async_clients
             cleanup_stale_async_clients()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     _STUCK_LOOP_THRESHOLD = 3  # restarts while active before auto-suspend
     _STUCK_LOOP_FILE = ".restart_failure_counts"
@@ -6180,7 +6182,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             atomic_json_write(path, new_counts, indent=None)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     def _suspend_stuck_loop_sessions(self) -> int:
         """Suspend sessions that have been active across too many restarts.
@@ -6215,19 +6217,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key, counts[session_key],
                     )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         if suspended:
             try:
                 self.session_store._save()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Clear the file — counters start fresh after suspension
         try:
             path.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return suspended
 
@@ -6250,7 +6252,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 else:
                     path.unlink(missing_ok=True)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil
@@ -6571,7 +6573,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.chat_id if source else "unknown",
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
@@ -6594,7 +6596,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 setattr(event, "_hermes_startup_restore_replay", True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             await adapter.handle_message(event)
             drained += 1
         return drained
@@ -6833,7 +6835,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _effective_max_iter,
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Redaction status: ON by default (#17691). Surface a prominent
         # warning if an operator has explicitly opted out so they don't
         # forget the downgrade is active — the redactor snapshots its
@@ -6856,19 +6858,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _redact_raw,
                 )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()
             if _profile and _profile != "default":
                 logger.info("Active profile: %s", _profile)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `hermes status` surfaces it; we do NOT block
@@ -6947,7 +6949,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if e.allow_all_env
             )
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         _any_allowlist = any(
             os.getenv(v) for v in _builtin_allowed_vars + _plugin_allowed_vars
         )
@@ -6982,7 +6984,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.status import write_runtime_status
                 write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._request_clean_exit(reason)
             return True
         
@@ -7079,7 +7081,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 _clean_marker.unlink()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             try:
                 suspended = await self.async_session_store.suspend_recently_active()
@@ -7255,7 +7257,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.status import write_runtime_status
                 write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
             self._request_clean_exit(reason)
             self._startup_restore_in_progress = False
@@ -7271,7 +7273,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     from gateway.status import write_runtime_status
                     write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
                 self._request_clean_exit(reason)
                 self._startup_restore_in_progress = False
@@ -7301,7 +7303,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             exit_reason=None,
                         )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     # Fall through to the normal "running" state — reconnect
                     # watcher takes it from here.
                 # All enabled platforms had no adapter (missing library or credentials).
@@ -7765,7 +7767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 reason="session_expired",
                             )
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         # Shut down memory provider and close tool resources
                         # on the cached agent.  Idle agents live in
                         # _agent_cache (not _running_agents), so look there.
@@ -8005,7 +8007,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             from gateway.channel_directory import build_channel_directory
                             await build_channel_directory(self.adapters)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
 
                         # A platform that was offline at gateway startup never
                         # got its restart-interrupted sessions auto-resumed —
@@ -8462,7 +8464,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             else:
                 logger.info(
                     "Skipping .clean_shutdown marker — drain timed out with "
@@ -8716,7 +8718,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if getattr(event, "source", None) is not None and not event.source.profile:
                     event.source.profile = profile_name
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             return await self._handle_message(event)
         return _handler
 
@@ -9274,7 +9276,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
             # Evict if: agent is idle beyond timeout, OR wall-clock age is
             # extreme (10x timeout or 2h, whichever is larger — catches
             # cases where the agent object was garbage-collected).
@@ -10023,7 +10025,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 event.text = steer_payload
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Do NOT return — fall through to _handle_message_with_agent
             # at the end of this function so the rewritten text is sent
             # to the agent as a regular user turn.
@@ -10428,7 +10430,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._session_model_overrides[quick_key] = _restore
             self._evict_cached_agent(quick_key)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _prepare_inbound_message_text(
         self,
@@ -10712,7 +10714,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         _msg_custom_providers = _msg_cfg.get("custom_providers") or []
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # Resolve the session's actual model/provider/base_url the
                 # same way the hygiene compression block does (~11080).
                 # GatewayRunner has no self._model/self._base_url attrs
@@ -10748,7 +10750,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _msg_custom_ctx:
                             _msg_config_ctx = _msg_custom_ctx
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 _msg_ctx_len = await get_model_context_length_async(
                     _msg_model,
                     base_url=_msg_base_url,
@@ -10828,7 +10830,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             while len(cached_sources) > max_size:
                 cached_sources.popitem(last=False)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     @property
     def async_session_store(self) -> AsyncSessionStore:
@@ -10850,7 +10852,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 cached_sources.move_to_end(session_key)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         return source
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
@@ -10880,7 +10882,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 event.source = source
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -11043,7 +11045,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _pcfg = _load_gateway_config()
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
@@ -11103,7 +11105,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                         await adapter.send(
                             source.chat_id, notice,
                             metadata=self._thread_metadata_for_source(source),
@@ -11208,7 +11210,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             try:
                                 _hyg_config_context_length = int(_raw_ctx)
                             except (TypeError, ValueError):
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                         # Read provider for accurate context detection
                         _hyg_provider = _model_cfg.get("provider") or None
                         _hyg_base_url = _model_cfg.get("base_url") or None
@@ -11228,7 +11230,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if _parsed > 0:
                                     _hyg_hard_msg_limit = _parsed
                             except (TypeError, ValueError):
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
 
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -11240,7 +11242,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hyg_base_url = _hyg_runtime.get("base_url") or _hyg_base_url
                     _hyg_api_key = _hyg_runtime.get("api_key") or _hyg_api_key
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 # Check custom_providers per-model context_length
                 # (same fallback as run_agent.py lines 1171-1189).
@@ -11268,9 +11270,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             _hyg_config_context_length = int(_cp_ctx)
                                 break
                     except (TypeError, ValueError):
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             if _hyg_compression_enabled:
                 _hyg_context_length = await get_model_context_length_async(
@@ -11738,7 +11740,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             if not self._is_session_run_current(_quick_key, run_generation):
                 logger.info(
@@ -12287,7 +12289,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             logger.exception("Agent error in session %s", session_key)
             # Crash-resilience for failures that happen before AIAgent enters
             # run_conversation() (for example: provider/httpx client init
@@ -12352,7 +12354,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if not isinstance(_err_json, dict):
                             _err_json = {}
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if _err_json.get("type") == "usage_limit_reached":
                     _resets_in = _err_json.get("resets_in_seconds")
                     if _resets_in and _resets_in > 0:
@@ -12432,7 +12434,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             config_context_length = int(raw_ctx)
                         except (TypeError, ValueError):
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
                 try:
@@ -12441,7 +12443,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     custom_provs = data.get("custom_providers")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Also check custom_providers for context_length when top-level model.context_length is not set
         if config_context_length is None and data:
@@ -12461,7 +12463,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     config_context_length = int(raw_cp_ctx)
                                     break
                                 except (TypeError, ValueError):
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                         # Also check per-model context_length
                         if isinstance(cp_models, dict):
                             model_entry = cp_models.get(model)
@@ -12474,9 +12476,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     config_context_length = int(model_ctx)
                                     break
                                 except (TypeError, ValueError):
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Resolve runtime credentials for probing
         try:
@@ -12485,7 +12487,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             base_url = base_url or runtime.get("base_url")
             api_key = runtime.get("api_key")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         context_length = get_model_context_length(
             model,
@@ -13148,7 +13150,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
                 await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Build a synthetic MessageEvent and feed through the normal pipeline
         # Use SimpleNamespace as raw_message so _get_guild_id() can extract
@@ -13295,7 +13297,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     os.unlink(p)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     async def _deliver_media_from_response(
         self,
@@ -13565,7 +13567,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             metadata=_thread_metadata,
                         )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 # Send media files, routing each by type so a TTS clip
                 # arrives as a voice bubble / a clip as a video rather than
@@ -13603,7 +13605,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 metadata=_thread_metadata,
                             )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
@@ -13621,7 +13623,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=_thread_metadata,
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
 
 
@@ -14242,7 +14244,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_entry.session_id, reload_msg
                 )
             except Exception:
-                pass  # Best-effort; don't fail the reload over a transcript write
+                logger.debug("Suppressed exception", exc_info=True)  # Best-effort; don't fail the reload over a transcript write
 
             return "\n".join(lines)
 
@@ -14301,7 +14303,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if isinstance(approvals, dict):
                 confirm_required = bool(approvals.get("destructive_slash_confirm", True))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         if not confirm_required:
             return await execute()
@@ -14611,7 +14613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key = f"{platform_str}:{chat_id}"
                     break
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         if not adapter or not chat_id:
             logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
@@ -14674,7 +14676,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             buffer += content[bytes_sent:]
                             bytes_sent = len(content)
                     except OSError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 await _flush_buffer()
 
                 # Send final status
@@ -14713,7 +14715,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         buffer += content[bytes_sent:]
                         bytes_sent = len(content)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             # Flush buffer periodically
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
@@ -14783,7 +14785,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=_non_conversational_metadata(metadata, platform=platform),
                 )
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             for p in (pending_path, claimed_path, output_path,
                       exit_code_path, prompt_path):
                 p.unlink(missing_ok=True)
@@ -16328,7 +16330,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if interrupt_event is not None:
                 setattr(interrupt_event, "_hermes_run_generation", int(generation))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     async def _interrupt_and_clear_session(
         self,
@@ -16501,7 +16503,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 self._release_evicted_agent_soft(agent)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
@@ -16613,7 +16615,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # fall back to the legacy full-close path.
                 self._cleanup_agent_resources(agent)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         # Free conversation history memory — can be tens of MB with tool
         # outputs (file reads, terminal output, search results) on heavy
         # 100+-tool-call sessions. release_clients() deliberately preserves
@@ -16978,7 +16980,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
         # Make the HTTP request with SSE streaming -----------------------
         full_response = ""
@@ -17047,7 +17049,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             if _stream_consumer:
                                                 _stream_consumer.on_delta(content)
                                 except json.JSONDecodeError:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                         if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError(
                                 "Proxy SSE stream exceeded max buffer size without a line boundary"
@@ -17244,7 +17246,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Apply friendly tool labels config (default on) — per-platform aware
         try:
@@ -17252,7 +17254,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _ftl = resolve_display_setting(user_config, platform_key, "friendly_tool_labels", True)
             set_friendly_tool_labels(bool(_ftl))
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         # Tool progress mode — resolved per-platform with env var fallback
         _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
@@ -17507,7 +17509,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ):
                     return
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
 
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
@@ -17702,7 +17704,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.error("write_tool_log error: %s", e)
                         await asyncio.sleep(1)
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             finally:
                 # Drain remaining entries before closing so late tool calls
                 # from the final iteration aren't lost.
@@ -17718,7 +17720,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     file_handler.flush()
                     file_handler.close()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
         async def send_progress_messages():
             if not progress_queue:
@@ -17887,7 +17889,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await asyncio.sleep(0)
                             continue
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
@@ -18027,7 +18029,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     try:
                                         await _edit_progress_message(progress_msg_id, _pending_text)
                                     except Exception:
-                                        pass
+                                        logger.debug("Suppressed exception", exc_info=True)
                                 progress_msg_id = None
                                 progress_lines = []
                                 last_progress_msg[0] = None
@@ -18045,7 +18047,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             await _edit_progress_message(progress_msg_id, full_text)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     return
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
@@ -18366,7 +18368,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _sess_row:
                         _current_msg_count = _sess_row.get("message_count", 0)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             _xproc_evicted_agent = None
             if _cache_lock and _cache is not None:
@@ -18430,7 +18432,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 try:
                                     _cache.move_to_end(session_key)
                                 except KeyError:
-                                    pass
+                                    logger.debug("Suppressed exception", exc_info=True)
                             self._init_cached_agent_for_turn(agent, _interrupt_depth)
                             # Refresh agent max_iterations from current config
                             # (cached agent may have been created with old config)
@@ -18468,7 +18470,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         self._release_evicted_agent_soft(_xproc_evicted_agent)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -18669,7 +18671,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     _status_adapter.pause_typing_for_chat(_status_chat_id)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
                 send_ok = False
                 fut = safe_schedule_threadsafe(
@@ -19101,7 +19103,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     from tools.clarify_gateway import clear_session as _clear_clarify_session
                     _clear_clarify_session(_approval_session_key)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
@@ -19338,7 +19340,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         **maybe_auto_title_kwargs,
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             return {
                 "final_response": final_response,
@@ -19590,7 +19592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _parts:
                             _status_detail = " — " + ", ".join(_parts)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 _heartbeat_text = (
                     _generic_status_phrase("status")
                     if _long_running_mode == "generic"
@@ -19716,7 +19718,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _act = _agent_ref.get_activity_summary()
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                     # Staged warning: fire once before escalating to full timeout.
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
@@ -19765,7 +19767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         _activity = _timed_out_agent.get_activity_summary()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 _last_desc = _activity.get("last_activity_desc", "unknown")
                 _secs_ago = _activity.get("seconds_since_activity", 0)
@@ -19850,7 +19852,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
                         _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
@@ -19961,7 +19963,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pending_event = None
                             pending = None
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
             if self._draining and (pending_event or pending):
                 logger.info(
@@ -20010,7 +20012,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             try:
                                 await stream_task
                             except asyncio.CancelledError:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
                     _previewed = bool(result.get("response_previewed"))
@@ -20053,7 +20055,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if inspect.isawaitable(_bg_result):
                                     await _bg_result
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                     elif adapter and hasattr(adapter, "_post_delivery_callbacks"):
                         _bg_cb = adapter._post_delivery_callbacks.pop(session_key, None)
                         if callable(_bg_cb):
@@ -20062,7 +20064,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if inspect.isawaitable(_bg_result):
                                     await _bg_result
                             except Exception:
-                                pass
+                                logger.debug("Suppressed exception", exc_info=True)
                 # else: interrupted — discard the interrupted response ("Operation
                 # interrupted." is just noise; the user already knows they sent a
                 # new message).
@@ -20116,7 +20118,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             metadata=_status_thread_metadata,
                         )
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
                 # Re-baseline the cached agent's message_count snapshot before
                 # recursing into the in-band queued (/queue) follow-up turn.
@@ -20173,7 +20175,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         await stream_task
                     except asyncio.CancelledError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 else:
                     try:
                         await asyncio.wait_for(stream_task, timeout=5.0)
@@ -20182,7 +20184,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         try:
                             await stream_task
                         except asyncio.CancelledError:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
             
             # Clean up tracking
             tracking_task.cancel()
@@ -20204,7 +20206,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         await task
                     except asyncio.CancelledError:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
@@ -20305,7 +20307,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _chat_id_snapshot, _mid
                             )
                         except Exception:
-                            pass
+                            logger.debug("Suppressed exception", exc_info=True)
                 try:
                     safe_schedule_threadsafe(
                         _delete_all(), _loop_snapshot,
@@ -20313,7 +20315,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         log_message="Temp bubble cleanup scheduling error",
                     )
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
             try:
                 _cleanup_adapter.register_post_delivery_callback(
@@ -20617,7 +20619,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             try:
                 terminate_pid(existing_pid, force=False)
             except ProcessLookupError:
-                pass  # Already gone
+                logger.debug("Suppressed exception", exc_info=True)  # Already gone
             except (PermissionError, OSError):
                 logger.error(
                     "Permission denied killing PID %d. Cannot replace.",
@@ -20629,7 +20631,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     from gateway.status import clear_takeover_marker
                     clear_takeover_marker()
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 return False
             # Wait up to 10 seconds for the old process to exit.
             # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
@@ -20652,7 +20654,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except ProcessLookupError:
                     old_gateway_exited = True
                 except (PermissionError, OSError):
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
                 # Confirm the force-kill actually reaped the process before we
                 # clear its PID file / scoped locks. SIGKILL can fail to take
                 # (e.g. an uninterruptible-sleep or zombie-reaping parent), and
@@ -20675,7 +20677,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                         from gateway.status import clear_takeover_marker
                         clear_takeover_marker()
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                     return False
             remove_pid_file()
             # remove_pid_file() is a no-op when the PID doesn't match.
@@ -20683,14 +20685,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             try:
                 (get_hermes_home() / "gateway.pid").unlink(missing_ok=True)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Clean up any takeover marker the old process didn't consume
             # (e.g. SIGKILL'd before its shutdown handler could read it).
             try:
                 from gateway.status import clear_takeover_marker
                 clear_takeover_marker()
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
             # Also release all scoped locks left by the old process.
             # Stopped (Ctrl+Z) processes don't release locks on exit,
             # leaving stale lock files that block the new gateway from starting.
@@ -20703,7 +20705,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 if _released:
                     logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
             except Exception:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         else:
             hermes_home = str(get_hermes_home())
             logger.error(
@@ -20724,7 +20726,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).
@@ -20895,12 +20897,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             try:
                 loop.add_signal_handler(sig, shutdown_signal_handler, sig)  # windows-footgun: ok — wrapped in try/except NotImplementedError for Windows
             except NotImplementedError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         if hasattr(signal, "SIGUSR1"):
             try:
                 loop.add_signal_handler(signal.SIGUSR1, restart_signal_handler)  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
             except NotImplementedError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
     else:
         logger.info("Skipping signal handlers (not running in main thread).")
 
@@ -21007,7 +21009,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             from tools.mcp_tool import shutdown_mcp_servers
             shutdown_mcp_servers()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
         if runner.exit_code is not None:
             raise SystemExit(runner.exit_code)
         return True
@@ -21057,7 +21059,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
         stop_nous_auth_keepalive()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if runner.should_exit_with_failure:
         if runner.exit_reason:
@@ -21096,7 +21098,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     if runner.exit_code is not None:
         raise SystemExit(runner.exit_code)
@@ -21136,7 +21138,7 @@ def main():
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     import argparse
     
@@ -21217,7 +21219,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         try:
             stream.flush()
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     # Release PID + runtime lock BEFORE the log drain: the drain is bounded but
     # could still take up to its timeout on a wedged disk, and these locks must
     # never be stranded. os._exit skips atexit, and the early SystemExit exit
@@ -21227,7 +21229,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         remove_pid_file()
         release_gateway_runtime_lock()
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     # Drain the async log queue: os._exit bypasses atexit, so the listener's
     # atexit drain won't fire. Use drain_log_queue() (bounded, no restart), NOT
     # flush_log_queue(): if the listener is wedged on the rotation lock — the
@@ -21238,7 +21240,7 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         from hermes_logging import drain_log_queue
         drain_log_queue(timeout=1.0)
     except Exception:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
     os._exit(exit_code)
 
 

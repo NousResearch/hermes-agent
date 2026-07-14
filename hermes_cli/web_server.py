@@ -164,7 +164,7 @@ def _warm_gateway_module() -> None:
     try:
         import hermes_cli.gateway  # noqa: F401
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -1545,7 +1545,7 @@ def _fs_default_cwd() -> str:
             if candidate.is_dir():
                 return str(candidate)
         except (OSError, RuntimeError):
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
     return str(Path.cwd())
 
 
@@ -1711,7 +1711,7 @@ def _dashboard_local_update_managed_externally() -> bool:
         if method == "git":
             return False
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     return True
 
 
@@ -2722,7 +2722,7 @@ async def get_status(profile: Optional[str] = None):
             auth_providers = [p.name for p in _list_providers()]
         except Exception:
             # Module not importable yet (early startup) — leave as [].
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
         # Nous bootstrap-session validity for the NAS health sweep. A hosted
         # agent whose Nous auth dies terminally (invalid_grant / quarantine)
@@ -2897,19 +2897,19 @@ async def get_system_stats():
                 "percent": du.percent,
             }
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         try:
             info["cpu_percent"] = psutil.cpu_percent(interval=0.1)
             la = getattr(psutil, "getloadavg", None)
             if la:
                 info["load_avg"] = list(la())
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         try:
             boot = psutil.boot_time()
             info["uptime_seconds"] = int(time.time() - boot)
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         try:
             proc = psutil.Process()
             info["process"] = {
@@ -2919,7 +2919,7 @@ async def get_system_stats():
                 "num_threads": proc.num_threads(),
             }
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         info["psutil"] = True
     except Exception:
         info["psutil"] = False
@@ -2928,7 +2928,7 @@ async def get_system_stats():
         try:
             info["load_avg"] = list(os.getloadavg())
         except (OSError, AttributeError):
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     return info
 
@@ -3680,7 +3680,7 @@ async def check_hermes_update(force: bool = False):
             try:
                 (get_hermes_home() / ".update_check").unlink()
             except OSError:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
         behind = await asyncio.to_thread(check_for_updates)
     except Exception:
@@ -3762,7 +3762,7 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
             try:
                 os.unlink(temp_path)
             except OSError:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
     if not result.get("success"):
         raise HTTPException(
@@ -3932,7 +3932,7 @@ async def speak_text(payload: TTSSpeakRequest):
         try:
             os.unlink(file_path)
         except OSError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     encoded = base64.b64encode(audio_bytes).decode("ascii")
     return {
@@ -3967,7 +3967,7 @@ async def get_action_status(name: str, lines: int = 200):
             try:
                 proc.wait(timeout=1)
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": pid}
             _ACTION_PROCS.pop(name, None)
             _ACTION_COMMANDS.pop(name, None)
@@ -4309,7 +4309,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                     if resolved:
                         tip = resolved
                 except Exception:
-                    pass
+                    _log.debug("Suppressed exception", exc_info=True)
                 tip_cache[root_id] = tip
                 return tip
 
@@ -5466,7 +5466,7 @@ def get_model_info(profile: Optional[str] = None):
                     "model_family": mc.model_family,
                 }
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
         return {
             "model": model_name,
@@ -6087,7 +6087,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     "context_length": ctx_override,
                 }
         except Exception:
-            pass  # can't read disk config — just use the string form
+            _log.debug("Suppressed exception", exc_info=True)  # can't read disk config — just use the string form
     return config
 
 
@@ -7352,7 +7352,7 @@ def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
         try:
             proc.kill()
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
 
 def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
@@ -8218,7 +8218,7 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
         from hermes_cli.auth import PROVIDER_REGISTRY
         env_var_order = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
     except (ImportError, KeyError):
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     try:
         from hermes_cli.config import get_env_value
     except ImportError:
@@ -8554,7 +8554,7 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
                 "status_fn": None,
             })
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
     return rows
 
@@ -8648,13 +8648,13 @@ async def disconnect_oauth_provider(
                     oauth_file.unlink()
                     cleared = True
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             # Also clear the credential pool entry if present.
             try:
                 from hermes_cli.auth import clear_provider_auth
                 cleared = clear_provider_auth("anthropic") or cleared
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             _log.info("oauth/disconnect: %s", provider_id)
             return {"ok": bool(cleared), "provider": provider_id}
 
@@ -8823,7 +8823,7 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
             try:
                 pool.remove_entry(getattr(e, "id", ""))
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
         entry = PooledCredential(
             provider="anthropic",
             id=uuid.uuid4().hex[:6],
@@ -9906,7 +9906,7 @@ async def get_session_stats(profile: Optional[str] = None):
                 src = str(s.get("source") or "cli")
                 by_source[src] = by_source.get(src, 0) + 1
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         return {
             "total": total,
             "active_store": active_store,
@@ -11150,7 +11150,7 @@ async def auth_mcp_server(name: str, profile: Optional[str] = None):
 
                 get_manager().remove(name)
             except Exception:
-                pass  # No cached state to clear — fine.
+                _log.debug("Suppressed exception", exc_info=True)  # No cached state to clear — fine.
             try:
                 # The default 30s connect timeout would kill the flow while the
                 # user is still on the consent screen — give the browser
@@ -11303,7 +11303,7 @@ async def list_mcp_catalog(profile: Optional[str] = None):
             for (n, k, m) in mcp_catalog.catalog_diagnostics()
         ]
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
     return {"entries": entries, "diagnostics": diagnostics}
 
@@ -12112,12 +12112,12 @@ async def list_hooks():
         try:
             entry = shell_hooks.allowlist_entry_for(spec.event, spec.command)
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         executable = False
         try:
             executable = shell_hooks.script_is_executable(spec.command)
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         out.append({
             "event": spec.event,
             "matcher": spec.matcher,
@@ -12168,7 +12168,7 @@ async def create_hook(body: HookCreate):
     except HTTPException:
         raise
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
     cfg = load_config()
     hooks_cfg = cfg.get("hooks")
@@ -12234,7 +12234,7 @@ async def delete_hook(body: HookDelete):
     try:
         shell_hooks.revoke(command)
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
     if not removed:
         raise HTTPException(status_code=404, detail="No matching hook found")
@@ -12263,7 +12263,7 @@ async def list_checkpoints():
                         size += f.stat().st_size
                         count += 1
                     except OSError:
-                        pass
+                        _log.debug("Suppressed exception", exc_info=True)
             total_bytes += size
             sessions.append({
                 "session": child.name,
@@ -13543,7 +13543,7 @@ def _clear_skills_prompt_cache() -> None:
         from agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
     except Exception:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 @app.get("/api/skills/content")
@@ -14341,7 +14341,7 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
                         "model_family": mc.model_family,
                     }
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
             models.append({
                 "model": model_name,
@@ -14483,11 +14483,11 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
             try:
                 await asyncio.to_thread(bridge.close)
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
             try:
                 await ws.close()
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
 
@@ -14515,13 +14515,13 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
                 continue
             bridge.write(raw)
     except WebSocketDisconnect:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     finally:
         reader_task.cancel()
         try:
             await reader_task
         except (asyncio.CancelledError, Exception):
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
         await asyncio.to_thread(bridge.close)
 
 
@@ -15060,7 +15060,7 @@ def _forget_active_session_file(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
     except OSError:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 def _ws_close_reason(text: str) -> str:
@@ -15642,14 +15642,14 @@ async def console_ws(ws: WebSocket) -> None:
                 },
             )
     except WebSocketDisconnect:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     finally:
         if active_task and not active_task.done():
             active_task.cancel()
             try:
                 await active_task
             except (asyncio.CancelledError, Exception):
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
 
 @app.websocket("/api/pty")
@@ -15814,7 +15814,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
             session.bridge.write(raw)
     except WebSocketDisconnect:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     finally:
         # Detach only — the PTY keeps running for a reattach; the registry
         # reaper closes it after the TTL (or immediately on process exit).
@@ -15888,7 +15888,7 @@ async def pub_ws(ws: WebSocket) -> None:
         while True:
             await _broadcast_event(ws.app, channel, await ws.receive_text())
     except WebSocketDisconnect:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
 
 
 @app.websocket("/api/events")
@@ -15923,7 +15923,7 @@ async def events_ws(ws: WebSocket) -> None:
             # browser holds it.
             await ws.receive_text()
     except WebSocketDisconnect:
-        pass
+        _log.debug("Suppressed exception", exc_info=True)
     finally:
         async with event_lock:
             subs = event_channels.get(channel)
@@ -16688,7 +16688,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             dir_path.resolve().relative_to(plugins_root_resolved)
             under_user_tree = True
         except ValueError:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
         can_remove_update = (
             source in {"user", "git"} and under_user_tree and Path(dir_str).is_dir()
@@ -16709,7 +16709,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
                         auth_command = f"hermes auth {name}"
                         break
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
         rows.append({
             "name": name,
@@ -17158,7 +17158,7 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
             try:
                 Path(tmp_name).unlink(missing_ok=True)
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
@@ -17200,7 +17200,7 @@ def _maybe_open_browser(
             time.sleep(1.0)
             webbrowser.open(_open_url)
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     threading.Thread(target=_open, daemon=True).start()
 
@@ -17273,7 +17273,7 @@ def start_server(
                         f"  • nous: {_nous_plugin.LAST_SKIP_REASON}"
                     )
             except Exception:
-                pass
+                _log.debug("Suppressed exception", exc_info=True)
 
             _fix_hint = (
                 "Configure an auth provider before exposing the dashboard:\n"
@@ -17474,7 +17474,7 @@ def start_server(
                 asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
             )
         except Exception:
-            pass
+            _log.debug("Suppressed exception", exc_info=True)
 
     if _runner is not None:
         _runner(_serve(), loop_factory=_loop_factory)

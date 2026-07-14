@@ -251,7 +251,7 @@ def save_weixin_account(
     try:
         path.chmod(0o600)
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
 
 def load_weixin_account(hermes_home: str, account_id: str) -> Optional[Dict[str, Any]]:
@@ -1103,7 +1103,7 @@ async def qr_login(
                         qr.make(fit=True)
                         qr.print_ascii(invert=True)
                     except Exception:
-                        pass
+                        logger.debug("Suppressed exception", exc_info=True)
                 except Exception as exc:
                     logger.error("weixin: QR refresh failed: %s", exc)
                     return None
@@ -1322,7 +1322,7 @@ class WeixinAdapter(BasePlatformAdapter):
             try:
                 await self._poll_task
             except asyncio.CancelledError:
-                pass
+                logger.debug("Suppressed exception", exc_info=True)
         self._poll_task = None
         if self._poll_session and not self._poll_session.closed:
             await self._poll_session.close()
@@ -1999,7 +1999,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 try:
                     os.unlink(file_path)
                 except OSError:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
 
     async def send_image_file(
         self,

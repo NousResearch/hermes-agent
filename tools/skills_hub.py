@@ -1990,7 +1990,7 @@ class SkillsShSource(SkillSource):
                             if self._matches_skill_tokens(meta, tokens):
                                 return meta.identifier
         except Exception:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         return None
 
@@ -3137,7 +3137,7 @@ class BrowseShSource(SkillSource):
                     if isinstance(md_url, str) and md_url.startswith("http"):
                         return md_url
         except (httpx.HTTPError, json.JSONDecodeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
         source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
         if source_url and "raw.githubusercontent.com" in source_url:
@@ -3360,7 +3360,7 @@ def _write_index_cache(key: str, data: Any) -> None:
         try:
             ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     cache_file = index_cache_dir / f"{key}.json"
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
@@ -3612,7 +3612,7 @@ def install_from_quarantine(
                     f"{skill_size:,}",
                 )
         except OSError:
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Reject symlinks inside the quarantined skill before moving it.
     # A malicious skill bundle could include a symlink pointing outside the
@@ -3793,7 +3793,7 @@ def _load_hermes_index() -> Optional[dict]:
             if age < HERMES_INDEX_TTL:
                 return json.loads(hermes_index_cache_file.read_text())
         except (OSError, json.JSONDecodeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
 
     # Fetch from docs site.
     #
@@ -3847,7 +3847,7 @@ def _load_hermes_index() -> Optional[dict]:
         hermes_index_cache_file.parent.mkdir(parents=True, exist_ok=True)
         hermes_index_cache_file.write_text(json.dumps(data))
     except OSError:
-        pass
+        logger.debug("Suppressed exception", exc_info=True)
 
     return data
 
@@ -3859,7 +3859,7 @@ def _load_stale_index_cache() -> Optional[dict]:
         try:
             return json.loads(hermes_index_cache_file.read_text())
         except (OSError, json.JSONDecodeError):
-            pass
+            logger.debug("Suppressed exception", exc_info=True)
     return None
 
 
@@ -4175,7 +4175,7 @@ def parallel_search_sources(
                     if on_source_done:
                         on_source_done(sid, len(results))
                 except Exception:
-                    pass
+                    logger.debug("Suppressed exception", exc_info=True)
         except TimeoutError:
             timed_out_ids = [
                 futures[f] for f in futures if not f.done()

@@ -1328,8 +1328,15 @@ class SessionDB:
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
-        except Exception:
-            pass  # Best effort — never fatal.
+        except Exception as exc:
+            logger.warning("WAL checkpoint failed (non-fatal): %s", exc)
+            try:
+                self._conn.execute("PRAGMA quick_check(1)")
+            except Exception:
+                logger.error(
+                    "state.db integrity check failed after checkpoint error "
+                    "— DB may be corrupted"
+                )
 
     def _try_optimize_fts(self) -> None:
         """Best-effort FTS5 segment merge. Never raises.
@@ -1357,8 +1364,8 @@ class SessionDB:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("WAL checkpoint on close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
@@ -7015,8 +7022,8 @@ class SessionDB:
             # Best-effort WAL checkpoint first, then VACUUM.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("WAL checkpoint before VACUUM failed: %s", exc)
             self._conn.execute("VACUUM")
         return optimized
 

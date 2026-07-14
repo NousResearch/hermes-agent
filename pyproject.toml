@@ -215,6 +215,14 @@ teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1:
 # to it, which is already provided by the `mcp` extra.
 computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
+# AG-UI adapter: HTTP/SSE server exposing Hermes over the AG-UI protocol.
+# fastapi/uvicorn/starlette pinned to match the `web` extra: fastapi==0.121.2
+# required starlette<0.50, which conflicts with the starlette==1.0.1 the dev/
+# web/mcp extras pin for CVE-2026-48710 (BadHost) — so the old pin both broke
+# `uv sync` alongside those extras and forced a CVE-vulnerable starlette onto a
+# security-facing surface. 0.133.1 supports starlette 1.0.1 (adapter + tests
+# verified against it).
+agui = ["ag-ui-protocol==0.1.19", "fastapi==0.133.1", "uvicorn==0.41.0", "starlette==1.0.1"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
 # 2.4.6 release (Mini Shai-Hulud worm); 2.4.6 was removed from PyPI and the
@@ -307,6 +315,7 @@ all = [
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+hermes-agui = "agui_adapter.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
@@ -353,7 +362,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "agui_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

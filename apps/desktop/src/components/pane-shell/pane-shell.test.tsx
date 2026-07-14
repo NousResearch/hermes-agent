@@ -163,6 +163,22 @@ describe('PaneShell composition', () => {
     expect(getColumnTemplate(gridContainer(rendered))).toEqual(['320px', 'minmax(0,1fr)'])
   })
 
+  it('ignores widthOverride for non-resizable panes', () => {
+    setPaneOpen('files', true)
+    setPaneWidthOverride('files', 320)
+
+    const rendered = render(
+      <PaneShell>
+        <Pane id="files" side="left" width="240px">
+          files
+        </Pane>
+        <PaneMain>main</PaneMain>
+      </PaneShell>
+    )
+
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['240px', 'minmax(0,1fr)'])
+  })
+
   it('preserves CSS-string widths verbatim (clamp, var, etc.)', () => {
     const rendered = render(
       <PaneShell>

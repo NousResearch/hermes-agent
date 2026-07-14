@@ -1828,22 +1828,30 @@ class HindsightMemoryProvider(MemoryProvider):
             mental_model_id = args.get("mental_model_id", "")
             if not mental_model_id:
                 return tool_error("Missing required parameter: mental_model_id")
-            name = args.get("name")
-            source_query = args.get("source_query")
-            tags = args.get("tags")
-            max_tokens = args.get("max_tokens")
-            trigger = args.get("trigger")
             try:
                 from hindsight_client_api.models import update_mental_model_request, mental_model_trigger_input
-                trigger_obj = None
-                if trigger:
-                    trigger_obj = mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+                # Build kwargs only from fields the caller actually provided
+                # so omitted fields are not serialized as null (which would
+                # clear them server-side with hindsight-client 0.6.1).
+                update_kwargs: dict = {}
+                if "name" in args:
+                    update_kwargs["name"] = args["name"]
+                if "source_query" in args:
+                    update_kwargs["source_query"] = args["source_query"]
+                if "tags" in args:
+                    update_kwargs["tags"] = args["tags"]
+                if "max_tokens" in args:
+                    update_kwargs["max_tokens"] = args["max_tokens"]
+                if "trigger" in args:
+                    trigger = args["trigger"]
+                    if trigger:
+                        update_kwargs["trigger"] = (
+                            mental_model_trigger_input.MentalModelTriggerInput(**trigger)
+                        )
+                    else:
+                        update_kwargs["trigger"] = None
                 request_obj = update_mental_model_request.UpdateMentalModelRequest(
-                    name=name,
-                    source_query=source_query,
-                    tags=tags,
-                    max_tokens=max_tokens,
-                    trigger=trigger_obj,
+                    **update_kwargs
                 )
                 resp = self._run_hindsight_operation(
                     lambda c: c.mental_models.update_mental_model(self._bank_id, mental_model_id, request_obj)

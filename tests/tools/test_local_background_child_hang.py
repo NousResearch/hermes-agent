@@ -101,13 +101,38 @@ class TestBackgroundChildDoesNotHang:
             "'\\nTAIL-SENTINEL')\""
         )
 
-        result = local_env.execute(command, timeout=10)
+        result = local_env.execute(command, timeout=10, bounded_capture=True)
 
         assert result["returncode"] == 0
         assert len(result["output"]) <= 10_000
         assert result["output"].startswith("HEAD-SENTINEL")
         assert result["output"].endswith("TAIL-SENTINEL")
         assert "[OUTPUT TRUNCATED" in result["output"]
+
+    def test_default_capture_is_full_fidelity_for_internal_consumers(
+        self, local_env
+    ):
+        """Default execute() (no bounded_capture) must return complete output.
+
+        Internal consumers — file-operation ``cat`` reads that feed the patch
+        engine, code-execution RPC reads, log reads — rely on full-fidelity
+        capture. Bounding them at tool_output.max_bytes would CORRUPT files
+        on read-modify-write (#64435 review finding), so only the foreground
+        terminal tool opts in via bounded_capture=True.
+        """
+        # ~200 KB — four times the default 50 KB cap.
+        command = (
+            "python3 -c \"import sys; "
+            "sys.stdout.write('START-MARK\\n' + ('y' * 200000) + '\\nEND-MARK')\""
+        )
+
+        result = local_env.execute(command, timeout=10)
+
+        assert result["returncode"] == 0
+        assert "[OUTPUT TRUNCATED" not in result["output"]
+        assert result["output"].startswith("START-MARK")
+        assert result["output"].endswith("END-MARK")
+        assert len(result["output"]) > 200000
 
     def test_continuous_output_still_honors_foreground_timeout(
         self, local_env, monkeypatch
@@ -120,7 +145,7 @@ class TestBackgroundChildDoesNotHang:
         )
 
         started = time.monotonic()
-        result = local_env.execute(command, timeout=1)
+        result = local_env.execute(command, timeout=1, bounded_capture=True)
         elapsed = time.monotonic() - started
 
         assert elapsed < 4.0

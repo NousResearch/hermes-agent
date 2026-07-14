@@ -45,9 +45,14 @@ if _DEBUG_INTERRUPT:
 _activity_callback_local = threading.local()
 
 
+# Sentinel capacity for full-fidelity capture (internal consumers). Large
+# enough that the collector never evicts in practice, keeping a single code
+# path for both bounded and unbounded modes.
+_UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
+
+
 class _BoundedOutputCollector:
     """Retain a bounded 40/60 head-tail window of streamed text."""
-
     def __init__(self, max_chars: int):
         self.max_chars = max(1, int(max_chars))
         self._head_limit = int(self.max_chars * 0.4)
@@ -673,10 +678,20 @@ class BaseEnvironment(ABC):
     # Process lifecycle
     # ------------------------------------------------------------------
 
-    def _wait_for_process(self, proc: ProcessHandle, timeout: int = 120) -> dict:
+    def _wait_for_process(
+        self, proc: ProcessHandle, timeout: int = 120, *, bounded_capture: bool = False
+    ) -> dict:
         """Poll-based wait with interrupt checking and stdout draining.
 
         Shared across all backends — not overridden.
+
+        ``bounded_capture=True`` (foreground terminal-tool path only) retains
+        at most ``tool_output.max_bytes`` of output in a head/tail window
+        while draining, so a verbose subprocess cannot OOM the process
+        (#64435). The default (False) preserves full-fidelity capture for
+        internal consumers — file-operation ``cat`` reads feeding the patch
+        engine, code-execution RPC reads, log reads — where truncation would
+        corrupt data.
 
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
@@ -689,12 +704,18 @@ class BaseEnvironment(ABC):
         an orphan with ``PPID=1`` when python is shut down mid-tool — the
         ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
-        try:
-            from tools.tool_output_limits import get_max_bytes
+        if bounded_capture:
+            try:
+                from tools.tool_output_limits import get_max_bytes
 
-            capture_limit = get_max_bytes()
-        except Exception:
-            capture_limit = 50_000
+                capture_limit = get_max_bytes()
+            except Exception:
+                capture_limit = 50_000
+        else:
+            # Full fidelity: effectively unbounded collector (single head
+            # segment, no eviction) so behavior matches the historical
+            # accumulate-everything semantics.
+            capture_limit = _UNBOUNDED_CAPTURE_CHARS
         output = _BoundedOutputCollector(capture_limit)
 
         # Non-blocking drain via select().
@@ -1032,8 +1053,19 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        bounded_capture: bool = False,
     ) -> dict:
-        """Execute a command, return {"output": str, "returncode": int}."""
+        """Execute a command, return {"output": str, "returncode": int}.
+
+        ``bounded_capture=True`` caps stdout/stderr retention at
+        ``tool_output.max_bytes`` WHILE the stream is drained (head/tail
+        window) instead of holding the full output in memory (#64435).
+        It must only be set by callers whose output is destined for the
+        model/tool payload (the foreground terminal tool). Internal
+        full-fidelity consumers — file operations ``cat`` reads that feed
+        the patch engine, code-execution RPC reads, log reads — MUST leave
+        it False: truncating those corrupts data, not just display.
+        """
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
@@ -1068,7 +1100,9 @@ class BaseEnvironment(ABC):
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
-        result = self._wait_for_process(proc, timeout=effective_timeout)
+        result = self._wait_for_process(
+            proc, timeout=effective_timeout, bounded_capture=bounded_capture
+        )
         self._update_cwd(result)
 
         return result

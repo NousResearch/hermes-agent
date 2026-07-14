@@ -148,7 +148,17 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
     """Earliest TUI decision, usable before argparse/config imports.
 
     Precedence: explicit ``--cli`` wins (forces classic REPL), then
-    ``--tui``/``HERMES_TUI=1``, then ``display.interface`` in config.
+    explicit ``--tui``/``HERMES_TUI=1``, then a real-TTY gate (a
+    non-interactive stdio can't host the Ink UI, so ambient config never
+    boots it there), then ``display.interface`` in config.
+
+    The TTY gate is load-bearing for headless spawners — kanban workers,
+    cron jobs, pipes run ``hermes … chat -q`` with stdio on a pipe. This
+    is the earliest launch decision (it runs before ``cmd_chat`` /
+    ``_resolve_use_tui``), so a ``display.interface: tui`` default used to
+    boot the TUI here — whose no-TTY bail-out exits 0 without doing the
+    task → "protocol violation" on every attempt. An explicit ``--tui``
+    still reaches the informative bail-out.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -156,6 +166,11 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
         return False
     if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
         return True
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+    except Exception:
+        return False
     return _config_default_interface_early() == "tui"
 
 
@@ -2193,16 +2208,34 @@ def _resolve_use_tui(args) -> bool:
 
     Precedence (highest first):
       1. ``--cli`` flag         → always classic REPL
-      2. ``--tui`` flag / ``HERMES_TUI=1`` → always TUI
-      3. ``display.interface`` config value ("cli" | "tui")
-      4. default → classic REPL
+      2. ``--tui`` flag         → always TUI (explicit ask)
+      3. no TTY                 → always classic (ambient prefs don't apply)
+      4. ``HERMES_TUI=1`` env   → TUI
+      5. ``display.interface`` config value ("cli" | "tui")
+      6. default → classic REPL
 
     Explicit flags always win over config so muscle memory and scripts keep
     working regardless of the configured default.
+
+    The TTY gate (3) is load-bearing: ambient TUI preferences (env var or
+    config default) must never hijack a NON-interactive invocation. Kanban
+    workers, cron jobs, and pipelines run ``hermes … chat -q`` with stdout
+    on a pipe; booting the Ink TUI there hits its no-TTY bail-out, which
+    prints a resume hint and exits 0 — a kanban worker then dies with
+    "exited cleanly without calling kanban_complete — protocol violation"
+    on every attempt (found dogfooding the desktop kanban board). A user
+    who *explicitly* passes ``--tui`` still gets the informative bail-out.
     """
     if getattr(args, "cli", False):
         return False
-    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+    if getattr(args, "tui", False):
+        return True
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+    except Exception:
+        return False
+    if os.environ.get("HERMES_TUI") == "1":
         return True
     try:
         from hermes_cli.config import load_config
@@ -2252,6 +2285,27 @@ def cmd_chat(args):
             args.resume = resolved
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
+
+    # Session<->workspace binding: cd back into a resumed session's recorded cwd
+    # so it resumes in the repo it belonged to. Opt out with --no-restore-cwd;
+    # skipped under --worktree (that path owns its own dir). Best-effort — a
+    # missing dir warns and stays put rather than failing the resume.
+    if (
+        getattr(args, "resume", None)
+        and not getattr(args, "no_restore_cwd", False)
+        and not getattr(args, "worktree", False)
+    ):
+        try:
+            from hermes_state import SessionDB
+
+            _saved_cwd = ((SessionDB().get_session(args.resume) or {}).get("cwd") or "").strip()
+            if _saved_cwd and not os.path.isdir(_saved_cwd):
+                print(f"⚠ session's recorded dir is gone ({_saved_cwd}); staying in {os.getcwd()}")
+            elif _saved_cwd and os.path.realpath(_saved_cwd) != os.path.realpath(os.getcwd()):
+                os.chdir(_saved_cwd)
+                print(f"↪ restored workspace dir: {_saved_cwd}")
+        except Exception:
+            pass  # never let cwd-restore break a resume
 
     # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
@@ -2325,7 +2379,11 @@ def cmd_chat(args):
     except Exception:
         pass
 
-    # --yolo: bypass all dangerous command approvals
+    # --yolo: bypass all dangerous command approvals.
+    # Also set in main() before _prepare_agent_startup() — that is the
+    # authoritative site because it runs before tool imports freeze
+    # _YOLO_MODE_FROZEN.  This redundant set is a safety net for callers
+    # that invoke cmd_chat directly (e.g. subcommand dispatch).
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
@@ -3888,7 +3946,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             str(effort).strip().lower() for effort in efforts if str(effort).strip()
         )
     )
-    canonical_order = ("minimal", "low", "medium", "high", "xhigh")
+    canonical_order = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
     ordered = [effort for effort in canonical_order if effort in deduped]
     ordered.extend(effort for effort in deduped if effort not in canonical_order)
     if not ordered:
@@ -8068,6 +8126,90 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _npm_manifest_paths() -> tuple[Path, ...]:
+    """Manifests whose changes must defeat the update-skip.
+
+    The lockfile alone is NOT a sufficient key: on a local checkout a dev
+    can edit package.json (root or a workspace) without running npm — the
+    lockfile is then unchanged but `hermes update` is exactly the step
+    expected to sync node_modules (via the `npm install` fallback in
+    _run_npm_install_deterministic).
+
+    The workspace list is pulled from the root package.json's `workspaces`
+    globs (npm's own source of truth) rather than hardcoded, so adding a
+    workspace can never silently escape the skip key. The root install
+    (step 1, --workspaces=false) still hoists shared deps for EVERY
+    workspace — desktop included — so all of them belong in the key, not
+    just the ones step 2 installs. Falls back to hashing just root
+    manifests if package.json is unreadable (never skips more than main
+    would have installed).
+    """
+    root_pkg = PROJECT_ROOT / "package.json"
+    paths = [PROJECT_ROOT / "package-lock.json", root_pkg]
+    try:
+        workspaces = json.loads(root_pkg.read_text(encoding="utf-8")).get(
+            "workspaces", []
+        )
+        if isinstance(workspaces, dict):  # legacy {"packages": [...]} form
+            workspaces = workspaces.get("packages", [])
+        for pattern in workspaces:
+            for match in sorted(PROJECT_ROOT.glob(str(pattern))):
+                manifest = match / "package.json"
+                if manifest.is_file():
+                    paths.append(manifest)
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return tuple(paths)
+
+
+def _npm_manifests_digest() -> str | None:
+    """Combined sha256 over the lockfile + all workspace package.json files.
+
+    Returns None when the lockfile is missing (never skip then).
+    """
+    if not (PROJECT_ROOT / "package-lock.json").exists():
+        return None
+    h = hashlib.sha256()
+    for p in _npm_manifest_paths():
+        h.update(str(p.relative_to(PROJECT_ROOT)).encode())
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()
+
+
+def _npm_lockfile_changed(hermes_root: Path) -> bool:
+    current = _npm_manifests_digest()
+    if current is None:
+        return True
+    # Also check that node_modules exists; a matching hash with missing
+    # node_modules means the cache was recorded by another checkout.
+    if not (PROJECT_ROOT / "node_modules").is_dir():
+        return True
+    try:
+        # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.
+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        if not cache_file.exists():
+            return True
+        return cache_file.read_text(encoding="utf-8").strip() != current
+    except OSError:
+        return True
+
+
+def _record_npm_lockfile_hash(hermes_root: Path) -> None:
+    digest = _npm_manifests_digest()
+    if digest is None:
+        return
+    try:
+        cache_key = hashlib.sha256(str(PROJECT_ROOT).encode()).hexdigest()[:12]
+        cache_file = hermes_root / f".npm_lock_hash_{cache_key}"
+        cache_file.write_text(digest, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not write npm lockfile hash cache")
+
+
 def _update_node_dependencies() -> None:
     from hermes_constants import find_node_executable, with_hermes_node_path
 
@@ -8076,6 +8218,16 @@ def _update_node_dependencies() -> None:
         return
 
     if not (PROJECT_ROOT / "package.json").exists():
+        return
+
+    from hermes_constants import get_default_hermes_root
+
+    # This cache describes PROJECT_ROOT/node_modules, which is shared by every
+    # Hermes profile using this checkout. Keep one per-checkout cache under the
+    # shared Hermes root rather than rerunning npm once per named profile.
+    shared_hermes_root = get_default_hermes_root()
+    if not _npm_lockfile_changed(shared_hermes_root):
+        logger.info("npm lockfile unchanged, skipping npm install")
         return
 
     # With a single workspace lockfile the root install would cover ALL
@@ -8122,6 +8274,7 @@ def _update_node_dependencies() -> None:
         env=nixos_env,
     )
     if ws_result.returncode == 0:
+        _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
     else:
         print("  ⚠ npm workspace install failed")
@@ -12377,6 +12530,15 @@ def _should_background_mcp_startup(args) -> bool:
 
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    # --yolo: chokepoint guarantee that HERMES_YOLO_MODE is set before ANY
+    # plugin/tool discovery below imports tools.approval, which freezes
+    # _YOLO_MODE_FROZEN at import time (PR #7994 security design).  main()'s
+    # dispatch path also sets this earlier, but _prepare_agent_startup() is
+    # reachable from other launchers too (e.g. the Termux fast-CLI path),
+    # so the guarantee lives here where the import is actually triggered
+    # (#60328).
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
     _apply_safe_mode(args)
 
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -13468,6 +13630,12 @@ def main():
     sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
     )
+    sessions_list.add_argument(
+        "--workspace",
+        metavar="NEEDLE",
+        help="Only sessions in one workspace: a git repo root or project dir "
+        "(matched by path substring or basename).",
+    )
 
     def _add_session_filter_args(p, default_older_help):
         p.add_argument(
@@ -13794,13 +13962,58 @@ def main():
         _exclude = None if _source else ["tool"]
 
         if action == "list":
+            from hermes_state import workspace_key as _ws_key
+
             sessions = db.list_sessions_rich(
                 source=args.source, exclude_sources=_exclude, limit=args.limit
             )
+
+            # Workspace filter: match a session by its workspace key (git repo
+            # root, else cwd) — path substring or exact basename.
+            _ws_filter = (getattr(args, "workspace", None) or "").strip()
+            if _ws_filter:
+                _needle = _ws_filter.lower()
+
+                def _in_workspace(s):
+                    key = (_ws_key(s) or "").lower()
+                    return bool(key) and (
+                        _needle in key or _needle == os.path.basename(key.rstrip("/\\"))
+                    )
+
+                sessions = [s for s in sessions if _in_workspace(s)]
+
             if not sessions:
                 print("No sessions found.")
                 return
+
+            # Short workspace label: the repo/dir basename, "—" when unbound. The
+            # Workspace column only appears once at least one session carries one
+            # (or when filtering), so all-unbound listings read as before.
+            def _ws_label(s):
+                key = _ws_key(s)
+                return (os.path.basename(key.rstrip("/\\")) or key) if key else "—"
+
+            has_ws = bool(_ws_filter) or any(_ws_key(s) for s in sessions)
             has_titles = any(s.get("title") for s in sessions)
+
+            if has_ws:
+                if has_titles:
+                    print(f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}")
+                    print("─" * 110)
+                else:
+                    print(f"{'Preview':<38} {'Workspace':<18} {'Last Active':<13} {'Src':<6} {'ID'}")
+                    print("─" * 100)
+                for s in sessions:
+                    last_active = _relative_time(s.get("last_active"))
+                    ws = _ws_label(s)[:16]
+                    if has_titles:
+                        title = (s.get("title") or "—")[:26]
+                        print(f"{title:<28} {ws:<18} {last_active:<13} {s['id']}")
+                    else:
+                        preview = s.get("preview", "")[:36]
+                        print(f"{preview:<38} {ws:<18} {last_active:<13} {s['source']:<6} {s['id']}")
+                return
+
             if has_titles:
                 print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
                 print("─" * 110)
@@ -14593,6 +14806,15 @@ def main():
     if args.version:
         cmd_version(args)
         return
+
+    # --yolo: set HERMES_YOLO_MODE *before* plugin discovery.  The call to
+    # _prepare_agent_startup() below triggers discover_plugins() → tool
+    # imports, and tools.approval freezes _YOLO_MODE_FROZEN at module
+    # import time (PR #7994, security hardening against prompt-injection).
+    # If the env var is set only later (e.g. inside cmd_chat), the frozen
+    # value is already False and --yolo silently does nothing.
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
 
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated

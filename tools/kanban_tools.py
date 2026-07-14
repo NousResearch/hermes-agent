@@ -1596,6 +1596,180 @@ KANBAN_LINK_SCHEMA = {
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint tools
+# ---------------------------------------------------------------------------
+
+KANBAN_CHECKPOINT_SCHEMA = {
+    "name": "kanban_checkpoint",
+    "description": (
+        "Save a progress checkpoint for the current task. Use this after "
+        "completing each logical step so that if the worker crashes, the "
+        "next attempt can resume from the last checkpoint instead of "
+        "starting over. Checkpoints are automatically cleared on task "
+        "completion."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "step_key": {
+                "type": "string",
+                "description": (
+                    "Short machine-readable step identifier "
+                    "(e.g. 'analysis', 'impl-auth', 'test-unit'). "
+                    "Used to deduplicate — latest per step_key wins."
+                ),
+            },
+            "data": {
+                "type": "string",
+                "description": (
+                    "Arbitrary JSON string capturing the step's output "
+                    "(file paths, intermediate results, decisions). "
+                    "Keep under 8KB."
+                ),
+            },
+            "message": {
+                "type": "string",
+                "description": (
+                    "Human-readable one-liner describing what was "
+                    "accomplished in this step."
+                ),
+            },
+            "status": {
+                "type": "string",
+                "description": (
+                    "Step status: 'completed' (default), 'in_progress', "
+                    "or 'failed'. Workers typically save 'completed' after "
+                    "finishing a step."
+                ),
+            },
+        },
+        "required": ["step_key"],
+    },
+}
+
+
+def _handle_checkpoint(args: dict, **kw) -> str:
+    """Save a checkpoint for the current task."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    ownership_err = _enforce_worker_task_ownership(tid)
+    if ownership_err:
+        return ownership_err
+    step_key = args.get("step_key")
+    if not step_key or not str(step_key).strip():
+        return tool_error("step_key is required")
+    data = args.get("data")
+    message = args.get("message")
+    status = args.get("status") or "completed"
+    if status not in ("completed", "in_progress", "failed"):
+        return tool_error(
+            f"status must be 'completed', 'in_progress', or 'failed', "
+            f"got '{status}'"
+        )
+    try:
+        kb, conn = _connect()
+        try:
+            cp = kb.save_checkpoint(
+                conn, tid, step_key.strip(),
+                data=data, message=message, status=status,
+                run_id=_worker_run_id(tid),
+            )
+            return _ok(
+                checkpoint_id=cp.id,
+                task_id=tid,
+                step_key=cp.step_key,
+                status=cp.status,
+            )
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_checkpoint failed")
+        return tool_error(f"kanban_checkpoint: {e}")
+
+
+KANBAN_GET_CHECKPOINT_SCHEMA = {
+    "name": "kanban_get_checkpoint",
+    "description": (
+        "Retrieve checkpoints for the current task. Returns the most "
+        "recent checkpoints, or all checkpoints for a specific step. "
+        "Use this at the start of a retried task to see what the "
+        "previous attempt accomplished."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": _DESC_TASK_ID_DEFAULT,
+            },
+            "step_key": {
+                "type": "string",
+                "description": (
+                    "Optional: filter by step_key. If omitted, returns "
+                    "all recent checkpoints."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max checkpoints to return (default 20).",
+            },
+        },
+        "required": [],
+    },
+}
+
+
+def _handle_get_checkpoint(args: dict, **kw) -> str:
+    """Retrieve checkpoints for the current task."""
+    tid = _default_task_id(args.get("task_id"))
+    if not tid:
+        return tool_error(
+            "task_id is required (or set HERMES_KANBAN_TASK in the env)"
+        )
+    step_key = args.get("step_key")
+    limit = args.get("limit")
+    if limit is None:
+        limit = 20
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        return tool_error("limit must be an integer")
+    try:
+        kb, conn = _connect()
+        try:
+            if step_key:
+                cps = kb.get_checkpoints_by_step(conn, tid, step_key.strip())
+            else:
+                cps = kb.get_latest_checkpoints(conn, tid, limit=limit)
+            return json.dumps({
+                "checkpoints": [
+                    {
+                        "id": cp.id,
+                        "step_key": cp.step_key,
+                        "status": cp.status,
+                        "data": cp.data,
+                        "message": cp.message,
+                        "created_at": cp.created_at,
+                    }
+                    for cp in cps
+                ],
+                "count": len(cps),
+            })
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.exception("kanban_get_checkpoint failed")
+        return tool_error(f"kanban_get_checkpoint: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -1678,4 +1852,22 @@ registry.register(
     handler=_handle_link,
     check_fn=_check_kanban_mode,
     emoji="🔗",
+)
+
+registry.register(
+    name="kanban_checkpoint",
+    toolset="kanban",
+    schema=KANBAN_CHECKPOINT_SCHEMA,
+    handler=_handle_checkpoint,
+    check_fn=_check_kanban_mode,
+    emoji="📌",
+)
+
+registry.register(
+    name="kanban_get_checkpoint",
+    toolset="kanban",
+    schema=KANBAN_GET_CHECKPOINT_SCHEMA,
+    handler=_handle_get_checkpoint,
+    check_fn=_check_kanban_mode,
+    emoji="📖",
 )

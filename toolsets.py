@@ -75,6 +75,10 @@ _HERMES_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
+    # Roundtable multi-agent discussion (gated via check_fn in tools/roundtable_tools.py)
+    "roundtable_init", "roundtable_speak", "roundtable_read",
+    "roundtable_status", "roundtable_summarize", "roundtable_end",
+    "roundtable_list",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
@@ -272,6 +276,22 @@ TOOLSETS = {
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
+        ],
+        "includes": [],
+    },
+
+    "roundtable": {
+        "description": (
+            "Multi-agent roundtable discussion — structured multi-round topic "
+            "debate with convergence detection and conclusion generation. "
+            "Enable in profile toolsets to let agents create discussions, "
+            "take turns speaking, track consensus/disagreement, and produce "
+            "conclusion documents."
+        ),
+        "tools": [
+            "roundtable_init", "roundtable_speak", "roundtable_read",
+            "roundtable_status", "roundtable_summarize", "roundtable_end",
+            "roundtable_list",
         ],
         "includes": [],
     },

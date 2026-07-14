@@ -1264,6 +1264,27 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Worker checkpoint storage. Each checkpoint captures a task's progress
+-- at a named step so a crashed worker can resume from the last completed
+-- step instead of starting over. Workers call ``save_checkpoint`` via
+-- the ``kanban_checkpoint`` tool after completing each logical step;
+-- on retry, ``build_worker_context`` injects the latest checkpoint so
+-- the new worker instance knows where to pick up.
+CREATE TABLE IF NOT EXISTS task_checkpoints (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL,
+    run_id      INTEGER,
+    step_key    TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'completed',
+    -- status: completed | in_progress | failed
+    data        TEXT,
+    message     TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_task ON task_checkpoints(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_checkpoints_step ON task_checkpoints(task_id, step_key);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -4174,6 +4195,8 @@ def complete_task(
     # just tracks "is there a current pathology the breaker should
     # care about", and a success resets that question.
     _clear_failure_counter(conn, task_id)
+    # Clear checkpoints — task is done, no need to carry stale state.
+    clear_checkpoints(conn, task_id)
     # Recompute ready status for dependents (separate txn so children see done).
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
@@ -8304,6 +8327,122 @@ def run_daemon(
 
 
 # ---------------------------------------------------------------------------
+# Worker checkpoint persistence
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Checkpoint:
+    """In-memory view of a row from the ``task_checkpoints`` table."""
+    id: int
+    task_id: str
+    run_id: Optional[int]
+    step_key: str
+    status: str
+    data: Optional[str]
+    message: Optional[str]
+    created_at: int
+    updated_at: int
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Checkpoint":
+        return cls(
+            id=row["id"],
+            task_id=row["task_id"],
+            run_id=row["run_id"],
+            step_key=row["step_key"],
+            status=row["status"],
+            data=row["data"],
+            message=row["message"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+def save_checkpoint(
+    conn: sqlite3.Connection,
+    task_id: str,
+    step_key: str,
+    *,
+    data: Optional[str] = None,
+    message: Optional[str] = None,
+    status: str = "completed",
+    run_id: Optional[int] = None,
+) -> Checkpoint:
+    """Save a checkpoint for a task step.
+
+    Workers call this after completing each logical step via the
+    ``kanban_checkpoint`` tool.  On crash/retry the next worker reads
+    the latest checkpoint from ``build_worker_context`` and resumes
+    from there.
+
+    ``step_key`` is a short machine-readable identifier
+    (e.g. ``"analysis"``, ``"impl-auth"``, ``"test-unit"``).
+    ``data`` is an arbitrary JSON string capturing the step's output
+    (file paths, intermediate results, etc.).
+    ``message`` is a human-readable one-liner for the context block.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            """INSERT INTO task_checkpoints
+               (task_id, run_id, step_key, status, data, message, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, run_id, step_key, status, data, message, now, now),
+        )
+        cp_id = cur.lastrowid or 0
+    return Checkpoint(
+        id=cp_id, task_id=task_id, run_id=run_id,
+        step_key=step_key, status=status, data=data,
+        message=message, created_at=now, updated_at=now,
+    )
+
+
+def get_latest_checkpoints(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    limit: int = 20,
+) -> list[Checkpoint]:
+    """Return the most recent checkpoints for a task, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM task_checkpoints "
+        "WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
+        (task_id, limit),
+    ).fetchall()
+    return [Checkpoint.from_row(r) for r in rows]
+
+
+def get_checkpoints_by_step(
+    conn: sqlite3.Connection,
+    task_id: str,
+    step_key: str,
+) -> list[Checkpoint]:
+    """Return all checkpoints for a specific step, newest first."""
+    rows = conn.execute(
+        "SELECT * FROM task_checkpoints "
+        "WHERE task_id = ? AND step_key = ? ORDER BY created_at DESC",
+        (task_id, step_key),
+    ).fetchall()
+    return [Checkpoint.from_row(r) for r in rows]
+
+
+def clear_checkpoints(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> int:
+    """Delete all checkpoints for a task. Called on successful completion.
+
+    Returns the number of rows deleted.
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM task_checkpoints WHERE task_id = ?",
+            (task_id,),
+        )
+        return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
 # Worker context builder (what a spawned worker sees)
 # ---------------------------------------------------------------------------
 
@@ -8519,6 +8658,27 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
                 first = s[0][:200] if s else "(no summary)"
                 lines.append(f"- {row['id']} — {row['title']} ({ts_disp}): {first}")
             lines.append("")
+
+    # Checkpoints: show the latest checkpoint so a retrying worker can
+    # resume from where the previous attempt left off. Each checkpoint
+    # has a step_key, optional data (JSON), and a message. Only the
+    # most recent per step_key is shown (deduped).
+    checkpoints = get_latest_checkpoints(conn, task_id, limit=50)
+    if checkpoints:
+        lines.append("## Checkpoints (resume from here)")
+        lines.append("")
+        seen_steps: set[str] = set()
+        for cp in checkpoints:
+            if cp.step_key in seen_steps:
+                continue
+            seen_steps.add(cp.step_key)
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(cp.created_at))
+            status_tag = f" [{cp.status}]" if cp.status != "completed" else ""
+            msg = cp.message or ""
+            lines.append(f"- **{cp.step_key}**{status_tag} ({ts}): {msg}")
+            if cp.data and cp.data.strip():
+                lines.append(f"  data: `{_cap(cp.data, 2048)}`")
+        lines.append("")
 
     # Comments: cap at the most-recent _CTX_MAX_COMMENTS so
     # comment-storm tasks don't blow out the worker's prompt. Older

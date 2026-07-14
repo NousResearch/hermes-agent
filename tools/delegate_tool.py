@@ -685,11 +685,11 @@ def _build_child_system_prompt(
         "correctness is verified — there is no other completion signal. "
         "If you encounter problems, errors, or failures, DO NOT summarize them "
         "away — FIX them or report them as explicit BLOCKERS, not informational "
-        "findings. **Pre-existing test failures are YOUR responsibility.** "
-        "There is NO concept of 'authorship' or 'pre-existing failure' as a "
+        "findings. **Failures from prior sessions are YOUR responsibility.** "
+        "There is NO concept of 'authorship' or 'not my changes' as a "
         "dismissal rationale. Any test failure you encounter — regardless of "
         "who wrote the code or when — is yours to fix. The following phrases "
-        "are FORBIDDEN as dismissal rationales: 'pre-existing,' 'not from my "
+        "are FORBIDDEN as dismissal rationales: 'not from my "
         "changes,' 'unrelated to our work,' 'not my commit,' 'separate issue.' "
         "**Persistent failures spanning multiple sessions are STILL your "
         "responsibility — session boundaries do not create attribution exemptions.**",
@@ -710,7 +710,7 @@ def _build_child_system_prompt(
         "- What you did\n"
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
-        "- Any issues encountered AND any issues FIXED (including pre-existing failures)\n"
+        "- Any issues encountered AND any issues FIXED (including failures from prior sessions)\n"
         "- What remains unresolved (if any) and why\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
@@ -719,7 +719,7 @@ def _build_child_system_prompt(
         "If you encounter problems, errors, or failures, DO NOT summarize them away — "
         "either FIX them or report them as explicit BLOCKERS with the reason "
         "they could not be fixed (BLOCKER means: missing tool, unavailable API, "
-        "disk full, network down — NOT difficult or pre-existing failures, which "
+        "disk full, network down — NOT difficult test failures or failures from prior sessions, which "
         "are YOUR responsibility per the QUALITY MANDATE above). Accuracy matters more than brevity."
 
     )

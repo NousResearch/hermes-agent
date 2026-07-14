@@ -2353,9 +2353,20 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    child_id: str,
+    *,
+    signal_fn=None,
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    # Captured inside the write txn so we can terminate the orphaned
+    # worker process *after* the txn commits — avoids holding the DB
+    # write lock during the SIGTERM/SIGKILL wait loop (up to ~5 s).
+    _reclaim_pid: Optional[int] = None
+    _reclaim_lock: Optional[str] = None
     with write_txn(conn):
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
@@ -2391,6 +2402,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             # Demote running → todo + release claim (race case:
             # dispatcher claimed the child after a done parent was
             # linked but before this undone parent was linked).
+            run_row = conn.execute(
+                "SELECT worker_pid, claim_lock FROM tasks "
+                "WHERE id = ? AND status = 'running'",
+                (child_id,),
+            ).fetchone()
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -2398,6 +2414,8 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
                 (child_id,),
             )
             if cur.rowcount == 1:
+                _reclaim_pid = run_row["worker_pid"] if run_row else None
+                _reclaim_lock = run_row["claim_lock"] if run_row else None
                 _end_run(
                     conn, child_id,
                     outcome="reclaimed", status="reclaimed",
@@ -2406,6 +2424,10 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         _append_event(
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
+        )
+    if _reclaim_pid:
+        _terminate_reclaimed_worker(
+            _reclaim_pid, _reclaim_lock, signal_fn=signal_fn,
         )
 
 

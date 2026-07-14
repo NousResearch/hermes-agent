@@ -336,6 +336,99 @@ def test_link_demotes_running_child_to_todo_when_parent_not_done(kanban_home):
         assert "parent_not_done_on_link" in (run.error or "")
 
 
+def test_link_demoted_child_rejects_stale_completion(kanban_home):
+    """A zombie worker holding the pre-demotion run_id cannot complete.
+
+    After ``link_tasks`` demotes a running child back to ``todo`` and
+    calls ``_end_run`` (which NULLs ``current_run_id``), the orphaned
+    worker's subsequent ``complete_task(expected_run_id=<stale>)`` must
+    be rejected by the CAS guard — both because ``status`` is no longer
+    in ``('running', 'ready', 'blocked')`` and because
+    ``current_run_id`` no longer matches.
+    """
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", assignee="alice")
+        b = kb.create_task(conn, title="b", assignee="alice")
+        c = kb.create_task(conn, title="c", assignee="alice")
+
+        kb.complete_task(conn, a, result="ok")
+        kb.link_tasks(conn, a, c)
+        assert kb.get_task(conn, c).status == "ready"
+
+        claimed = kb.claim_task(conn, c)
+        assert claimed is not None
+        stale_run_id = claimed.current_run_id
+
+        kb.link_tasks(conn, b, c)
+        assert kb.get_task(conn, c).status == "todo"
+
+        ok = kb.complete_task(
+            conn, c, result="zombie", expected_run_id=stale_run_id,
+        )
+        assert ok is False
+        task = kb.get_task(conn, c)
+        assert task.status == "todo"
+        assert task.result is None
+
+
+def test_link_terminates_orphaned_worker_on_demote(
+    kanban_home, monkeypatch,
+):
+    """When a running child is demoted during ``link_tasks``, the
+    orphaned worker process is terminated via ``signal_fn``.
+
+    Mirrors the ``reclaim_task`` / ``release_stale_claims`` pattern:
+    the claim metadata (pid + lock) is captured inside the write txn,
+    and ``_terminate_reclaimed_worker`` runs *after* commit so the
+    SIGTERM wait loop doesn't hold the DB write lock.
+    """
+    import signal as _signal
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        a = kb.create_task(conn, title="a", assignee="alice")
+        b = kb.create_task(conn, title="b", assignee="alice")
+        c = kb.create_task(conn, title="c", assignee="alice")
+
+        kb.complete_task(conn, a, result="ok")
+        kb.link_tasks(conn, a, c)
+
+        # Simulate a host-local dispatcher claim with a live worker_pid.
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:{'ab' * 8}"
+        future = int(time.time()) + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', claim_lock=?, "
+            "claim_expires=?, worker_pid=? WHERE id=?",
+            (lock, future, 99999, c),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, "
+            "claim_expires, worker_pid, started_at) "
+            "VALUES (?, 'running', ?, ?, ?, ?)",
+            (c, lock, future, 99999, int(time.time())),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, c),
+        )
+        conn.commit()
+
+        signals_sent: list[int] = []
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+        kb.link_tasks(
+            conn, b, c,
+            signal_fn=lambda pid, sig: signals_sent.append(sig),
+        )
+
+        assert signals_sent == [_signal.SIGTERM]
+        task = kb.get_task(conn, c)
+        assert task.status == "todo"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+
+
 def test_recompute_ready_cascades_through_chain(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")

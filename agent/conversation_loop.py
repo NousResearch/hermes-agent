@@ -1887,6 +1887,35 @@ def run_conversation(
                                 force=True,
                             )
                         if assistant_message is not None and not _trunc_has_tool_calls:
+                            # Guard: if the truncated response has no actual content
+                            # (empty string or None), sending a "continue where you
+                            # left off" prompt causes the model to hallucinate about
+                            # unrelated topics because there is literally nothing to
+                            # continue from. Treat this as a hard failure instead.
+                            _trunc_actual_content = str(getattr(assistant_message, 'content', '') or '').strip()
+                            if not _trunc_actual_content and not _is_partial_stream_stub:
+                                agent._vprint(
+                                    f"{agent.log_prefix}⚠️  finish_reason='length' with empty "
+                                    f"response — cannot send continuation (nothing to continue). "
+                                    f"Try reducing ollama_num_ctx in config.",
+                                    force=True,
+                                )
+                                agent._cleanup_task_resources(effective_task_id)
+                                agent._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": (
+                                        "⚠️ The model produced an empty response (finish_reason='length'). "
+                                        "This usually means the context window is too large for this model "
+                                        "or the reasoning trace consumed all available tokens. "
+                                        "Try reducing `ollama_num_ctx` in ~/.hermes/config.yaml."
+                                    ),
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "failed": True,
+                                    "error": "Empty response with finish_reason='length' — cannot continue without content",
+                                }
+
                             length_continue_retries += 1
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)

@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections import deque
 from pathlib import Path
 from typing import IO, Callable, Protocol
 
@@ -42,6 +43,100 @@ if _DEBUG_INTERRUPT:
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
+
+
+class _BoundedOutputCollector:
+    """Retain a bounded 40/60 head-tail window of streamed text."""
+
+    def __init__(self, max_chars: int):
+        self.max_chars = max(1, int(max_chars))
+        self._head_limit = int(self.max_chars * 0.4)
+        self._tail_limit = self.max_chars - self._head_limit
+        self._head: list[str] = []
+        self._tail: deque[str] = deque()
+        self._head_chars = 0
+        self._tail_chars = 0
+        self._total_chars = 0
+        self._lock = threading.Lock()
+
+    @property
+    def buffered_chars(self) -> int:
+        with self._lock:
+            return self._head_chars + self._tail_chars
+
+    @property
+    def total_chars(self) -> int:
+        with self._lock:
+            return self._total_chars
+
+    def append(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            text_len = len(text)
+            self._total_chars += text_len
+            start = 0
+
+            if self._head_chars < self._head_limit:
+                take = min(self._head_limit - self._head_chars, text_len)
+                if take:
+                    self._head.append(text[:take])
+                    self._head_chars += take
+                    start = take
+
+            remaining = text_len - start
+            if remaining <= 0 or self._tail_limit <= 0:
+                return
+            if remaining >= self._tail_limit:
+                self._tail.clear()
+                self._tail.append(text[-self._tail_limit :])
+                self._tail_chars = self._tail_limit
+                return
+
+            chunk = text[start:]
+            self._tail.append(chunk)
+            self._tail_chars += len(chunk)
+            while self._tail_chars > self._tail_limit:
+                excess = self._tail_chars - self._tail_limit
+                first = self._tail[0]
+                if len(first) <= excess:
+                    self._tail.popleft()
+                    self._tail_chars -= len(first)
+                else:
+                    self._tail[0] = first[excess:]
+                    self._tail_chars -= excess
+
+    def render(self, *, suffix: str = "") -> str:
+        """Render within ``max_chars``, preserving a required status suffix."""
+        with self._lock:
+            if len(suffix) >= self.max_chars:
+                return suffix[-self.max_chars :]
+
+            head = "".join(self._head)
+            tail = "".join(self._tail)
+            available = self.max_chars - len(suffix)
+            if self._total_chars <= available:
+                return head + tail + suffix
+
+            notice = ""
+            for _ in range(4):
+                content_budget = max(0, available - len(notice))
+                head_chars = int(content_budget * 0.4)
+                tail_chars = content_budget - head_chars
+                omitted = max(0, self._total_chars - head_chars - tail_chars)
+                updated = (
+                    f"\n\n... [OUTPUT TRUNCATED - {omitted:,} chars omitted "
+                    f"out of {self._total_chars:,} total] ...\n\n"
+                )
+                if updated == notice:
+                    break
+                notice = updated
+
+            content_budget = max(0, available - len(notice))
+            head_chars = int(content_budget * 0.4)
+            tail_chars = content_budget - head_chars
+            rendered_tail = tail[-tail_chars:] if tail_chars else ""
+            return head[:head_chars] + notice[:available] + rendered_tail + suffix
 
 
 def set_activity_callback(cb: Callable[[str], None] | None) -> None:
@@ -594,7 +689,13 @@ class BaseEnvironment(ABC):
         an orphan with ``PPID=1`` when python is shut down mid-tool — the
         ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
-        output_chunks: list[str] = []
+        try:
+            from tools.tool_output_limits import get_max_bytes
+
+            capture_limit = get_max_bytes()
+        except Exception:
+            capture_limit = 50_000
+        output = _BoundedOutputCollector(capture_limit)
 
         # Non-blocking drain via select().
         #
@@ -635,16 +736,16 @@ class BaseEnvironment(ABC):
                     if piece is None:
                         continue
                     if isinstance(piece, bytes):
-                        output_chunks.append(decoder.decode(piece))
+                        output.append(decoder.decode(piece))
                     else:
-                        output_chunks.append(str(piece))
+                        output.append(str(piece))
             except Exception:
                 pass
             finally:
                 try:
                     tail = decoder.decode(b"", final=True)
                     if tail:
-                        output_chunks.append(tail)
+                        output.append(tail)
                 except Exception:
                     pass
 
@@ -675,14 +776,14 @@ class BaseEnvironment(ABC):
                         chunk = os.read(fd, 4096)
                         if not chunk:
                             break
-                        output_chunks.append(decoder.decode(chunk))
+                        output.append(decoder.decode(chunk))
                 except (ValueError, OSError):
                     pass
                 finally:
                     try:
                         tail = decoder.decode(b"", final=True)
                         if tail:
-                            output_chunks.append(tail)
+                            output.append(tail)
                     except Exception:
                         pass
                 return
@@ -700,7 +801,7 @@ class BaseEnvironment(ABC):
                             break
                         if not chunk:
                             break  # true EOF — all writers closed
-                        output_chunks.append(decoder.decode(chunk))
+                        output.append(decoder.decode(chunk))
                         idle_after_exit = 0
                     elif proc.poll() is not None:
                         # bash is gone and the pipe was idle for ~100ms.  Give
@@ -716,7 +817,7 @@ class BaseEnvironment(ABC):
                 try:
                     tail = decoder.decode(b"", final=True)
                     if tail:
-                        output_chunks.append(tail)
+                        output.append(tail)
                 except Exception:
                     pass
 
@@ -762,7 +863,7 @@ class BaseEnvironment(ABC):
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
                     return {
-                        "output": "".join(output_chunks) + "\n[Command interrupted]",
+                        "output": output.render(suffix="\n[Command interrupted]"),
                         "returncode": 130,
                     }
                 if time.monotonic() > deadline:
@@ -774,12 +875,11 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
-                    partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
                     return {
-                        "output": partial + timeout_msg
-                        if partial
-                        else timeout_msg.lstrip(),
+                        "output": output.render(suffix=timeout_msg).lstrip()
+                        if output.total_chars == 0
+                        else output.render(suffix=timeout_msg),
                         "returncode": 124,
                     }
                 # Periodic activity touch so the gateway knows we're alive
@@ -855,7 +955,7 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
-        return {"output": "".join(output_chunks), "returncode": proc.returncode}
+        return {"output": output.render(), "returncode": proc.returncode}
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""

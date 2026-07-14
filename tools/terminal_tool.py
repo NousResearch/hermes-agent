@@ -2708,9 +2708,10 @@ def terminal_tool(
                         "command."
                     )
 
-            # Foreground terminal output canonicalization seam: plugins receive
-            # the full output string before default truncation and may only
-            # replace it by returning a string from transform_terminal_output.
+            # Foreground terminal output canonicalization seam: process capture
+            # is already bounded by BaseEnvironment before sudo checks and hooks
+            # run. Plugins may replace that bounded string; replacements are
+            # still subject to the final output limit below.
             # The hook is fail-open, and the first valid string return wins.
             try:
                 from hermes_cli.plugins import invoke_hook

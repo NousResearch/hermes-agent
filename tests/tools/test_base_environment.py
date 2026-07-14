@@ -6,7 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
@@ -20,6 +20,41 @@ class _TestableEnv(BaseEnvironment):
 
     def cleanup(self):
         pass
+
+
+class TestBoundedOutputCollector:
+    def test_large_stream_retains_bounded_head_and_tail(self):
+        collector = _BoundedOutputCollector(1_000)
+        collector.append("HEAD-SENTINEL\n")
+        for _ in range(2_000):
+            collector.append("x" * 4_096)
+        collector.append("\nTAIL-SENTINEL")
+
+        rendered = collector.render()
+
+        assert collector.total_chars > 8_000_000
+        assert collector.buffered_chars <= 1_000
+        assert len(rendered) <= 1_000
+        assert rendered.startswith("HEAD-SENTINEL")
+        assert rendered.endswith("TAIL-SENTINEL")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+    def test_small_stream_is_unchanged(self):
+        collector = _BoundedOutputCollector(100)
+        collector.append("hello ")
+        collector.append("world")
+
+        assert collector.render() == "hello world"
+
+    def test_required_status_suffix_stays_inside_limit(self):
+        collector = _BoundedOutputCollector(120)
+        collector.append("A" * 10_000)
+
+        rendered = collector.render(suffix="\n[Command timed out after 1s]")
+
+        assert len(rendered) <= 120
+        assert rendered.endswith("[Command timed out after 1s]")
+        assert "[OUTPUT TRUNCATED" in rendered
 
 
 class TestWrapCommand:

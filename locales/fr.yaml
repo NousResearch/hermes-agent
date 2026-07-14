@@ -364,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Contexte estimé : ~{count} jetons"
     detailed_after_first:     "_(Utilisation détaillée disponible après la première réponse de l'agent)_"
     no_data:                  "Aucune donnée d'utilisation disponible pour cette session."
+    unknown_subcommand:       "Sous-commande /usage inconnue : `{args}`. Essayez `/usage` ou `/usage reset [--force]`."
+    reset_wrong_provider:     "Les réinitialisations de limite en réserve ne sont disponibles qu'avec le fournisseur openai-codex. Changez d'abord avec `/model`."
 
   credits:
     not_logged_in:            "Non connecté à Nous Portal. Connecte-toi pour voir ton solde de crédits et recharger."

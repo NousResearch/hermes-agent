@@ -68,7 +68,7 @@ A persistent status bar sits above the input area, updating in real time:
 
 | Element | Description |
 |---------|-------------|
-| Model name | Current model (truncated if longer than 26 chars) |
+| Model name | Current model (truncated if longer than 26 chars). Explicit non-default reasoning effort, or `none` when reasoning is disabled, appears next to the model. |
 | Token count | Context tokens used / max context window |
 | Context bar | Visual fill indicator with color-coded thresholds |
 | Cost | Estimated session cost (or `n/a` for unknown/zero-priced models) |

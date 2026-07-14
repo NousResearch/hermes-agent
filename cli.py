@@ -4534,6 +4534,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return f"{emoji} {time_str}"
 
     @staticmethod
+    def _status_bar_reasoning_effort_label(reasoning_config: Any) -> str:
+        """Return the compact reasoning-effort suffix for the status bar."""
+        from hermes_constants import reasoning_effort_label
+
+        return reasoning_effort_label(reasoning_config)
+
+    @staticmethod
+    def _status_bar_model_label(snapshot: Dict[str, Any]) -> str:
+        effort = snapshot.get("reasoning_effort")
+        if effort:
+            return f"{snapshot['model_short']} {effort}"
+        return snapshot["model_short"]
+
+    @staticmethod
+    def _status_bar_model_fragments(snapshot: Dict[str, Any]):
+        fragments = [("class:status-bar-strong", snapshot["model_short"])]
+        effort = snapshot.get("reasoning_effort")
+        if effort:
+            fragments.append(("class:status-bar-dim", f" {effort}"))
+        return fragments
+
+    @staticmethod
     def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
         """Format time since the last final agent response for the status bar.
 
@@ -4559,10 +4581,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        reasoning_config = getattr(agent, "reasoning_config", None)
+        if not isinstance(reasoning_config, dict):
+            reasoning_config = getattr(self, "reasoning_config", None)
+        reasoning_effort = self._status_bar_reasoning_effort_label(reasoning_config)
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_effort": reasoning_effort,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -5069,15 +5097,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            model_label = self._status_bar_model_label(snapshot)
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {model_label} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {model_label}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -5103,7 +5132,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {model_label}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5145,7 +5174,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    *self._status_bar_model_fragments(snapshot),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -5163,7 +5192,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        *self._status_bar_model_fragments(snapshot),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -5202,7 +5231,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        *self._status_bar_model_fragments(snapshot),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),

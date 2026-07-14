@@ -192,6 +192,11 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         from gateway.canonical_writer_protocol import CanonicalWriterOperation
 
 
+        assert foundation_module._ARTIFACT_FILENAMES["phase_b_preflight"] == (
+            "canonical_writer_foundation_phase_b_preflight_v1.sql"
+        )
+
+
         class FakeDatabase:
             statement_names = PRODUCTION_STATEMENT_CATALOG.names
             statement_catalog_sha256 = PRODUCTION_CATALOG_SHA256

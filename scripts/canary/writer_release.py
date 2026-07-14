@@ -106,6 +106,7 @@ CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
 )
 CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS = (
     Path("scripts/sql/canonical_writer_foundation_observe_v1.sql"),
+    Path("scripts/sql/canonical_writer_foundation_phase_b_preflight_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_phase_b_role_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_legacy_observe_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_prerequisites_v1.sql"),

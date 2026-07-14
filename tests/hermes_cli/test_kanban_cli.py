@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import config as hermes_config
 
 
 @pytest.fixture
@@ -165,6 +166,61 @@ def test_run_slash_json_output(kanban_home):
     assert payload["title"] == "jsontask"
     assert payload["assignee"] == "alice"
     assert payload["status"] == "ready"
+
+
+def test_run_slash_create_notification_intent(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "cli-prof")
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "default", "chat_id": "fallback"}],
+    })
+    hermes_config.save_config(config)
+
+    explicit = json.loads(kc.run_slash(
+        "create 'explicit notifications' --notify telegram:chat-1:topic-1 "
+        "--notify discord:channel-2 --json"
+    ))
+    quiet = json.loads(kc.run_slash(
+        "create 'no notifications' --notify telegram:chat-3 --no-subscribe --json"
+    ))
+
+    with kb.connect() as conn:
+        explicit_subs = kb.list_notify_subs(conn, explicit["id"])
+        quiet_subs = kb.list_notify_subs(conn, quiet["id"])
+
+    assert {(row["platform"], row["chat_id"], row["thread_id"])
+            for row in explicit_subs} == {
+        ("telegram", "chat-1", "topic-1"),
+        ("discord", "channel-2", ""),
+    }
+    assert {row["notifier_profile"] for row in explicit_subs} == {"cli-prof"}
+    assert quiet_subs == []
+
+
+def test_run_slash_create_uses_defaults_and_explicit_targets_ignore_disabled_gate(kanban_home):
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "default", "chat_id": "fallback"}],
+    })
+    hermes_config.save_config(config)
+    default_task = json.loads(kc.run_slash("create 'default notifications' --json"))
+
+    config["kanban"]["auto_subscribe_on_create"] = False
+    hermes_config.save_config(config)
+    explicit_task = json.loads(kc.run_slash(
+        "create 'explicit despite disabled gate' --notify discord:channel-2 --json"
+    ))
+
+    with kb.connect() as conn:
+        default_subs = kb.list_notify_subs(conn, default_task["id"])
+        explicit_subs = kb.list_notify_subs(conn, explicit_task["id"])
+
+    assert [(row["platform"], row["chat_id"], row["thread_id"])
+            for row in default_subs] == [("default", "fallback", "")]
+    assert [(row["platform"], row["chat_id"], row["thread_id"])
+            for row in explicit_subs] == [("discord", "channel-2", "")]
 
 
 def test_run_slash_dispatch_dry_run_counts(kanban_home):

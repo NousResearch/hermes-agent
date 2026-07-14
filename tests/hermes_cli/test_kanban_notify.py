@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -652,10 +653,8 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     """`/kanban --board <slug> create ...` must subscribe on that board.
 
-    The gateway handler currently auto-subscribes after `/kanban create`,
-    but the create detection must still work when the shared `--board`
-    flag appears before the subcommand, and the subscription must land in
-    that board's DB rather than the ambient/default board.
+    The shared creation seam receives the gateway origin even when the
+    shared `--board` flag appears before the subcommand.
     """
     from gateway.run import GatewayRunner
     from gateway.config import Platform
@@ -663,6 +662,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     kb.create_board("projx")
 
     runner = object.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "gateway-prof"
     source = SimpleNamespace(
         platform=Platform.TELEGRAM,
         chat_id="chat1",
@@ -670,13 +670,13 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         user_id="u1",
     )
     event = SimpleNamespace(
-        text='/kanban --board projx create "hello" --assignee alice',
+        text='/kanban --board projx create "hello" --assignee alice --json',
         source=source,
     )
 
     out = await GatewayRunner._handle_kanban_command(runner, event)
 
-    assert "subscribed" in out.lower()
+    assert json.loads(out)["title"] == "hello"
 
     conn = kb.connect(board="projx")
     try:
@@ -689,12 +689,88 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "th1"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["notifier_profile"] == "gateway-prof"
 
     conn = kb.connect(board="default")
     try:
         assert kb.list_notify_subs(conn) == []
     finally:
         conn.close()
+
+
+@pytest.mark.asyncio
+async def test_gateway_create_json_output_stays_parseable_and_subscribes(kanban_home):
+    """Gateway origin subscription does not alter structured command output."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    runner = object.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "gateway-prof"
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        thread_id="th1",
+        user_id="u1",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "json hello" --assignee alice --json',
+        source=source,
+    )
+
+    data = json.loads(await GatewayRunner._handle_kanban_command(runner, event))
+
+    assert data["title"] == "json hello"
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, data["id"])
+    assert [(row["platform"], row["chat_id"], row["thread_id"], row["user_id"], row["notifier_profile"])
+            for row in subs] == [("telegram", "chat1", "th1", "u1", "gateway-prof")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("automatic", "command", "expected"),
+    [
+        (False, 'create "disabled ambient" --json', set()),
+        (False, 'create "disabled explicit" --notify discord:channel --json',
+         {("discord", "channel", "", None, "gateway-prof")}),
+        (True, 'create "explicit wins" --notify discord:channel --json',
+         {("discord", "channel", "", None, "gateway-prof")}),
+        (True, 'create "same-platform explicit" --notify telegram:target-chat --json',
+         {("telegram", "target-chat", "", "u1", "gateway-prof")}),
+        (True, 'create "no subscriptions" --notify discord:channel --no-subscribe --json', set()),
+    ],
+    ids=("disabled-suppresses-ambient", "disabled-keeps-explicit", "explicit-overrides-ambient", "same-platform-explicit-keeps-user", "no-subscribe-suppresses-all"),
+)
+async def test_gateway_create_subscription_policy(
+    kanban_home, automatic, command, expected,
+):
+    """Gateway creation applies the shared subscription policy at its public seam."""
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    _configure_subscription_policy(auto_subscribe_on_create=automatic)
+    runner = object.__new__(GatewayRunner)
+    runner._kanban_notifier_profile = "gateway-prof"
+    event = SimpleNamespace(
+        text=f"/kanban {command}",
+        source=SimpleNamespace(
+            platform=Platform.TELEGRAM,
+            chat_id="ambient-chat",
+            thread_id="ambient-thread",
+            user_id="u1",
+        ),
+    )
+
+    task = json.loads(await GatewayRunner._handle_kanban_command(runner, event))
+    with kb.connect() as conn:
+        subscriptions = kb.list_notify_subs(conn, task["id"])
+
+    assert {
+        (row["platform"], row["chat_id"], row["thread_id"],
+         row["user_id"], row["notifier_profile"])
+        for row in subscriptions
+    } == expected
 
 
 @pytest.mark.asyncio

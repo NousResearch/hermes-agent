@@ -28,6 +28,7 @@ from urllib.parse import quote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from hermes_cli._subprocess_compat import windows_hide_flags
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -627,6 +628,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         normalized_path = audio_path
         normalized_cleanup: Optional[str] = None
+        keep_tmp_path = False
         try:
             if not self._is_native_voice_wav_source(audio_path):
                 ffmpeg = shutil.which("ffmpeg")
@@ -652,9 +654,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         normalized_path,
                     ],
                     check=True,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=60,
+                    creationflags=windows_hide_flags(),
                 )
                 if not os.path.isfile(normalized_path) or os.path.getsize(normalized_path) == 0:
                     return None
@@ -672,11 +676,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     tmp_path,
                 ],
                 check=True,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=60,
+                creationflags=windows_hide_flags(),
             )
             if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                keep_tmp_path = True
                 return tmp_path
         except Exception as exc:
             logger.debug("BlueBubbles Opus CAF transcode failed: %s", exc)
@@ -686,11 +693,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     os.unlink(normalized_cleanup)
                 except OSError:
                     pass
-
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+            if not keep_tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         return None
 
     def _prepare_voice_attachment(
@@ -705,13 +712,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 filename=requested_name or "Audio Message.caf",
                 content_type="audio/x-caf",
             )
-        if ext == ".mp3":
-            return _PreparedAttachment(
-                path=file_path,
-                filename=requested_name or "Audio Message.mp3",
-                content_type="audio/mpeg",
-            )
-
         converted = self._convert_audio_to_caf(file_path)
         if converted:
             return _PreparedAttachment(
@@ -746,7 +746,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
 
         prepared = (
-            self._prepare_voice_attachment(file_path, filename)
+            await asyncio.to_thread(self._prepare_voice_attachment, file_path, filename)
             if is_audio_message
             else _PreparedAttachment(
                 path=file_path,

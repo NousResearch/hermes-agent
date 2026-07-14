@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import time
+import tools.code_execution_tool as code_execution_tool
 
 os.environ["TERMINAL_ENV"] = "local"
 
@@ -46,6 +47,7 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _check_write_safe_root_code,
 )
 
 
@@ -1005,6 +1007,79 @@ for i in range(15000):
         if "TRUNCATED" in output:
             self.assertIn("chars omitted", output)
             self.assertIn("total", output)
+
+
+class TestExecuteCodeWriteSafeRoot:
+    def test_literal_open_modes(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        outside = tmp_path / "outside.txt"
+
+        assert _check_write_safe_root_code(f"open('{outside}', 'r')") is None
+        assert _check_write_safe_root_code(f"open('{outside}', 'r+')") is not None
+
+    def test_path_open_modes(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        outside = tmp_path / "outside.txt"
+
+        assert _check_write_safe_root_code(f"Path('{outside}').open()") is None
+        assert _check_write_safe_root_code(f"Path('{outside}').open('r+')") is not None
+
+    def test_endpoint_blocks_open_r_plus_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        outside = tmp_path / "outside.txt"
+        dispatched = []
+
+        monkeypatch.setattr(
+            "tools.terminal_tool._get_env_config",
+            lambda: {"env_type": "ssh"},
+        )
+        monkeypatch.setattr(
+            "tools.approval.check_execute_code_guard",
+            lambda *args, **kwargs: {"approved": True},
+        )
+        monkeypatch.setattr(
+            code_execution_tool,
+            "_execute_remote",
+            lambda *args: dispatched.append(args) or '{"status":"success"}',
+        )
+
+        result = json.loads(execute_code(f"open('{outside}', 'r+')", task_id="test"))
+
+        assert result["status"] == "error"
+        assert "Blocked" in result["error"]
+        assert dispatched == []
+
+    def test_endpoint_allows_default_path_open_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        outside = tmp_path / "outside.txt"
+        dispatched = []
+
+        monkeypatch.setattr(
+            "tools.terminal_tool._get_env_config",
+            lambda: {"env_type": "ssh"},
+        )
+        monkeypatch.setattr(
+            "tools.approval.check_execute_code_guard",
+            lambda *args, **kwargs: {"approved": True},
+        )
+        monkeypatch.setattr(
+            code_execution_tool,
+            "_execute_remote",
+            lambda *args: dispatched.append(args) or '{"status":"reached"}',
+        )
+
+        result = json.loads(execute_code(f"Path('{outside}').open()", task_id="test"))
+
+        assert result == {"status": "reached"}
+        assert dispatched
 
 
 class TestRpcTokenAuthorization(unittest.TestCase):

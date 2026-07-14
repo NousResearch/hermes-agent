@@ -1,6 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
 import tools.terminal_tool as terminal_tool
+from tools.terminal_tool import _check_write_safe_root
 
 
 def setup_function():
@@ -323,3 +324,45 @@ def test_transform_sudo_command_pipes_one_password_line_per_invocation(monkeypat
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+class TestTerminalWriteSafeRoot:
+    def test_blocks_redirect_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        assert _check_write_safe_root("echo data > /etc/output.txt", str(tmp_path))
+
+    def test_allows_redirect_inside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        assert _check_write_safe_root("echo data > session/output.txt", str(tmp_path)) is None
+
+    def test_blocks_python_open_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        assert _check_write_safe_root("python3 -c \"open('/root/evil.txt','w')\"", str(tmp_path))
+
+    def test_allows_python_open_read_only_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        assert _check_write_safe_root("python3 -c \"open('/root/read-only.txt','r')\"", str(tmp_path)) is None
+
+    def test_blocks_tee_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        assert _check_write_safe_root("echo hello | tee /etc/output.txt", str(tmp_path))
+
+    def test_blocks_cp_mv_outside(self, tmp_path, monkeypatch):
+        safe_root = tmp_path / "session"
+        safe_root.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        assert _check_write_safe_root("cp file.txt /root/file.txt", str(tmp_path))
+
+    def test_unset_allows_writes(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+        assert _check_write_safe_root("echo data > /etc/output.txt", str(tmp_path)) is None

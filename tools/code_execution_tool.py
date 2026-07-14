@@ -34,6 +34,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import shlex
 import socket
@@ -1109,6 +1110,61 @@ def _execute_remote(
 
 
 # ---------------------------------------------------------------------------
+# HERMES_WRITE_SAFE_ROOT heuristic guard for Python code
+# ---------------------------------------------------------------------------
+
+_CODE_OPEN_RE = re.compile(
+    r"open\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]*)['\"]"
+)
+_CODE_PATHLIB_WRITE_RE = re.compile(
+    r"Path\s*\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\.(?:write_text|write_bytes)\s*\("
+)
+_CODE_PATHLIB_OPEN_RE = re.compile(
+    r"Path\s*\(\s*['\"]([^'\"]+)['\"]\s*\)\s*\.open\s*\(\s*"
+    r"(?:['\"]([^'\"]*)['\"])?"
+)
+
+
+def _check_write_safe_root_code(code: str) -> str | None:
+    """Block literal Python writes outside HERMES_WRITE_SAFE_ROOT."""
+    from agent.file_safety import get_safe_write_roots, is_write_denied
+
+    safe_roots = get_safe_write_roots()
+    if not safe_roots:
+        return None
+    safe_root_display = os.pathsep.join(sorted(safe_roots))
+
+    def blocked(path: str) -> str | None:
+        if not is_write_denied(os.path.expanduser(path)):
+            return None
+        return (
+            f"Blocked: code attempts to write to {path!r}, which is "
+            f"outside HERMES_WRITE_SAFE_ROOT ({safe_root_display!r}). "
+            "Writes must stay inside the configured safe root. "
+            "(Defense-in-depth, not a security boundary; regex matching "
+            "may miss dynamically constructed paths.)"
+        )
+
+    for match in _CODE_OPEN_RE.finditer(code):
+        path, mode = match.groups()
+        if any(char in mode for char in ("w", "x", "a", "+")):
+            if error := blocked(path):
+                return error
+
+    for match in _CODE_PATHLIB_WRITE_RE.finditer(code):
+        if error := blocked(match.group(1)):
+            return error
+
+    for match in _CODE_PATHLIB_OPEN_RE.finditer(code):
+        path, mode = match.groups()
+        if mode and any(char in mode for char in ("w", "x", "a", "+")):
+            if error := blocked(path):
+                return error
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -1175,6 +1231,14 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
+
+    if safe_root_error := _check_write_safe_root_code(code):
+        return json.dumps({
+            "status": "error",
+            "error": safe_root_error,
+            "tool_calls_made": 0,
+            "duration_seconds": 0,
+        }, ensure_ascii=False)
 
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)

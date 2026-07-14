@@ -8,7 +8,6 @@ import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
-import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
 import { SidebarCount } from './chrome'
@@ -127,6 +126,11 @@ interface SidebarSessionsSectionProps {
   // When false the section header is static (no caret/toggle) and always open.
   collapsible?: boolean
   sortable?: boolean
+  /** When provided, the virtualized flat list scrolls in this external
+   *  element (the sidebar's shared scroll container) instead of owning its
+   *  own nested scroller. Virtualization only activates in this mode — see
+   *  the `flatVirtualized` predicate. */
+  getScrollElement?: () => HTMLElement | null
   // The flat session list is the only hand-reorderable surface (grouped/project
   // views sort deterministically), so it owns the one ReorderableList.
   onReorderSessions?: (ids: string[]) => void
@@ -171,6 +175,7 @@ export function SidebarSessionsSection({
   labelIcon,
   collapsible = true,
   sortable = false,
+  getScrollElement,
   onReorderSessions,
   onReorderProjects,
   projectBackRow,
@@ -217,12 +222,20 @@ export function SidebarSessionsSection({
   const renderRows = (items: SessionInfo[]) =>
     flattenSessionsWithBranches(items).map(({ branchStem, session }) => renderRow(session, false, branchStem))
 
+  // Virtualize ONLY in shared-scroll mode (caller provides the scroll
+  // element). Without one, the virtual list would nest its OWN scroll
+  // container inside the sidebar's scroller; a nested scroller that grows to
+  // its content height can never scroll, yet Chromium still latches wheel
+  // events to it, and overscroll-contain then stops the scroll chain — wheel
+  // goes dead over the rows and only the outer scrollbar track works. A long
+  // list without a scroll element simply renders flat.
   const flatVirtualized =
     !showEmptyState &&
     !groups?.length &&
     !projectOverview?.length &&
     !projectContent &&
-    sessions.length >= VIRTUALIZE_THRESHOLD
+    sessions.length >= VIRTUALIZE_THRESHOLD &&
+    Boolean(getScrollElement)
 
   // First paint into the grouped view (e.g. the app restoring the Projects tab)
   // has flat recents in `sessions` but no tree yet. Show skeletons rather than
@@ -305,6 +318,7 @@ export function SidebarSessionsSection({
         activeSessionId={activeSessionId}
         className={contentClassName}
         entries={displayEntries}
+        getScrollElement={getScrollElement}
         onArchiveSession={onArchiveSession}
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
@@ -334,9 +348,12 @@ export function SidebarSessionsSection({
     inner = displayEntries.map(({ branchStem, session }) => renderRow(session, false, branchStem))
   }
 
-  // The virtualizer owns its own scroller, so suppress the wrapper's overflow
-  // to avoid a double scroll container.
-  const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
+  // flatVirtualized implies shared-scroll mode (see the predicate above): the
+  // virtualizer never owns a scroller here, so the wrapper needs no overflow
+  // suppression. Do not add per-axis overflow classes to this wrapper — a
+  // single-axis overflow forces the other axis from `visible` to `auto` and
+  // silently recreates a nested scroll container.
+  const resolvedContentClassName = contentClassName
 
   return (
     <SidebarGroup className={rootClassName}>

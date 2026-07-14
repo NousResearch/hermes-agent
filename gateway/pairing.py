@@ -23,7 +23,6 @@ import json
 import logging
 import os
 import secrets
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -34,7 +33,7 @@ from gateway.whatsapp_identity import (
     normalize_whatsapp_identifier,
 )
 from hermes_constants import get_hermes_dir, get_hermes_home
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 logger = logging.getLogger(__name__)
 
@@ -213,7 +212,7 @@ def _secure_write(path: Path, data: str) -> None:
     complete file or the new one — never a partial write.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    fd, tmp_path = bounded_mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)

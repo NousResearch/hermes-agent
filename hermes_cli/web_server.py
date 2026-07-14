@@ -89,7 +89,7 @@ from hermes_cli.memory_providers import (
     ProviderField as DeclaredProviderField,
     get_memory_provider as get_declared_memory_provider,
 )
-from utils import env_var_enabled
+from utils import bounded_mkstemp, env_var_enabled
 
 try:
     from fastapi import (
@@ -2067,7 +2067,7 @@ async def upload_managed_file_stream(
 
     # Write to a sibling temp file first so a partial/aborted upload never
     # clobbers an existing file, then atomically rename into place.
-    tmp_fd, tmp_name = tempfile.mkstemp(
+    tmp_fd, tmp_name = bounded_mkstemp(
         prefix=f".{target.name}.", suffix=".upload", dir=str(target.parent)
     )
     tmp_path = Path(tmp_name)
@@ -12018,7 +12018,7 @@ async def run_import_upload(
     safe_name = _safe_backup_upload_name(file.filename)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     target = staging_dir / f"dashboard-import-{stamp}-{secrets.token_hex(4)}-{safe_name}"
-    tmp_fd, tmp_name = tempfile.mkstemp(
+    tmp_fd, tmp_name = bounded_mkstemp(
         prefix=f".{target.name}.",
         suffix=".upload",
         dir=str(staging_dir),

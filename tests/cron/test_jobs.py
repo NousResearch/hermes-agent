@@ -1692,6 +1692,17 @@ class TestSaveJobOutput:
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
+    def test_write_denied_raises_promptly(self, tmp_cron_dir):
+        """Regression for the one-shot CLI busy-spin: a write-denied cron
+        store must surface PermissionError immediately instead of retrying
+        TMP_MAX candidate names inside tempfile."""
+        from unittest.mock import patch as mock_patch
+
+        denial = PermissionError(13, "Access is denied", str(tmp_cron_dir))
+        with mock_patch("cron.jobs.bounded_mkstemp", side_effect=denial):
+            with pytest.raises(PermissionError):
+                save_jobs([])
+
     @pytest.mark.parametrize("bad_job_id", ["../escape", "nested/escape", ".", "..", ""])
     def test_rejects_unsafe_job_id(self, tmp_cron_dir, bad_job_id):
         """Path-escape attempts must fail closed and never create dirs."""

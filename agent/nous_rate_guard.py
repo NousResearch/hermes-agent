@@ -15,10 +15,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import time
 from typing import Any, Mapping, Optional
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +114,7 @@ def record_nous_rate_limit(
         }
 
         # Atomic write: write to temp file + rename
-        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+        fd, tmp_path = bounded_mkstemp(dir=state_dir, suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
                 json.dump(state, f)

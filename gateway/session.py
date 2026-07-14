@@ -94,7 +94,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -1254,7 +1254,6 @@ class SessionStore:
 
     def _save_sessions_json(self, data: Dict[str, Any]) -> None:
         """Write the legacy sessions.json mirror of the routing index."""
-        import tempfile
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         sessions_file = self.sessions_dir / "sessions.json"
 
@@ -1276,7 +1275,7 @@ class SessionStore:
             ),
             **data,
         }
-        fd, tmp_path = tempfile.mkstemp(
+        fd, tmp_path = bounded_mkstemp(
             dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
         )
         try:

@@ -91,6 +91,17 @@ class TestSecureWrite:
         mode = oct(target.stat().st_mode & 0o777)
         assert mode == "0o600"
 
+    def test_write_denied_raises_promptly(self, tmp_path):
+        """Regression for the one-shot CLI busy-spin: an ACL-denied pairing
+        dir must surface PermissionError immediately instead of retrying
+        TMP_MAX candidate names inside tempfile."""
+        target = tmp_path / "approved.json"
+        denial = PermissionError(13, "Access is denied", str(target))
+        with patch("gateway.pairing.bounded_mkstemp", side_effect=denial):
+            with pytest.raises(PermissionError):
+                _secure_write(target, "data")
+        assert not target.exists()
+
 
 # ---------------------------------------------------------------------------
 # Code generation

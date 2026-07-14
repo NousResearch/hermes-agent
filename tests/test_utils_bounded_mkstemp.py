@@ -111,28 +111,51 @@ class TestWindowsAclDeny:
     def test_acl_denied_dir_raises_promptly(self, tmp_path):
         """End-to-end on a real ACL-denied directory: PermissionError in
         milliseconds, where ``tempfile.mkstemp`` spins for hours.
+
+        The deny ACE is placed by SID, not account name: on machines with
+        several similar local principals (sandbox pseudo-users, a machine
+        name equal to the user name) icacls can resolve a bare name to the
+        wrong principal and silently produce an ineffective deny.  A probe
+        write then confirms the deny actually bites before asserting.
         """
-        import getpass
         import subprocess
 
         denied = tmp_path / "denied"
         denied.mkdir()
-        user = getpass.getuser()
+        whoami = os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "whoami.exe"
+        )
+        got_sid = subprocess.run(
+            [whoami, "/user", "/fo", "csv", "/nh"], capture_output=True, text=True
+        )
+        if got_sid.returncode != 0:
+            pytest.skip(f"cannot resolve own SID: {got_sid.stderr.strip()}")
+        sid = got_sid.stdout.strip().rsplit(",", 1)[-1].strip().strip('"')
         set_deny = subprocess.run(
-            ["icacls", str(denied), "/deny", f"{user}:(OI)(CI)(W,AD,WD,DC)"],
+            ["icacls", str(denied), "/deny", f"*{sid}:(OI)(CI)(W,AD,WD,DC)"],
             capture_output=True,
             text=True,
         )
         if set_deny.returncode != 0:
             pytest.skip(f"cannot set a deny ACL here: {set_deny.stderr.strip()}")
         try:
+            try:
+                probe_fd = os.open(
+                    str(denied / "probe.bin"), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
+                )
+            except PermissionError:
+                pass  # the deny is effective — proceed to the real assertion
+            else:
+                os.close(probe_fd)
+                pytest.skip("deny ACL not effective in this environment")
+
             start = time.monotonic()
             with pytest.raises(PermissionError):
                 bounded_mkstemp(dir=str(denied))
             assert time.monotonic() - start < 5.0
         finally:
             subprocess.run(
-                ["icacls", str(denied), "/remove:d", user],
+                ["icacls", str(denied), "/remove:d", f"*{sid}"],
                 capture_output=True,
                 text=True,
             )

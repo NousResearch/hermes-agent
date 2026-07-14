@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import json
 import logging
 import shutil
-import tempfile
 import threading
 import time
 import os
@@ -39,7 +38,7 @@ from typing import Optional, Dict, List, Any, Set, Tuple, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 try:
     from croniter import croniter
@@ -755,7 +754,7 @@ def _atomic_write_epoch(path: Path) -> None:
     torn/truncated file. Best-effort: failures are swallowed by callers.
     """
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
+    fd, tmp_path = bounded_mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".hb_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
@@ -872,7 +871,7 @@ def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
+    fd, tmp_path = bounded_mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
@@ -2168,7 +2167,7 @@ def save_job_output(job_id: str, output: str):
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
+    fd, tmp_path = bounded_mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
             f.write(output)

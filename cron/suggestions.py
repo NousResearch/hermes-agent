@@ -30,7 +30,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -38,7 +37,7 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +91,7 @@ def _load_raw() -> Dict[str, Any]:
 
 def _save_raw(suggestions: List[Dict[str, Any]]) -> None:
     _ensure_dir()
-    fd, tmp_path = tempfile.mkstemp(dir=str(SUGGESTIONS_FILE.parent), suffix=".tmp", prefix=".sugg_")
+    fd, tmp_path = bounded_mkstemp(dir=str(SUGGESTIONS_FILE.parent), suffix=".tmp", prefix=".sugg_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(

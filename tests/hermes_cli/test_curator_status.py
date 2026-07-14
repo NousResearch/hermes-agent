@@ -32,7 +32,7 @@ def test_status_uses_last_activity_not_only_last_used(monkeypatch, capsys):
     monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
     monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
     monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: [
         {
             "name": "recently-viewed",
             "state": "active",
@@ -171,7 +171,7 @@ def test_status_hides_most_active_when_all_zero(curator_status_env):
 def test_status_no_skills_produces_clean_empty_output(curator_status_env):
     env = curator_status_env
     out = _capture_status(env["curator_cli"])
-    assert "no agent-created skills" in out
+    assert "no curator-managed skills" in out
     # None of the ranking sections render
     assert "most active" not in out
     assert "least active" not in out
@@ -194,7 +194,7 @@ def test_status_marks_missing_last_report_path(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(curator_state, "get_interval_hours", lambda: 168)
     monkeypatch.setattr(curator_state, "get_stale_after_days", lambda: 30)
     monkeypatch.setattr(curator_state, "get_archive_after_days", lambda: 90)
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+    monkeypatch.setattr(skill_usage, "curated_report", lambda: [])
 
     assert curator_cli._cmd_status(SimpleNamespace()) == 0
 

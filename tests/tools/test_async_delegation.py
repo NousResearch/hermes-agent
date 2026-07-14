@@ -589,11 +589,8 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     assert _drain_one() is None
 
 
-def test_model_dispatch_forces_background():
-    """The MODEL-facing dispatch path forces background=True for any top-level
-    delegation (single task OR batch), and keeps it off for an orchestrator
-    subagent (depth > 0). Direct delegate_task() callers are unaffected (they
-    keep the synchronous default)."""
+def test_model_dispatch_respects_foreground_config_in_registry_fallback(monkeypatch):
+    """The registry fallback mirrors the live model dispatch policy."""
     import tools.delegate_tool as dt
     from unittest.mock import MagicMock
 
@@ -602,49 +599,89 @@ def test_model_dispatch_forces_background():
     sub = MagicMock()
     sub._delegate_depth = 1
 
-    # Registry-fallback helper: top-level always background, regardless of
-    # single vs batch; subagent never.
+    monkeypatch.setattr(dt, "_load_config", lambda: {})
     assert dt._model_background_value({"goal": "x"}, top) is True
     assert dt._model_background_value(
         {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
     ) is True
-    assert dt._model_background_value({"tasks": [{"goal": "a"}]}, top) is True
-    assert dt._model_background_value({"goal": "x"}, sub) is False
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {"foreground_by_default": True})
+    assert dt._model_background_value({"goal": "x"}, top) is False
     assert dt._model_background_value(
-        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, sub
+        {"tasks": [{"goal": "a"}, {"goal": "b"}]}, top
     ) is False
+    assert dt._model_background_value({"goal": "x"}, sub) is False
 
 
-def test_run_agent_dispatch_forces_background():
-    """run_agent._dispatch_delegate_task — the live model path — forces
-    background on for any top-level delegation (single OR batch) and off for a
-    subagent."""
+def test_tool_description_reflects_foreground_config(monkeypatch):
+    """The model receives accurate lifecycle guidance for the configured mode."""
+    import tools.delegate_tool as dt
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {"foreground_by_default": True})
+    foreground_description = dt._build_top_level_description()
+    assert "parent waits" in foreground_description
+    assert "RUN IN THE BACKGROUND" not in foreground_description
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {})
+    background_description = dt._build_top_level_description()
+    assert "RUN IN THE BACKGROUND" in background_description
+
+
+def test_run_agent_dispatch_respects_foreground_by_default_config():
+    """Top-level model delegation follows delegation.foreground_by_default;
+    orchestrator children always remain synchronous so they can synthesize."""
     from unittest.mock import patch
     import run_agent
 
+    captured = {}
+
     class _FakeAgent:
         _delegate_depth = 0
-
-    captured = {}
 
     def _fake_delegate(**kwargs):
         captured.update(kwargs)
         return "{}"
 
-    with patch("tools.delegate_tool.delegate_task", _fake_delegate):
+    with (
+        patch("tools.delegate_tool.delegate_task", _fake_delegate),
+        patch("tools.delegate_tool._load_config", return_value={"foreground_by_default": True}),
+    ):
         agent = _FakeAgent()
         run_agent.AIAgent._dispatch_delegate_task(agent, {"goal": "x"})
-        assert captured["background"] is True
+        assert captured["background"] is False
 
         run_agent.AIAgent._dispatch_delegate_task(
             agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
         )
-        assert captured["background"] is True
+        assert captured["background"] is False
 
         sub = _FakeAgent()
         sub._delegate_depth = 1
         run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
         assert captured["background"] is False
+
+
+def test_run_agent_dispatch_defaults_to_background_for_compatibility():
+    """Without the new config, preserve Hermes' current async default."""
+    from unittest.mock import patch
+    import run_agent
+
+    captured = {}
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    def _fake_delegate(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    with (
+        patch("tools.delegate_tool.delegate_task", _fake_delegate),
+        patch("tools.delegate_tool._load_config", return_value={}),
+    ):
+        run_agent.AIAgent._dispatch_delegate_task(_FakeAgent(), {"goal": "x"})
+
+    assert captured["background"] is True
 
 
 def test_dispatch_never_forwards_model_toolsets():

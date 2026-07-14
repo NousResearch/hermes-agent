@@ -261,7 +261,12 @@ class GatewayAuthorizationMixin:
             return per_profile[profile]
         return getattr(self, "pairing_store", None)
 
-    def _is_user_authorized(self, source: SessionSource) -> bool:
+    def _is_user_authorized(
+        self,
+        source: SessionSource,
+        *,
+        allow_adapter_delegation: bool = True,
+    ) -> bool:
         """
         Check if a user is authorized to use the bot.
         
@@ -308,9 +313,12 @@ class GatewayAuthorizationMixin:
         # SessionSource, and an explicit identity check refuses to authorize a
         # non-bool stand-in (e.g. a MagicMock attribute auto-vivifies truthy in
         # tests) — defensive against accidental fail-open.
-        if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
-            source.platform,
-            profile=source.profile,
+        if allow_adapter_delegation and (
+            source.delivered_via_upstream_relay is True
+            or self._adapter_authorization_is_upstream(
+                source.platform,
+                profile=source.profile,
+            )
         ):
             return True
 
@@ -488,7 +496,7 @@ class GatewayAuthorizationMixin:
             # flag (checked above), and the pairing flow remain the explicit
             # opt-ins to broader access. (#34515 follow-up: trusting "open" was a
             # fail-open.)
-            if self._adapter_enforces_own_access_policy(
+            if allow_adapter_delegation and self._adapter_enforces_own_access_policy(
                 source.platform,
                 profile=source.profile,
             ):

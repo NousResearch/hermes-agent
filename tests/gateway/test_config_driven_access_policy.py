@@ -150,6 +150,25 @@ def test_own_policy_allowlist_authorized_without_env_allowlist(monkeypatch, plat
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_stored_route_cannot_reuse_prior_adapter_authorization(monkeypatch, platform):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "allowlist"},
+            )
+        }
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(
+        _source(platform),
+        allow_adapter_delegation=False,
+    ) is False
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
 def test_own_policy_open_dm_authorized_with_gateway_allow_all(monkeypatch, platform):
     """Explicit ``GATEWAY_ALLOW_ALL_USERS`` unlocks ``dm_policy: open``."""
     _clear_auth_env(monkeypatch)

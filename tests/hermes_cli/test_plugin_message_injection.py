@@ -47,7 +47,7 @@ def test_cli_running_injection_keeps_existing_interrupt_behaviour():
     )
     manager._cli_ref = cli
 
-    assert context.inject_message("status", role="system") is True
+    assert context.inject_message("status", "system") is True
     assert cli._interrupt_queue.get_nowait() == "[system] status"
     assert cli._pending_input.empty()
 
@@ -72,10 +72,13 @@ def test_gateway_injection_requires_explicit_permission(tmp_path, monkeypatch):
     injector = MagicMock(return_value=True)
     manager.set_gateway_message_injector(object(), injector)
 
-    assert context.inject_message(
-        "wake up",
-        session_key="agent:main:telegram:dm:42",
-    ) is False
+    assert (
+        context.inject_message(
+            "wake up",
+            session_key="agent:main:telegram:dm:42",
+        )
+        is False
+    )
     injector.assert_not_called()
 
 
@@ -89,10 +92,13 @@ def test_gateway_injection_does_not_treat_string_as_permission(tmp_path, monkeyp
     injector = MagicMock(return_value=True)
     manager.set_gateway_message_injector(object(), injector)
 
-    assert context.inject_message(
-        "wake up",
-        session_key="agent:main:telegram:dm:42",
-    ) is False
+    assert (
+        context.inject_message(
+            "wake up",
+            session_key="agent:main:telegram:dm:42",
+        )
+        is False
+    )
     injector.assert_not_called()
 
 
@@ -105,10 +111,13 @@ def test_gateway_injection_fails_closed_when_config_cannot_be_read():
         "hermes_cli.plugins.load_config_readonly",
         side_effect=OSError("config unavailable"),
     ):
-        assert context.inject_message(
-            "wake up",
-            session_key="agent:main:telegram:dm:42",
-        ) is False
+        assert (
+            context.inject_message(
+                "wake up",
+                session_key="agent:main:telegram:dm:42",
+            )
+            is False
+        )
 
     injector.assert_not_called()
 
@@ -122,10 +131,13 @@ def test_gateway_injection_requires_live_host(tmp_path, monkeypatch):
     context, manager = _context()
 
     assert manager.has_gateway_message_injector is False
-    assert context.inject_message(
-        "wake up",
-        session_key="agent:main:telegram:dm:42",
-    ) is False
+    assert (
+        context.inject_message(
+            "wake up",
+            session_key="agent:main:telegram:dm:42",
+        )
+        is False
+    )
 
 
 def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypatch):
@@ -164,7 +176,29 @@ def test_gateway_injection_returns_host_rejection(tmp_path, monkeypatch):
         MagicMock(return_value=False),
     )
 
-    assert context.inject_message(
-        "wake up",
-        session_key="agent:main:telegram:dm:42",
-    ) is False
+    assert (
+        context.inject_message(
+            "wake up",
+            session_key="agent:main:telegram:dm:42",
+        )
+        is False
+    )
+
+
+def test_gateway_injection_fails_closed_on_host_exception(tmp_path, monkeypatch):
+    _write_plugin_config(
+        tmp_path,
+        monkeypatch,
+        {"allow_gateway_injection": True},
+    )
+    context, manager = _context()
+    injector = MagicMock(side_effect=RuntimeError("gateway unavailable"))
+    manager.set_gateway_message_injector(object(), injector)
+
+    assert (
+        context.inject_message(
+            "wake up",
+            session_key="agent:main:telegram:dm:42",
+        )
+        is False
+    )

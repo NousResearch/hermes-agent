@@ -100,6 +100,47 @@ def test_run_one_job_failed_job_delivers_error(monkeypatch):
     assert mark == ("mark", "j5", False)
 
 
+def test_run_one_job_persists_exact_prerun_script_error(monkeypatch):
+    """The scheduler's last_error keeps the exact redacted pre-run failure."""
+    script_error = "Script timed out after 30s: /tmp/slow.py"
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda job, *, defer_agent_teardown=None: (False, "failure doc", "", script_error),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *args, **kwargs: None)
+    marks = []
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda jid, ok, err=None, delivery_error=None: marks.append((jid, ok, err)),
+    )
+
+    ok = s.run_one_job({"id": "script-failure", "name": "script failure"})
+
+    assert ok is True  # processed; the job outcome itself is recorded as failed
+    assert marks == [("script-failure", False, script_error)]
+
+
+def test_prerun_script_timeout_delivery_is_not_provider_timeout():
+    message = s._summarize_cron_failure_for_delivery(
+        {"id": "j", "name": "script job"},
+        "Script timed out after 30s: /tmp/slow.py",
+    )
+
+    assert "pre-run script timeout" in message
+    assert "provider timeout" not in message
+    assert "fallback" not in message.lower()
+
+    no_agent_message = s._summarize_cron_failure_for_delivery(
+        {"id": "j", "name": "script job", "no_agent": True},
+        "Script timed out after 30s: /tmp/slow.py",
+    )
+    assert "script-only job failed" in no_agent_message
+    assert "agent was not started" not in no_agent_message
+
+
 def test_run_one_job_exception_marks_failure(monkeypatch):
     """If run_job raises, the helper marks the run failed and returns False
     rather than propagating."""

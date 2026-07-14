@@ -4168,7 +4168,7 @@ class TestVisionAutoSkipsKimiCoding:
             "agent.auxiliary_client.resolve_provider_client", rpc_mock,
         )
 
-        def fake_strict(provider, model=None):
+        def fake_strict(provider, model=None, explicit_api_key=None):
             if provider == "openrouter":
                 return fake_or_client, "google/gemini-3-flash-preview"
             if provider == "nous":
@@ -4204,7 +4204,7 @@ class TestVisionAutoSkipsKimiCoding:
         )
         monkeypatch.setattr(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            lambda p, m=None: (fake_or_client, "gemini")
+            lambda p, m=None, explicit_api_key=None: (fake_or_client, "gemini")
             if p == "openrouter"
             else (None, None),
         )
@@ -5653,3 +5653,111 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+# ---------------------------------------------------------------------------
+# Strict-vision key forwarding regression
+# ---------------------------------------------------------------------------
+
+
+class TestStrictVisionKeyForwarding:
+    """Verify that a resolved vision API key is forwarded to OpenRouter
+    through _resolve_strict_vision_backend, rather than falling back to
+    the OPENROUTER_API_KEY environment variable.
+
+    Regression: _resolve_strict_vision_backend accepted explicit_api_key
+    but did not pass it to _try_openrouter, so the resolved key was silently
+    dropped and the env-var fallback was used instead.
+    """
+
+    def test_explicit_key_forwarded_to_openrouter(self, monkeypatch):
+        """A non-null explicit_api_key must reach _try_openrouter."""
+        from agent.auxiliary_client import _resolve_strict_vision_backend
+
+        captured_kwargs = {}
+
+        def fake_try_openrouter(**kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock(name="openrouter_client"), "google/gemini-2.0-flash"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._try_openrouter", fake_try_openrouter,
+        )
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        result_client, result_model = _resolve_strict_vision_backend(
+            "openrouter", model="google/gemini-2.0-flash",
+            explicit_api_key="sk-or-v1-resolved-key-abc",
+        )
+
+        assert result_client is not None
+        assert captured_kwargs.get("explicit_api_key") == "sk-or-v1-resolved-key-abc"
+
+    def test_null_key_falls_back_to_env(self, monkeypatch):
+        """When explicit_api_key is None, _try_openrouter uses env var."""
+        from agent.auxiliary_client import _resolve_strict_vision_backend
+
+        captured_kwargs = {}
+
+        def fake_try_openrouter(**kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock(name="openrouter_client"), "model"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._try_openrouter", fake_try_openrouter,
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-env-key")
+
+        result_client, _ = _resolve_strict_vision_backend(
+            "openrouter", explicit_api_key=None,
+        )
+
+        assert result_client is not None
+        assert captured_kwargs.get("explicit_api_key") is None
+
+    def test_empty_string_key_not_forwarded(self, monkeypatch):
+        """An empty-string explicit_api_key should not mask the env var."""
+        from agent.auxiliary_client import _resolve_strict_vision_backend
+
+        captured_kwargs = {}
+
+        def fake_try_openrouter(**kwargs):
+            captured_kwargs.update(kwargs)
+            return MagicMock(name="openrouter_client"), "model"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._try_openrouter", fake_try_openrouter,
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-env-key")
+
+        result_client, _ = _resolve_strict_vision_backend(
+            "openrouter", explicit_api_key="",
+        )
+
+        assert result_client is not None
+        assert captured_kwargs.get("explicit_api_key") == ""
+
+    def test_full_flow_resolve_to_openrouter_with_key(self, monkeypatch):
+        """End-to-end: resolve_vision_provider_client with api_key='auto'
+        resolves a key and forwards it through _resolve_strict_vision_backend
+        to _try_openrouter."""
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        fake_client = MagicMock(name="openrouter_client")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *a, **kw: ("openrouter", "google/gemini-2.0-flash", None, "sk-or-v1-resolved-xyz", None),
+        )
+        captured = {}
+        def fake_try_openrouter(**kwargs):
+            captured.update(kwargs)
+            return fake_client, "google/gemini-2.0-flash"
+        monkeypatch.setattr(
+            "agent.auxiliary_client._try_openrouter", fake_try_openrouter,
+        )
+
+        provider, client, model = resolve_vision_provider_client()
+        assert provider == "openrouter"
+        assert client is fake_client
+        assert captured.get("explicit_api_key") == "sk-or-v1-resolved-xyz"

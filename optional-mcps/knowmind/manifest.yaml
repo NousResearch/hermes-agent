@@ -14,9 +14,9 @@ transport:
   command: npx
   args:
     - "-y"
-    - "knowmind@0.1.11"
+    - "knowmind@0.1.26"
     - "mcp"
-  version: "0.1.11"
+  version: "0.1.26"
 
 # Credentials are tenant/user-specific. The catalog never ships Schübeler
 # Consulting credentials; each Hermes user provides their own Knowmind API URL

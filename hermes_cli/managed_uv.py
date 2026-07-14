@@ -195,6 +195,8 @@ def update_managed_uv() -> Optional[str]:
     else:
         # Non-fatal — old uv still works fine.
         logger.debug("uv self update failed (rc=%d): %s", result.returncode, result.stderr)
+        print("  ! Managed uv self-update failed (continuing with the current version).")
+        _print_installer_proxy_guidance(os.environ)
     return existing
 
 

@@ -1422,7 +1422,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes] [--proxy URL]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
@@ -1438,6 +1438,7 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 | `--no-backup` | Skip the pre-update backup for this run, even if `updates.pre_update_backup` is enabled in `config.yaml`. |
 | `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `updates.pre_update_backup: true` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
+| `--proxy URL` | HTTP(S) proxy URL to route update network calls through, including the managed uv bootstrap/self-update. Applied to this run only (exported as `HERMES_UPDATE_PROXY`/`HTTPS_PROXY`/`HTTP_PROXY` for update subprocesses). Otherwise Hermes honors an existing `HTTPS_PROXY`/`HTTP_PROXY` in your shell. |
 
 Additional behavior:
 

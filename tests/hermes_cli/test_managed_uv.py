@@ -219,7 +219,7 @@ class TestUpdateManagedUv:
             assert mock_run.call_count == 2
             assert mock_run.call_args_list[0][0][0] == [str(tmp_path / "bin" / "uv"), "self", "update"]
 
-    def test_self_update_failure_non_fatal(self, tmp_path):
+    def test_self_update_failure_non_fatal(self, tmp_path, capsys):
         _make_executable(tmp_path / "bin" / "uv")
         with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
              patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
@@ -228,6 +228,21 @@ class TestUpdateManagedUv:
             result = update_managed_uv()
             # Still returns the path — failure is non-fatal
             assert result == str(tmp_path / "bin" / "uv")
+        # Failure now surfaces actionable proxy guidance instead of staying silent.
+        out = capsys.readouterr().out
+        assert "self-update failed" in out
+        assert "hermes update --proxy" in out
+
+    def test_self_update_failure_reports_configured_proxy(self, tmp_path, capsys, monkeypatch):
+        _make_executable(tmp_path / "bin" / "uv")
+        monkeypatch.setenv("HERMES_UPDATE_PROXY", "http://corp.proxy:8080")
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.managed_uv.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="nope")
+            from hermes_cli.managed_uv import update_managed_uv
+            update_managed_uv()
+        out = capsys.readouterr().out
+        assert "A proxy is configured" in out
 
 
 # ---------------------------------------------------------------------------

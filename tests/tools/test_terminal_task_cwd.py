@@ -40,7 +40,7 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True})]
 
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
@@ -73,7 +73,7 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     )
 
     assert result["exit_code"] == 0
-    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir"}]
+    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True}]
 
 
 def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
@@ -104,7 +104,7 @@ def test_foreground_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live", "bounded_capture": True})]
 
 
 def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
@@ -261,7 +261,7 @@ def test_stale_env_cwd_from_different_session_is_ignored(monkeypatch):
     assert result["exit_code"] == 0
     # The command must run in the config cwd (hermes-agent), NOT the stale
     # env.cwd left by session A (hermes-desktop-tipc).
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/home/user/src/hermes-agent"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/home/user/src/hermes-agent", "bounded_capture": True})]
 
 
 def test_same_session_env_cwd_is_trusted_after_first_claim(monkeypatch):
@@ -303,7 +303,7 @@ def test_same_session_env_cwd_is_trusted_after_first_claim(monkeypatch):
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/deep"})]
+    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/deep", "bounded_capture": True})]
 
 
 def test_safe_getcwd_returns_real_cwd(monkeypatch):

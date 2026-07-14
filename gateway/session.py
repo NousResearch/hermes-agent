@@ -24,8 +24,21 @@ logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
-    """Return the current local time."""
-    return datetime.now()
+    """Return the current wall-clock time in the configured Hermes timezone.
+
+    Falls back to server-local time if ``hermes_time`` is unavailable or
+    misconfigured. Returns a naive datetime so it remains comparable with
+    existing stored ``updated_at`` values (also naive).
+    """
+    try:
+        from hermes_time import now as _hermes_now
+        return _hermes_now().replace(tzinfo=None)
+    except Exception:
+        return datetime.now()
+
+
+#: Public alias for use by other gateway modules.
+gateway_now = _now
 
 
 # Default auto-continue freshness window in seconds (1 hour).  A session

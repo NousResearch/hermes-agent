@@ -5791,6 +5791,14 @@ def test_expired_compression_failure_cooldown_is_ignored(db):
     assert db.get_compression_failure_cooldown("s1") is None
 
 
+def test_compression_fallback_streak_round_trips(db):
+    db.create_session("s1", "cli")
+
+    assert db.get_compression_fallback_streak("s1") == 0
+    db.set_compression_fallback_streak("s1", 2)
+    assert db.get_compression_fallback_streak("s1") == 2
+
+
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):
     db.create_session("s1", "cli")
 

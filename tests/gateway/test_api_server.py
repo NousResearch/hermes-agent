@@ -2363,6 +2363,110 @@ class TestResponsesEndpoint:
             )
             assert resp.status == 400
 
+    @pytest.mark.asyncio
+    async def test_previous_response_id_uses_rotated_session_after_compression(
+        self, adapter
+    ):
+        """Preflight compression may rotate ``agent.session_id`` mid-run.
+
+        ``_run_agent`` surfaces the effective post-rotation value via
+        ``result["session_id"]``. The non-streaming Responses path must
+        persist that value in ``_response_store`` and return it via
+        ``X-Hermes-Session-Id`` so the next chained request (via
+        ``previous_response_id``) resumes the post-compression session
+        rather than replaying the abandoned pre-compression one — which
+        would re-trigger compression on every subsequent turn.
+        """
+        prior_history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        pre_rotation_sid = "sid-before-compression"
+        post_rotation_sid = "sid-after-compression"
+
+        adapter._response_store.put(
+            "resp_prev_rot",
+            {
+                "response": {"id": "resp_prev_rot", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": pre_rotation_sid,
+            },
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # Second turn: agent runs, compression rotates session_id.
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "rotated answer",
+                        "messages": prior_history + [
+                            {"role": "user", "content": "follow up"},
+                            {"role": "assistant", "content": "rotated answer"},
+                        ],
+                        "api_calls": 1,
+                        # _run_agent surfaces the effective, possibly-rotated
+                        # session id here (see run_agent.py: it sets
+                        # result["session_id"] = agent.session_id).
+                        "session_id": post_rotation_sid,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_prev_rot",
+                    },
+                )
+
+            assert resp2.status == 200
+            # The rotated session id must surface in the response header.
+            assert resp2.headers.get("X-Hermes-Session-Id") == post_rotation_sid
+            data2 = await resp2.json()
+            second_response_id = data2["id"]
+
+            # ...and be persisted alongside the stored snapshot so
+            # previous_response_id chaining can pick it up.
+            stored = adapter._response_store.get(second_response_id)
+            assert stored["session_id"] == post_rotation_sid
+
+            # Third turn: chain from the compressed response. The runner
+            # must resume the *post-rotation* session — i.e. the session
+            # id passed to _run_agent must be post_rotation_sid, NOT
+            # pre_rotation_sid. Regression guard for teknium1's review
+            # note on PR #41700: without the rotation-aware persist,
+            # every chained turn would resurrect the pre-rotation
+            # session and re-trigger compression.
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "ok",
+                        "messages": [{"role": "assistant", "content": "ok"}],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp3 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "third",
+                        "previous_response_id": second_response_id,
+                    },
+                )
+
+            assert resp3.status == 200
+            third_call_session_id = mock_run.call_args.kwargs["session_id"]
+            assert third_call_session_id == post_rotation_sid
+            # And this third turn's stored snapshot should also inherit
+            # that post-rotation session id (no rotation happened this
+            # turn, so pre == post).
+            data3 = await resp3.json()
+            stored3 = adapter._response_store.get(data3["id"])
+            assert stored3["session_id"] == post_rotation_sid
+
 
 class TestResponsesStreaming:
     @pytest.mark.asyncio
@@ -2765,6 +2869,118 @@ class TestResponsesStreaming:
         stored = adapter._response_store.get(response_id)
         assert stored is not None, "snapshot must survive client disconnect"
         assert stored["response"]["status"] == "incomplete"
+
+    @pytest.mark.asyncio
+    async def test_streaming_previous_response_id_uses_rotated_session_after_compression(
+        self, adapter
+    ):
+        """Streaming counterpart of the non-streaming rotated-session test.
+
+        When preflight compression rotates ``agent.session_id`` mid-run,
+        the terminal SSE snapshot persisted by ``_write_sse_responses``
+        must record the rotated session id — otherwise the next chained
+        request via ``previous_response_id`` would resume the abandoned
+        pre-compression session and re-trigger compression every turn.
+
+        Note: the ``response.created`` snapshot legitimately keeps the
+        pre-run session id (the rotation has not happened yet at that
+        point).  Only the terminal ``response.completed`` snapshot is
+        updated once ``_run_agent`` returns.
+        """
+        prior_history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        pre_rotation_sid = "sid-before-compression-stream"
+        post_rotation_sid = "sid-after-compression-stream"
+
+        adapter._response_store.put(
+            "resp_prev_rot_stream",
+            {
+                "response": {"id": "resp_prev_rot_stream", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": pre_rotation_sid,
+            },
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("rotated")
+                return (
+                    {
+                        "final_response": "rotated",
+                        "messages": prior_history + [
+                            {"role": "user", "content": "follow up"},
+                            {"role": "assistant", "content": "rotated"},
+                        ],
+                        "api_calls": 1,
+                        # Simulate compression-triggered rotation surfaced
+                        # by _run_agent (run_agent.py sets
+                        # result["session_id"] = agent.session_id).
+                        "session_id": post_rotation_sid,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "follow up",
+                        "previous_response_id": "resp_prev_rot_stream",
+                        "stream": True,
+                    },
+                )
+                assert resp2.status == 200
+                body = await resp2.text()
+
+            # Parse the terminal SSE event for the response id.
+            second_response_id = None
+            for line in body.splitlines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    payload = json.loads(line[len("data: "):])
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("type") == "response.completed":
+                    second_response_id = payload["response"]["id"]
+                    break
+
+            assert second_response_id, "streaming response must terminate with response.completed"
+
+            # The terminal snapshot in the response store must record
+            # the rotated session id (overwriting the pre-run value
+            # captured by the earlier response.created snapshot).
+            stored = adapter._response_store.get(second_response_id)
+            assert stored["session_id"] == post_rotation_sid
+
+            # Chain a third turn — the runner must resume the
+            # post-rotation session, not the abandoned pre-rotation one.
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {
+                        "final_response": "ok",
+                        "messages": [{"role": "assistant", "content": "ok"}],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp3 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "third",
+                        "previous_response_id": second_response_id,
+                    },
+                )
+
+            assert resp3.status == 200
+            assert mock_run.call_args.kwargs["session_id"] == post_rotation_sid
 
 
 # ---------------------------------------------------------------------------

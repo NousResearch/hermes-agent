@@ -2866,6 +2866,13 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_error: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
+        # Effective session id — mutated after the agent task completes
+        # if preflight compression rotated ``agent.session_id`` mid-turn
+        # (see ``_run_agent`` where ``result["session_id"]`` is written).
+        # Terminal snapshots persisted below use this value so
+        # ``previous_response_id`` chains resume the post-compression
+        # session rather than the abandoned pre-compression one.
+        effective_session_id = session_id
 
         def _persist_response_snapshot(
             response_env: Dict[str, Any],
@@ -2881,7 +2888,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_env,
                 "conversation_history": conversation_history_snapshot,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
@@ -3166,6 +3173,17 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                # If preflight compression rotated the agent's session_id
+                # mid-run, ``_run_agent`` surfaces the effective value via
+                # ``result["session_id"]``.  Adopt it for the terminal
+                # snapshot so ``previous_response_id`` chains resume the
+                # post-compression session — the initial ``response.created``
+                # snapshot above intentionally kept the pre-run value
+                # because the rotation had not happened yet.
+                if isinstance(result, dict):
+                    _rotated = result.get("session_id")
+                    if isinstance(_rotated, str) and _rotated:
+                        effective_session_id = _rotated
                 # If the agent produced a final_response but no text
                 # deltas were streamed (e.g. some providers only emit
                 # the full response at the end), emit a single fallback
@@ -3590,6 +3608,21 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
 
+        # If the agent rotated its session_id during this run (e.g. because
+        # preflight compression allocated a fresh SQLite row for the
+        # post-compression transcript), _run_agent surfaces the effective
+        # session id via ``result["session_id"]``. Persist and return that
+        # value so ``previous_response_id`` chaining and the
+        # ``X-Hermes-Session-Id`` response header point at the row the
+        # next turn will actually append to — otherwise the next request
+        # would resume the pre-compression session and re-trigger
+        # compression on every turn.
+        effective_session_id = session_id
+        if isinstance(result, dict):
+            _rotated = result.get("session_id")
+            if isinstance(_rotated, str) and _rotated:
+                effective_session_id = _rotated
+
         # Build the full conversation history for storage
         # (includes tool calls from the agent run)
         full_history = self._build_response_conversation_history(
@@ -3629,14 +3662,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)

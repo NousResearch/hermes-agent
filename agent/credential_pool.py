@@ -114,6 +114,9 @@ EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
+# Exponential backoff cap for repeated exhaustion (issue #15296).
+EXHAUSTED_BACKOFF_CAP_SECONDS = 8 * 60 * 60  # 8 hours max cooldown
+
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
 # custom_providers name: 'custom:<normalized_name>'.
@@ -164,6 +167,7 @@ class PooledCredential:
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
     extra: Dict[str, Any] = None  # type: ignore[assignment]
+    consecutive_failures: int = 0  # incremented on exhaustion, reset on recovery (issue #15296)
 
     def __post_init__(self):
         if self.extra is None:
@@ -264,13 +268,23 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
-def _exhausted_ttl(error_code: Optional[int]) -> int:
-    """Return cooldown seconds based on the HTTP status that caused exhaustion."""
+def _exhausted_ttl(error_code: Optional[int], consecutive_failures: int = 0) -> int:
+    """Return cooldown seconds based on the HTTP status that caused exhaustion.
+
+    Applies exponential backoff for repeated failures: base * 2^(failures-1),
+    capped at EXHAUSTED_BACKOFF_CAP_SECONDS (8 hours).
+    Example progression for 429: 1h → 2h → 4h → 8h → 8h (issue #15296).
+    """
     if error_code == 401:
-        return EXHAUSTED_TTL_401_SECONDS
-    if error_code == 429:
-        return EXHAUSTED_TTL_429_SECONDS
-    return EXHAUSTED_TTL_DEFAULT_SECONDS
+        base = EXHAUSTED_TTL_401_SECONDS
+    elif error_code == 429:
+        base = EXHAUSTED_TTL_429_SECONDS
+    else:
+        base = EXHAUSTED_TTL_DEFAULT_SECONDS
+    if consecutive_failures > 1:
+        backoff = base * min(2 ** (consecutive_failures - 1), EXHAUSTED_BACKOFF_CAP_SECONDS // max(base, 1))
+        return min(backoff, EXHAUSTED_BACKOFF_CAP_SECONDS)
+    return base
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -358,7 +372,7 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if reset_at is not None:
         return reset_at
     if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
+        return entry.last_status_at + _exhausted_ttl(entry.last_error_code, entry.consecutive_failures)
     return None
 
 
@@ -647,6 +661,7 @@ class CredentialPool:
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
+            consecutive_failures=entry.consecutive_failures + 1,
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -1144,6 +1159,7 @@ class CredentialPool:
                             last_status=STATUS_OK,
                             last_status_at=None,
                             last_error_code=None,
+                            consecutive_failures=0,
                         )
                         self._replace_entry(synced, updated)
                         self._persist()
@@ -1183,6 +1199,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_failures=0,
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
@@ -1253,6 +1270,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_failures=0,
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
@@ -1320,6 +1338,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_failures=0,
                     )
                     self._replace_entry(synced, updated)
                     self._persist()
@@ -1383,6 +1402,7 @@ class CredentialPool:
             last_error_reason=None,
             last_error_message=None,
             last_error_reset_at=None,
+            consecutive_failures=0,
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -1523,6 +1543,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_failures=0,
                     )
                     self._replace_entry(entry, cleared)
                     entry = cleared
@@ -1693,6 +1714,7 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        consecutive_failures=0,
                     )
                 )
                 count += 1

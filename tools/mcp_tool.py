@@ -454,6 +454,37 @@ def _sanitize_error(text: str) -> str:
     return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
 
 
+def _extract_mcp_error_message(error_text: str) -> str:
+    """Extract a human-readable message from an MCP isError content block.
+
+    MCP servers sometimes return structured JSON in their error content
+    (e.g. ``{"ok":false,"error":{"code":"...","message":"..."}}``).
+    Without extraction, the raw JSON string gets double-encoded into the
+    tool response, hiding the actionable message from the model.
+    """
+    if not error_text:
+        return "MCP tool returned an error"
+    try:
+        inner = json.loads(error_text)
+    except (json.JSONDecodeError, TypeError):
+        return error_text
+    if not isinstance(inner, dict):
+        return error_text
+    # Nested {"error": {"message": "..."}}
+    nested = inner.get("error")
+    if isinstance(nested, dict):
+        msg = nested.get("message") or nested.get("msg")
+        if msg:
+            return str(msg)
+    elif isinstance(nested, str) and nested:
+        return nested
+    # Top-level {"message": "..."}
+    msg = inner.get("message")
+    if msg:
+        return str(msg)
+    return error_text
+
+
 def _exc_str(exc: BaseException) -> str:
     """Return a non-empty human-readable string for *exc*.
 
@@ -3949,10 +3980,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 for block in (result.content or []):
                     if hasattr(block, "text"):
                         error_text += block.text
+                display_error = _extract_mcp_error_message(error_text)
                 return json.dumps({
-                    "error": _sanitize_error(
-                        error_text or "MCP tool returned an error"
-                    )
+                    "error": _sanitize_error(display_error)
                 }, ensure_ascii=False)
 
             # Collect text from content blocks. MCP tool results can also

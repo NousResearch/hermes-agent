@@ -835,6 +835,36 @@ class TestTranscribeAudioDispatch:
         assert result["provider"] == "groq"
         mock_groq.assert_called_once()
 
+    def test_groq_can_fallback_to_local_when_configured(self, sample_ogg):
+        config = {"provider": "groq", "fallback_provider": "local", "local": {"model": "base"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._transcribe_groq",
+                   return_value={"success": False, "transcript": "", "error": "Connection error"}) as mock_groq, \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi", "provider": "local"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result == {"success": True, "transcript": "hi", "provider": "local", "fallback_from": "groq"}
+        mock_groq.assert_called_once()
+        mock_local.assert_called_once_with(sample_ogg, "base")
+
+    def test_groq_failure_without_fallback_still_returns_error(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "groq"}), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._transcribe_groq",
+                   return_value={"success": False, "transcript": "", "error": "Connection error"}), \
+             patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._transcribe_local") as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is False
+        assert result["error"] == "Connection error"
+        mock_local.assert_not_called()
+
     def test_dispatches_to_local(self, sample_ogg):
         with patch("tools.transcription_tools._load_stt_config", return_value={}), \
              patch("tools.transcription_tools._get_provider", return_value="local"), \

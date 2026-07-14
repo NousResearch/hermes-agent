@@ -1760,7 +1760,40 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
+        result = _transcribe_groq(file_path, model_name)
+        if result.get("success"):
+            return result
+
+        fallback_provider = stt_config.get("fallback_provider")
+        if fallback_provider == "local":
+            local_cfg = stt_config.get("local", {})
+            local_model_name = _normalize_local_model(
+                local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+            )
+            if _HAS_FASTER_WHISPER:
+                fallback_result = _transcribe_local(file_path, local_model_name)
+                if fallback_result.get("success"):
+                    fallback_result["fallback_from"] = "groq"
+                    return fallback_result
+            if _has_local_command():
+                command_model_name = _normalize_local_command_model(local_model_name)
+                fallback_result = _transcribe_local_command(file_path, command_model_name)
+                if fallback_result.get("success"):
+                    fallback_result["fallback_from"] = "groq"
+                    return fallback_result
+
+        if fallback_provider == "local_command":
+            local_cfg = stt_config.get("local", {})
+            command_model_name = _normalize_local_command_model(
+                local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+            )
+            if _has_local_command():
+                fallback_result = _transcribe_local_command(file_path, command_model_name)
+                if fallback_result.get("success"):
+                    fallback_result["fallback_from"] = "groq"
+                    return fallback_result
+
+        return result
 
     if provider == "openai":
         openai_cfg = stt_config.get("openai") or {}

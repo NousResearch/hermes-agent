@@ -820,6 +820,45 @@ export function getProfiles(): Promise<ProfilesResponse> {
   })
 }
 
+
+// ── Daily Reports / Calendar ──────────────────────────────────────
+
+export interface CalendarDay {
+  day: number
+  hasActivity: boolean
+  sessionCount: number
+  cronCount: number
+  preview: string
+}
+
+export interface CalendarMonthResponse {
+  year: number
+  month: number
+  days: CalendarDay[]
+  activityCount: number
+  sources: string[]
+}
+
+export interface DailyReportResponse {
+  date: string
+  content: string
+  filename: string
+  size: number
+}
+
+export function getCalendarMonth(year: number, month: number): Promise<CalendarMonthResponse> {
+  return window.hermesDesktop.api<CalendarMonthResponse>({
+    path: `/api/calendar/${year}/${month}`
+  })
+}
+
+export function getDailyReport(date: string): Promise<DailyReportResponse> {
+  return window.hermesDesktop.api<DailyReportResponse>({
+    path: `/api/daily-reports/${date}`
+  })
+}
+
+
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
   return window.hermesDesktop.api<{ name: string; ok: boolean; path: string }>({
     path: '/api/profiles',

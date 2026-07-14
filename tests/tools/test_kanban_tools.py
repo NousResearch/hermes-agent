@@ -311,6 +311,103 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_owning_worker_process_can_complete_its_task(worker_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        kb._set_worker_pid(conn, worker_env, os.getpid())
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_complete({"summary": "owner finished"}))
+    assert out["ok"] is True
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "args"),
+    [
+        ("_handle_complete", {"summary": "nested trial finished"}),
+        ("_handle_block", {"reason": "nested trial stopped"}),
+        ("_handle_heartbeat", {"note": "nested trial alive"}),
+    ],
+)
+def test_descendant_process_cannot_mutate_owning_workers_lifecycle(
+    monkeypatch, worker_env, handler_name, args
+):
+    """Inherited Kanban env must not grant lifecycle authority to children.
+
+    A worker may launch another Hermes process for a nested trial.  That
+    descendant inherits HERMES_KANBAN_TASK/RUN_ID/CLAIM_LOCK, but it must not
+    be able to terminate the parent worker's run.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    parent_pid = os.getpid() + 1
+    conn = kb.connect()
+    try:
+        kb._set_worker_pid(conn, worker_env, parent_pid)
+    finally:
+        conn.close()
+
+    out = getattr(kt, handler_name)(args)
+    error = json.loads(out).get("error", "")
+    assert "owning worker process" in error
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        run = kb.latest_run(conn, worker_env)
+        assert task is not None
+        assert run is not None
+        assert task.status == "running"
+        assert run.status == "running"
+        assert run.outcome is None
+    finally:
+        conn.close()
+
+
+def test_worker_pid_none_bypasses_process_guard(worker_env):
+    """Tasks with worker_pid=NULL (legacy/manual claims) must still work."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        # Ensure worker_pid is NULL
+        assert task.worker_pid is None
+    finally:
+        conn.close()
+
+    # Complete should succeed even though os.getpid() != any worker_pid
+    out = json.loads(kt._handle_complete({"summary": "manual finish"}))
+    assert out["ok"] is True
+
+
+def test_invalid_worker_pid_rejected(worker_env):
+    """Garbage worker_pid data should be rejected, not crash."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET worker_pid = 'not-a-pid' WHERE id = ?",
+            (worker_env,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = json.loads(kt._handle_complete({"summary": "should fail"}))
+    assert "error" in out
+    assert "invalid worker_pid" in out["error"]
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

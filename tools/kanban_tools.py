@@ -164,6 +164,38 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     return None
 
 
+def _enforce_worker_process_ownership(conn, tid: str) -> Optional[str]:
+    """Reject lifecycle mutations from descendants of the owning worker.
+
+    Dispatcher workers pass task/run scope through environment variables.
+    Child processes inherit those variables, so env scope alone cannot prove
+    that the caller is the worker the dispatcher spawned.  The task row's
+    ``worker_pid`` is the authoritative direct-worker identity.
+
+    Legacy/manual claims may not have a worker PID; retain their existing
+    behavior rather than making those task rows impossible to terminate.
+    """
+    row = conn.execute(
+        "SELECT worker_pid FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    owner_pid = row["worker_pid"] if row else None
+    if owner_pid is not None:
+        try:
+            owner_pid_int = int(owner_pid)
+        except (ValueError, TypeError):
+            return tool_error(
+                f"task {tid} has invalid worker_pid ({owner_pid!r}); refusing "
+                "to mutate the run lifecycle"
+            )
+        if owner_pid_int != os.getpid():
+            return tool_error(
+                f"process {os.getpid()} inherited Kanban scope for task {tid}, "
+                f"but the owning worker process is {owner_pid_int}; refusing "
+                "to mutate the run lifecycle"
+            )
+    return None
+
+
 def _connect(board: Optional[str] = None):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
@@ -592,6 +624,9 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            process_ownership_err = _enforce_worker_process_ownership(conn, tid)
+            if process_ownership_err:
+                return process_ownership_err
             # Goal-mode pre-completion judge gate (Issue #38367).
             # Prevent workers from bypassing the auxiliary judge by
             # calling kanban_complete before acceptance criteria are met.
@@ -690,6 +725,10 @@ def _handle_block(args: dict, **kw) -> str:
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
+        process_ownership_err = _enforce_worker_process_ownership(conn, tid)
+        if process_ownership_err:
+            conn.close()
+            return process_ownership_err
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
             conn.close()
             return tool_error(
@@ -773,6 +812,9 @@ def _handle_heartbeat(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            process_ownership_err = _enforce_worker_process_ownership(conn, tid)
+            if process_ownership_err:
+                return process_ownership_err
             # Extend the claim TTL first. The dispatcher pins
             # HERMES_KANBAN_CLAIM_LOCK in the worker env at spawn time
             # (see _default_spawn in kanban_db.py); falling back to the
@@ -1071,6 +1113,9 @@ def _handle_unblock(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            process_ownership_err = _enforce_worker_process_ownership(conn, str(tid))
+            if process_ownership_err:
+                return process_ownership_err
             ok = kb.unblock_task(conn, str(tid))
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")

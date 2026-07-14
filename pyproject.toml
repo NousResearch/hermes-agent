@@ -157,7 +157,7 @@ hindsight = ["hindsight-client==0.6.1"]
 # OTLP telemetry export (optional). Provides the OpenTelemetry SDK + OTLP/HTTP
 # exporter so `hermes telemetry export --otlp` can send spans to a Collector.
 # Lazy-imported by agent/telemetry/otlp_exporter.py; never a core dependency.
-otlp = ["opentelemetry-sdk==1.30.0", "opentelemetry-exporter-otlp-proto-http==1.30.0"]
+otlp = ["opentelemetry-sdk==1.39.1", "opentelemetry-exporter-otlp-proto-http==1.39.1"]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
 cron = []  # croniter is now a core dependency; this extra kept for back-compat

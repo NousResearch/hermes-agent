@@ -1950,6 +1950,26 @@ DEFAULT_CONFIG = {
         "trajectories": {
             "enabled": False,
         },
+        # Gateway Health & Diagnostics Export. Customer-owned service health and
+        # narrow gateway diagnostics only: no prompts, messages, tool args/results,
+        # product analytics, audit logs, quality reports, or trajectories.
+        "gateway_health_export": {
+            "enabled": False,
+            "metrics_enabled": True,
+            "diagnostic_events_enabled": True,
+            "warning_error_events_enabled": True,
+            "export_interval_seconds": 60,
+            "logs_export_interval_seconds": 5,
+            "resource_attributes": {
+                "service.name": "hermes-gateway",
+                "deployment.environment": "production",
+            },
+            "redaction": {
+                "enabled": True,
+                "include_stack_summary": True,
+                "include_raw_stack": False,
+            },
+        },
         # Exporters. The OTLP exporter sends to a configured Collector endpoint;
         # endpoint headers reference environment variable names rather than inline
         # secrets.

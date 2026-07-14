@@ -150,7 +150,7 @@ telemetry:
       enabled: true
       endpoint: "https://collector.your-corp.internal:4318/v1/traces"
       headers_env:                 # secrets by reference — env var NAMES, not values
-        Authorization: MY_OTLP_TOKEN_ENVVAR
+        Authorization: HERMES_OTLP_AUTH_HEADER
 ```
 
 Set the referenced environment variable, then run the export:
@@ -167,6 +167,125 @@ Each telemetry event is exported as an OTel span carrying its recorded attribute
 (provider, model, tokens, duration, etc.). The `tel_spans` timing/parent linkage is not
 yet reconstructed into connected OTel `SpanContext`s, so spans currently arrive as
 independent records rather than a connected trace tree; that projection is planned.
+
+### Gateway Health & Diagnostics Export
+
+Gateway Health & Diagnostics Export is the enterprise monitoring plane for a long-running Hermes gateway. It is separate from product usage analytics, governance/audit logs, quality reporting, trajectories, and session content.
+
+Enable it when a customer wants their Hermes gateway to report service health to their own OpenTelemetry Collector or DataDog pipeline:
+
+```yaml
+telemetry:
+  gateway_health_export:
+    enabled: true
+    metrics_enabled: true
+    diagnostic_events_enabled: true
+    warning_error_events_enabled: true
+    export_interval_seconds: 60
+    logs_export_interval_seconds: 5
+  export:
+    otlp:
+      enabled: true
+      endpoint: "http://otel-collector:4318/v1/traces"
+      headers_env: {}
+```
+
+This exports only the P0 gateway monitoring signals:
+
+- gateway lifecycle/state: `hermes.gateway.up`, `hermes.gateway.state`, restart requested
+- service/process health derived from the in-process gateway runtime status
+- platform connector health: `hermes.platform.up`, `hermes.platform.degraded`
+- active agents, busy, and drainable gauges
+- narrow redacted warning/error diagnostic events from gateway-owned loggers
+
+It does not export prompts, messages, tool arguments/results, session history, audit records, product usage analytics, quality reports, or trajectories.
+
+The exporter is in-process and fail-open. It works under systemd, launchd, s6, containers, tmux/nohup, or a simple shell process. Service-manager data is best-effort enrichment only; correctness does not depend on a sidecar, watchdog, `systemctl`, host agent, or `/proc` behavior.
+
+#### DataDog collector recipe
+
+Use an OpenTelemetry Collector close to the gateway and send from Hermes to the collector:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch: {}
+
+exporters:
+  datadog:
+    api:
+      key: ${env:DD_API_KEY}
+      site: datadoghq.com
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [datadog]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [datadog]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [datadog]
+```
+
+Then point Hermes at the collector:
+
+```bash
+hermes config set telemetry.export.otlp.enabled true
+hermes config set telemetry.export.otlp.endpoint http://otel-collector:4318/v1/traces
+hermes config set telemetry.gateway_health_export.enabled true
+hermes gateway restart
+```
+
+For direct hosted collectors that require auth, keep the secret in the environment and reference only the variable name in config:
+
+```yaml
+telemetry:
+  export:
+    otlp:
+      headers_env:
+        Authorization: HERMES_OTLP_AUTHORIZATION
+```
+
+#### Local no-Docker smoke test
+
+For development environments without Docker, use the checked-in OTLP capture receiver. It accepts OTLP/HTTP protobuf on `/v1/traces`, `/v1/metrics`, and `/v1/logs` and records request metadata as JSONL.
+
+```bash
+# Terminal/tmux pane 1
+python scripts/observability/otel_capture_collector.py \
+  --host 127.0.0.1 \
+  --port 4318 \
+  --log /tmp/hermes_otel_capture.jsonl
+
+# Terminal/tmux pane 2
+python scripts/observability/gateway_health_export_probe.py \
+  --endpoint http://127.0.0.1:4318/v1/traces \
+  --log /tmp/hermes_otel_capture.jsonl \
+  --wait 7
+```
+
+A passing run reports all three OTLP paths:
+
+```json
+{
+  "paths": ["/v1/logs", "/v1/metrics", "/v1/traces"]
+}
+```
+
+Gateway health/lifecycle events are projected to OTLP traces, gateway metrics go to OTLP metrics, and redacted gateway diagnostics go to OTLP logs. The collector is a local test receiver only; production deployments should use the customer's OpenTelemetry Collector or equivalent managed receiver.
 
 ## Redaction
 
@@ -194,6 +313,20 @@ telemetry:
   content_redaction: none     # none | pii
   trajectories:
     enabled: false            # unlocks full-content export to your destination
+  gateway_health_export:
+    enabled: false            # customer-owned gateway health metrics and diagnostics
+    metrics_enabled: true
+    diagnostic_events_enabled: true
+    warning_error_events_enabled: true
+    export_interval_seconds: 60
+    logs_export_interval_seconds: 5
+    resource_attributes:
+      service.name: hermes-gateway
+      deployment.environment: production
+    redaction:
+      enabled: true
+      include_stack_summary: true
+      include_raw_stack: false
   export:
     otlp:
       enabled: false

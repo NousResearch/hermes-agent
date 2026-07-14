@@ -5953,6 +5953,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             write_runtime_status(gateway_state="starting", exit_reason=None)
         except Exception:
             pass
+        try:
+            from hermes_cli.config import load_config
+            from agent.telemetry.gateway_health_export import start_gateway_health_export
+            self._gateway_health_export_runtime = start_gateway_health_export(load_config())
+            if getattr(self._gateway_health_export_runtime, "enabled", False):
+                logger.info("Gateway health OTLP export: enabled")
+        except Exception:
+            logger.debug("gateway health OTLP export startup failed", exc_info=True)
 
         # Log any active supply-chain security advisories. Operators see this
         # in gateway.log and `hermes status` surfaces it; we do NOT block
@@ -7523,6 +7531,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("running", self._exit_reason)
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
+            try:
+                _gh_runtime = getattr(self, "_gateway_health_export_runtime", None)
+                if _gh_runtime is not None:
+                    _gh_runtime.shutdown()
+            except Exception:
+                logger.debug("gateway health OTLP export shutdown failed", exc_info=True)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())

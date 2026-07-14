@@ -12418,6 +12418,12 @@ def cmd_telemetry(args):
                       "telemetry only")
             print("    Secret redaction: on (always)")
             print(f"    PII redaction:    {redaction.content_mode_for(config)}")
+            tel_cfg = tel if isinstance(tel, dict) else {}
+            gh = tel_cfg.get("gateway_health_export") if isinstance(tel_cfg.get("gateway_health_export"), dict) else {}
+            if gh.get("enabled"):
+                print("    Gateway health: enabled (metrics + redacted diagnostics to customer OTLP)")
+            else:
+                print("    Gateway health: disabled (telemetry.gateway_health_export.enabled)")
             print("    Bulk export:    hermes telemetry export --out FILE [--otlp]")
         except Exception:
             pass

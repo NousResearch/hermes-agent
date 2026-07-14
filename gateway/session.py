@@ -2401,6 +2401,42 @@ class SessionStore:
 
         return new_entry
 
+    def advance_compression_session(
+        self,
+        session_key: str,
+        expected_session_id: str,
+        target_session_id: str,
+    ) -> Optional[SessionEntry]:
+        """CAS-advance one route along an already-verified compression lineage.
+
+        Unlike ``switch_session``, this does not end or reopen SQLite rows. The
+        compression transaction already owns that lifecycle; this method only
+        repairs the persisted gateway key→session mapping. Returning ``None``
+        means the route moved after the caller's snapshot (for example /new),
+        so the caller must fail closed instead of overwriting the newer route.
+        """
+        if not session_key or not expected_session_id or not target_session_id:
+            return None
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return None
+            if entry.session_id == target_session_id:
+                return entry
+            if entry.session_id != expected_session_id:
+                return None
+            if not self._heal_compression_tip_locked(
+                entry,
+                expected_session_id,
+                target_session_id,
+            ):
+                return None
+            entry.updated_at = _now()
+            self._save()
+            return entry
+
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 

@@ -70,6 +70,47 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_SIDEQUEST_COMPACT_SLASH_RE = re.compile(r"^/(sq|sidequest)(\d+)(?:@[^\s]+)?(?:\s+(.*))?$", re.IGNORECASE)
+_SIDEQUEST_HASHTAG_RE = re.compile(r"^#sq(\d+)\b(?:\s+(.*))?$", re.IGNORECASE)
+_SIDEQUEST_BARE_RE = re.compile(r"^sq(\d+)\b(?:\s+(.*))?$", re.IGNORECASE)
+
+
+def _normalize_sidequest_shortcut_text(text: str) -> str:
+    """Expand compact sidequest shorthands to the canonical /sq form.
+
+    Keep the rewrite intentionally narrow: only a message-leading `sq<digits>`,
+    `/sq<digits>`, `/sidequest<digits>`, or `#sq<digits>` with a word boundary
+    is rewritten, so paths, hashtags like `#sqlite`, and commands like `/sqldb`
+    keep their normal meaning. Bare `sq<digits>` opens the sidequest handle; it
+    must not enqueue a synthetic follow-up/background resume on its own.
+    """
+    raw = text or ""
+    stripped = raw.strip()
+    if not stripped:
+        return raw
+    match = _SIDEQUEST_COMPACT_SLASH_RE.match(stripped)
+    if not match:
+        match = _SIDEQUEST_HASHTAG_RE.match(stripped)
+    if not match:
+        match = _SIDEQUEST_BARE_RE.match(stripped)
+    if not match:
+        return raw
+    if stripped.startswith("/"):
+        alias = match.group(2)
+        rest = match.group(3)
+    else:
+        alias = match.group(1)
+        rest = match.group(2)
+    return f"/sq {alias}" + (f" {rest.strip()}" if rest and rest.strip() else "")
+
+
+def _normalize_sidequest_shortcut_event(event: "MessageEvent") -> "MessageEvent":
+    if event.message_type != MessageType.TEXT:
+        return event
+    normalized = _normalize_sidequest_shortcut_text(event.text)
+    if normalized == event.text:
+        return event
+    return dataclasses.replace(event, text=normalized)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -8372,6 +8413,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _phase_elapsed(),
             )
 
+            _cancelled_background_tasks = []
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:
                     continue
@@ -8382,6 +8424,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _exit_code = 75 (#12875).  It self-terminates anyway.
                     continue
                 _task.cancel()
+                _cancelled_background_tasks.append(_task)
+            if _cancelled_background_tasks:
+                # Let durable runs record their terminal cancellation state.
+                # Bound the drain so a cancellation-resistant task cannot
+                # wedge gateway shutdown.
+                _done, _pending = await asyncio.wait(
+                    _cancelled_background_tasks,
+                    timeout=2.0,
+                )
+                if _pending:
+                    logger.warning(
+                        "Shutdown left %d cancelled background task(s) pending",
+                        len(_pending),
+                    )
             self._background_tasks.clear()
 
             self.adapters.clear()
@@ -9025,6 +9081,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _action == "allow":
                     break
 
+        event = _normalize_sidequest_shortcut_event(event)
+        source = event.source
+
         if is_internal:
             pass
         elif source.user_id is None:
@@ -9479,6 +9538,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # name, so this branch handles both commands.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
+
+            if _cmd_def_inner and _cmd_def_inner.name == "sidequest":
+                return await self._handle_sidequest_command(event)
 
             # /kanban must bypass the guard. It writes to a profile-agnostic
             # DB (kanban.db), not to the running agent's state. In fact
@@ -10011,6 +10073,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "background":
             return await self._handle_background_command(event)
+
+        if canonical == "sidequest":
+            return await self._handle_sidequest_command(event)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
@@ -13433,9 +13498,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         media_urls = media_urls or []
         media_types = media_types or []
+        store = self._sidequest_store()
+        store.mark_running(task_id)
 
         adapter = self._adapter_for_source(source)
         if not adapter:
+            store.mark_failed(task_id, f"no adapter for platform {source.platform}")
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
@@ -13448,6 +13516,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_config=user_config,
             )
             if not runtime_kwargs.get("api_key"):
+                store.mark_failed(task_id, "no provider credentials configured")
                 await adapter.send(
                     source.chat_id,
                     f"❌ Background task {task_id} failed: no provider credentials configured.",
@@ -13537,6 +13606,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.platforms.base import BasePlatformAdapter
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
+                artifact_paths = [str(path) for path, _is_voice in (media_files or [])]
+                store.mark_completed(
+                    task_id,
+                    summary=self._clip_background_summary(
+                        text_content or response or "(No response generated)"
+                    ),
+                    artifact_paths=artifact_paths,
+                )
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
@@ -13604,6 +13681,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         pass
             else:
+                store.mark_completed(task_id, summary="(No response generated)")
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
@@ -13611,8 +13689,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=_thread_metadata,
                 )
 
+        except asyncio.CancelledError:
+            try:
+                store.mark_failed(task_id, "gateway shutdown cancelled task")
+            except Exception:
+                pass
+            raise
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
+            try:
+                store.mark_failed(task_id, str(e))
+            except Exception:
+                pass
             try:
                 await adapter.send(
                     chat_id=source.chat_id,

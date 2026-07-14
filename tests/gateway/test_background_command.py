@@ -38,6 +38,7 @@ def _make_runner():
     runner._fallback_model = None
     runner._running_agents = {}
     runner._background_tasks = set()
+    runner._sidequest_store = MagicMock(return_value=MagicMock())
 
     mock_store = MagicMock()
     runner.session_store = mock_store
@@ -205,6 +206,46 @@ class TestRunBackgroundTask:
         )
         # No adapters set — should not raise
         await runner._run_background_task("test prompt", source, "bg_test")
+
+    @pytest.mark.asyncio
+    async def test_cancellation_marks_durable_run_failed(self, monkeypatch):
+        """Shutdown cancellation must not leave a durable run stuck as running."""
+        from gateway import run as gateway_run
+
+        runner = _make_runner()
+        durable_store = MagicMock()
+        runner._sidequest_store = MagicMock(return_value=durable_store)
+        runner._resolve_session_agent_runtime = MagicMock(
+            return_value=("test-model", {"api_key": "test-key"})
+        )
+        runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+        runner._load_service_tier = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={
+                "model": "test-model",
+                "runtime": {"api_key": "test-key"},
+                "request_overrides": None,
+            }
+        )
+        runner._run_in_executor_with_context = AsyncMock(
+            side_effect=asyncio.CancelledError
+        )
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        runner.adapters[Platform.TELEGRAM] = AsyncMock()
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await runner._run_background_task("test prompt", source, "bg_cancelled")
+
+        durable_store.mark_failed.assert_called_once_with(
+            "bg_cancelled",
+            "gateway shutdown cancelled task",
+        )
 
     @pytest.mark.asyncio
     async def test_no_credentials_sends_error(self):
@@ -480,6 +521,12 @@ class TestBackgroundInHelp:
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
         assert "bg" in GATEWAY_KNOWN_COMMANDS
 
+    def test_sidequest_is_known_command(self):
+        """The /sidequest command and /sq alias are gateway-known."""
+        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        assert "sidequest" in GATEWAY_KNOWN_COMMANDS
+        assert "sq" in GATEWAY_KNOWN_COMMANDS
+
 
 # ---------------------------------------------------------------------------
 # CLI /background command definition
@@ -498,6 +545,12 @@ class TestBackgroundInCLICommands:
         """The /bg alias is in the COMMANDS dict."""
         from hermes_cli.commands import COMMANDS
         assert "/bg" in COMMANDS
+
+    def test_sidequest_commands_dict(self):
+        """The /sidequest command and /sq alias are in the COMMANDS dict."""
+        from hermes_cli.commands import COMMANDS
+        assert "/sidequest" in COMMANDS
+        assert "/sq" in COMMANDS
 
     def test_background_in_session_category(self):
         """The /background command is in the Session category."""

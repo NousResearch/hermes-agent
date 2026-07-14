@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import re
 from typing import Any, Dict, List, Optional
 
 from hermes_state import SessionDB
@@ -145,6 +146,31 @@ def _content_to_text(content: Any) -> str:
     return ""
 
 
+# Gateway-injected context that prefixes the stored user row but that the user
+# never typed (see gateway/run.py): the Discord "Triggering message id" marker
+# and the "Replying to" pointers. They are pure plumbing, yet at 100+ chars they
+# consumed the ENTIRE /undo·/redo "↦ Now at" preview window — so every landing
+# looked identical and told the user nothing about WHERE they landed. Strip any
+# run of these leading bracket blocks before building a preview.
+_INJECTED_PREFIX_RE = re.compile(
+    r"^\s*\[(?:Triggering message id:|Replying to)[^\]]*\]\s*"
+)
+
+
+def _strip_injected_markers(text: str) -> str:
+    """Remove leading gateway-injected marker blocks from a preview string.
+
+    Best-effort and preview-only: iterates so a message carrying BOTH a
+    Triggering marker and a Replying pointer is fully cleaned, and leaves the
+    text untouched once no known marker leads it.
+    """
+    prev = None
+    while text != prev:
+        prev = text
+        text = _INJECTED_PREFIX_RE.sub("", text, count=1)
+    return text
+
+
 def _preview_text(text: str, max_len: int) -> str:
     """Collapse whitespace and trim to a short, sentence-aware preview."""
     collapsed = " ".join(text.split())
@@ -164,7 +190,7 @@ def _preview_text(text: str, max_len: int) -> str:
     return window.rstrip() + "…"
 
 
-def tail_preview(session_id: str, max_len: int = 140) -> Dict[str, Any]:
+def tail_preview(session_id: str, max_len: int = 240) -> Dict[str, Any]:
     """Describe the CURRENT active tail of a session for at-a-glance confirmation.
 
     Returns ``{"role": <role|None>, "preview": <str|None>, "empty": <bool>,
@@ -189,7 +215,7 @@ def tail_preview(session_id: str, max_len: int = 140) -> Dict[str, Any]:
     tail = _new_tail(msgs)
     if tail is None:
         return {"role": None, "preview": None, "empty": True, "error": False}
-    text = _content_to_text(tail.get("content"))
+    text = _strip_injected_markers(_content_to_text(tail.get("content")))
     preview = _preview_text(text, max_len) if text else None
     return {
         "role": tail.get("role") or "message",

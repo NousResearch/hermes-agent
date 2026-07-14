@@ -289,3 +289,56 @@ def test_tail_preview_unexpected_role_bounds_to_message(store):
     # Must render a readable label, never the raw key path.
     assert "gateway.undo.party" not in suffix
     assert "the last message" in suffix
+
+
+def test_tail_preview_strips_injected_gateway_markers(store):
+    """The 'Now at' preview must show the user's ACTUAL text, not the gateway's
+    injected [Triggering message id: …]/[Replying to: …] plumbing prefix.
+
+    Regression for the real 2026-07-14 report: the ~113-char Discord Triggering
+    marker consumed the entire preview window, so every /undo landing looked
+    identical and told the user nothing about where they landed.
+    """
+    src = _source("tail-marker")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    marker = (
+        "[Triggering message id: `1526623289844170812` — use as `message_id` "
+        "for reply/react/pin via the discord tools.]\n\n"
+    )
+    body = '>Say "hey clanker, buy paper towels" at the theater right now.'
+    db.append_message(entry.session_id, "assistant", "prior reply")
+    db.append_message(entry.session_id, "user", marker + body)
+    db.append_message(entry.session_id, "assistant", "a" * 400)
+    runner = _runner(store)
+
+    msg = asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+
+    assert "Now at" in msg
+    # The real body shows...
+    assert "buy paper towels" in msg
+    # ...and the injected marker does NOT lead the preview.
+    assert "Triggering message id" not in msg
+    assert "reply/react/pin" not in msg
+
+
+def test_tail_preview_strips_both_marker_and_reply_pointer(store):
+    """A message carrying BOTH a Triggering marker and a Replying-to pointer is
+    fully cleaned so the preview begins at the user's own words."""
+    src = _source("tail-marker2")
+    entry = store.get_or_create_session(src)
+    db = store._db
+    prefix = (
+        "[Triggering message id: `123` — use as `message_id` for reply/react/pin "
+        'via the discord tools.]\n\n[Replying to: "some earlier quoted thing"]\n\n'
+    )
+    db.append_message(entry.session_id, "assistant", "prior reply")
+    db.append_message(entry.session_id, "user", prefix + "actual question here")
+    db.append_message(entry.session_id, "assistant", "b" * 400)
+    runner = _runner(store)
+
+    msg = asyncio.run(runner._handle_undo_command(_event("/undo", src)))
+
+    assert "actual question here" in msg
+    assert "Triggering message id" not in msg
+    assert "Replying to" not in msg

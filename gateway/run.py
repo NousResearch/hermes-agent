@@ -10012,6 +10012,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "queue":
+            # No active agent — there is no in-flight turn to queue behind,
+            # and the FIFO drain only runs at the tail of a completed agent
+            # run (see _dequeue_pending_event in _process_message_background).
+            # Enqueuing here would strand the message — nothing would ever
+            # consume it. So strip the prefix and run the payload now as a
+            # normal user turn (mirrors the idle /steer branch below).
+            queue_payload = event.get_command_args().strip()
+            if not queue_payload:
+                return "Usage: /queue <prompt>  (no agent is running; sending as a normal message)"
+            try:
+                event.text = queue_payload
+            except Exception:
+                pass
+            # Do NOT return — fall through to _handle_message_with_agent
+            # at the end of this function so the rewritten text is sent
+            # to the agent as a regular user turn.
+
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
             # Strip the prefix so downstream treats it as a normal user

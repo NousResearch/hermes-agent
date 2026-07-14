@@ -74,6 +74,17 @@ await page.goto(BASE, { waitUntil: "networkidle" });
 // Make the run idempotent: reset local state to defaults and let sync push
 // the reset to the server (previous runs' data would otherwise be adopted).
 await page.evaluate(() => import("/js/store.js").then(({ store }) => store.reset()));
+await page.evaluate(async () => {
+  // clear server-side rules from previous runs
+  const { rules } = await (await fetch("/api/automations")).json();
+  for (const rule of rules) {
+    await fetch("/api/automations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "delete", id: rule.id }),
+    });
+  }
+});
 await page.waitForTimeout(1600); // debounced sync push of the reset
 await page.reload({ waitUntil: "networkidle" });
 
@@ -186,6 +197,58 @@ check("briefing produced with FOCUS section", true);
 check("briefing recognizes the agent-created task", await page.evaluate(() =>
   [...document.querySelectorAll(".agent-msg")].some((el) => el.textContent.includes("e2e agent made this"))));
 await shot(page, "05-agent");
+
+// ---- automations via the agent ------------------------------------------------
+await page.locator(".agent-input").fill("alert me if BTC moves 0.5%");
+await page.locator(".agent-form .btn-primary").click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".agent-chip")].some((el) => el.textContent.includes("armed")),
+  null, { timeout: 10000 });
+check("agent creates an automation", true);
+
+await page.locator(".agent-input").fill("list automations");
+await page.locator(".agent-form .btn-primary").click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".agent-tool-block, .agent-chip")].some((el) => el.textContent.includes("BTC ±0.5%")),
+  null, { timeout: 10000 });
+check("agent lists automations", true);
+
+// force an evaluation tick: the sample BTC 24h move (±2.41%) crosses 0.5%
+const ticked = await page.evaluate(async () => {
+  const res = await fetch("/api/automations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "tick" }),
+  });
+  return (await res.json()).fired;
+});
+check("automation fires on tick", ticked >= 1);
+// nudge the poller (it also runs every 30s and on tab-focus)
+await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+await page.waitForSelector(".toast", { timeout: 10000 });
+check("notification surfaces as toast",
+  (await page.locator(".toast").first().innerText()).includes("BTC"));
+
+// memory: remember + recall
+await page.locator(".agent-input").fill("remember: my e2e marker is zx91");
+await page.locator(".agent-form .btn-primary").click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".agent-chip")].some((el) => el.textContent.includes("memory")),
+  null, { timeout: 10000 });
+await page.locator(".agent-input").fill("what do you remember?");
+await page.locator(".agent-form .btn-primary").click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".agent-msg")].some((el) => el.textContent.includes("zx91")),
+  null, { timeout: 10000 });
+check("agent memory persists and recalls", true);
+
+// research tool: weather via agent
+await page.locator(".agent-input").fill("what's the weather?");
+await page.locator(".agent-form .btn-primary").click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".agent-msg")].some((el) => /humidity \d+%/.test(el.textContent)),
+  null, { timeout: 10000 });
+check("agent answers weather from live data", true);
 
 // ---- summarize buttons -------------------------------------------------------
 check("widget summarize buttons present", (await page.locator(".widget-controls .sum-btn").count()) >= 6);

@@ -1013,8 +1013,25 @@ a { color: inherit; }
   color: var(--status-serious);
   border-color: color-mix(in srgb, var(--status-serious) 40%, transparent);
 }
-.agent-quick { display: flex; gap: 14px; margin: 8px 2px 6px; }
+.agent-quick { display: flex; gap: 12px; margin: 8px 2px 6px; flex-wrap: wrap; }
 .agent-quick .link-btn:last-child { margin-left: auto; color: var(--muted); }
+.agent-tool-block {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-left: 2px solid var(--delta-up);
+  border-radius: 3px;
+  padding: 8px 10px;
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+  width: 100%;
+}
 .agent-form { display: flex; gap: 8px; }
 .agent-busy .agent-input { opacity: 0.6; }
 .agent-busy::after {

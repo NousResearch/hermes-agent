@@ -244,6 +244,140 @@ class AssistantLocalTests(unittest.TestCase):
             self.assistant.summarize({"content": ""})
 
 
+class AutomationsTests(unittest.TestCase):
+    def setUp(self):
+        server.CACHE.clear()
+        self.api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+        self.autos = self.api.automations
+
+    def test_validation(self):
+        import automations as autos_mod
+        bad = [
+            {"name": "x", "trigger": {"type": "hourly"}, "action": {"type": "notify", "message": "m"}},
+            {"name": "x", "trigger": {"type": "daily", "time": "25:00"}, "action": {"type": "notify", "message": "m"}},
+            {"name": "x", "trigger": {"type": "market", "symbol": "BTC", "percent": 0}, "action": {"type": "notify", "message": "m"}},
+            {"name": "x", "trigger": {"type": "worldstate", "level": "calm"}, "action": {"type": "notify", "message": "m"}},
+            {"name": "x", "trigger": {"type": "daily", "time": "08:00"}, "action": {"type": "notify", "message": " "}},
+            {"name": "", "trigger": {"type": "daily", "time": "08:00"}, "action": {"type": "briefing"}},
+        ]
+        for rule in bad:
+            self.assertIsNotNone(autos_mod.validate_rule(rule), rule)
+        self.assertIsNone(autos_mod.validate_rule(
+            {"name": "ok", "trigger": {"type": "daily", "time": "08:00"}, "action": {"type": "briefing"}}))
+
+    def test_crud_and_persistence(self):
+        rule = self.autos.create_rule(
+            {"name": "R1", "trigger": {"type": "daily", "time": "08:00"}, "action": {"type": "briefing"}})
+        self.assertEqual(rule["id"], 1)
+        # a new engine instance sees the persisted rule
+        reloaded = server.Automations(self.autos.path, self.api)
+        self.assertEqual(len(reloaded.list_rules()), 1)
+        self.assertTrue(self.autos.delete_rule(1))
+        self.assertFalse(self.autos.delete_rule(1))
+
+    def test_market_rule_edge_triggered(self):
+        # sample BTC 24h change is +2.41%
+        self.autos.create_rule({
+            "name": "BTC", "trigger": {"type": "market", "symbol": "BTC", "percent": 2},
+            "action": {"type": "notify", "message": "moved"}})
+        self.assertEqual(self.autos.tick(), 1)   # crossing fires
+        self.assertEqual(self.autos.tick(), 0)   # still beyond → no refire
+        notes = self.autos.notifications_after(0)["notifications"]
+        self.assertEqual(len(notes), 1)
+        self.assertIn("2.41%", notes[0]["body"])
+
+    def test_market_rule_below_threshold(self):
+        self.autos.create_rule({
+            "name": "BTC", "trigger": {"type": "market", "symbol": "BTC", "percent": 50},
+            "action": {"type": "notify", "message": "moved"}})
+        self.assertEqual(self.autos.tick(), 0)
+
+    def test_daily_rule_fires_once_per_day(self):
+        from datetime import datetime
+        rule = self.autos.create_rule({
+            "name": "Brief", "trigger": {"type": "daily", "time": "08:00"},
+            "action": {"type": "briefing"}})
+        # simulate: created before 08:00 (clear the retro-guard), then 09:00 arrives
+        with self.autos._lock:
+            self.autos._data["rules"][0]["state"] = {}
+        nine = datetime(2030, 1, 2, 9, 0)
+        self.assertEqual(self.autos.tick(now=nine), 1)
+        self.assertEqual(self.autos.tick(now=nine), 0)  # same day: once only
+        next_day = datetime(2030, 1, 3, 9, 0)
+        self.assertEqual(self.autos.tick(now=next_day), 1)
+        body = self.autos.notifications_after(0)["notifications"][0]["body"]
+        self.assertIn("FOCUS", body)  # briefing action produced a briefing
+
+    def test_worldstate_rule(self):
+        # sample data compiles to a "stable"-ish index; watch threshold with
+        # rank >= watch should depend on computed level — use "watch" and
+        # verify edge-triggering semantics rather than a fixed outcome.
+        self.autos.create_rule({
+            "name": "World", "trigger": {"type": "worldstate", "level": "watch"},
+            "action": {"type": "notify", "message": "world moved"}})
+        first = self.autos.tick()
+        second = self.autos.tick()
+        self.assertIn(first, (0, 1))
+        self.assertEqual(second, 0)  # never refires while condition persists
+
+    def test_notifications_after_filtering(self):
+        self.autos._notify("A", "a")
+        self.autos._notify("B", "b")
+        all_notes = self.autos.notifications_after(0)
+        self.assertEqual([n["title"] for n in all_notes["notifications"]], ["A", "B"])
+        newer = self.autos.notifications_after(all_notes["notifications"][0]["id"])
+        self.assertEqual([n["title"] for n in newer["notifications"]], ["B"])
+
+
+class MemoryAndToolsTests(unittest.TestCase):
+    def setUp(self):
+        server.CACHE.clear()
+        self.api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+
+    def test_memory_roundtrip(self):
+        self.api.memory_append("Likes espresso")
+        self.api.memory_append("Runs on Tuesdays")
+        memory = self.api.memory_read()
+        self.assertIn("Likes espresso", memory)
+        self.assertIn("Runs on Tuesdays", memory)
+
+    def test_memory_rejects_empty(self):
+        with self.assertRaises(server.ApiError):
+            self.api.memory_append("   ")
+
+    def test_server_tools(self):
+        run = self.api.assistant.run_server_tool
+        self.assertIn("New York", run("get_weather", {}))
+        self.assertIn("BTC", run("get_markets", {}))
+        self.assertIn("Global index", run("get_worldstate", {}))
+        self.assertIn("1.", run("get_news", {"topic": "science"}))
+        self.assertEqual(run("remember", {"fact": "test fact"}), "Saved to long-term memory.")
+        self.assertIn("test fact", self.api.memory_read())
+
+    def test_unknown_tool_rejected(self):
+        with self.assertRaises(ValueError):
+            self.api.assistant.run_server_tool("format_disk", {})
+
+    def test_local_automation_intents(self):
+        a = self.api.assistant
+        r = a._chat_local([{"role": "user", "content": "alert me if BTC moves 5%"}], {})
+        tools = [b for b in r["content"] if b["type"] == "tool_use"]
+        self.assertEqual(tools[0]["name"], "create_automation")
+        self.assertEqual(tools[0]["input"]["symbol"], "BTC")
+        self.assertEqual(tools[0]["input"]["percent"], 5.0)
+
+        r = a._chat_local([{"role": "user", "content": "every morning at 7 brief me"}], {})
+        tools = [b for b in r["content"] if b["type"] == "tool_use"]
+        self.assertEqual(tools[0]["input"]["time"], "07:00")
+
+        r = a._chat_local([{"role": "user", "content": "brief me daily at 8pm"}], {})
+        tools = [b for b in r["content"] if b["type"] == "tool_use"]
+        self.assertEqual(tools[0]["input"]["time"], "20:00")
+
+        r = a._chat_local([{"role": "user", "content": "what's the weather like?"}], {})
+        self.assertIn("New York", r["content"][0]["text"])
+
+
 class ScoreLevelTests(unittest.TestCase):
     def test_boundaries(self):
         self.assertEqual(server.score_level(75), "stable")

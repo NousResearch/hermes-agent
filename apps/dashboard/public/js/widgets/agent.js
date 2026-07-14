@@ -5,9 +5,10 @@
 // blocks and are executed HERE, against the browser's own data, then results
 // are fed back until the turn ends. Nothing personal is stored server-side.
 
-import { h, clear } from "../utils.js";
+import { h, clear, toast } from "../utils.js";
 import { executeAction, buildContext } from "../actions.js";
 import { api } from "../api.js";
+import { enableSystemAlerts } from "../notifications.js";
 
 const MAX_LOOPS = 6;
 const MAX_HISTORY = 60;
@@ -77,9 +78,14 @@ export default {
         }
         if (entry.actions?.length) {
           bubble.append(h("div.agent-actions", {},
-            entry.actions.map((a) =>
-              h("span.agent-chip", { class: a.ok ? "agent-chip" : "agent-chip agent-chip-err" },
-                `${a.ok ? "✓" : "✗"} ${a.result}`)),
+            entry.actions.map((a) => {
+              const long = a.result.length > 140 || a.result.includes("\n");
+              if (long && a.ok) {
+                return h("pre.agent-tool-block", {}, a.result);
+              }
+              return h("span.agent-chip", { class: a.ok ? "agent-chip" : "agent-chip agent-chip-err" },
+                `${a.ok ? "✓" : "✗"} ${a.result}`);
+            }),
           ));
         }
         log.append(bubble);
@@ -113,7 +119,7 @@ export default {
           for (const block of res.content) {
             if (block.type === "text" && block.text.trim()) texts.push(block.text.trim());
             if (block.type === "tool_use") {
-              const outcome = executeAction(block.name, block.input);
+              const outcome = await executeAction(block.name, block.input);
               actions.push(outcome);
               toolResults.push({
                 type: "tool_result",
@@ -164,6 +170,23 @@ export default {
         type: "button",
         onclick: () => !busy && runTurn("What should I focus on right now?"),
       }, "▸ Focus check"),
+      h("button.link-btn", {
+        type: "button",
+        title: "Show standing automations",
+        onclick: () => !busy && runTurn("list automations"),
+      }, "▸ Automations"),
+      h("button.link-btn", {
+        type: "button",
+        title: "Allow system notifications for automation alerts",
+        onclick: async () => {
+          const result = await enableSystemAlerts();
+          toast(result === "granted"
+            ? "System alerts enabled"
+            : result === "unsupported"
+              ? "This browser doesn't support notifications"
+              : "Notifications not allowed");
+        },
+      }, "🔔 Alerts"),
       h("button.link-btn", {
         type: "button",
         onclick: () => {

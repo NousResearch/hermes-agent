@@ -62,6 +62,10 @@ export const api = {
   statePut: (state, baseRev) => postJSON("/api/state", { state, baseRev }),
   assistantStatus: () => getJSON("/api/assistant/status"),
   chat: (messages, context) => postJSON("/api/assistant/chat", { messages, context }),
+  runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
+  automations: () => getJSON("/api/automations"),
+  automationsOp: (body) => postJSON("/api/automations", body),
+  notifications: (after) => getJSON("/api/notifications", { after }),
   summarize: (kind, title, content) => postJSON("/api/assistant/summarize", { kind, title, content }),
   briefing: (context) => postJSON("/api/assistant/briefing", { context }),
 };

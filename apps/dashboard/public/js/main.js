@@ -3,6 +3,7 @@ import { store } from "./store.js";
 import { api } from "./api.js";
 import { showLockScreen } from "./auth.js";
 import { initSync } from "./sync.js";
+import { initNotifications } from "./notifications.js";
 
 import { openViewer } from "./viewer.js";
 import { summarizeButton } from "./summarize.js";
@@ -513,3 +514,4 @@ if ("serviceWorker" in navigator) {
 bindShortcuts();
 boot();
 initSync(boot);
+initNotifications();

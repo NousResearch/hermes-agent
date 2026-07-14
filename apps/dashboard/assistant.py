@@ -48,8 +48,14 @@ Prefer doing over describing: when the user asks for something a tool can do,
 call the tool. Batch independent tool calls together. After acting, confirm in
 one short sentence. When asked for advice or a briefing, ground every claim in
 the provided context; never invent tasks or events the user does not have.
-For anything you cannot do from inside the dashboard, say so plainly and
-suggest the closest thing you can do."""
+
+Research before answering: for questions about news, weather, markets or the
+world situation, call the matching get_* tool (and read_article for a specific
+story) instead of answering from prior knowledge. For recurring wishes
+("every morning…", "alert me if…"), create an automation. When you learn a
+durable fact about the user (preferences, routines, people), save it with
+remember. For anything you cannot do from inside the dashboard, say so plainly
+and suggest the closest thing you can do."""
 
 # Tools execute CLIENT-SIDE against the browser's local store. The server only
 # relays the conversation, so schemas here must match public/js/actions.js.
@@ -152,7 +158,120 @@ DASHBOARD_TOOLS = [
             "additionalProperties": False,
         },
     },
+    # ---- research tools (read server data; proxied via /api/assistant/tool)
+    {
+        "name": "get_news",
+        "description": "Fetch current headlines for a topic. Use before answering questions about the news.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "enum": ["top", "world", "tech", "business", "science", "sports", "entertainment"],
+                },
+            },
+            "required": ["topic"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "read_article",
+        "description": "Fetch and read the text of an article/web page by URL. Use to answer questions about a specific story.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "http(s) URL"}},
+            "required": ["url"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_weather",
+        "description": "Get the current weather and 7-day outlook for the user's configured location.",
+        "strict": True,
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_worldstate",
+        "description": "Get the state-of-the-world situation board: per-domain stability scores, levels and headline signals.",
+        "strict": True,
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_markets",
+        "description": "Get the market watchlist: prices and 24h changes.",
+        "strict": True,
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    # ---- memory
+    {
+        "name": "remember",
+        "description": "Save a durable fact about the user or their preferences to long-term memory (persists across sessions).",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"fact": {"type": "string", "description": "One concise fact"}},
+            "required": ["fact"],
+            "additionalProperties": False,
+        },
+    },
+    # ---- automations
+    {
+        "name": "create_automation",
+        "description": (
+            "Create a standing automation. Triggers: daily (needs time HH:MM), "
+            "market (needs symbol + percent — fires when |24h change| crosses it), "
+            "worldstate (needs level — fires when the global index reaches it). "
+            "Actions: briefing (auto-generated) or notify (needs message)."
+        ),
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "trigger_type": {"type": "string", "enum": ["daily", "market", "worldstate"]},
+                "time": {"type": ["string", "null"], "description": "HH:MM for daily"},
+                "symbol": {"type": ["string", "null"], "description": "e.g. BTC, for market"},
+                "percent": {"type": ["number", "null"], "description": "threshold, for market"},
+                "level": {
+                    "type": ["string", "null"],
+                    "enum": ["watch", "elevated", "critical", None],
+                    "description": "for worldstate",
+                },
+                "action_type": {"type": "string", "enum": ["briefing", "notify"]},
+                "message": {"type": ["string", "null"], "description": "for notify"},
+            },
+            "required": ["name", "trigger_type", "time", "symbol", "percent", "level",
+                         "action_type", "message"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_automations",
+        "description": "List the user's standing automations with their ids.",
+        "strict": True,
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "delete_automation",
+        "description": "Delete an automation by id (find ids with list_automations).",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}},
+            "required": ["id"],
+            "additionalProperties": False,
+        },
+    },
 ]
+
+# Tools the browser proxies back to the server (they read server-side data or
+# mutate server-side state). Everything else executes against the local store.
+SERVER_TOOLS = {
+    "get_news", "read_article", "get_weather", "get_worldstate", "get_markets",
+    "remember", "create_automation", "list_automations", "delete_automation",
+}
 
 
 def _credentials_available() -> bool:
@@ -167,6 +286,86 @@ class Assistant:
     def __init__(self, model: str = DEFAULT_MODEL) -> None:
         self.model = model
         self._client = None
+        self.services = None  # set by server.Api — access to feeds/memory/automations
+
+    # -- server-side tools (proxied through /api/assistant/tool) -------------
+    def run_server_tool(self, name: str, tool_input: dict) -> str:
+        if self.services is None:
+            raise ValueError("server tools unavailable")
+        handler = getattr(self, f"_tool_{name}", None)
+        if name not in SERVER_TOOLS or handler is None:
+            raise ValueError(f"unknown server tool {name!r}")
+        try:
+            return handler(tool_input or {})
+        except ValueError:
+            raise
+        except Exception as exc:  # upstream/API errors become tool errors
+            raise ValueError(str(exc)) from None
+
+    def _tool_get_news(self, args: dict) -> str:
+        data = self.services.news({"topic": [args.get("topic", "top")], "limit": ["10"]})
+        lines = [f"{i + 1}. {item['title']} ({item['source']}) {item['url']}"
+                 for i, item in enumerate(data["items"])]
+        return f"[{data['source']} data] " + "\n".join(lines)
+
+    def _tool_read_article(self, args: dict) -> str:
+        data = self.services.reader({"url": [args.get("url", "")]})
+        if not data.get("blocks"):
+            return data.get("note") or "No readable text could be extracted."
+        text = "\n".join(b["text"] for b in data["blocks"])
+        return f"{data.get('title', '')}\n\n{text[:6000]}"
+
+    def _tool_get_weather(self, args: dict) -> str:
+        return format_weather(self.services.weather({}))
+
+    def _tool_get_worldstate(self, args: dict) -> str:
+        return format_worldstate(self.services.worldstate({}))
+
+    def _tool_get_markets(self, args: dict) -> str:
+        return format_markets(self.services.markets({}))
+
+    def _tool_remember(self, args: dict) -> str:
+        self.services.memory_append(args.get("fact", ""))
+        return "Saved to long-term memory."
+
+    def _tool_create_automation(self, args: dict) -> str:
+        trigger = {"type": args.get("trigger_type")}
+        if trigger["type"] == "daily":
+            trigger["time"] = args.get("time")
+        elif trigger["type"] == "market":
+            trigger["symbol"] = (args.get("symbol") or "").upper()
+            trigger["percent"] = args.get("percent")
+        elif trigger["type"] == "worldstate":
+            trigger["level"] = args.get("level")
+        action = {"type": args.get("action_type")}
+        if action["type"] == "notify":
+            action["message"] = args.get("message") or ""
+        rule = self.services.automations.create_rule(
+            {"name": args.get("name"), "trigger": trigger, "action": action})
+        return f"Automation #{rule['id']} “{rule['name']}” is armed."
+
+    def _tool_list_automations(self, args: dict) -> str:
+        rules = self.services.automations.list_rules()
+        if not rules:
+            return "No automations yet."
+        lines = []
+        for rule in rules:
+            trigger, action = rule["trigger"], rule["action"]
+            if trigger["type"] == "daily":
+                when = f"daily at {trigger['time']}"
+            elif trigger["type"] == "market":
+                when = f"{trigger['symbol']} moves ±{trigger['percent']}%"
+            else:
+                when = f"world state reaches {trigger['level'].upper()}"
+            what = "auto-briefing" if action["type"] == "briefing" else f"notify: {action.get('message', '')}"
+            state = "" if rule.get("enabled") else " (paused)"
+            lines.append(f"#{rule['id']} {rule['name']} — {when} → {what}{state}")
+        return "\n".join(lines)
+
+    def _tool_delete_automation(self, args: dict) -> str:
+        if not self.services.automations.delete_rule(int(args.get("id", 0))):
+            raise ValueError(f"no automation with id {args.get('id')}")
+        return f"Automation #{args.get('id')} deleted."
 
     # -- mode handling ------------------------------------------------------
     @property
@@ -220,11 +419,16 @@ class Assistant:
                     *content,
                 ],
             }
+        system = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+        memory = self.services.memory_read() if self.services else ""
+        if memory.strip():
+            # after the cached block, so editing memory never invalidates it
+            system.append({"type": "text", "text": "Long-term memory about the user:\n" + memory[-4000:]})
         response = self._get_client().messages.create(
             model=self.model,
             max_tokens=4096,
             thinking={"type": "adaptive"},
-            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            system=system,
             tools=DASHBOARD_TOOLS,
             messages=request_messages,
         )
@@ -248,10 +452,37 @@ class Assistant:
             b.get("text", "") for b in last["content"] if isinstance(b, dict) and b.get("type") == "text"
         )
         actions, reply = parse_local_command(text, context)
+        if not actions and reply is HELP_TEXT:
+            inline = self._local_data_reply(text)
+            if inline is not None:
+                return {"mode": "local", "stop_reason": "end_turn",
+                        "content": [{"type": "text", "text": inline}]}
         content = [{"type": "text", "text": reply}]
         for i, (name, args) in enumerate(actions):
             content.append({"type": "tool_use", "id": f"local_{i}", "name": name, "input": args})
         return {"mode": "local", "stop_reason": "end_turn", "content": content}
+
+    def _local_data_reply(self, text: str) -> str | None:
+        """Answer data questions directly in local mode (weather, markets, …)."""
+        if self.services is None:
+            return None
+        lowered = text.lower()
+        try:
+            if re.search(r"\b(weather|forecast|temperature)\b", lowered):
+                return format_weather(self.services.weather({}))
+            if re.search(r"\b(state of the world|world ?state|global (?:index|situation))\b", lowered):
+                return format_worldstate(self.services.worldstate({}))
+            if re.search(r"\b(markets?|prices?|crypto|bitcoin|btc|eth(?:ereum)?)\b", lowered) and "task" not in lowered:
+                return format_markets(self.services.markets({}))
+            if re.fullmatch(r"(what(?:'s| is) (?:in the |the )?news\??|headlines\??|news\??)", lowered.strip()):
+                data = self.services.news({"topic": ["top"], "limit": ["6"]})
+                return "\n".join(f"• {item['title']} ({item['source']})" for item in data["items"])
+            if re.search(r"\bwhat do you (?:remember|know)(?: about me)?\b|^recall\??$", lowered):
+                memory = self.services.memory_read().strip()
+                return memory if memory else "Long-term memory is empty. Tell me “remember: …” to add something."
+        except Exception:
+            return None
+        return None
 
     # -- summarize ------------------------------------------------------------
     def summarize(self, payload: dict) -> dict:
@@ -299,6 +530,37 @@ class Assistant:
             text = next((b.text for b in response.content if b.type == "text"), "")
             return {"mode": "claude", "briefing": text.strip()}
         return {"mode": "local", "briefing": local_briefing(context)}
+
+
+# ---------------------------------------------------------------------------
+# Data formatters (shared by server tools and local-mode replies)
+# ---------------------------------------------------------------------------
+def format_weather(data: dict) -> str:
+    current = data["current"]
+    lines = [
+        f"{data['location']['name']}: {round(current['temp'])}° "
+        f"(feels {round(current['feels'])}°), humidity {current['humidity']}%, "
+        f"wind {round(current['wind'])} {data['units']['wind']}."
+    ]
+    for day in data["daily"][:5]:
+        lines.append(f"{day['date']}: {round(day['min'])}–{round(day['max'])}°, "
+                     f"precip {day.get('precipProb') or 0}%")
+    return "\n".join(lines)
+
+
+def format_worldstate(data: dict) -> str:
+    lines = [f"Global index {data['overall']['score']} ({data['overall']['level'].upper()})."]
+    for domain in data["domains"]:
+        lines.append(f"{domain['name']}: {domain['score']} {domain['level'].upper()} — {domain['explanation']}")
+    return "\n".join(lines)
+
+
+def format_markets(data: dict) -> str:
+    return "\n".join(
+        f"{a['name']} ({a['symbol']}): ${a['price']:,} · "
+        f"{'+' if a['change24h'] >= 0 else ''}{a['change24h']:.2f}% 24h"
+        for a in data["assets"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -451,9 +713,72 @@ _NEWS_CMD = re.compile(
 )
 
 
+_REMEMBER_CMD = re.compile(r"^remember\s*:?\s+(.+)$", re.I | re.S)
+_DAILY_BRIEF_A = re.compile(
+    r"^(?:every\s?(?:day|morning)|daily)\s*,?\s*(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*[,:]?\s*"
+    r"(?:send (?:me )?(?:a )?brief(?:ing)?|brief(?:ing)?(?:\s+me)?)\.?$", re.I)
+_DAILY_BRIEF_B = re.compile(
+    r"^brief(?:ing)?(?:\s+me)?\s+(?:every\s?(?:day|morning)|daily)\s*,?\s*(?:at\s+)?"
+    r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\.?$", re.I)
+_MARKET_ALERT = re.compile(
+    r"^alert me (?:if|when)\s+(\w+)\s+(?:moves|changes|drops|falls|rises|gains)"
+    r"(?:\s+(?:by|more than|over))?\s+(\d+(?:\.\d+)?)\s*%\.?$", re.I)
+_WORLD_ALERT = re.compile(
+    r"^alert me (?:if|when)\s+(?:the\s+)?world\s?(?:state)?\s*(?:index\s*)?"
+    r"(?:reaches|goes(?:\s+to)?|hits|is)\s+(watch|elevated|critical)\.?$", re.I)
+_LIST_AUTOS = re.compile(r"^(?:list|show)(?:\s+my)?\s+automations?\.?$", re.I)
+_DELETE_AUTO = re.compile(r"^(?:delete|remove)\s+automation\s+#?(\d+)\.?$", re.I)
+
+
+def _clock(hour: str, minute: str | None, ampm: str | None) -> str:
+    h = int(hour) % 24
+    if ampm:
+        h = h % 12 + (12 if ampm.lower() == "pm" else 0)
+    return f"{h:02d}:{minute or '00'}"
+
+
 def parse_local_command(text: str, context: dict) -> tuple[list, str]:
     """Map a natural-ish command to dashboard actions. Returns (actions, reply)."""
     text = text.strip()
+
+    match = _REMEMBER_CMD.match(text)
+    if match:
+        fact = match.group(1).strip()
+        return [("remember", {"fact": fact})], "Noted — saved to long-term memory."
+
+    match = _DAILY_BRIEF_A.match(text) or _DAILY_BRIEF_B.match(text)
+    if match:
+        when = _clock(match.group(1), match.group(2), match.group(3))
+        return [("create_automation", {
+            "name": f"Daily briefing {when}", "trigger_type": "daily", "time": when,
+            "symbol": None, "percent": None, "level": None,
+            "action_type": "briefing", "message": None,
+        })], f"Standing order: I'll compile your briefing every day at {when}."
+
+    match = _MARKET_ALERT.match(text)
+    if match:
+        symbol, percent = match.group(1).upper(), float(match.group(2))
+        return [("create_automation", {
+            "name": f"{symbol} ±{percent:g}% alert", "trigger_type": "market", "time": None,
+            "symbol": symbol, "percent": percent, "level": None,
+            "action_type": "notify", "message": f"{symbol} moved more than {percent:g}% in 24h.",
+        })], f"Watching {symbol}: you'll hear from me when it moves more than {percent:g}% in 24h."
+
+    match = _WORLD_ALERT.match(text)
+    if match:
+        level = match.group(1).lower()
+        return [("create_automation", {
+            "name": f"World state {level.upper()} alert", "trigger_type": "worldstate",
+            "time": None, "symbol": None, "percent": None, "level": level,
+            "action_type": "notify", "message": f"Global situation index reached {level.upper()}.",
+        })], f"Armed: I'll alert you when the global index reaches {level.upper()}."
+
+    if _LIST_AUTOS.match(text):
+        return [("list_automations", {})], "Here are your automations:"
+
+    match = _DELETE_AUTO.match(text)
+    if match:
+        return [("delete_automation", {"id": int(match.group(1))})], "Removing that automation."
 
     match = _DONE_CMD.match(text)
     if match:
@@ -510,9 +835,15 @@ def parse_local_command(text: str, context: dict) -> tuple[list, str]:
     if re.search(r"\b(brief|briefing|focus|plate|agenda|catch me up)\b", text, re.I):
         return [], local_briefing(context)
 
-    return [], (
-        "Local mode understands: “add task … [to LIST]”, “complete …”, “note: …”, "
-        "“add event 2026-07-10: title” (or today/tomorrow), “add app NAME URL”, "
-        "“open APP”, “show tech news”, and “brief me”. "
-        "For free-form conversation, install the anthropic SDK and set ANTHROPIC_API_KEY."
-    )
+    return [], HELP_TEXT
+
+
+HELP_TEXT = (
+    "Local mode understands: “add task … [to LIST]”, “complete …”, “note: …”, "
+    "“add event 2026-07-10: title” (or today/tomorrow), “add app NAME URL”, "
+    "“open APP”, “show tech news”, “brief me”, “remember: …”, "
+    "“every morning at 8 brief me”, “alert me if BTC moves 5%”, "
+    "“alert me when the world reaches elevated”, “list automations”, and "
+    "questions about the weather, markets, headlines or the state of the world. "
+    "For free-form conversation, install the anthropic SDK and set ANTHROPIC_API_KEY."
+)

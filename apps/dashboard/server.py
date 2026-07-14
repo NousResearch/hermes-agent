@@ -39,6 +39,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import assistant as assistant_module
+from automations import Automations
 
 APP_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = APP_DIR / "public"
@@ -730,10 +731,54 @@ def live_markets() -> dict:
 # API dispatch: try cache → live → sample
 # ---------------------------------------------------------------------------
 class Api:
-    def __init__(self, offline: bool = False, state_store: StateStore | None = None) -> None:
+    def __init__(
+        self,
+        offline: bool = False,
+        state_store: StateStore | None = None,
+        data_dir: Path | None = None,
+    ) -> None:
         self.offline = offline
+        self.data_dir = data_dir or APP_DIR / "data"
         self.assistant = assistant_module.Assistant()
+        self.assistant.services = self
         self.state_store = state_store
+        self.automations = Automations(self.data_dir / "automations.json", self)
+        self._memory_lock = threading.Lock()
+
+    # -- agent memory (a plain markdown file the agent reads/writes) --------
+    @property
+    def memory_path(self) -> Path:
+        return self.data_dir / "memory.md"
+
+    def memory_read(self) -> str:
+        with self._memory_lock:
+            try:
+                return self.memory_path.read_text(encoding="utf-8")
+            except OSError:
+                return ""
+
+    def memory_append(self, fact: str) -> None:
+        fact = " ".join(fact.split())[:500]
+        if not fact:
+            raise ApiError(400, "empty fact")
+        with self._memory_lock:
+            self.memory_path.parent.mkdir(parents=True, exist_ok=True)
+            existing = ""
+            try:
+                existing = self.memory_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+            stamp = datetime.now().strftime("%Y-%m-%d")
+            with self.memory_path.open("a", encoding="utf-8") as f:
+                if not existing:
+                    f.write("# Hermes Hub — agent memory\n")
+                f.write(f"- ({stamp}) {fact}\n")
+            # keep the file bounded: newest 200 facts
+            lines = self.memory_path.read_text(encoding="utf-8").splitlines()
+            facts = [ln for ln in lines if ln.startswith("- ")]
+            if len(facts) > 200:
+                kept = [lines[0]] + facts[-200:]
+                self.memory_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
 
     def _cached(self, key: str, ttl: float, live_fn, sample_fn):
         cached = CACHE.get(key)
@@ -865,6 +910,47 @@ class Api:
     def assistant_status(self, params: dict) -> dict:
         return self.assistant.status()
 
+    # -- automations & notifications ----------------------------------------
+    def automations_list(self, params: dict) -> dict:
+        return {"rules": self.automations.list_rules()}
+
+    def automations_op(self, body: dict) -> dict:
+        op = body.get("op")
+        if op == "create":
+            try:
+                return {"rule": self.automations.create_rule(body.get("rule") or {})}
+            except ValueError as exc:
+                raise ApiError(400, str(exc)) from None
+        if op == "delete":
+            if not self.automations.delete_rule(int(body.get("id", 0))):
+                raise ApiError(404, "no such rule")
+            return {"ok": True}
+        if op == "toggle":
+            rule = self.automations.toggle_rule(int(body.get("id", 0)))
+            if rule is None:
+                raise ApiError(404, "no such rule")
+            return {"rule": rule}
+        if op == "tick":  # evaluate immediately (used by tests and the UI)
+            return {"fired": self.automations.tick()}
+        raise ApiError(400, "op must be create, delete, toggle or tick")
+
+    def notifications(self, params: dict) -> dict:
+        try:
+            after = int(params.get("after", ["0"])[0])
+        except ValueError:
+            raise ApiError(400, "after must be an integer") from None
+        return self.automations.notifications_after(after)
+
+    # -- agent tool proxy (tools that read server data / server state) -------
+    def assistant_tool(self, body: dict) -> dict:
+        name = body.get("name", "")
+        tool_input = body.get("input") or {}
+        try:
+            result = self.assistant.run_server_tool(name, tool_input)
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from None
+        return {"result": result}
+
     # POST endpoints (body is parsed JSON)
     def assistant_chat(self, body: dict) -> dict:
         try:
@@ -908,6 +994,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/state": "state_get",
         "/api/state/rev": "state_rev",
         "/api/assistant/status": "assistant_status",
+        "/api/automations": "automations_list",
+        "/api/notifications": "notifications",
     }
 
     POST_ROUTES = {
@@ -915,6 +1003,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/assistant/chat": "assistant_chat",
         "/api/assistant/summarize": "assistant_summarize",
         "/api/assistant/briefing": "assistant_briefing",
+        "/api/assistant/tool": "assistant_tool",
+        "/api/automations": "automations_op",
     }
 
     # /api/health stays open so the lock screen can probe reachability.
@@ -1014,14 +1104,17 @@ def make_server(
     offline: bool,
     token: str | None = None,
     data_dir: Path | None = None,
+    run_automations: bool = False,
 ) -> ThreadingHTTPServer:
-    store = StateStore((data_dir or APP_DIR / "data") / "hub.db")
-    handler = type(
-        "BoundHandler",
-        (HubHandler,),
-        {"api": Api(offline=offline, state_store=store), "token": token},
-    )
-    return ThreadingHTTPServer((host, port), handler)
+    data_dir = data_dir or APP_DIR / "data"
+    store = StateStore(data_dir / "hub.db")
+    api = Api(offline=offline, state_store=store, data_dir=data_dir)
+    if run_automations:
+        api.automations.start()
+    handler = type("BoundHandler", (HubHandler,), {"api": api, "token": token})
+    server = ThreadingHTTPServer((host, port), handler)
+    server.api = api  # so callers (and tests) can reach the engine
+    return server
 
 
 def main() -> None:
@@ -1051,10 +1144,13 @@ def main() -> None:
         print("WARNING: binding beyond localhost without --token / HERMES_HUB_TOKEN —")
         print("         anyone on the network can read and write your dashboard data.")
 
-    server = make_server(args.host, args.port, args.offline, args.token, args.data_dir)
+    server = make_server(
+        args.host, args.port, args.offline, args.token, args.data_dir,
+        run_automations=True,
+    )
     mode = "offline (sample data)" if args.offline else "live (sample fallback)"
     lock = "locked (access code required)" if args.token else "open (localhost)"
-    print(f"Hermes Hub → http://{args.host}:{args.port}  [{mode}] [{lock}] [sync on]")
+    print(f"Hermes Hub → http://{args.host}:{args.port}  [{mode}] [{lock}] [sync on] [automations on]")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

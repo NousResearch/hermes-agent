@@ -4,6 +4,14 @@
 import { uid } from "./utils.js";
 import { store } from "./store.js";
 import { openViewer } from "./viewer.js";
+import { api } from "./api.js";
+
+// Tools that read server data or manage server-side automations/memory are
+// proxied straight through to the server (must mirror assistant.SERVER_TOOLS).
+const SERVER_TOOLS = new Set([
+  "get_news", "read_article", "get_weather", "get_worldstate", "get_markets",
+  "remember", "create_automation", "list_automations", "delete_automation",
+]);
 
 function findList(state, name) {
   const lower = (name || "").toLowerCase();
@@ -86,7 +94,15 @@ const HANDLERS = {
 };
 
 /** Run one tool call. Returns {ok, result} — errors are reported, not thrown. */
-export function executeAction(name, input) {
+export async function executeAction(name, input) {
+  if (SERVER_TOOLS.has(name)) {
+    try {
+      const { result } = await api.runTool(name, input || {});
+      return { ok: true, result };
+    } catch (err) {
+      return { ok: false, result: String(err.message || err) };
+    }
+  }
   const handler = HANDLERS[name];
   if (!handler) return { ok: false, result: `unknown tool ${name}` };
   try {

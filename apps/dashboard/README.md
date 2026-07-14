@@ -68,13 +68,33 @@ with two engines:
 | **LOCAL** | default, zero setup | command parser (`add task…`, `complete…`, `open GitHub`, `add event tomorrow: …`, `show tech news`, `brief me`), extractive summaries, rule-based daily briefing with automation suggestions |
 | **CLAUDE** | `pip install anthropic` + `ANTHROPIC_API_KEY` (or `ant auth login`), then restart | full conversational agent (Claude Opus 4.8 by default, override with `HERMES_HUB_MODEL`) that plans, chats, and calls dashboard tools; model-written summaries and briefings |
 
-In both modes the agent's tools — add/complete tasks, add events, notes and
-launcher apps, open URLs in the viewer, switch news topics — execute **in your
-browser against your local data**. The server only relays the conversation;
-your tasks, notes and events never persist server-side.
+In both modes the agent can **act** (add/complete tasks, events, notes,
+launcher apps, open URLs in the viewer, switch news topics — executed in your
+browser against your local data) and **research** (read the news, fetch and
+read an article, check the weather, markets and world state — served from the
+dashboard's own feeds). It also has **long-term memory**: say
+"remember: …" and the fact persists in `data/memory.md` across sessions
+("what do you remember" reads it back; in Claude mode it is injected into the
+agent's context automatically).
 
 Every widget (and every news story, and the article viewer) has a **∑**
 button that summarizes that piece of data with the active engine.
+
+### Automations — set-and-forget Jarvis
+
+Standing orders run **server-side** (they fire even with no browser open) and
+surface as in-app toasts plus system notifications (tap **🔔 Alerts** in the
+Agent widget once to allow them). Create them by just telling the agent:
+
+- "every morning at 7:30 brief me" → a daily auto-generated briefing
+- "alert me if BTC moves 5%" → edge-triggered 24 h-change alert
+- "alert me when the world reaches elevated" → situation-board level alert
+- "list automations" / "delete automation 2" to manage them
+
+Rules live in `data/automations.json`; triggers are `daily`, `market` and
+`worldstate`; actions are `notify` or `briefing`. The engine evaluates every
+20 s and keeps the last 100 notifications for clients to poll
+(`/api/notifications?after=<id>`).
 
 ## Features
 
@@ -102,14 +122,17 @@ button that summarizes that piece of data with the active engine.
 ```
 server.py          stdlib HTTP server: static files + JSON API + live/sample fallback
 assistant.py       AI layer: Claude (optional SDK) or local rule-based engines
+automations.py     standing rules engine (daily/market/worldstate → notify/briefing)
 sample_data.json   bundled offline data (news, weather, markets, geocode)
 public/            zero-build frontend (ES modules, design-system CSS)
   js/widgets/      one module per widget (clock, worldstate, agent, …)
   js/viewer.js     in-app reader/embed overlay
   js/actions.js    executes agent tool calls against local state
 tests/
-  test_server.py   40 unit tests (feeds, worldstate, reader, assistant, HTTP)
-  e2e.mjs          51-check Playwright suite (needs playwright-core + Chromium)
+  test_server.py   64 unit tests (feeds, worldstate, reader, assistant, sync,
+                   auth, automations, memory, HTTP)
+  e2e.mjs          66-check Playwright suite (needs playwright-core + Chromium)
+                   — also runs in CI (.github/workflows/dashboard.yml)
 ```
 
 ## Tests

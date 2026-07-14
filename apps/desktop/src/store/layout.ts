@@ -13,6 +13,7 @@ export const SIDEBAR_MAX_WIDTH = 360
 export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '10rem'
 export const FILE_BROWSER_MAX_WIDTH = '20rem'
+export const REVIEW_PANE_MAX_WIDTH = '76rem'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 

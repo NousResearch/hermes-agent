@@ -1,20 +1,20 @@
-"""Feishu generic request tool -- one validated entry point for the whole API.
+"""Read-only Feishu Open API gateway with fail-closed path validation.
 
-Rather than shipping one typed tool per Feishu endpoint (there are hundreds),
-this exposes a single ``feishu_request`` tool whose ``path`` is checked against a
-curated "navigation map" of known-good endpoint templates *before* the call is
-made.  An unknown path is rejected up front with a "did you mean ..." hint,
-instead of being sent to Feishu and bouncing back as a confusing 404.
+Exposes a single ``feishu_request`` tool for ad-hoc Feishu/Lark reads. The
+path is checked against a curated GET-only endpoint map *before* dispatch;
+unknown paths are rejected with a "did you mean" hint instead of 404ing at
+Feishu (which the agent often misreads as a permissions problem).
 
-Why this exists: the agent has no folder-listing tool, so it used to fall back
-to the raw code sandbox and hand-craft URLs like
-``GET /open-apis/drive/v1/files/{folder_token}/children`` -- which does not
-exist (the correct call is ``GET /open-apis/drive/v1/files?folder_token=xxx``)
-and only failed at runtime.  Routing all ad-hoc calls through this tool turns
-that runtime 404 into a pre-flight rejection that names the correct endpoint.
+Why this exists: agents without a folder-listing tool invent paths like
+``GET /open-apis/drive/v1/files/{folder_token}/children`` (does not exist).
+The correct call is ``GET /open-apis/drive/v1/files?folder_token=xxx``.
 
-Validation is pure Python (no SDK import), so it is independently testable.
-Dispatch reuses ``feishu_drive_tool._do_request`` for response parsing.
+Scope: GET only. This tool is wired into ``feishu_drive`` (comment-agent
+path with lark client injection). Writes stay on typed tools and the
+handler's controlled ``deliver_comment_reply`` path — not this gateway.
+
+Validation is pure Python (no SDK import). Dispatch reuses
+``feishu_drive_tool._do_request``.
 """
 
 import difflib
@@ -50,64 +50,47 @@ def _check_feishu():
 
 
 # ---------------------------------------------------------------------------
-# The navigation map: (METHOD, path_template).
+# Read-only navigation map: (METHOD, path_template).
 #
-# A ``:segment`` matches any single concrete path segment (a token / id).
-# This list is the source of truth for what the agent is allowed to call --
-# fail-closed: anything not listed here is rejected.  It is intentionally
-# curated (not auto-generated) so every entry is a verified-correct endpoint.
-# Extend it as new endpoints are needed; keep templates exactly as Feishu
-# documents them (https://open.feishu.cn/document/server-docs).
+# ``:segment`` matches one concrete path segment (token / id).
+# Fail-closed: unlisted paths never leave the process. GET only — no
+# POST/PUT/DELETE (comment writes, Bitable mutations, create_folder, etc.).
+# Keep templates exactly as Feishu documents them
+# (https://open.feishu.cn/document/server-docs).
 # ---------------------------------------------------------------------------
 _FEISHU_ENDPOINTS = [
-    # --- Drive: files & folders ---------------------------------------------
-    # List items in a folder == the call the agent kept getting wrong.
-    # It is a QUERY param (?folder_token=), NOT a /:token/children path.
+    # Drive — folder list is ?folder_token=, NOT /:token/children.
     ("GET", "/open-apis/drive/v1/files"),
-    ("POST", "/open-apis/drive/v1/files/create_folder"),
     ("GET", "/open-apis/drive/v1/files/:file_token/statistics"),
-    ("POST", "/open-apis/drive/v1/metas/batch_query"),
-    # root_folder/meta is not in the typed lark SDK; verified against the
-    # official docs (GET .../drive/explorer/v2/root_folder/meta).
+    # Not in the typed lark SDK; verified against official docs.
     ("GET", "/open-apis/drive/explorer/v2/root_folder/meta"),
     ("GET", "/open-apis/drive/v1/files/:file_token/comments"),
-    # Official "Add a Global Comment" is POST .../comments (open.feishu.cn).
-    # new_comments is still used by tools/feishu_drive_tool._ADD_COMMENT_URI.
-    ("POST", "/open-apis/drive/v1/files/:file_token/comments"),
-    ("POST", "/open-apis/drive/v1/files/:file_token/new_comments"),
     ("GET", "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"),
-    ("POST", "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"),
-    # --- Docx ----------------------------------------------------------------
+    # Docx
     ("GET", "/open-apis/docx/v1/documents/:document_id"),
     ("GET", "/open-apis/docx/v1/documents/:document_id/raw_content"),
     ("GET", "/open-apis/docx/v1/documents/:document_id/blocks"),
-    # --- Bitable (multi-dimensional tables) ----------------------------------
+    # Bitable (reads only)
     ("GET", "/open-apis/bitable/v1/apps/:app_token"),
     ("GET", "/open-apis/bitable/v1/apps/:app_token/tables"),
     ("GET", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"),
     ("GET", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"),
-    ("POST", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"),
-    ("POST", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/search"),
-    ("PUT", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"),
-    ("DELETE", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"),
-    # --- Sheets --------------------------------------------------------------
+    # Sheets
     ("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token"),
     ("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query"),
-    # --- Wiki ----------------------------------------------------------------
+    # Wiki
     ("GET", "/open-apis/wiki/v2/spaces"),
     ("GET", "/open-apis/wiki/v2/spaces/:space_id/nodes"),
 ]
 
-_ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH"}
+_ALLOWED_METHODS = {"GET"}
 
 
 def _normalize_path(path: str) -> str:
     """Reduce any caller-supplied form to a bare ``/open-apis/...`` path.
 
-    The agent often pastes a full URL (the original incident used
-    ``https://open.feishu.cn/open-apis/drive/v1/files?page_size=50``). Slice
-    from ``/open-apis/`` so scheme+host don't get mistaken for path segments
-    and reject an otherwise-valid call.
+    Agents often paste full URLs (scheme+host). Slice from ``/open-apis/`` so
+    the host is not treated as path segments.
     """
     path = (path or "").strip()
     idx = path.find("/open-apis/")
@@ -136,9 +119,9 @@ def validate_endpoint(method: str, path: str):
     method = str(method).upper()
     segments = _split(path)
 
-    # Collect every structural match, then prefer the most specific one
-    # (fewest wildcards). This stops a literal segment like ``create_folder``
-    # or ``search`` from being captured as a ``:token`` by a looser template.
+    # Prefer the most specific structural match (fewest wildcards) so a
+    # literal segment like ``raw_content`` or ``query`` is not captured as
+    # a ``:token`` by a looser template.
     matches = []
     for m, template in _FEISHU_ENDPOINTS:
         if m != method:
@@ -160,8 +143,8 @@ def validate_endpoint(method: str, path: str):
         matches.sort(key=lambda x: x[0])
         return matches[0][1], matches[0][2]
 
-    # No match -> build "did you mean" suggestions. Normalise the caller's
-    # concrete tokens to ``:x`` so fuzzy matching compares shapes, not tokens.
+    # No match -> "did you mean" suggestions. Normalize concrete tokens to
+    # ``:x`` so fuzzy matching compares shapes, not tokens.
     norm = "/" + "/".join(":x" if _looks_like_token(s) else s for s in segments)
     candidates = [t for (m, t) in _FEISHU_ENDPOINTS if m == method]
     if not candidates:
@@ -194,27 +177,28 @@ def validate_endpoint(method: str, path: str):
 FEISHU_REQUEST_SCHEMA = {
     "name": "feishu_request",
     "description": (
-        "Call any Feishu/Lark Open API endpoint. The path is validated against "
-        "a map of known-good endpoints BEFORE the call -- an unknown path is "
-        "rejected with the correct one suggested, instead of 404ing. "
-        "Use this for Drive/Docx/Bitable/Sheets/Wiki reads and writes. "
-        "Note: list items in a folder is "
-        "GET /open-apis/drive/v1/files with query folder_token=xxx "
-        "(query param -- there is NO /files/{token}/children path)."
+        "Call a validated Feishu/Lark Open API endpoint (GET / read-only). "
+        "The path is checked against a known-good map BEFORE the call — an "
+        "unknown path is rejected with the correct one suggested, instead of "
+        "404ing. Use for Drive/Docx/Bitable/Sheets/Wiki reads. "
+        "Writes are not supported here. "
+        "List items in a folder: GET /open-apis/drive/v1/files with query "
+        "folder_token=xxx (there is NO /files/{token}/children path)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "method": {
                 "type": "string",
-                "description": "HTTP method.",
-                "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                "description": "HTTP method (GET only — this tool is read-only).",
+                "enum": ["GET"],
             },
             "path": {
                 "type": "string",
                 "description": (
                     "API path starting with /open-apis/, with concrete tokens "
-                    "inline, e.g. /open-apis/bitable/v1/apps/APP_TOKEN/tables."
+                    "inline, e.g. /open-apis/drive/v1/files or "
+                    "/open-apis/docx/v1/documents/DOC_TOKEN/raw_content."
                 ),
             },
             "query": {
@@ -223,7 +207,7 @@ FEISHU_REQUEST_SCHEMA = {
             },
             "body": {
                 "type": "object",
-                "description": "Optional JSON body for POST/PUT/PATCH requests.",
+                "description": "Unused for GET; reserved for schema stability.",
             },
         },
         "required": ["method", "path"],
@@ -241,14 +225,12 @@ def _handle_feishu_request(args: dict, **kwargs) -> str:
         return tool_error("method and path are required")
     if method not in _ALLOWED_METHODS:
         return tool_error(
-            f"Unsupported method '{method}'. Use one of: "
-            f"{', '.join(sorted(_ALLOWED_METHODS))}."
+            f"Unsupported method '{method}'. feishu_request is read-only "
+            f"(GET only). Writes stay on typed Feishu tools / delivery path."
         )
 
     template, result = validate_endpoint(method, path)
     if template is None:
-        # Log the rejection so a guessed endpoint is auditable in agent.log
-        # rather than silently bounced — mirrors feishu_comment's API logging.
         logger.warning(
             "[Feishu-Request] REJECTED %s %s — not in endpoint map; suggesting %s",
             method, path, result,
@@ -289,7 +271,7 @@ def _handle_feishu_request(args: dict, **kwargs) -> str:
                        method, template, code, msg)
         return tool_error(f"Feishu request failed: code={code} msg={msg}")
 
-    return tool_result(success=True, data=data)
+    return tool_result({"success": True, "data": data})
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +286,6 @@ registry.register(
     check_fn=_check_feishu,
     requires_env=[],
     is_async=False,
-    description="Call a validated Feishu Open API endpoint",
+    description="Call a validated Feishu Open API endpoint (GET / read-only)",
     emoji="\U0001f5fa️",
 )

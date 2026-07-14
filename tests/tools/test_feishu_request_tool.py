@@ -1,8 +1,9 @@
-"""Tests for feishu_request_tool -- endpoint validation ("navigation map")."""
+"""Tests for feishu_request_tool -- read-only endpoint validation + dispatch."""
 
 import importlib
 import json
 import unittest
+from unittest.mock import patch
 
 from tools.registry import registry
 
@@ -15,7 +16,7 @@ from tools.feishu_request_tool import (  # noqa: E402
 
 
 class TestEndpointValidation(unittest.TestCase):
-    """The map accepts known-good paths and rejects guessed ones."""
+    """The map accepts known-good GET paths and rejects guessed / write ones."""
 
     def test_list_folder_correct_query_form_is_valid(self):
         template, paths = validate_endpoint("GET", "/open-apis/drive/v1/files")
@@ -30,7 +31,7 @@ class TestEndpointValidation(unittest.TestCase):
         self.assertEqual(paths, {})
 
     def test_wrong_children_path_is_rejected_with_suggestion(self):
-        # The exact mistake from the incident.
+        # Exact mistake from the folder-listing incident.
         template, suggestions = validate_endpoint(
             "GET", "/open-apis/drive/v1/files/fldcnK0sP9zb1TejQsaN0S54cHc/children"
         )
@@ -44,34 +45,40 @@ class TestEndpointValidation(unittest.TestCase):
         self.assertEqual(template, "/open-apis/drive/v1/files/:file_token/comments")
         self.assertEqual(paths, {"file_token": "Lv4SdXIhAou70nxGvwLc"})
 
-    def test_add_global_comment_official_path(self):
-        # Official docs: POST /open-apis/drive/v1/files/:file_token/comments
-        template, paths = validate_endpoint(
-            "POST", "/open-apis/drive/v1/files/Lv4SdXIhAou70nxGvwLc/comments"
-        )
-        self.assertEqual(template, "/open-apis/drive/v1/files/:file_token/comments")
-        self.assertEqual(paths, {"file_token": "Lv4SdXIhAou70nxGvwLc"})
-
     def test_two_token_segments_extracted(self):
         template, paths = validate_endpoint(
-            "PUT",
-            "/open-apis/bitable/v1/apps/APPTOKEN123456789/tables/tblXYZ/records/recABC",
+            "GET",
+            "/open-apis/bitable/v1/apps/APPTOKEN123456789/tables/tblXYZ/records",
         )
         self.assertEqual(
             template,
-            "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id",
+            "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records",
         )
         self.assertEqual(paths["app_token"], "APPTOKEN123456789")
         self.assertEqual(paths["table_id"], "tblXYZ")
-        self.assertEqual(paths["record_id"], "recABC")
 
-    def test_method_matters(self):
-        # The records collection is GET (list) and POST (create), not DELETE.
-        template, _ = validate_endpoint(
-            "DELETE",
-            "/open-apis/bitable/v1/apps/APPTOKEN123456789/tables/tblXYZ/records",
-        )
-        self.assertIsNone(template)
+    def test_write_methods_are_not_on_the_map(self):
+        # Read-only surface: comment POST / Bitable DELETE must not validate.
+        for method, path in (
+            ("POST", "/open-apis/drive/v1/files/Lv4SdXIhAou70nxGvwLc/comments"),
+            ("POST", "/open-apis/drive/v1/files/create_folder"),
+            (
+                "DELETE",
+                "/open-apis/bitable/v1/apps/APPTOKEN123456789/tables/tblXYZ"
+                "/records/recABC",
+            ),
+            (
+                "PUT",
+                "/open-apis/bitable/v1/apps/APPTOKEN123456789/tables/tblXYZ"
+                "/records/recABC",
+            ),
+            (
+                "POST",
+                "/open-apis/bitable/v1/apps/APPTOKEN123456789/tables/tblXYZ/records",
+            ),
+        ):
+            template, _ = validate_endpoint(method, path)
+            self.assertIsNone(template, msg=f"{method} {path} should be rejected")
 
     def test_unknown_root_returns_suggestions_list(self):
         template, suggestions = validate_endpoint("GET", "/open-apis/totally/made/up")
@@ -79,7 +86,6 @@ class TestEndpointValidation(unittest.TestCase):
         self.assertIsInstance(suggestions, list)
 
     def test_full_url_is_normalized_and_validated(self):
-        # The agent's actual mistake: pasting a full URL with scheme+host.
         template, paths = validate_endpoint(
             "GET", "https://open.feishu.cn/open-apis/drive/v1/files?page_size=50"
         )
@@ -93,12 +99,14 @@ class TestEndpointValidation(unittest.TestCase):
         self.assertEqual(template, "/open-apis/drive/v1/files")
 
     def test_static_segment_wins_over_wildcard(self):
-        # create_folder is a literal segment, not a :file_token.
+        # raw_content is a literal segment, not a :document_id-style capture.
         template, paths = validate_endpoint(
-            "POST", "/open-apis/drive/v1/files/create_folder"
+            "GET", "/open-apis/docx/v1/documents/DOCIDTOKEN12345/raw_content"
         )
-        self.assertEqual(template, "/open-apis/drive/v1/files/create_folder")
-        self.assertEqual(paths, {})
+        self.assertEqual(
+            template, "/open-apis/docx/v1/documents/:document_id/raw_content"
+        )
+        self.assertEqual(paths, {"document_id": "DOCIDTOKEN12345"})
 
 
 class TestHandler(unittest.TestCase):
@@ -117,8 +125,22 @@ class TestHandler(unittest.TestCase):
         )
         self.assertIn("error", out)
 
+    def test_write_method_rejected_before_dispatch(self):
+        out = json.loads(
+            _handle_feishu_request(
+                {
+                    "method": "DELETE",
+                    "path": (
+                        "/open-apis/bitable/v1/apps/APPTOKEN123456789"
+                        "/tables/tblXYZ/records/recABC"
+                    ),
+                }
+            )
+        )
+        self.assertIn("error", out)
+        self.assertIn("read-only", out["error"].lower())
+
     def test_invalid_path_rejected_before_client_lookup(self):
-        # Even with no client set, an invalid path is rejected at validation.
         out = json.loads(
             _handle_feishu_request(
                 {"method": "GET", "path": "/open-apis/drive/v1/files/TOKEN123456789/children"}
@@ -128,13 +150,84 @@ class TestHandler(unittest.TestCase):
         self.assertIn("valid_suggestions", out)
 
     def test_valid_path_without_client_reports_client_error(self):
-        # Valid path passes validation, then fails on missing client (not 404).
         set_client(None)
         out = json.loads(
             _handle_feishu_request({"method": "GET", "path": "/open-apis/drive/v1/files"})
         )
         self.assertIn("error", out)
         self.assertIn("client not available", out["error"])
+
+
+class TestFakeClientDispatch(unittest.TestCase):
+    """Prove canonical folder-list dispatch and write rejection without HTTP."""
+
+    def tearDown(self):
+        set_client(None)
+
+    def test_folder_list_dispatches_canonical_template(self):
+        set_client(object())  # any truthy client
+        with patch(
+            "tools.feishu_request_tool._do_request",
+            return_value=(0, "ok", {"files": [{"name": "a.docx"}]}),
+        ) as mock_req:
+            out = json.loads(
+                _handle_feishu_request(
+                    {
+                        "method": "GET",
+                        "path": "/open-apis/drive/v1/files",
+                        "query": {"folder_token": "fldcnABC123", "page_size": "50"},
+                    }
+                )
+            )
+        self.assertTrue(out.get("success"))
+        self.assertEqual(out["data"]["files"][0]["name"], "a.docx")
+        mock_req.assert_called_once()
+        args, kwargs = mock_req.call_args
+        # client, method, template (positional)
+        self.assertEqual(args[1], "GET")
+        self.assertEqual(args[2], "/open-apis/drive/v1/files")
+        self.assertFalse(kwargs.get("paths"))
+        queries = kwargs.get("queries")
+        self.assertIn(("folder_token", "fldcnABC123"), queries)
+        self.assertIn(("page_size", "50"), queries)
+
+    def test_write_delete_never_calls_client(self):
+        set_client(object())
+        with patch(
+            "tools.feishu_request_tool._do_request",
+            return_value=(0, "ok", {}),
+        ) as mock_req:
+            out = json.loads(
+                _handle_feishu_request(
+                    {
+                        "method": "DELETE",
+                        "path": (
+                            "/open-apis/bitable/v1/apps/APPTOKEN123456789"
+                            "/tables/tblXYZ/records/recABC"
+                        ),
+                    }
+                )
+            )
+        self.assertIn("error", out)
+        mock_req.assert_not_called()
+
+    def test_comment_post_never_calls_client(self):
+        set_client(object())
+        with patch(
+            "tools.feishu_request_tool._do_request",
+            return_value=(0, "ok", {}),
+        ) as mock_req:
+            out = json.loads(
+                _handle_feishu_request(
+                    {
+                        "method": "POST",
+                        "path": "/open-apis/drive/v1/files/Lv4SdXIhAou70nxGvwLc/comments",
+                        "body": {"content": "side effect"},
+                    }
+                )
+            )
+        self.assertIn("error", out)
+        mock_req.assert_not_called()
 
 
 class TestToolsetWiring(unittest.TestCase):
@@ -181,6 +274,7 @@ class TestRegistration(unittest.TestCase):
         props = entry.schema["parameters"]["properties"]
         self.assertIn("method", props)
         self.assertIn("path", props)
+        self.assertEqual(props["method"]["enum"], ["GET"])
         self.assertEqual(entry.schema["parameters"]["required"], ["method", "path"])
 
 

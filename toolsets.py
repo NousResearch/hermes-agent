@@ -307,7 +307,7 @@ TOOLSETS = {
     },
 
     "feishu_drive": {
-        "description": "Feishu/Lark drive: document comments plus validated Open API access",
+        "description": "Feishu/Lark document comments plus read-only validated Open API reads",
         "tools": [
             "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment", "feishu_drive_add_comment",

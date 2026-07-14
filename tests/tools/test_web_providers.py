@@ -167,21 +167,6 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("TAVILY_API_KEY", "test-key")
         assert web_tools._get_search_backend() == "tavily"
 
-    def test_explicit_extract_backend_honored_when_unavailable(self, monkeypatch):
-        """An explicit per-capability backend is honored even with no creds, so
-        its setup error surfaces instead of silently rerouting to the keyless
-        Parallel default (which would send user URLs to a different provider)."""
-        from tools import web_tools
-
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "extract_backend": "firecrawl",
-        })
-        for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL"):
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False, raising=False)
-        # Resolves to firecrawl (not parallel) despite firecrawl being unavailable.
-        assert web_tools._get_extract_backend() == "firecrawl"
-
     def test_falls_back_to_generic_backend_when_extract_backend_empty(self, monkeypatch):
         from tools import web_tools
 
@@ -192,7 +177,7 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
         assert web_tools._get_extract_backend() == "parallel"
 
-    def test_explicit_search_backend_honored_when_unavailable(self, monkeypatch):
+    def test_search_backend_ignored_when_not_available(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
@@ -201,10 +186,8 @@ class TestPerCapabilityBackendSelection:
         })
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
-        # The explicit per-capability choice (exa) is honored even though it's
-        # unavailable, so its setup error surfaces — we don't silently reroute
-        # to the shared backend (or the keyless Parallel default).
-        assert web_tools._get_search_backend() == "exa"
+        # Should fall back to firecrawl since exa isn't configured
+        assert web_tools._get_search_backend() == "firecrawl"
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
@@ -308,55 +291,26 @@ class TestUnconfiguredErrorEnvelopeParity:
         ):
             monkeypatch.delenv(k, raising=False)
 
-    def test_extract_empty_urls_does_not_raise(self, monkeypatch):
-        """Regression: empty (or fully SSRF-blocked) URL sets skip the dispatch
-        branch; the free-Parallel flag must still be initialized so the tool
-        returns an error envelope instead of UnboundLocalError."""
-        import asyncio
-        from tools import web_tools
-        self._clear_web_creds(monkeypatch)
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        out = asyncio.run(web_tools.web_extract_tool([], "markdown"))
-        # The key assertion is that it returns a normal error envelope (a
-        # string) rather than raising UnboundLocalError.
-        assert isinstance(out, str)
-        result = json.loads(out)
-        assert "error" in result
-
-    def test_unconfigured_search_falls_back_to_free_parallel(self, monkeypatch):
-        """``web_search_tool`` with no creds routes to Parallel's free Search
-        MCP rather than erroring. The MCP transport is mocked so the test
-        stays offline; we assert dispatch landed on parallel and returned the
-        standard search envelope.
+    def test_unconfigured_search_emits_top_level_error(self, monkeypatch):
+        """``web_search_tool`` with no creds returns ``{"error": "Error searching web: ..."}``
+        — matching main's ``tool_error()`` envelope, not a per-result shape.
         """
         from tools import web_tools
-        import plugins.web.parallel.provider as parallel_provider
 
         self._clear_web_creds(monkeypatch)
+        # Reset firecrawl client cache so the unconfigured state is re-evaluated
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
+        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
 
-        captured = {}
-
-        def _fake_mcp(query, limit, api_key):
-            captured["query"] = query
-            captured["api_key"] = api_key
-            return {
-                "success": True,
-                "data": {"web": [
-                    {"url": "https://example.com", "title": "Example",
-                     "description": "hit", "position": 1},
-                ]},
-            }
-
-        monkeypatch.setattr(parallel_provider, "_mcp_web_search", _fake_mcp)
-
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
-        assert result.get("success") is True, f"expected success, got {result}"
-        assert result["data"]["web"][0]["url"] == "https://example.com"
-        # Keyless path: dispatched to parallel with no Bearer token.
-        assert captured == {"query": "hello world", "api_key": None}
+        assert "error" in result, f"expected top-level 'error' key, got {result}"
+        # ``Error searching web:`` prefix comes from web_tools' top-level except handler
+        assert "Error searching web:" in result["error"]
+        assert "FIRECRAWL_API_KEY" in result["error"]
+        # No per-result burying
+        assert "results" not in result
 
 
 class TestDispatchersTriggerPluginDiscovery:
@@ -464,7 +418,6 @@ class TestDispatchersTriggerPluginDiscovery:
             result = json.loads(asyncio.run(
                 web_tools.web_extract_tool(
                     ["https://example.com"],
-                    use_llm_processing=False,
                 )
             ))
 
@@ -536,6 +489,136 @@ class TestDispatchersTriggerPluginDiscovery:
             )
             assert "No web search provider configured" not in json.dumps(result)
             assert web_search_registry.get_provider("brave-free") is not None
+        finally:
+            restore()
+
+
+class TestDisabledPluginDiagnostic:
+    """#40190 follow-up: when the configured web backend names a bundled
+    web plugin the user put in ``plugins.disabled``, the dispatcher must
+    tell the user to re-enable the plugin instead of the misleading
+    "No web extract provider configured. Set web.extract_backend to ..."
+    (they already set it correctly — the provider just isn't loaded).
+    """
+
+    def _clear_registry(self):
+        from agent import web_search_registry
+
+        with web_search_registry._lock:
+            original = dict(web_search_registry._providers)
+            web_search_registry._providers.clear()
+
+        def _restore():
+            with web_search_registry._lock:
+                web_search_registry._providers.clear()
+                web_search_registry._providers.update(original)
+
+        return _restore
+
+    class _FakeLoaded:
+        def __init__(self, enabled, error):
+            self.enabled = enabled
+            self.error = error
+
+    def _patch_manager(self, monkeypatch, plugins_map):
+        """Point ``get_plugin_manager()`` at a stub whose ``_plugins``
+        dict is ``plugins_map`` so ``_disabled_web_plugin_for`` sees the
+        simulated disabled/enabled state without touching real config."""
+        import hermes_cli.plugins as plugins_mod
+
+        class _StubMgr:
+            _plugins = plugins_map
+
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _StubMgr())
+
+    def test_disabled_web_plugin_for_matches_by_key(self, monkeypatch):
+        from agent.web_search_registry import _disabled_web_plugin_for
+
+        self._patch_manager(monkeypatch, {
+            "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
+            "web/ddgs": self._FakeLoaded(True, None),
+        })
+        assert _disabled_web_plugin_for("firecrawl") == "web/firecrawl"
+        # Enabled plugin is not a match
+        assert _disabled_web_plugin_for("ddgs") is None
+        # Unknown name is not a match
+        assert _disabled_web_plugin_for("nope") is None
+
+    def test_disabled_web_plugin_for_normalizes_hyphens(self, monkeypatch):
+        from agent.web_search_registry import _disabled_web_plugin_for
+
+        self._patch_manager(monkeypatch, {
+            "web/brave_free": self._FakeLoaded(False, "disabled via config"),
+        })
+        # config name uses a hyphen; plugin key uses an underscore
+        assert _disabled_web_plugin_for("brave-free") == "web/brave_free"
+
+    def test_disabled_web_plugin_for_ignores_non_disabled_errors(self, monkeypatch):
+        from agent.web_search_registry import _disabled_web_plugin_for
+
+        self._patch_manager(monkeypatch, {
+            # a plugin that failed to import is NOT "disabled via config"
+            "web/exa": self._FakeLoaded(False, "ImportError: boom"),
+        })
+        assert _disabled_web_plugin_for("exa") is None
+
+    def test_extract_tool_reports_disabled_plugin(self, monkeypatch):
+        import asyncio
+
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        try:
+            monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"extract_backend": "firecrawl"},
+            )
+            import agent.web_search_registry as wsr
+            monkeypatch.setattr(
+                wsr, "_read_config_key",
+                lambda *path: "firecrawl" if path == ("web", "extract_backend") else None,
+            )
+            self._patch_manager(monkeypatch, {
+                "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
+            })
+            result = json.loads(
+                asyncio.new_event_loop().run_until_complete(
+                    web_tools.web_extract_tool(["https://example.com"])
+                )
+            )
+            err = result["error"]
+            assert "disabled" in err
+            assert "web/firecrawl" in err
+            assert "hermes plugins enable" in err
+            # Must NOT tell them to set extract_backend (already set)
+            assert "Set web.extract_backend to firecrawl" not in err
+        finally:
+            restore()
+
+    def test_search_tool_reports_disabled_plugin(self, monkeypatch):
+        from tools import web_tools
+
+        restore = self._clear_registry()
+        try:
+            monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+            monkeypatch.setattr(
+                web_tools, "_load_web_config",
+                lambda: {"search_backend": "firecrawl"},
+            )
+            import agent.web_search_registry as wsr
+            monkeypatch.setattr(
+                wsr, "_read_config_key",
+                lambda *path: "firecrawl" if path == ("web", "search_backend") else None,
+            )
+            self._patch_manager(monkeypatch, {
+                "web/firecrawl": self._FakeLoaded(False, "disabled via config"),
+            })
+            result = json.loads(web_tools.web_search_tool("hello", limit=1))
+            err = result["error"]
+            assert "disabled" in err
+            assert "web/firecrawl" in err
+            assert "No web search provider configured" not in err
         finally:
             restore()
 

@@ -1,4 +1,4 @@
-"""Tests for Automation Blueprints — the parameterized automation template system.
+"""Tests for Automation Blueprints — the parameterized automation blueprint system.
 
 Covers the core catalog/slot schema/renderers/fill (cron/blueprint_catalog.py),
 the shared /blueprint command handler (hermes_cli/blueprint_cmd.py), and

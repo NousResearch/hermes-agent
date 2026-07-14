@@ -7,11 +7,14 @@ mint-site census test).
 
 Security properties (authoritative spec Section 16.3/16.4):
 - private sealed type + module-private construction seal
+- authorization-critical state lives only in factory closure cells (not
+  assignable instance attributes)
 - immutable enabled-tool snapshot at mint time
 - fixed expected tool name ``ucm_structured_process``
 - atomic one-shot ``consume`` under a lock
 - owner-side ``invalidate`` (works even if never consumed)
 - exact provenance (no duck typing / subclass authorization)
+- frozen instances: ordinary setattr/delattr cannot attach or mutate state
 - copy/deepcopy cannot create a second independently authorizing object
 - pickle/JSON reconstruction rejected
 - redacted ``repr`` / ``str``
@@ -31,81 +34,40 @@ __all__ = [
 
 EXPECTED_TOOL_NAME = "ucm_structured_process"
 
-# Non-exported construction seal. Deliberate external construction without this
-# object must fail.
+# Non-exported construction seal. Deliberate external subclassing without this
+# seal must fail.
 _MINT_SEAL = object()
 
 _REDACTED_REPR = "<UcmAuthCapability redacted>"
 
 
-class _UcmAuthCapability:
-    """Sealed one-shot authorization capability.
+class _UcmAuthCapabilityBase:
+    """Sealed capability base. Not useful alone; factory mints a sealed subclass.
 
-    Not part of the public API. Construct only via ``mint_ucm_auth_context``.
+    Authorization-critical mutable state is never stored on instances. Each
+    mint creates a sealed subclass whose methods close over private nonlocal
+    cells owned exclusively by that mint.
     """
 
-    __slots__ = (
-        "_active",
-        "_consumed",
-        "_enabled",
-        "_tool_call_id",
-        "_lock",
-    )
-
-    def __init__(
-        self,
-        enabled_tools: Iterable[str],
-        tool_call_id: Optional[str] = None,
-        *,
-        _seal: Any = None,
-    ) -> None:
-        if _seal is not _MINT_SEAL:
-            raise TypeError(
-                "UcmAuthCapability cannot be constructed directly; "
-                "use mint_ucm_auth_context()"
-            )
-        self._enabled: frozenset[str] = frozenset(enabled_tools)
-        self._tool_call_id: Optional[str] = tool_call_id
-        self._active: bool = True
-        self._consumed: bool = False
-        self._lock = threading.Lock()
+    __slots__ = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401
-        raise TypeError("UcmAuthCapability cannot be subclassed for authorization")
+        seal = kwargs.pop("_ucm_seal", None)
+        if seal is not _MINT_SEAL:
+            raise TypeError("UcmAuthCapability cannot be subclassed for authorization")
+        super().__init_subclass__(**kwargs)
 
-    def consume(self, tool_name: str) -> bool:
-        """Atomically attempt one-shot authorization for ``tool_name``.
+    def __setattr__(self, name: str, value: Any) -> None:  # noqa: ANN401
+        raise AttributeError("UcmAuthCapability attributes are frozen")
 
-        Returns True only when all of the following hold under the lock:
-        - capability is still active
-        - not already consumed
-        - ``tool_name`` equals ``EXPECTED_TOOL_NAME``
-        - ``EXPECTED_TOOL_NAME`` is in the mint-time enabled-tool snapshot
-        """
-        with self._lock:
-            if not self._active:
-                return False
-            if self._consumed:
-                return False
-            if tool_name != EXPECTED_TOOL_NAME:
-                return False
-            if EXPECTED_TOOL_NAME not in self._enabled:
-                return False
-            self._consumed = True
-            return True
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("UcmAuthCapability attributes are frozen")
 
-    def invalidate(self) -> None:
-        """Owner-side unconditional invalidation (idempotent)."""
-        with self._lock:
-            self._active = False
-
-    # --- anti-copy / anti-forgery -------------------------------------------
-
-    def __copy__(self) -> "_UcmAuthCapability":
+    def __copy__(self) -> "_UcmAuthCapabilityBase":
         # Share exact one-shot state: copy is not an independent authorization.
         return self
 
-    def __deepcopy__(self, memo: dict[int, Any]) -> "_UcmAuthCapability":
+    def __deepcopy__(self, memo: dict[int, Any]) -> "_UcmAuthCapabilityBase":
         return self
 
     def __getstate__(self) -> None:
@@ -126,11 +88,19 @@ class _UcmAuthCapability:
     def __str__(self) -> str:
         return _REDACTED_REPR
 
+    # Base implementations never authorize. Factory subclasses override via
+    # methods that close over mint-private state.
+    def consume(self, tool_name: str) -> bool:  # noqa: ARG002
+        return False
+
+    def invalidate(self) -> None:
+        return None
+
 
 def mint_ucm_auth_context(
     enabled_tools: Iterable[str] | None,
     tool_call_id: Optional[str] = None,
-) -> _UcmAuthCapability:
+) -> _UcmAuthCapabilityBase:
     """Mint a sealed one-shot capability for ``ucm_structured_process``.
 
     Phase 1: public factory exists for unit tests and future audited mint sites.
@@ -139,15 +109,55 @@ def mint_ucm_auth_context(
     mint-site census test is the control against unauthorized call sites.
 
     ``tool_call_id`` is correlation metadata only and is never used for
-    authorization decisions.
+    authorization decisions. It is captured in a closure cell and is not
+    exposed as an instance attribute.
     """
     if enabled_tools is None:
-        snapshot: Iterable[str] = ()
+        enabled: frozenset[str] = frozenset()
     else:
-        snapshot = enabled_tools
-    return _UcmAuthCapability(snapshot, tool_call_id=tool_call_id, _seal=_MINT_SEAL)
+        enabled = frozenset(enabled_tools)
+
+    # Authorization-critical mutable state: nonlocal cells only. Not attached
+    # to the instance, not reachable as ordinary attributes.
+    active = True
+    consumed = False
+    lock = threading.Lock()
+    # Captured for future tracing correlation only; never consulted by consume.
+    _correlation_id = tool_call_id  # noqa: F841
+
+    class _UcmAuthCapability(_UcmAuthCapabilityBase, _ucm_seal=_MINT_SEAL):
+        __slots__ = ()
+
+        def consume(self, tool_name: str) -> bool:
+            nonlocal active, consumed
+            with lock:
+                if not active:
+                    return False
+                if consumed:
+                    return False
+                if tool_name != EXPECTED_TOOL_NAME:
+                    return False
+                if EXPECTED_TOOL_NAME not in enabled:
+                    return False
+                consumed = True
+                return True
+
+        def invalidate(self) -> None:
+            nonlocal active
+            with lock:
+                active = False
+
+    # Class marker for exact provenance (not present on unauthorized subclasses).
+    _UcmAuthCapability._ucm_factory_product = _MINT_SEAL  # type: ignore[attr-defined]
+
+    return _UcmAuthCapability()
 
 
 def is_ucm_auth_capability(value: Any) -> bool:  # noqa: ANN401
     """Exact provenance check — True only for the factory's direct product."""
-    return type(value) is _UcmAuthCapability
+    if not isinstance(value, _UcmAuthCapabilityBase):
+        return False
+    cls = type(value)
+    if cls is _UcmAuthCapabilityBase:
+        return False
+    return getattr(cls, "_ucm_factory_product", None) is _MINT_SEAL

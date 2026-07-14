@@ -29,12 +29,20 @@ class TestMintAndLifecycle:
     def test_valid_mint_and_provenance(self):
         ctx = _mint()
         assert is_ucm_auth_capability(ctx) is True
-        assert type(ctx) is auth_mod._UcmAuthCapability
+        assert isinstance(ctx, auth_mod._UcmAuthCapabilityBase)
+        assert type(ctx) is not auth_mod._UcmAuthCapabilityBase
         assert type(ctx) is not object
 
-    def test_direct_construction_without_seal_rejected(self):
-        with pytest.raises(TypeError, match="mint_ucm_auth_context"):
-            auth_mod._UcmAuthCapability(["ucm_structured_process"])
+    def test_base_construction_does_not_authorize(self):
+        base = auth_mod._UcmAuthCapabilityBase()
+        assert is_ucm_auth_capability(base) is False
+        assert base.consume(TOOL) is False
+
+    def test_direct_subclass_without_seal_rejected(self):
+        with pytest.raises(TypeError, match="cannot be subclassed"):
+
+            class Sub(auth_mod._UcmAuthCapabilityBase):  # type: ignore[misc,valid-type]
+                pass
 
     def test_valid_one_time_authorization(self):
         ctx = _mint()
@@ -128,7 +136,7 @@ class TestAntiForgery:
     def test_subclass_attempt_denied(self):
         with pytest.raises(TypeError, match="cannot be subclassed"):
 
-            class Sub(auth_mod._UcmAuthCapability):  # type: ignore[misc,valid-type]
+            class Sub(auth_mod._UcmAuthCapabilityBase):  # type: ignore[misc,valid-type]
                 pass
 
     def test_shallow_copy_shares_one_shot_state(self):
@@ -172,6 +180,161 @@ class TestAntiForgery:
         assert not hasattr(ctx, "enabled_tools")
         with pytest.raises(AttributeError):
             ctx.enabled = set()  # type: ignore[attr-defined]
+
+
+class TestPublicMutationHardening:
+    """Regression suite for audit H1 — ordinary attribute mutation must not re-arm."""
+
+    def test_assign_enabled_raises_and_does_not_escalate(self):
+        ctx = mint_ucm_auth_context(["terminal"])
+        assert ctx.consume(TOOL) is False
+        with pytest.raises(AttributeError):
+            ctx._enabled = frozenset({TOOL})  # type: ignore[attr-defined]
+        assert ctx.consume(TOOL) is False
+
+    def test_assign_consumed_raises_and_does_not_rearm(self):
+        ctx = _mint()
+        assert ctx.consume(TOOL) is True
+        with pytest.raises(AttributeError):
+            ctx._consumed = False  # type: ignore[attr-defined]
+        assert ctx.consume(TOOL) is False
+
+    def test_assign_active_raises_and_does_not_reactivate(self):
+        ctx = _mint()
+        ctx.invalidate()
+        with pytest.raises(AttributeError):
+            ctx._active = True  # type: ignore[attr-defined]
+        assert ctx.consume(TOOL) is False
+
+    def test_object_setattr_lifecycle_fields_do_not_alter_auth(self):
+        ctx = mint_ucm_auth_context(["terminal"])
+        assert ctx.consume(TOOL) is False
+        for name, value in (
+            ("_enabled", frozenset({TOOL})),
+            ("_consumed", False),
+            ("_active", True),
+            ("enabled", frozenset({TOOL})),
+            ("consumed", False),
+            ("active", True),
+        ):
+            with pytest.raises(AttributeError):
+                object.__setattr__(ctx, name, value)
+        assert ctx.consume(TOOL) is False
+
+    def test_object_setattr_after_consume_cannot_rearm(self):
+        ctx = _mint()
+        assert ctx.consume(TOOL) is True
+        for name, value in (("_consumed", False), ("consumed", False), ("_active", True)):
+            with pytest.raises(AttributeError):
+                object.__setattr__(ctx, name, value)
+        assert ctx.consume(TOOL) is False
+
+    def test_object_setattr_after_invalidate_cannot_reactivate(self):
+        ctx = _mint()
+        ctx.invalidate()
+        for name, value in (("_active", True), ("active", True), ("_consumed", False)):
+            with pytest.raises(AttributeError):
+                object.__setattr__(ctx, name, value)
+        assert ctx.consume(TOOL) is False
+
+    def test_dir_lifecycle_names_are_not_assignable_state(self):
+        ctx = _mint()
+        names = set(dir(ctx))
+        # Former slot names must not be live assignable instance state.
+        for leaked in ("_enabled", "_consumed", "_active", "_lock", "_tool_call_id"):
+            assert leaked not in names
+            with pytest.raises(AttributeError):
+                setattr(ctx, leaked, object())
+        assert ctx.consume(TOOL) is True
+        assert ctx.consume(TOOL) is False
+
+    def test_adding_new_lifecycle_like_attribute_fails(self):
+        ctx = _mint()
+        with pytest.raises(AttributeError):
+            ctx.authorization_state = {"active": True}  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            object.__setattr__(ctx, "authorization_state", {"active": True})
+
+    def test_replace_consume_method_fails_closed(self):
+        ctx = mint_ucm_auth_context(["terminal"])
+        assert ctx.consume(TOOL) is False
+        with pytest.raises(AttributeError):
+            ctx.consume = lambda _name: True  # type: ignore[method-assign]
+        with pytest.raises(AttributeError):
+            object.__setattr__(ctx, "consume", lambda _name: True)
+        assert ctx.consume(TOOL) is False
+        assert is_ucm_auth_capability(ctx) is True
+
+    def test_replace_invalidate_method_fails_closed(self):
+        ctx = _mint()
+        with pytest.raises(AttributeError):
+            ctx.invalidate = lambda: None  # type: ignore[method-assign]
+        with pytest.raises(AttributeError):
+            object.__setattr__(ctx, "invalidate", lambda: None)
+        ctx.invalidate()
+        assert ctx.consume(TOOL) is False
+
+    def test_replace_lock_or_state_carrier_fails(self):
+        ctx = _mint()
+        for name in ("_lock", "lock", "_state", "state", "_impl", "impl", "_cell"):
+            with pytest.raises(AttributeError):
+                setattr(ctx, name, object())
+            with pytest.raises(AttributeError):
+                object.__setattr__(ctx, name, object())
+        assert ctx.consume(TOOL) is True
+
+    def test_authorization_escalation_attempt_denied(self):
+        """Original audit exploit #1."""
+        c1 = mint_ucm_auth_context(["terminal"])
+        assert c1.consume(TOOL) is False
+        with pytest.raises(AttributeError):
+            c1._enabled = frozenset({TOOL})  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            object.__setattr__(c1, "_enabled", frozenset({TOOL}))
+        assert c1.consume(TOOL) is False
+
+    def test_consumed_capability_rearm_attempt_denied(self):
+        """Original audit exploit #2."""
+        c2 = mint_ucm_auth_context(["ucm_structured_process"])
+        assert c2.consume(TOOL) is True
+        with pytest.raises(AttributeError):
+            c2._consumed = False  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            object.__setattr__(c2, "_consumed", False)
+        assert c2.consume(TOOL) is False
+
+    def test_invalidated_capability_reactivation_attempt_denied(self):
+        """Original audit exploit #3."""
+        c3 = mint_ucm_auth_context(["ucm_structured_process"])
+        c3.invalidate()
+        with pytest.raises(AttributeError):
+            c3._active = True  # type: ignore[attr-defined]
+        with pytest.raises(AttributeError):
+            object.__setattr__(c3, "_active", True)
+        assert c3.consume(TOOL) is False
+
+    def test_mutation_attempts_preserve_single_concurrent_success(self):
+        ctx = _mint()
+        # noise mutations must not create extra tickets
+        for _ in range(3):
+            with pytest.raises(AttributeError):
+                ctx._consumed = False  # type: ignore[attr-defined]
+        results: list[bool] = []
+        barrier = threading.Barrier(8)
+
+        def worker() -> None:
+            barrier.wait()
+            with pytest.raises(AttributeError):
+                object.__setattr__(ctx, "_active", True)
+            results.append(ctx.consume(TOOL))
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results.count(True) == 1
+        assert results.count(False) == 7
 
 
 class TestConcurrency:

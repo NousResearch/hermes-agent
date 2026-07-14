@@ -725,6 +725,18 @@ class TestHealthEndpoint:
             assert data["version"] != ""
 
     @pytest.mark.asyncio
+    async def test_health_reports_machine_identity(self, adapter):
+        """Direct clients need stable identity to keep multiple gateways distinct."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert isinstance(data["hostname"], str)
+            assert data["hostname"]
+            assert isinstance(data["local_ip"], str)
+
+    @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
         app = _create_app(adapter)

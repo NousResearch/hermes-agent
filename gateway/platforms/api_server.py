@@ -1525,8 +1525,33 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
+        import socket as _socket
+
+        hostname = ""
+        try:
+            hostname = _socket.gethostname()
+        except Exception:
+            pass
+
+        local_ip = ""
+        try:
+            # Ask the kernel which local interface would carry normal traffic.
+            # UDP connect does not send a packet, so no external service is
+            # contacted by this health check.
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as sock:
+                sock.connect(("8.8.8.8", 80))
+                local_ip = sock.getsockname()[0]
+        except Exception:
+            pass
+
         return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
+            {
+                "status": "ok",
+                "platform": "hermes-agent",
+                "version": _hermes_version(),
+                "hostname": hostname,
+                "local_ip": local_ip,
+            }
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":

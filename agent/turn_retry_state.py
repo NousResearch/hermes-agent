@@ -45,6 +45,7 @@ class TurnRetryState:
     nous_auth_retry_attempted: bool = False
     nous_paid_entitlement_refresh_attempted: bool = False
     copilot_auth_retry_attempted: bool = False
+    vertex_auth_retry_attempted: bool = False
 
     # ── Format / payload recovery guards ─────────────────────────────────
     thinking_sig_retry_attempted: bool = False

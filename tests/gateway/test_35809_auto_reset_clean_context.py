@@ -85,6 +85,10 @@ class TestAutoResetBlockReSyncsBinding:
         for stmt in ast.walk(block):
             if isinstance(stmt, ast.Assign):
                 val = stmt.value
+                # reset_session is async at the gateway boundary, so the
+                # assignment value is Await(Call(...)), not a bare Call.
+                if isinstance(val, ast.Await):
+                    val = val.value
                 if (
                     isinstance(val, ast.Call)
                     and isinstance(val.func, ast.Attribute)
@@ -102,13 +106,25 @@ class TestAutoResetBlockReSyncsBinding:
         """The block must re-sync the topic binding so the next inbound message
         cannot ``switch_session`` back onto the bloated compressed child."""
         block = _find_compression_exhausted_reset_block()
-        sync_calls = [
-            sub
-            for sub in ast.walk(block)
-            if isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr == "_sync_telegram_topic_binding"
-        ]
+
+        def _references_helper(node):
+            # Direct call: self._sync_telegram_topic_binding(...)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_sync_telegram_topic_binding"
+            ):
+                return True
+            # Offloaded: await asyncio.to_thread(self._sync_telegram_topic_binding, ...)
+            # — the helper is passed as an argument, not the call's func.
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "_sync_telegram_topic_binding"
+            ):
+                return True
+            return False
+
+        sync_calls = [sub for sub in ast.walk(block) if _references_helper(sub)]
         assert sync_calls, (
             "gateway/run.py auto-reset block does not call "
             "_sync_telegram_topic_binding after reset_session. Without it the "

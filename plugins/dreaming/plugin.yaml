@@ -1,0 +1,12 @@
+name: dreaming
+version: 0.1.0
+description: >
+  Automatic background memory consolidation inspired by biological sleep cycles.
+  Enqueues session candidates on session_end, then consolidates during idle
+  periods via a 3-phase pipeline: Light Sleep (scan/dedupe/score), REM
+  (theme extraction + dream diary), Deep Sleep (promote to MEMORY.md).
+pip_dependencies: []
+requires_env: []
+hooks:
+  - on_session_end
+opt_in: true

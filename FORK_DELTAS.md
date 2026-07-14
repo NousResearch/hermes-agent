@@ -340,3 +340,28 @@ that became redundant.
   multi-being group presence. Discord, GitHub, and future adapters populate
   the sidecar; injection behavior is free. See AMBIENT-ROOM-INTELLIGENCE.md
   for the full design rationale.
+
+---
+
+### D13 — feat(api_server): voice mode in POST /v1/runs — TTS audio in SSE response
+
+- **Files:** `gateway/platforms/api_server.py`
+- **Status:** Active — introduced 2026-07-14 for Janus DM voice calls in spire-ui
+- **What it does:**
+  When a `/v1/runs` request carries `message_type: "voice"` in the body OR an
+  `X-Hermes-Voice: true` header, the handler generates TTS audio for the agent's
+  `final_response` after the run completes. The audio file path is included as
+  `audio_path` in the `run.completed` SSE event. The caller (spire-ui's
+  `chat-proxy.js`) intercepts this field, resolves the file to a base64 data URL,
+  and emits a `call.tts_audio` event to the chat's event bus. The transcription
+  agent subscribes to that event and publishes the audio as a LiveKit track so the
+  user hears the Janus speak.
+- **Why here and not in base.py:** `/v1/runs` calls `agent.run_conversation()`
+  directly, bypassing the `MessageEvent` pipeline. `MessageType.VOICE` and
+  `_should_auto_tts_for_chat` live in the platform event path and don't apply.
+  TTS must be invoked inline in `_run_and_close()` after `final_response` is known.
+- **Upstream disposition:** Stepping stone toward a proper voice mode in the
+  api_server platform. Upstream would benefit from a cleaner abstraction (e.g. a
+  `voice_mode` run option that the platform handles uniformly), but the current
+  inline approach is the minimal correct change for our use case. File as a
+  candidate upstream once the spire-ui integration is proven.

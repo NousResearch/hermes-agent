@@ -4430,6 +4430,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
+
+        # Voice mode: when message_type='voice' or X-Hermes-Voice header is set,
+        # generate TTS audio after the run completes and include it in the SSE event.
+        _voice_mode = (
+            str(body.get("message_type", "")).lower() == "voice"
+            or request.headers.get("X-Hermes-Voice", "").strip().lower()
+            in _TRUE_REQUEST_BOOL_STRINGS
+        )
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
         # conversation/memory scopes, not authorization namespaces: multiple
@@ -4578,11 +4586,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Voice mode: generate TTS audio and include path in the SSE event
+                    # so the caller (spire-ui proxy) can intercept and route it.
+                    tts_audio_path: Optional[str] = None
+                    if _voice_mode and final_response:
+                        try:
+                            from tools.tts_tool import check_tts_requirements, text_to_speech_tool
+                            import json as _json
+                            if check_tts_requirements():
+                                _tts_result = await asyncio.get_running_loop().run_in_executor(
+                                    None, text_to_speech_tool, final_response
+                                )
+                                _tts_data = _json.loads(_tts_result) if isinstance(_tts_result, str) else {}
+                                tts_audio_path = _tts_data.get("file_path")
+                        except Exception as _tts_err:
+                            logger.warning("[api_server] Voice TTS failed: %s", _tts_err)
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
+                        **({"audio_path": tts_audio_path} if tts_audio_path else {}),
                         "usage": usage,
                     })
                     self._set_run_status(

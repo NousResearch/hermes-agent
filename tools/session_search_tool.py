@@ -81,10 +81,16 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
+_PARENT_CACHE: dict = {}  # session_id → lineage root
+
+
 def _resolve_to_parent(db, session_id: str) -> str:
     """Walk parent_session_id chain to the lineage root. Falls back to input on errors."""
     if not session_id:
         return session_id
+    cached = _PARENT_CACHE.get(session_id)
+    if cached is not None:
+        return cached
     visited = set()
     cur = session_id
     while cur and cur not in visited:
@@ -100,6 +106,7 @@ def _resolve_to_parent(db, session_id: str) -> str:
         except Exception as e:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
+    _PARENT_CACHE[session_id] = cur
     return cur
 
 

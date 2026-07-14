@@ -4963,27 +4963,30 @@ class SessionDB:
             # Per-token CJK length check (#20494): trigram needs >=3 CJK chars
             # per token. A query like "广西 OR 桂林 OR 漓江" has cjk_count=6
             # (>=3) but each individual token is only 2 chars — trigram returns 0.
-            # Route to LIKE when any non-operator CJK token is <3 CJK chars.
-            _tokens_for_check = [
-                t for t in raw_query.split()
-                if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
-            ]
-            _any_short_cjk = any(
-                self._count_cjk(t) < 3 for t in _tokens_for_check
-            )
-
             _trigram_succeeded = False
-            if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
-                # Trigram FTS5 path — quote each non-operator token to handle
-                # FTS5 special chars (%, *, etc.) while preserving boolean
+            if cjk_count >= 1 and self._trigram_available:
+                # Trigram FTS5 path — simple tokenizer (jieba) handles
+                # CJK segmentation natively.  No need to quote individual
+                # tokens: quoting forces FTS5 to intersect separate posting
+                # lists (slow on 180K rows).  Instead pass the raw query
+                # directly; jieba tokenizes at query time.  Preserve boolean
                 # operators (AND, OR, NOT) for multi-term queries.
+                # No per-token CJK-length guard needed: simple tokenizer
+                # handles 1-2 char words fine (unlike the old trigram tokenizer
+                # which needed ≥3 CJK chars = 9 UTF-8 bytes).
                 tokens = raw_query.split()
                 parts = []
                 for tok in tokens:
                     if tok.upper() in {"AND", "OR", "NOT"}:
                         parts.append(tok)
                     else:
-                        parts.append('"' + tok.replace('"', '""') + '"')
+                        # CJK tokens (＞U+007F) pass through raw — simple
+                        # tokenizer handles them natively.  Non-CJK tokens are
+                        # quoted to protect FTS5 special chars (%, *, etc.).
+                        if any(ord(c) > 127 for c in tok):
+                            parts.append(tok)
+                        else:
+                            parts.append('"' + tok.replace('"', '""') + '"')
                 trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]

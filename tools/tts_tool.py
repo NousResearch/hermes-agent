@@ -2207,9 +2207,13 @@ def _generate_neutts_warm(text: str, output_path: str, tts_config: Dict[str, Any
         else:
             entry["last_used_at"] = time.monotonic()
 
-        wav = entry["tts"].infer(text, entry["ref_codes"], entry["ref_text"])
-        entry["last_used_at"] = time.monotonic()
-        _write_neutts_wav(wav_path, wav, 24000)
+        try:
+            wav = entry["tts"].infer(text, entry["ref_codes"], entry["ref_text"])
+            entry["last_used_at"] = time.monotonic()
+            _write_neutts_wav(wav_path, wav, 24000)
+        except Exception:
+            _clear_neutts_cache("synthesis_error")
+            raise
         _schedule_neutts_idle_unload(_neutts_idle_unload_seconds(neutts_config))
 
     return _convert_neutts_wav(wav_path, output_path)
@@ -2233,6 +2237,7 @@ def _generate_neutts_subprocess(text: str, output_path: str, tts_config: Dict[st
         "--ref-audio", resolved["ref_audio"],
         "--ref-text", resolved["ref_text"],
         "--model", resolved["model"],
+        "--codec-repo", resolved["codec_repo"],
         "--device", resolved["device"],
     ]
 
@@ -2250,6 +2255,10 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
     if _neutts_warm_cache_enabled(neutts_config):
         return _generate_neutts_warm(text, output_path, tts_config)
+    with _neutts_cache_lock:
+        cache_is_active = bool(_neutts_cache) or _neutts_idle_timer is not None
+    if cache_is_active:
+        _clear_neutts_cache("warm_cache_disabled")
     return _generate_neutts_subprocess(text, output_path, tts_config)
 
 

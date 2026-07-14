@@ -1313,13 +1313,40 @@ class CuaDriverBackend(ComputerUseBackend):
 
             desktop = [w for w in windows if _is_desktop_window(w)]
             if not desktop:
+                # No desktop window found in list_windows (common on macOS when
+                # Finder's desktop window isn't enumerated). Fall back to
+                # get_desktop_state, which cua-driver supports for whole-desktop
+                # capture and returns the screenshot in structuredContent.screenshot_png_b64.
+                try:
+                    gds_out = self._session.call_tool(
+                        "get_desktop_state",
+                        {"session": self._session_id},
+                    )
+                    png_b64, image_mime_type = _image_from_tool_result(gds_out)
+                    if png_b64:
+                        return CaptureResult(
+                            mode=mode,
+                            width=0,  # Desktop state may not report dimensions
+                            height=0,
+                            png_b64=png_b64,
+                            elements=[],
+                            app="desktop",
+                            window_title="Desktop (whole-screen)",
+                            png_bytes_len=len(png_b64) if png_b64 else 0,
+                        )
+                except Exception as fallback_exc:
+                    logger.debug(
+                        "get_desktop_state fallback failed for desktop capture: %s",
+                        fallback_exc,
+                    )
+
+                # Fallback exhausted; return empty result with helpful error.
                 return CaptureResult(
                     mode=mode, width=0, height=0, png_b64=None,
                     elements=[], app="",
                     window_title=(
                         f"<no desktop/shell window found for app={app!r}; "
-                        f"cua-driver captures one window at a time and exposes "
-                        f"no whole-virtual-desktop or per-monitor capture. "
+                        f"get_desktop_state fallback also failed. "
                         f"Call list_apps / capture(app='<AppName>') to target a "
                         f"specific window instead. On Windows the taskbar is "
                         f"'Shell_TrayWnd' and the desktop is 'Progman'.>"

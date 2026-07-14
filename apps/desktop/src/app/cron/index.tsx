@@ -54,8 +54,8 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { jobState, jobTitle, STATE_DOT } from './job-state'
 import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 

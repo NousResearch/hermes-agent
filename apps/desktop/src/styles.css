@@ -786,8 +786,9 @@ code {
 }
 
 /* Arc-style multicolor action surface (static, not animated). Reusable on any
-   Button via className. Unlayered so it beats Tailwind's bg-*/
-text-* variant utilities. */ .btn-arc {
+   Button via className. Unlayered so it beats Tailwind's background and text
+   variant utilities. */
+.btn-arc {
   background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
   color: #fff;
   border-color: transparent;

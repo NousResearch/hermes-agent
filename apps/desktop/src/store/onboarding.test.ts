@@ -284,7 +284,10 @@ describe('OAuth onboarding', () => {
         return { ok: true, status: 'approved' }
       }
 
-      if (path === '/api/model/options') {
+      if (path.startsWith('/api/model/options?')) {
+        expect(path).toContain('include_unconfigured=1')
+        expect(path).not.toContain('explicit_only=1')
+
         return {
           providers: [
             {
@@ -357,7 +360,7 @@ describe('OAuth onboarding', () => {
 
     expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
 
-    const optionsIndex = calls.findIndex(c => c.path === '/api/model/options')
+    const optionsIndex = calls.findIndex(c => c.path.startsWith('/api/model/options?'))
     const recommendedIndex = calls.findIndex(c => c.path.startsWith('/api/model/recommended-default'))
     const setIndex = calls.findIndex(c => c.path === '/api/model/set')
 

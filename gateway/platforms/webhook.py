@@ -1089,6 +1089,8 @@ class WebhookAdapter(BasePlatformAdapter):
             # Special token: dump the entire payload as JSON
             if key == "__raw__":
                 return json.dumps(payload, indent=2)[:4000]
+            if key == "event_type":
+                return event_type
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -1237,7 +1239,18 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error=f"Unknown platform: {platform_name}"
             )
 
+        # Default adapters first; multiplex may park Slack/etc. only on a
+        # secondary profile (self._profile_adapters). Fall back so webhook
+        # deliver:slack still works when default has slack disabled.
         adapter = self.gateway_runner.adapters.get(target_platform)
+        if not adapter:
+            for _prof, amap in (getattr(self.gateway_runner, "_profile_adapters", None) or {}).items():
+                if not isinstance(amap, dict):
+                    continue
+                cand = amap.get(target_platform)
+                if cand is not None:
+                    adapter = cand
+                    break
         if not adapter:
             return SendResult(
                 success=False,

@@ -960,7 +960,14 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
         raw_token = self.config.token
-        app_token = os.getenv("SLACK_APP_TOKEN")
+        # Multiplex: profile secrets live in secret_scope, not process os.environ.
+        # Prefer get_secret; fall back to os.getenv for single-profile / tests.
+        try:
+            from agent.secret_scope import get_secret
+
+            app_token = get_secret("SLACK_APP_TOKEN") or os.getenv("SLACK_APP_TOKEN")
+        except Exception:
+            app_token = os.getenv("SLACK_APP_TOKEN")
 
         if not raw_token:
             logger.error("[Slack] SLACK_BOT_TOKEN not set")
@@ -3443,18 +3450,32 @@ class SlackAdapter(BasePlatformAdapter):
         if os.getenv("SLACK_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
             return True
 
+        def _env(name: str) -> str:
+            # Multiplex: profile .env is in secret_scope, not process environ.
+            try:
+                from agent.secret_scope import get_secret
+
+                val = get_secret(name)
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+            except Exception:
+                pass
+            return (os.getenv(name) or "").strip()
+
         allowed_ids = set()
-        platform_allowlist = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        platform_allowlist = _env("SLACK_ALLOWED_USERS")
         if platform_allowlist:
             allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        global_allowlist = _env("GATEWAY_ALLOWED_USERS")
         if global_allowlist:
             allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
 
         if allowed_ids:
             return "*" in allowed_ids or normalized_user_id in allowed_ids
 
-        return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        if _env("SLACK_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}:
+            return True
+        return _env("GATEWAY_ALLOW_ALL_USERS").lower() in {"true", "1", "yes"}
 
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
         """Handle a slash-confirm button click from Block Kit."""

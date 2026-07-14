@@ -47,7 +47,7 @@ hermes mcp profile-router-token create --name chatgpt
 hermes mcp serve --profile-router --http --host 127.0.0.1 --port 8765
 ```
 
-When running behind a TLS reverse proxy for a remote MCP client such as ChatGPT, pass the externally reachable origin with `--public-url` or `HERMES_PROFILE_ROUTER_PUBLIC_URL` so MCP auth metadata uses the public HTTPS URL instead of the localhost backend URL:
+When running behind a TLS reverse proxy for a remote MCP client such as ChatGPT, set `profile_router.public_url` in `config.yaml` or pass the externally reachable origin with `--public-url` so MCP auth metadata uses the public HTTPS URL instead of the localhost backend URL:
 
 ```bash
 hermes mcp serve \
@@ -58,7 +58,16 @@ hermes mcp serve \
   --public-url https://mcp.example.com
 ```
 
-`--public-url` must be an origin only (`https://mcp.example.com`), not the MCP path (`/mcp`) and not a URL containing query parameters or fragments. The MCP endpoint remains `https://mcp.example.com/mcp` when using the default path.
+Equivalent `config.yaml` setting:
+
+```yaml
+profile_router:
+  public_url: https://mcp.example.com
+```
+
+`--public-url` and `profile_router.public_url` must contain an origin only (`https://mcp.example.com`), not the MCP path (`/mcp`) and not a URL containing query parameters or fragments. The MCP endpoint remains `https://mcp.example.com/mcp` when using the default path.
+
+The profile router currently requires a POSIX host. On Windows, run it under WSL rather than passing native drive-letter paths.
 
 The first command prints the raw bearer token **once**. Copy it immediately. Hermes stores only a server-side hash and cannot display the raw token again.
 
@@ -102,6 +111,11 @@ The profile-router server registers only read-only no-model tools by default:
 - `profile_get`
 - `profile_health`
 - `profile_context_get`
+- `skills_list`
+- `skill_view`
+- `session_search`
+- `viking_search`
+- `viking_read`
 - `workspace_open`
 - `workspace_instructions_get`
 - `workspace_context_status`
@@ -109,6 +123,8 @@ The profile-router server registers only read-only no-model tools by default:
 - `workspace_close`
 - `workspace_file_list`
 - `workspace_file_read`
+- `workspace_file_stat`
+- `workspace_file_search`
 - `workspace_diff`
 
 The primary v1 workflow focuses on:
@@ -120,9 +136,9 @@ The primary v1 workflow focuses on:
 - `workspace_file_read`
 - `workspace_diff`
 
-The private Profile Router may register direct action tools (`file_patch`, `file_write`, `terminal_run`) for a trusted gateway hop, but those raw direct tools are **not** the public product surface. Public exposure, when enabled by a production gateway policy, must use only the explicit workspace-scoped wrapper names `workspace_file_patch`, `workspace_file_write`, and `workspace_terminal_run`; the gateway and private node still enforce profile/root/context/tool policy, no-shell terminal execution, secret-path denial, bounded output, and `llm_calls=0`.
+Local stdio developer mode may register direct action tools (`file_patch`, `file_write`, `terminal_run`), but HTTP v1 never registers those raw tools. Public HTTP discovery is exactly the read-only tool set above.
 
-In short: v1 still does not expose conversation messaging, cron, deploy, Git push/merge, broad shell access, or agent-loop execution tools. Write/patch/terminal are available only through explicit production wrappers and private-node policy.
+In short: HTTP v1 does not expose conversation messaging, cron, deploy, Git push/merge, broad shell access, or agent-loop execution tools.
 
 ## Remote VPS shape for ChatGPT
 

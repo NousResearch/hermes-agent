@@ -125,7 +125,6 @@ from mcp_profile_router_auth import (
     DEFAULT_PROFILE_ROUTER_SCOPES,
     PROFILE_ROUTER_CRON_SCOPE,
     PROFILE_ROUTER_MESSAGING_SCOPE,
-    PROFILE_ROUTER_OWNER_SCOPE,
     PROFILE_ROUTER_TERMINAL_SCOPE,
     PROFILE_ROUTER_WRITE_SCOPE,
     ProfileRouterAuditLogger,
@@ -4852,7 +4851,10 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch, capsys):
     monkeypatch.setattr("mcp_serve.run_profile_router_mcp_server", mock_run)
     monkeypatch.setattr("mcp_serve.run_mcp_server", mock_legacy_run)
 
-    from hermes_cli.mcp_config import mcp_command
+    from hermes_cli import mcp_config
+
+    monkeypatch.setattr(mcp_config, "load_config", lambda: {})
+    mcp_command = mcp_config.mcp_command
 
     args = argparse.Namespace(mcp_action="serve", verbose=True, profile_router=True)
     mcp_command(args)
@@ -4902,6 +4904,36 @@ def test_mcp_command_routes_profile_router_serve(monkeypatch, capsys):
     mcp_command(args)
     mock_legacy_run.assert_not_called()
     assert "require --profile-router" in capsys.readouterr().out
+
+
+def test_mcp_command_reads_profile_router_public_url_from_config(monkeypatch):
+    import mcp_serve
+    from hermes_cli import mcp_config
+
+    mock_run = MagicMock()
+    monkeypatch.setattr(mcp_serve, "run_profile_router_mcp_server", mock_run)
+    monkeypatch.setattr(
+        mcp_config,
+        "load_config",
+        lambda: {"profile_router": {"public_url": "https://mcp.example.com"}},
+    )
+
+    mcp_config.mcp_command(
+        argparse.Namespace(mcp_action="serve", profile_router=True, http=True)
+    )
+
+    assert mock_run.call_args.kwargs["public_url"] == "https://mcp.example.com"
+
+    mock_run.reset_mock()
+    mcp_config.mcp_command(
+        argparse.Namespace(
+            mcp_action="serve",
+            profile_router=True,
+            http=True,
+            public_url="https://cli-mcp.example.com",
+        )
+    )
+    assert mock_run.call_args.kwargs["public_url"] == "https://cli-mcp.example.com"
 
 
 def test_profile_router_token_store_hashes_verifies_revokes_and_rotates(tmp_path):
@@ -5061,7 +5093,7 @@ def test_profile_router_public_url_validation_for_remote_metadata(monkeypatch):
     )
 
     monkeypatch.setenv("HERMES_PROFILE_ROUTER_PUBLIC_URL", "https://env-mcp.example.com")
-    assert mcp_serve._profile_router_http_base_url("127.0.0.1", 8765) == "https://env-mcp.example.com"
+    assert mcp_serve._profile_router_http_base_url("127.0.0.1", 8765) == "http://127.0.0.1:8765"
 
     for invalid_public_url in (
         "mcp.example.com",
@@ -5078,7 +5110,7 @@ def test_profile_router_public_url_validation_for_remote_metadata(monkeypatch):
             )
 
 
-def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_tools(
+def test_profile_router_http_factory_uses_bearer_auth_and_exact_public_tools(
     monkeypatch,
     tmp_path,
 ):
@@ -5088,6 +5120,7 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
 
     server = mcp_serve.create_profile_router_mcp_server(
+        public_http=True,
         http_auth=True,
         host="127.0.0.1",
         port=8765,
@@ -5097,10 +5130,26 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     )
     tools = set(server._tool_manager._tools)
     assert tools == {
-        name
-        for name, tool in get_router_tool_metadata().items()
-        if tool["enabled_by_default"]
-    } | {"file_patch", "patch_apply", "file_write", "workspace_status_probe", "workspace_scratch_smoke", "file_move", "file_delete", "directory_create", "terminal_run", "workspace_python_run", "process_start", "process_list", "process_poll", "process_log", "process_kill", "git_status", "git_diff", "git_log", "git_branch", "git_add", "git_commit", "git_push", "git_checkout", "git_restore", "git_rebase", "git_merge", "github_pr_status", "github_pr_create", "github_pr_update", "github_pr_ready", "github_pr_merge", "github_issue_view", "github_issue_comment", "cron_list", "cron_pause", "cron_resume", "cron_run", "cron_create_script_only", "message_send", "telegram_send", "workspace_production_action_list", "workspace_production_action_status", "workspace_production_action_run", "server_alias_list", "server_status_check", "server_service_logs", "server_docker_ps", "server_docker_logs", "server_port_check", "server_command_run", "server_shell_run", "workspace_web_fetch", "profile_skill_create", "profile_skill_patch", "profile_skill_edit", "profile_skill_write_file", "profile_skill_remove_file", "profile_skill_delete", "profile_memory_add", "profile_memory_replace", "profile_memory_remove", "profile_memory_list"}
+        "profiles_list",
+        "profile_get",
+        "profile_health",
+        "profile_context_get",
+        "skills_list",
+        "skill_view",
+        "session_search",
+        "viking_search",
+        "viking_read",
+        "workspace_open",
+        "workspace_instructions_get",
+        "workspace_context_status",
+        "workspace_get",
+        "workspace_close",
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
+        "workspace_diff",
+    }
     server_kwargs = getattr(server, "kwargs")
     assert server_kwargs["host"] == "127.0.0.1"
     assert server_kwargs["port"] == 8765
@@ -5109,27 +5158,20 @@ def test_profile_router_http_factory_uses_bearer_auth_localhost_and_same_public_
     assert str(server_kwargs["auth"].resource_server_url).rstrip("/") == "https://mcp.example.com/mcp"
     assert server_kwargs["token_verifier"].store.path == tmp_path / "tokens.json"
     assert server_kwargs["auth"].required_scopes == []
-    assert "terminal_run" in tools
-    assert "file_patch" in tools
-    assert "patch_apply" in tools
-    assert "file_write" in tools
-    assert "workspace_status_probe" in tools
-    assert "workspace_scratch_smoke" in tools
-    assert "file_move" in tools
-    assert "file_delete" in tools
-    assert "directory_create" in tools
+    assert {
+        "terminal_run",
+        "file_patch",
+        "cron_run",
+        "message_send",
+        "git_status",
+        "server_shell_run",
+    }.isdisjoint(tools)
     assert "workspace_file_stat" in tools
     assert "skills_list" in tools
     assert "skill_view" in tools
     assert "session_search" in tools
     assert "viking_search" in tools
     assert "viking_read" in tools
-    assert "git_status" in tools
-    assert "git_diff" in tools
-    assert "git_log" in tools
-    assert "git_branch" in tools
-    assert "cron_list" in tools
-    assert "cron_create_script_only" in tools
 
 
 def test_profile_router_tokens_are_case_sensitive(tmp_path):
@@ -5140,62 +5182,63 @@ def test_profile_router_tokens_are_case_sensitive(tmp_path):
     assert store.verify_token(created["token"].upper()) is None
 
 
-def test_http_owner_mode_tools_require_owner_scope_before_dispatch(monkeypatch, tmp_path):
+def test_http_owner_mode_tools_are_not_registered(monkeypatch, tmp_path):
     import mcp_serve
-    import mcp_profile_router_auth
 
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
     monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
 
-    checked_scopes = []
-
-    def fake_require_scope(scope):
-        checked_scopes.append(scope)
-        if scope == PROFILE_ROUTER_OWNER_SCOPE:
-            raise mcp_profile_router_auth.ProfileRouterAuthError(
-                "insufficient_scope",
-                "profile-router token requires owner scope",
-            )
-        return {"token_id": "tok_ownerless", "token_hash_prefix": "sha256:ownerless"}
-
-    def must_not_dispatch(*args, **kwargs):
-        raise AssertionError("owner-gated tool dispatched without owner scope")
-
-    monkeypatch.setattr(
-        mcp_profile_router_auth,
-        "require_current_access_token_scope",
-        fake_require_scope,
-    )
-    monkeypatch.setattr(mcp_profile_router, "workspace_production_action_run", must_not_dispatch)
-    monkeypatch.setattr(mcp_profile_router, "server_command_run", must_not_dispatch)
-    monkeypatch.setattr(mcp_profile_router, "server_shell_run", must_not_dispatch)
-
     server = mcp_serve.create_profile_router_mcp_server(
+        public_http=True,
         http_auth=True,
         token_store_path=str(tmp_path / "tokens.json"),
         audit_log_path=str(tmp_path / "audit.jsonl"),
     )
     tools = server._tool_manager._tools
 
-    cases = (
-        (
-            "workspace_production_action_run",
-            {"workspace_id": "ws_1", "action_name": "deploy", "context_token": "ctx"},
-        ),
-        (
-            "server_command_run",
-            {"profile_ref": "local:main-bot", "alias": "prod", "command_name": "deploy"},
-        ),
-        (
-            "server_shell_run",
-            {"profile_ref": "local:main-bot", "alias": "prod", "command": "uptime"},
-        ),
-    )
+    assert {
+        "workspace_production_action_run",
+        "server_command_run",
+        "server_shell_run",
+    }.isdisjoint(tools)
 
-    for name, kwargs in cases:
-        checked_scopes.clear()
-        payload = json.loads(tools[name].fn(**kwargs))
 
-        assert payload["ok"] is False
-        assert payload["error"]["code"] == "insufficient_scope"
-        assert checked_scopes == [PROFILE_ROUTER_TERMINAL_SCOPE, PROFILE_ROUTER_OWNER_SCOPE]
+def test_public_http_without_auth_still_registers_only_read_tools(monkeypatch):
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+
+    server = mcp_serve.create_profile_router_mcp_server(public_http=True)
+    assert set(server._tool_manager._tools) == {
+        "profiles_list",
+        "profile_get",
+        "profile_health",
+        "profile_context_get",
+        "skills_list",
+        "skill_view",
+        "session_search",
+        "viking_search",
+        "viking_read",
+        "workspace_open",
+        "workspace_instructions_get",
+        "workspace_context_status",
+        "workspace_get",
+        "workspace_close",
+        "workspace_file_list",
+        "workspace_file_read",
+        "workspace_file_stat",
+        "workspace_file_search",
+        "workspace_diff",
+    }
+
+
+def test_profile_router_entrypoint_rejects_native_windows(monkeypatch):
+    import mcp_serve
+
+    monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
+    monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
+    monkeypatch.setattr(mcp_serve.os, "name", "nt")
+
+    with pytest.raises(RuntimeError, match="requires a POSIX host"):
+        mcp_serve.run_profile_router_mcp_server(transport="streamable-http")

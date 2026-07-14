@@ -1078,13 +1078,20 @@ def mcp_command(args):
         mcp_serve = importlib.import_module("mcp_serve")
         if getattr(args, "profile_router", False):
             transport = "streamable-http" if getattr(args, "http", False) else getattr(args, "transport", "stdio")
+            public_url = getattr(args, "public_url", None)
+            if public_url is None:
+                profile_router_config = load_config().get("profile_router", {})
+                if isinstance(profile_router_config, dict):
+                    configured_public_url = profile_router_config.get("public_url")
+                    if isinstance(configured_public_url, str):
+                        public_url = configured_public_url.strip() or None
             mcp_serve.run_profile_router_mcp_server(
                 verbose=getattr(args, "verbose", False),
                 transport=transport,
                 host=getattr(args, "host", "127.0.0.1"),
                 port=getattr(args, "port", 8765),
                 streamable_http_path=getattr(args, "streamable_http_path", "/mcp"),
-                public_url=getattr(args, "public_url", None),
+                public_url=public_url,
             )
         else:
             if _profile_router_only_serve_flag_used(args):

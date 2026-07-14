@@ -80,6 +80,17 @@ def test_malformed_existing_board_metadata_fails_closed(kanban_home):
     assert kb.is_profile_allowed("guarded", "goggins") is False
 
 
+@pytest.mark.parametrize("payload", [[], None, "bad", 42, True])
+def test_non_object_board_metadata_fails_closed(kanban_home, payload):
+    kb.create_board("guarded", allowed_profiles=["alex"])
+    kb.board_metadata_path("guarded").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    assert kb.get_board_allowed_profiles("guarded") == ()
+    assert kb.is_profile_allowed("guarded", "alex") is False
+
+
 def test_empty_allowlist_denies_every_profile_and_none_restores_unrestricted(kanban_home):
     kb.create_board("guarded", allowed_profiles=[])
     assert kb.get_board_allowed_profiles("guarded") == ()
@@ -160,6 +171,66 @@ def test_direct_claim_rejects_preexisting_disallowed_assignment(kanban_home):
         and event.payload.get("reason") == "profile_not_allowed"
         for event in events
     )
+
+
+def test_empty_allowlist_rejects_unassigned_ready_and_review_claims(kanban_home):
+    kb.create_board("frozen", allowed_profiles=[])
+    with kb.connect(board="frozen") as conn:
+        ready_id = kb.create_task(conn, title="ready", board="frozen")
+        review_id = kb.create_task(conn, title="review", board="frozen")
+        conn.execute(
+            "UPDATE tasks SET status = 'review' WHERE id = ?",
+            (review_id,),
+        )
+        conn.commit()
+
+        assert kb.claim_task(conn, ready_id, board="frozen") is None
+        assert kb.claim_review_task(conn, review_id, board="frozen") is None
+        ready = kb.get_task(conn, ready_id)
+        review = kb.get_task(conn, review_id)
+        assert ready is not None and ready.status == "ready"
+        assert review is not None and review.status == "review"
+
+
+def test_rejected_reassign_reclaim_preserves_running_task_and_run(kanban_home):
+    kb.create_board("guarded", allowed_profiles=["alex"])
+    with kb.connect(board="guarded") as conn:
+        task_id = kb.create_task(
+            conn, title="running", assignee="alex", board="guarded"
+        )
+        claimed = kb.claim_task(
+            conn, task_id, claimer="claim-1", board="guarded"
+        )
+        assert claimed is not None
+        before = kb.get_task(conn, task_id)
+        assert before is not None
+        runs_before = kb.list_runs(conn, task_id)
+
+        with pytest.raises(ValueError, match="not allowed on board 'guarded'"):
+            kb.reassign_task(
+                conn,
+                task_id,
+                "goggins",
+                reclaim_first=True,
+                board="guarded",
+            )
+
+        after = kb.get_task(conn, task_id)
+        assert after is not None
+        runs_after = kb.list_runs(conn, task_id)
+
+    assert (
+        after.status,
+        after.assignee,
+        after.claim_lock,
+        after.current_run_id,
+    ) == (
+        before.status,
+        before.assignee,
+        before.claim_lock,
+        before.current_run_id,
+    )
+    assert runs_after == runs_before
 
 
 def test_decomposer_filters_roster_and_uses_allowed_fallbacks(kanban_home, monkeypatch):

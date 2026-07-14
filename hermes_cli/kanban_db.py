@@ -688,6 +688,11 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 # its directory — trust the filesystem.
                 raw["slug"] = slug
                 meta.update(raw)
+            else:
+                # A syntactically valid JSON scalar/list is still malformed
+                # board metadata. Do not let it erase a security policy by
+                # falling back to the unrestricted default.
+                meta["allowed_profiles"] = []
     except (OSError, json.JSONDecodeError):
         # Missing metadata is handled by the defaults above, but an existing
         # unreadable/malformed policy file must fail closed rather than erase
@@ -3476,10 +3481,15 @@ def claim_task(
             "SELECT assignee FROM tasks WHERE id = ? AND status = 'ready'",
             (task_id,),
         ).fetchone()
+        allowed_profiles = get_board_allowed_profiles(board)
         if (
             allowed_row is not None
-            and allowed_row["assignee"] is not None
-            and not is_profile_allowed(board, allowed_row["assignee"])
+            and allowed_profiles is not None
+            and (
+                allowed_row["assignee"] is None
+                or _canonical_assignee(allowed_row["assignee"])
+                not in set(allowed_profiles)
+            )
         ):
             _append_event(
                 conn,
@@ -3626,10 +3636,15 @@ def claim_review_task(
             "SELECT assignee FROM tasks WHERE id = ? AND status = 'review'",
             (task_id,),
         ).fetchone()
+        allowed_profiles = get_board_allowed_profiles(board)
         if (
             allowed_row is not None
-            and allowed_row["assignee"] is not None
-            and not is_profile_allowed(board, allowed_row["assignee"])
+            and allowed_profiles is not None
+            and (
+                allowed_row["assignee"] is None
+                or _canonical_assignee(allowed_row["assignee"])
+                not in set(allowed_profiles)
+            )
         ):
             _append_event(
                 conn,
@@ -3961,12 +3976,18 @@ def reassign_task(
     Returns True if the reassign landed. ``profile`` may be ``None`` to
     unassign entirely.
     """
+    canonical_profile = _canonical_assignee(profile)
+    # Validate before reclaiming so a rejected destination cannot terminate
+    # the current worker or mutate the task/run state.
+    require_profile_allowed(
+        board, canonical_profile, operation="task reassignment"
+    )
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
     # assign_task handles its own txn + the still-running guard.
     try:
-        return assign_task(conn, task_id, profile, board=board)
+        return assign_task(conn, task_id, canonical_profile, board=board)
     except RuntimeError:
         # Task is still running and reclaim_first was False; caller
         # needs to decide whether to retry with reclaim.

@@ -414,6 +414,10 @@ class TestBareTextNoLongerApproves:
 class TestBlockingApprovalE2E:
     """Test the full blocking flow: agent thread blocks → user approves → agent resumes."""
 
+    @pytest.fixture(autouse=True)
+    def _manual_approval_mode(self, monkeypatch):
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
+
     def setup_method(self):
         _clear_approval_state()
         os.environ.pop("HERMES_YOLO_MODE", None)
@@ -421,6 +425,16 @@ class TestBlockingApprovalE2E:
         os.environ.pop("HERMES_GATEWAY_SESSION", None)
         os.environ.pop("HERMES_EXEC_ASK", None)
         os.environ.pop("HERMES_SESSION_KEY", None)
+        # These E2E tests exercise manual gateway blocking; default config is
+        # approvals.mode=smart which may auto-approve/deny via aux LLM before
+        # notify_cb runs (flaky on CI when the LLM is slow or unavailable).
+        self._approval_mode_patch = patch(
+            "tools.approval._get_approval_mode", return_value="manual"
+        )
+        self._approval_mode_patch.start()
+
+    def teardown_method(self):
+        self._approval_mode_patch.stop()
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""
@@ -743,6 +757,10 @@ class TestCrossSessionApprovalIsolation:
     worker thread carrying session A's contextvar resolves to session A
     even when ``os.environ`` has been clobbered to session B.
     """
+
+    @pytest.fixture(autouse=True)
+    def _manual_approval_mode(self, monkeypatch):
+        monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "manual")
 
     def setup_method(self):
         _clear_approval_state()

@@ -321,6 +321,10 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
+        # When True, login bash is unusable (e.g. broken Git-for-Windows
+        # ``Directory \\drivers\\etc`` startup) so execute() must not fall
+        # back to ``bash -l`` per command — use non-login ``bash -c`` instead.
+        self._prefer_nonlogin = False
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -437,13 +441,37 @@ class BaseEnvironment(ABC):
                 self.cwd,
             )
         except Exception as exc:
-            logger.warning(
-                "init_session failed (session=%s): %s — "
-                "falling back to bash -l per command",
-                self._session_id,
-                exc,
-            )
             self._snapshot_ready = False
+            # Default fallback is bash -l per command so PATH/nvm/etc still
+            # load.  If login itself is dead (classic Windows Git Bash
+            # ``Directory \\drivers\\etc does not exist``), that fallback
+            # would brick every tool — prefer non-login bash -c instead.
+            detail = str(exc)
+            prefer_nonlogin = False
+            try:
+                probe = self._run_bash("true", login=False, timeout=min(15, self._snapshot_timeout))
+                probe_result = self._wait_for_process(probe, timeout=min(15, self._snapshot_timeout))
+                prefer_nonlogin = int(probe_result.get("returncode") or 0) == 0
+                if not prefer_nonlogin:
+                    detail = (probe_result.get("stdout") or detail).strip() or detail
+            except Exception as probe_exc:
+                detail = f"{detail}; non-login probe: {probe_exc}"
+
+            self._prefer_nonlogin = prefer_nonlogin
+            if prefer_nonlogin:
+                logger.warning(
+                    "init_session failed (session=%s): %s — "
+                    "login bash unusable; falling back to non-login bash -c",
+                    self._session_id,
+                    exc,
+                )
+            else:
+                logger.warning(
+                    "init_session failed (session=%s): %s — "
+                    "falling back to bash -l per command",
+                    self._session_id,
+                    detail,
+                )
 
     # ------------------------------------------------------------------
     # Command wrapping
@@ -933,8 +961,9 @@ class BaseEnvironment(ABC):
 
         wrapped = self._wrap_command(exec_command, effective_cwd)
 
-        # Use login shell if snapshot failed (so user's profile still loads)
-        login = not self._snapshot_ready
+        # Use login shell if snapshot failed (so user's profile still loads),
+        # unless login itself is broken — then non-login is the only path.
+        login = not self._snapshot_ready and not self._prefer_nonlogin
 
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin

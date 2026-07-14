@@ -300,17 +300,17 @@ class MemoryStore:
         Hard limits keep files from exceeding absolute prompt budget. The soft
         guard is a hygiene layer: when enabled, new append-only entries are
         refused once they would push core memory above the target percentage.
-        Agents can still consolidate with replace/remove, or the user can
-        intentionally bypass via HERMES_MEMORY_SOFT_GUARD_BYPASS=1.
+        Agents can still consolidate with replace/remove, or an operator can
+        intentionally bypass via ``memory.soft_guard_bypass`` in config.yaml.
         """
-        if os.environ.get("HERMES_MEMORY_SOFT_GUARD_BYPASS") == "1":
-            return {"enabled": False}
         try:
             from hermes_cli.config import read_raw_config
 
             cfg = read_raw_config() or {}
             mem_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
             if not isinstance(mem_cfg, dict):
+                return {"enabled": False}
+            if bool(mem_cfg.get("soft_guard_bypass", False)):
                 return {"enabled": False}
             enabled = bool(mem_cfg.get("soft_guard_enabled", False))
             target_pct = float(mem_cfg.get("soft_target_pct", 50))
@@ -378,7 +378,7 @@ class MemoryStore:
                             f"above the configured {target_pct:.1f}% target. "
                             "Use replace/remove to consolidate, save procedures as skills, "
                             "or store detailed facts in fact_store/session/project docs. "
-                            "Set HERMES_MEMORY_SOFT_GUARD_BYPASS=1 only for an intentional override."
+                            "Set memory.soft_guard_bypass in config.yaml only for an intentional override."
                         ),
                         "current_entries": entries,
                         "usage": f"{current:,}/{limit:,}",

@@ -1646,7 +1646,11 @@ def _split_audio_with_ffmpeg(file_path: str, output_dir: str, *, segment_seconds
         output_pattern,
     ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        details = (e.stderr or e.stdout or "").strip() if isinstance(e.stderr or e.stdout, str) else ""
+        logger.error("ffmpeg audio chunking timed out for %s: %s", file_path, details)
+        return [], "Timed out while splitting audio for STT"
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("ffmpeg audio chunking failed for %s: %s", file_path, details)

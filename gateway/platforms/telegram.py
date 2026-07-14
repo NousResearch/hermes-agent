@@ -1028,7 +1028,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if getattr(self.config, "extra", None):
             raw = self.config.extra.get("concurrent_updates")
         if raw is None:
-            raw = os.getenv("HERMES_TELEGRAM_CONCURRENT_UPDATES", "32")
+            raw = 32
         if isinstance(raw, bool):
             return raw
         if isinstance(raw, int):

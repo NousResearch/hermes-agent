@@ -947,7 +947,8 @@ class TestTranscribeAudioDispatch:
         large_audio = tmp_path / "long.ogg"
         large_audio.write_bytes(b"x" * 20)
 
-        def fake_ffmpeg_run(command, check, capture_output, text):
+        def fake_ffmpeg_run(command, check, capture_output, text, timeout):
+            assert timeout == 300
             output_pattern = next(arg for arg in command if "%03d" in str(arg))
             for idx in range(2):
                 Path(str(output_pattern).replace("%03d", f"{idx:03d}")).write_bytes(b"chunk")
@@ -971,6 +972,21 @@ class TestTranscribeAudioDispatch:
         assert result["provider"] == "local"
         assert result["transcript"] == "first chunk\n\nsecond chunk"
         assert mock_local.call_count == 2
+
+    def test_large_audio_chunking_reports_ffmpeg_timeout(self, tmp_path):
+        large_audio = tmp_path / "long.ogg"
+        large_audio.write_bytes(b"x" * 20)
+
+        with patch("tools.transcription_tools.MAX_FILE_SIZE", 10), \
+             patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local"}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._find_ffmpeg_binary", return_value="ffmpeg"), \
+             patch("tools.transcription_tools.subprocess.run", side_effect=subprocess.TimeoutExpired(["ffmpeg"], 300)):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(large_audio))
+
+        assert result["success"] is False
+        assert "Timed out while splitting audio" in result["error"]
 
 
 # ============================================================================

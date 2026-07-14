@@ -148,8 +148,8 @@ def _parse_backend_order(value: Any) -> List[str]:
 def _get_backend_order() -> List[str]:
     """Return the ordered backend preference list.
 
-    ``web.backend_order`` or ``HERMES_WEB_BACKEND_ORDER`` enables runtime
-    fallback across multiple configured providers. If no order is configured,
+    ``web.backend_order`` enables runtime fallback across multiple configured
+    providers. If no order is configured,
     preserve the historical single-backend behavior for explicit
     ``web.backend`` values and the legacy auto-discovery order otherwise.
     """
@@ -157,7 +157,7 @@ def _get_backend_order() -> List[str]:
     configured_order = _parse_backend_order(
         web_config.get("backend_order")
         or web_config.get("fallback_order")
-        or os.getenv("HERMES_WEB_BACKEND_ORDER", "")
+        or ""
     )
     if configured_order:
         return configured_order

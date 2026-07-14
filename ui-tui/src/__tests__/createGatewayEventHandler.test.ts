@@ -4,7 +4,7 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { $skinReady, getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -61,9 +61,30 @@ describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
+    $skinReady.set(false)
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('releases the first-paint gate when a skin.changed arrives', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    expect($skinReady.get()).toBe(false)
+
+    onEvent({ payload: { colors: { fg: '#fff' } }, type: 'skin.changed' } as any)
+
+    expect($skinReady.get()).toBe(true)
+  })
+
+  it('releases the first-paint gate on gateway.ready even without a skin', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    expect($skinReady.get()).toBe(false)
+
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    expect($skinReady.get()).toBe(true)
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

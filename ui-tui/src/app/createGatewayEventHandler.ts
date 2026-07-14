@@ -23,13 +23,13 @@ import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { getUiState, markSkinReady, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
 
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
-const applySkin = (s: GatewaySkin) =>
+const applySkin = (s: GatewaySkin) => {
   patchUiState({
     theme: fromSkin(
       s.colors ?? {},
@@ -40,6 +40,10 @@ const applySkin = (s: GatewaySkin) =>
       s.help_header ?? ''
     )
   })
+  // First skin applied — release the first-paint gate so App renders once,
+  // already in the user's theme, instead of flashing DEFAULT_THEME first.
+  markSkinReady()
+}
 
 const dropBgTask = (taskId: string) =>
   patchUiState(state => {
@@ -310,6 +314,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     if (skin) {
       applySkin(skin)
     }
+
+    // gateway.ready means the gateway is up; even if it carried no skin (old
+    // gateway / edge config), release the gate now rather than waiting out the
+    // timeout fallback. applySkin already marks ready when a skin is present.
+    markSkinReady()
 
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can

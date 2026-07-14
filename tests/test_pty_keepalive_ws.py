@@ -24,7 +24,7 @@ async def test_attach_token_reuses_same_session(monkeypatch):
         def close(self):
             self.alive = False
 
-    def fake_spawn(argv, cwd=None, env=None):
+    def fake_spawn(argv, cwd=None, env=None, cols=80, rows=24):
         b = FakeBridge()
         spawned.append(b)
         return b

@@ -34,6 +34,21 @@ const buildUiState = (): UiState => ({
 
 export const $uiState = atom<UiState>(buildUiState())
 
+// Gates the first paint until the gateway's skin has been applied. entry.tsx
+// renders App immediately after clearing the screen, so without this the first
+// frame paints in DEFAULT_THEME and visibly snaps to the user's theme once the
+// `skin.changed` / `gateway.ready` event is read off the gateway stdio. App
+// renders nothing while false; markSkinReady() flips it on the first skin (and
+// a timeout fallback flips it so an old gateway that never emits one can't hang
+// the UI).
+export const $skinReady = atom<boolean>(false)
+
+export const markSkinReady = () => {
+  if (!$skinReady.get()) {
+    $skinReady.set(true)
+  }
+}
+
 export const $uiTheme = computed($uiState, state => state.theme)
 export const $uiSessionId = computed($uiState, state => state.sid)
 

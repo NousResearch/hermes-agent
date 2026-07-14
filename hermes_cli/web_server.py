@@ -14422,6 +14422,17 @@ else:
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2
+# The embedded TUI is a full-screen app that clears and repaints on every
+# resize. Spawning it at the PTY default (80x24) and then letting the browser's
+# startup burst of RESIZE escapes drive it to the real size made users see
+# several full repaints ("flashing") before it settled. Instead we hold the
+# spawn until the browser reports its size, then boot the child once at that
+# size. ``_PTY_INITIAL_RESIZE_TIMEOUT`` bounds the wait for the first sizing
+# frame (old/headless clients that never send one fall back to 80x24);
+# ``_PTY_RESIZE_SETTLE`` coalesces the rapid follow-up resizes (post-layout
+# refit, ResizeObserver) so the burst collapses into a single boot size.
+_PTY_INITIAL_RESIZE_TIMEOUT = 0.75
+_PTY_RESIZE_SETTLE = 0.2
 
 # Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
 # bound to a process that survives disconnect/refresh and is reattachable.
@@ -14519,7 +14530,6 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
         except (asyncio.CancelledError, Exception):
             pass
         await asyncio.to_thread(bridge.close)
-
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
@@ -15743,13 +15753,74 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
 
+    loop = asyncio.get_running_loop()
+
+    # --- wait for the browser's initial terminal size before spawning ---
+    # Booting the full-screen TUI at the size the browser reports up front
+    # avoids the startup repaint storm (see _PTY_INITIAL_RESIZE_TIMEOUT notes).
+    # Non-resize bytes that somehow arrive first are buffered and replayed to
+    # the child once it's up, so no keystrokes are lost.
+    init_cols, init_rows = 80, 24
+    pending_input: list[bytes] = []
+
+    def _frame_bytes(msg: dict) -> Optional[bytes]:
+        raw = msg.get("bytes")
+        if raw is None:
+            text = msg.get("text")
+            raw = text.encode("utf-8") if isinstance(text, str) else b""
+        return raw or None
+
+    try:
+        first = await asyncio.wait_for(
+            ws.receive(), timeout=_PTY_INITIAL_RESIZE_TIMEOUT
+        )
+        if first.get("type") == "websocket.disconnect":
+            return
+        raw = _frame_bytes(first)
+        if raw is not None:
+            match = _RESIZE_RE.match(raw)
+            if match and match.end() == len(raw):
+                init_cols, init_rows = int(match.group(1)), int(match.group(2))
+                # Coalesce the follow-up resize burst: keep the last size seen
+                # within a short settle window so the child boots once.
+                settle_end = loop.time() + _PTY_RESIZE_SETTLE
+                while (remaining := settle_end - loop.time()) > 0:
+                    try:
+                        nxt = await asyncio.wait_for(ws.receive(), timeout=remaining)
+                    except asyncio.TimeoutError:
+                        break
+                    if nxt.get("type") == "websocket.disconnect":
+                        return
+                    nraw = _frame_bytes(nxt)
+                    if nraw is None:
+                        continue
+                    nmatch = _RESIZE_RE.match(nraw)
+                    if nmatch and nmatch.end() == len(nraw):
+                        init_cols, init_rows = int(nmatch.group(1)), int(nmatch.group(2))
+                    else:
+                        # Real input arrived mid-settle; stop coalescing, hold it.
+                        pending_input.append(nraw)
+                        break
+            else:
+                pending_input.append(raw)
+    except asyncio.TimeoutError:
+        pass
+    except WebSocketDisconnect:
+        return
+
+    # Normalize before either direct spawn or the registry callback. The
+    # bridge also clamps defensively, but keeping raw browser dimensions out
+    # of the spawn boundary makes the initial and later resize paths match.
+    init_cols, init_rows = PtyBridge.clamp_dimensions(init_cols, init_rows)
     attach_token = ws.query_params.get("attach") or None
 
     def _spawn():
-        return PtyBridge.spawn(argv, cwd=cwd, env=env)
+        return PtyBridge.spawn(
+            argv, cwd=cwd, env=env, cols=init_cols, rows=init_rows
+        )
 
     if attach_token is None:
-        # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
+        # Legacy path: 1:1 socket<->PTY, killed on disconnect.
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
@@ -15760,12 +15831,15 @@ async def pty_ws(ws: WebSocket) -> None:
             await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
+        for buffered in pending_input:
+            bridge.write(buffered)
         await _legacy_pump(ws, bridge)
         return
 
-    # Keep-alive path: the PTY outlives this socket; reattach by token.
+    # Keep-alive path: attach to an existing token or spawn exactly once at
+    # the negotiated size from inside the registry lifecycle boundary.
     try:
-        session, _created = await PTY_REGISTRY.attach_or_spawn(
+        session, created = await PTY_REGISTRY.attach_or_spawn(
             attach_token, spawn=_spawn
         )
     except PtyUnavailableError as exc:
@@ -15777,6 +15851,12 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=1011)
         return
 
+    if not created:
+        # The initial RESIZE frame was consumed during negotiation. Apply it
+        # to an existing keep-alive process instead of dropping that update.
+        session.bridge.resize(cols=init_cols, rows=init_rows)
+    for buffered in pending_input:
+        session.bridge.write(buffered)
     await session.attach(ws)
 
     # --- writer loop: WebSocket → PTY master ----------------------------
@@ -15992,12 +16072,27 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        # Inject the active theme (name + full definition for user themes) so
+        # the SPA paints it before React mounts — no defaultTheme flash on a
+        # first-ever load with an empty localStorage cache. Escape the JSON's
+        # HTML-significant chars so a user theme string can't break out of the
+        # inline <script> (the YAML is local/trusted, but defence in depth).
+        theme_json = json.dumps(
+            _active_theme_bootstrap_payload(), separators=(",", ":")
+        )
+        theme_json = (
+            theme_json.replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+        )
+        theme_js = f"window.__HERMES_THEME_BOOTSTRAP__={theme_json};"
         if gated:
             bootstrap_script = (
                 f"<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"{theme_js}"
                 f"</script>"
             )
         else:
@@ -16006,6 +16101,7 @@ def mount_spa(application: FastAPI):
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
+                f"{theme_js}"
                 f"</script>"
             )
         if prefix:
@@ -16326,6 +16422,31 @@ def _discover_user_themes() -> list:
         if normalised is not None:
             result.append(normalised)
     return result
+
+
+def _active_theme_bootstrap_payload() -> dict:
+    """Resolve the active dashboard theme for first-paint HTML injection.
+
+    Returns ``{"name": <active>, "definition": <def-or-None>}``. Built-ins
+    ship their definitions inside the JS bundle, so for those only the name
+    is needed; user themes (``~/.hermes/dashboard-themes/*.yaml``) carry their
+    full normalised definition so the SPA can paint them on the very first
+    load — before ``/api/dashboard/themes`` resolves and before any
+    localStorage cache exists. If the configured theme no longer exists, fall
+    back to ``default`` so the SPA never strands on an unknown name.
+    """
+    try:
+        config = load_config()
+        active = cfg_get(config, "dashboard", "theme", default="default")
+        builtin_names = {t["name"] for t in _BUILTIN_DASHBOARD_THEMES}
+        if active in builtin_names:
+            return {"name": active, "definition": None}
+        for theme in _discover_user_themes():
+            if theme["name"] == active:
+                return {"name": active, "definition": theme}
+        return {"name": "default", "definition": None}
+    except Exception:
+        return {"name": "default", "definition": None}
 
 
 @app.get("/api/dashboard/themes")

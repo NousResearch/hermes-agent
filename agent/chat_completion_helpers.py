@@ -2632,84 +2632,110 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # that can leak in under an api_mode-flip race. The Anthropic SDK
         # raises a non-retryable TypeError on them, killing the turn. See
         # #31673 / sanitize_anthropic_kwargs().
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        from agent.anthropic_adapter import (
+            _is_stream_unavailable_error,
+            create_anthropic_message,
+            sanitize_anthropic_kwargs,
+        )
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
-        # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
-            # The Anthropic SDK exposes the raw httpx response on
-            # ``stream.response``.  Snapshot diagnostic headers
-            # immediately so they survive a stream that dies before the
-            # first event.
-            try:
-                agent._stream_diag_capture_response(
-                    _diag, getattr(stream, "response", None)
-                )
-            except Exception:
-                pass
-            for event in stream:
-                # Update stale-stream timer on every event so the
-                # outer poll loop knows data is flowing.  Without
-                # this, the detector kills healthy long-running
-                # Opus streams after 180 s even when events are
-                # actively arriving (the chat_completions path
-                # already does this at the top of its chunk loop).
-                last_chunk_time["t"] = time.time()
-                agent._touch_activity("receiving stream response")
-
-                # Update per-attempt diagnostic counters (best-effort).
+        # Use the Anthropic SDK's streaming context manager. Wrap the full
+        # stream context + iteration: Anthropic SDK accumulate_event() runs
+        # on every SSE event (including message_delta), so MiniMax-style
+        # ``usage: null`` crashes can raise during ``for event in stream``
+        # — not only at get_final_message() (#60683).
+        try:
+            with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+                # The Anthropic SDK exposes the raw httpx response on
+                # ``stream.response``.  Snapshot diagnostic headers
+                # immediately so they survive a stream that dies before the
+                # first event.
                 try:
-                    _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
-                    if _diag.get("first_chunk_at") is None:
-                        _diag["first_chunk_at"] = last_chunk_time["t"]
-                    try:
-                        _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
-                    except Exception:
-                        pass
+                    agent._stream_diag_capture_response(
+                        _diag, getattr(stream, "response", None)
+                    )
                 except Exception:
                     pass
+                for event in stream:
+                    # Update stale-stream timer on every event so the
+                    # outer poll loop knows data is flowing.  Without
+                    # this, the detector kills healthy long-running
+                    # Opus streams after 180 s even when events are
+                    # actively arriving (the chat_completions path
+                    # already does this at the top of its chunk loop).
+                    last_chunk_time["t"] = time.time()
+                    agent._touch_activity("receiving stream response")
 
+                    # Update per-attempt diagnostic counters (best-effort).
+                    try:
+                        _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
+                        if _diag.get("first_chunk_at") is None:
+                            _diag["first_chunk_at"] = last_chunk_time["t"]
+                        try:
+                            _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                    if agent._interrupt_requested:
+                        break
+
+                    event_type = getattr(event, "type", None)
+
+                    if event_type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block and getattr(block, "type", None) == "tool_use":
+                            has_tool_use = True
+                            tool_name = getattr(block, "name", None)
+                            if tool_name:
+                                _fire_first_delta()
+                                agent._fire_tool_gen_started(tool_name)
+
+                    elif event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta:
+                            delta_type = getattr(delta, "type", None)
+                            if delta_type == "text_delta":
+                                text = getattr(delta, "text", "")
+                                if text and not has_tool_use:
+                                    _fire_first_delta()
+                                    agent._fire_stream_delta(text)
+                                    deltas_were_sent["yes"] = True
+                            elif delta_type == "thinking_delta":
+                                thinking_text = getattr(delta, "thinking", "")
+                                if thinking_text:
+                                    _fire_first_delta()
+                                    agent._fire_reasoning_delta(thinking_text)
+
+                # Return the native Anthropic Message for downstream processing.
+                # If the stream was interrupted (the event loop broke out above on
+                # agent._interrupt_requested), do NOT call get_final_message() — on
+                # a partially-consumed stream the SDK may hang draining remaining
+                # events or return a Message with incomplete tool_use blocks (partial
+                # JSON in `input`). The outer poll loop raises InterruptedError, so
+                # this return value is discarded anyway.
                 if agent._interrupt_requested:
-                    break
-
-                event_type = getattr(event, "type", None)
-
-                if event_type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block and getattr(block, "type", None) == "tool_use":
-                        has_tool_use = True
-                        tool_name = getattr(block, "name", None)
-                        if tool_name:
-                            _fire_first_delta()
-                            agent._fire_tool_gen_started(tool_name)
-
-                elif event_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        delta_type = getattr(delta, "type", None)
-                        if delta_type == "text_delta":
-                            text = getattr(delta, "text", "")
-                            if text and not has_tool_use:
-                                _fire_first_delta()
-                                agent._fire_stream_delta(text)
-                                deltas_were_sent["yes"] = True
-                        elif delta_type == "thinking_delta":
-                            thinking_text = getattr(delta, "thinking", "")
-                            if thinking_text:
-                                _fire_first_delta()
-                                agent._fire_reasoning_delta(thinking_text)
-
-            # Return the native Anthropic Message for downstream processing.
-            # If the stream was interrupted (the event loop broke out above on
-            # agent._interrupt_requested), do NOT call get_final_message() — on
-            # a partially-consumed stream the SDK may hang draining remaining
-            # events or return a Message with incomplete tool_use blocks (partial
-            # JSON in `input`). The outer poll loop raises InterruptedError, so
-            # this return value is discarded anyway.
-            if agent._interrupt_requested:
-                return None
-            return stream.get_final_message()
+                    return None
+                return stream.get_final_message()
+        except Exception as exc:
+            if not _is_stream_unavailable_error(exc):
+                raise
+            # Force non-streaming create — _anthropic_messages_create() would
+            # pass prefer_stream=True again and re-enter messages.stream().
+            logger.debug(
+                "%sAnthropic stream aggregation failed; falling back to "
+                "messages.create(): %s",
+                getattr(agent, "log_prefix", ""),
+                exc,
+            )
+            return create_anthropic_message(
+                agent._anthropic_client,
+                api_kwargs,
+                log_prefix=getattr(agent, "log_prefix", ""),
+                prefer_stream=False,
+            )
 
     def _call():
         import httpx as _httpx

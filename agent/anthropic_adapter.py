@@ -2746,6 +2746,15 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
         from agent.bedrock_adapter import is_streaming_access_denied_error
 
         return is_streaming_access_denied_error(exc)
+    # Anthropic SDK accumulate_event() assumes message_start carried a usage
+    # object; some Anthropic-compatible providers (e.g. MiniMax api.minimaxi.com)
+    # emit usage: null on message_start and only populate it on message_delta,
+    # so get_final_message() raises AttributeError on output_tokens (#60683).
+    if isinstance(exc, AttributeError):
+        if "output_tokens" in err_lower:
+            return True
+        if "nonetype" in err_lower and "usage" in err_lower:
+            return True
     return False
 
 

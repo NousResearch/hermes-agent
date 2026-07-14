@@ -23,7 +23,7 @@ Usage:
 Environment:
   HYPERLIQUID_API_URL  Override API base URL
                        (default: https://api.hyperliquid.xyz)
-  HYPERLIQUID_USER_ADDRESS  Default address for state/fills/orders/review commands
+  HYPERLIQUID_USER_ADDRESS  Default address for state/spot-balances/delegations/fills/orders/review commands
 """
 
 from __future__ import annotations

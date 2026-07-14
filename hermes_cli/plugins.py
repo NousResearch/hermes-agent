@@ -274,17 +274,6 @@ def _get_enabled_plugins() -> Optional[set]:
         return None
 
 
-def _split_plugin_paths(raw: str) -> List[Path]:
-    """Parse a path-list string into expanded plugin roots."""
-    paths: List[Path] = []
-    for line in raw.splitlines():
-        for item in line.split(os.pathsep):
-            candidate = item.strip()
-            if candidate:
-                paths.append(Path(candidate).expanduser())
-    return paths
-
-
 def _get_extra_plugin_paths() -> List[Path]:
     """Read additional general-plugin discovery roots from config.
 
@@ -302,17 +291,24 @@ def _get_extra_plugin_paths() -> List[Path]:
         if isinstance(plugins_cfg, dict):
             raw_config = plugins_cfg.get("extra_paths", [])
             if isinstance(raw_config, str):
-                paths.extend(_split_plugin_paths(raw_config))
+                if raw_config.strip():
+                    paths.append(Path(raw_config.strip()).expanduser())
             elif isinstance(raw_config, list):
                 for item in raw_config:
                     if isinstance(item, str) and item.strip():
                         paths.append(Path(item).expanduser())
+            elif raw_config not in (None, []):
+                logger.warning(
+                    "plugins.extra_paths must be a path string or list of path strings; got %s",
+                    type(raw_config).__name__,
+                )
     except Exception:
         pass
 
     deduped: List[Path] = []
     seen: Set[str] = set()
     for path in paths:
+        path = path.resolve(strict=False)
         key = str(path)
         if key in seen:
             continue
@@ -1416,7 +1412,7 @@ class PluginManager:
                 "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
             )
 
-        # 4. External plugin paths (config/env).
+        # 4. External general-plugin paths (config only).
         for external_path in _get_extra_plugin_paths():
             logger.debug("Scanning external plugin path: %s", external_path)
             external_manifests = self._scan_external_path(external_path)
@@ -1601,18 +1597,44 @@ class PluginManager:
         * ``/path/to/plugins/`` containing ``<name>/plugin.yaml`` children.
         * ``/path/to/plugin-checkout/`` containing a root ``plugin.yaml``.
         """
-        manifest_file = path / "plugin.yaml"
-        if not manifest_file.exists():
-            manifest_file = path / "plugin.yml"
-        if manifest_file.exists():
-            manifest = self._parse_manifest(
-                manifest_file,
+        if not path.is_dir():
+            logger.warning(
+                "Configured plugin extra path does not exist or is not a directory: %s",
+                path,
+            )
+            return []
+        try:
+            manifest_file = path / "plugin.yaml"
+            if not manifest_file.exists():
+                manifest_file = path / "plugin.yml"
+            if manifest_file.exists():
+                manifest = self._parse_manifest(
+                    manifest_file,
+                    path,
+                    source="external",
+                    prefix="",
+                )
+                if manifest is not None and manifest.kind in {"exclusive", "model-provider"}:
+                    logger.warning(
+                        "Skipping external plugin '%s': kind '%s' uses an independent "
+                        "discovery root and is not supported by plugins.extra_paths",
+                        manifest.name,
+                        manifest.kind,
+                    )
+                    return []
+                return [manifest] if manifest is not None else []
+            return self._scan_directory(
                 path,
                 source="external",
-                prefix="",
+                skip_names={"memory", "context_engine", "model-providers"},
             )
-            return [manifest] if manifest is not None else []
-        return self._scan_directory(path, source="external")
+        except OSError as exc:
+            logger.warning(
+                "Could not scan configured plugin extra path %s: %s",
+                path,
+                exc,
+            )
+            return []
 
     def _scan_directory_level(
         self,

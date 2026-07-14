@@ -15,6 +15,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    _get_extra_plugin_paths,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -441,6 +442,101 @@ class TestPluginDiscovery:
         assert loaded.manifest.kind == "backend"
         assert loaded.enabled is True
         assert "direct-plugin" in mgr._plugin_commands
+
+    def test_external_collection_excludes_independent_loader_categories(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_test"
+        external_root = tmp_path / "private_plugins"
+        bundled_root = tmp_path / "bundled_plugins"
+        bundled_root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_root))
+
+        _make_plugin_dir(external_root / "memory", "memory-x", auto_enable=False)
+        _make_plugin_dir(external_root / "context_engine", "context-x", auto_enable=False)
+        _make_plugin_dir(external_root / "model-providers", "model-x", auto_enable=False)
+        _write_plugins_config(
+            hermes_home,
+            enabled=["memory/memory-x", "context_engine/context-x", "model-providers/model-x"],
+            extra_paths=[str(external_root)],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "memory/memory-x" not in mgr._plugins
+        assert "context_engine/context-x" not in mgr._plugins
+        assert "model-providers/model-x" not in mgr._plugins
+
+    def test_external_direct_checkout_excludes_independent_provider_kind(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_test"
+        checkout = tmp_path / "model-provider-checkout"
+        checkout.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (checkout / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "model-x", "kind": "model-provider"})
+        )
+        (checkout / "__init__.py").write_text("def register(ctx): pass\n")
+        _write_plugins_config(
+            hermes_home,
+            enabled=["model-x"],
+            extra_paths=[str(checkout)],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "model-x" not in mgr._plugins
+
+    def test_missing_external_path_logs_actionable_warning(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / "hermes_test"
+        missing = tmp_path / "missing-plugin-root"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_plugins_config(hermes_home, extra_paths=[str(missing)])
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            PluginManager().discover_and_load()
+
+        assert "does not exist or is not a directory" in caplog.text
+
+    def test_extra_paths_are_canonicalized_before_deduplication(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes_test"
+        external_root = tmp_path / "private_plugins"
+        external_root.mkdir()
+        alias = tmp_path / "private_plugins_alias"
+        alias.symlink_to(external_root, target_is_directory=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _write_plugins_config(
+            hermes_home,
+            extra_paths=[str(external_root), str(alias)],
+        )
+
+        assert _get_extra_plugin_paths() == [external_root.resolve()]
+
+    def test_invalid_extra_paths_config_logs_actionable_warning(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"extra_paths": {"bad": "shape"}}})
+        )
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            paths = _get_extra_plugin_paths()
+
+        assert paths == []
+        assert "must be a path string or list of path strings" in caplog.text
+
+    def test_external_scan_isolates_filesystem_errors(self, tmp_path, caplog):
+        external_root = tmp_path / "private_plugins"
+        external_root.mkdir()
+        mgr = PluginManager()
+
+        with patch.object(mgr, "_scan_directory", side_effect=OSError("permission denied")):
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                manifests = mgr._scan_external_path(external_root)
+
+        assert manifests == []
+        assert "Could not scan configured plugin extra path" in caplog.text
 
     def test_unenabled_external_plugin_does_not_shadow_bundled_backend(self, tmp_path, monkeypatch):
         """External discovery alone must not replace a bundled auto-loaded backend."""

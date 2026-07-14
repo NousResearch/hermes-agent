@@ -8127,30 +8127,27 @@ def _update_node_dependencies() -> None:
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
-    # Step 1: root install (no workspace recursion).
-    # NOTE: capture_output=False here is deliberate (#18840) — optional
-    # postinstall scripts (e.g. @askjo/camofox-browser's browser-binary fetch)
-    # print download progress, and capturing it makes a long download look
-    # hung. The chatty npm-deprecation noise during `hermes update` comes from
-    # the *desktop* build, not this step; that one is captured to update.log.
-    root_args = [*extra_args, "--workspaces=false"]
-    root_result = _run_npm_install_deterministic(
-        npm,
-        PROJECT_ROOT,
-        extra_args=tuple(root_args),
-        capture_output=False,
-        env=nixos_env,
-    )
-    if root_result.returncode != 0:
-        print("  ⚠ npm install failed in repo root")
-        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        return
-
-    # Step 2: install only the workspaces update needs (ui-tui, web).
-    # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    # Single-pass install: root deps + only the workspaces the CLI/TUI/web
+    # build requires. ``--include-workspace-root`` (``-W``) is critical — without
+    # it, a scoped ``--workspace`` selects a sub-tree that excludes the
+    # root-only packages (``agent-browser``, ``@streamdown/math``), and
+    # ``npm ci`` (which the deterministic helper prefers) wipes ``node_modules``
+    # before reifying, so a follow-on scoped install erases what a previous
+    # root install put there. Single pass avoids the wipe-then-don't-restore
+    # hole (#64354) and is verified to keep ``apps/desktop`` (Electron) out
+    # of the install tree.
+    #
+    # capture_output=False is deliberate (#18840) — optional postinstall
+    # scripts (e.g. @askjo/camofox-browser's browser-binary fetch) print
+    # download progress, and capturing it makes a long download look hung.
+    ws_args = [
+        *extra_args,
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "web",
+        "--include-workspace-root",
+    ]
     ws_result = _run_npm_install_deterministic(
         npm,
         PROJECT_ROOT,
@@ -8158,13 +8155,96 @@ def _update_node_dependencies() -> None:
         capture_output=False,
         env=nixos_env,
     )
-    if ws_result.returncode == 0:
-        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
-    else:
+    if ws_result.returncode != 0:
         print("  ⚠ npm workspace install failed")
         stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
+        return
+
+    # Hardening: don't claim success if scoped install silently dropped
+    # root-only deps. ``npm ci`` is supposed to reify against the lockfile,
+    # but a follow-on scoped call (or any future regression of the same
+    # shape that #64354 introduced) can leave us with a partial tree while
+    # exit codes stay 0. Asserting the tree is complete prevents the silent
+    # "✓" on a broken browser-tools install (#64354).
+    manifest = _read_root_package_dependencies(PROJECT_ROOT / "package.json")
+    if manifest and not _node_modules_root_deps_present(PROJECT_ROOT, manifest):
+        missing = _missing_root_deps_report(PROJECT_ROOT, manifest)
+        print("  ⚠ npm install completed but root-only dependencies are missing:")
+        for name in missing:
+            print(f"    - {name}")
+        print("    Browser/desktop tooling that depends on these may not work.")
+        return
+
+    print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+
+
+def _read_root_package_dependencies(package_json: Path) -> tuple[str, ...]:
+    """Return root dependency names declared in package.json, or () if unavailable.
+
+    Used by ``_update_node_dependencies`` to verify root-only deps survived a
+    scoped install. Read-only; ignores everything other than the top-level
+    ``dependencies`` key so non-root package metadata can't poison the check.
+    """
+    try:
+        import json as _json
+
+        data = _json.loads(package_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ()
+    deps = data.get("dependencies") if isinstance(data, dict) else None
+    if not isinstance(deps, dict):
+        return ()
+    return tuple(name for name in deps.keys() if isinstance(name, str) and name)
+
+
+_NODE_MODULES_ROOT_PACKAGE_MARKERS = (
+    "package.json",  # legacy marker for npm < 7
+    "node_modules",
+)
+
+
+def _node_modules_root_deps_present(
+    project_root: Path, root_dep_names: tuple[str, ...]
+) -> bool:
+    """Return True iff every root dep materialised under ``node_modules/``.
+
+    We accept either a populated ``node_modules/<name>/`` subtree (npm ≥ 7,
+    hoisted layout) or a flat ``node_modules/<name>/package.json`` (legacy
+    flat layout) — both are real install outcomes. We do NOT treat a bare
+    ``node_modules/<name>`` symlink or shim file as evidence of install
+    success.
+    """
+    if not root_dep_names:
+        return True
+    nm = project_root / "node_modules"
+    for name in root_dep_names:
+        dep_dir = nm / name
+        if not dep_dir.is_dir():
+            return False
+        # A directory alone isn't enough — for the legacy flat layout
+        # a real package installs ``node_modules/<name>/package.json``,
+        # and for hoisted layouts the per-package dir is non-empty. An
+        # empty dir is what a partial / interrupted install leaves.
+        if not any((dep_dir / marker).exists() for marker in _NODE_MODULES_ROOT_PACKAGE_MARKERS):
+            return False
+    return True
+
+
+def _missing_root_deps_report(
+    project_root: Path, root_dep_names: tuple[str, ...]
+) -> list[str]:
+    """List specific root deps missing from ``node_modules/`` after install."""
+    nm = project_root / "node_modules"
+    missing: list[str] = []
+    for name in root_dep_names:
+        dep_dir = nm / name
+        if not dep_dir.is_dir() or not any(
+            (dep_dir / marker).exists() for marker in _NODE_MODULES_ROOT_PACKAGE_MARKERS
+        ):
+            missing.append(name)
+    return missing
 
 
 class _UpdateOutputStream:

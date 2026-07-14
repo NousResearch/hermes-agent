@@ -5,15 +5,14 @@ version: 1.0.0
 author: LP (plagtech)
 license: MIT
 platforms: [macos, linux, windows]
-required_environment_variables:
-  - name: SPRAAY_GATEWAY_URL
-    prompt: Spraay gateway URL
-    help: Default is https://gateway.spraay.app — override only for self-hosted gateways
-    required_for: full functionality
 metadata:
   hermes:
     tags: [blockchain, payments, x402, batch, crypto, agent-commerce]
     requires_toolsets: [terminal]
+    config:
+      SPRAAY_GATEWAY_URL:
+        default: "https://gateway.spraay.app"
+        help: "Spraay gateway URL. Override only for self-hosted gateways."
 ---
 
 # Spraay x402 Payments Skill
@@ -36,10 +35,6 @@ Do NOT use this skill for wallet creation, seed phrase management, or custodial 
 
 ## Prerequisites
 
-**Gateway URL (optional override):**
-
-The public gateway is `https://gateway.spraay.app`. No API key is required — Spraay uses the x402 protocol where each call includes a micro-payment header. Set `SPRAAY_GATEWAY_URL` in `~/.hermes/.env` only if you run a self-hosted instance.
-
 **MCP Server (alternative path):**
 
 Spraay also ships an MCP server with 161 tools on Smithery. If MCP is preferred over HTTP:
@@ -56,45 +51,36 @@ The agent needs access to a signing mechanism (private key, hardware wallet, or 
 
 ## How to Run
 
-All interactions go through the `terminal` tool using `curl` against the gateway REST API.
+All interactions go through the bundled helper script `scripts/spraay_gateway.py` via the `terminal` tool.
+
+### Helper script — `scripts/spraay_gateway.py`
 
 ```bash
-# Scan available primitives
-curl -s https://gateway.spraay.app/scan | jq '.categories'
+# Check gateway health
+python scripts/spraay_gateway.py health
 
-# Get a quote for a batch payment on Base
-curl -s https://gateway.spraay.app/quote \
-  -H "Content-Type: application/json" \
-  -d '{
-    "primitive": "batch_payment",
-    "chain": "base",
-    "recipients": ["0xRecipient1", "0xRecipient2"],
-    "amounts": ["1000000", "2000000"],
-    "token": "USDC"
-  }' | jq .
+# List all available primitives and categories
+python scripts/spraay_gateway.py scan
 
-# Execute (returns unsigned tx for agent signing)
-curl -s https://gateway.spraay.app/execute \
-  -H "Content-Type: application/json" \
-  -H "X-402-Payment: <payment_header>" \
-  -d '{
-    "primitive": "batch_payment",
-    "chain": "base",
-    "recipients": ["0xRecipient1", "0xRecipient2"],
-    "amounts": ["1000000", "2000000"],
-    "token": "USDC",
-    "sender": "0xYourAddress"
-  }' | jq .
+# Get a price quote for a primitive
+python scripts/spraay_gateway.py quote batch_payment base '{"recipientCount": 5}'
+
+# Execute a primitive (requires x402 payment header)
+python scripts/spraay_gateway.py execute batch_payment base 0xYourAddress \
+  --payment "<x402_payment_header>" \
+  '{"token": "USDC", "recipients": ["0xAddr1"], "amounts": ["1000000"]}'
 ```
+
+The `execute` command requires an `X-402-Payment` header obtained from the x402 payment flow. The `quote` endpoint returns the required payment amount; the agent's wallet signs the payment; then the signed payment header is passed via `--payment`.
 
 ## Quick Reference
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/scan` | GET | List all 39 categories and 151+ paid primitives |
-| `/quote` | POST | Get price quote and gas estimate for a primitive |
-| `/execute` | POST | Execute primitive, returns unsigned tx |
-| `/health` | GET | Gateway health check |
+| Command | Purpose |
+|---------|---------|
+| `python scripts/spraay_gateway.py health` | Gateway health check |
+| `python scripts/spraay_gateway.py scan` | List all categories and primitives |
+| `python scripts/spraay_gateway.py quote <primitive> <chain> [params_json]` | Get price quote and gas estimate |
+| `python scripts/spraay_gateway.py execute <primitive> <chain> <sender> --payment <header> [params_json]` | Execute primitive with x402 payment |
 
 ### Key Primitives by Category
 
@@ -114,37 +100,39 @@ Base (primary), Ethereum, Solana, Polygon, Arbitrum, Optimism, Avalanche, BNB Ch
 
 ## Procedure
 
-1. **Scan** — Call `/scan` via `terminal` to list available primitives and confirm the desired operation exists.
+1. **Health check** — Run `python scripts/spraay_gateway.py health` via `terminal` to confirm the gateway is reachable.
 
-2. **Quote** — Call `/quote` with the primitive name, chain, and parameters. The response includes the x402 payment amount (in USDC) and gas estimate.
+2. **Scan** — Run `python scripts/spraay_gateway.py scan` to list available primitives and confirm the desired operation exists.
 
-3. **Review** — Present the quote to the user. Show the total cost (gateway fee + estimated gas). Ask for confirmation before proceeding.
+3. **Quote** — Run `python scripts/spraay_gateway.py quote <primitive> <chain> '<params_json>'`. The response includes the x402 payment amount (in USDC) and gas estimate.
 
-4. **Execute** — Call `/execute` with the full parameters and the x402 payment header. The gateway returns an unsigned transaction object.
+4. **Review** — Present the quote to the user. Show the total cost (gateway fee + estimated gas). Ask for confirmation before proceeding.
 
-5. **Sign & Submit** — The unsigned transaction must be signed by the user's wallet or agent wallet. Spraay does not handle signing. If the agent has a configured signer, sign and broadcast. Otherwise, present the unsigned tx to the user for manual signing.
+5. **Pay & Execute** — The agent's wallet signs the x402 payment for the quoted amount. Then run `python scripts/spraay_gateway.py execute <primitive> <chain> <sender> --payment "<signed_header>" '<params_json>'`. The gateway returns an unsigned transaction object.
 
-6. **Verify** — Check the transaction hash on the relevant block explorer. For Base: `https://basescan.org/tx/<hash>`.
+6. **Sign & Submit** — The unsigned transaction must be signed by the user's wallet or agent wallet. Spraay does not handle signing. If the agent has a configured signer, sign and broadcast. Otherwise, present the unsigned tx to the user for manual signing.
+
+7. **Verify** — Check the transaction hash on the relevant block explorer. For Base: `https://basescan.org/tx/<hash>`.
 
 ## Pitfalls
 
 - **Spraay is non-custodial.** It returns unsigned transactions. You need a signer. If no signer is configured, present the raw unsigned tx and guide the user to sign it manually.
-- **x402 payment required.** Each paid primitive requires a micro-payment via the `X-402-Payment` header. The `/quote` endpoint tells you the exact amount. Free primitives (health, scan, some reads) do not require payment.
+- **x402 payment required.** Each paid primitive requires a micro-payment via the `X-402-Payment` header. The `quote` command tells you the exact amount. Free primitives (health, scan, some reads) do not require payment.
 - **Batch contract address on Base is `0x1646452F98E36A3c9Cfc3eDD8868221E207B5eEC`.** Do not use any other address.
 - **Token amounts are in smallest units.** USDC on Base uses 6 decimals, so `1000000` = 1 USDC. ETH uses 18 decimals.
 - **Solana gateway** (`gateway-solana.spraay.app`) returns base64-encoded unsigned transactions, not EVM-style tx objects.
 - **Rate limits.** The public gateway is not rate-limited for normal usage, but sustained high-volume callers should reach out for dedicated access.
-- **Do not fabricate addresses.** Never generate or guess contract addresses. Use only the documented addresses from this skill or from the `/scan` response.
+- **Do not fabricate addresses.** Never generate or guess contract addresses. Use only the documented addresses from this skill or from the `scan` response.
 
 ## Verification
 
 ```bash
 # Confirm gateway is live
-curl -s https://gateway.spraay.app/health | jq .
+python scripts/spraay_gateway.py health
 
 # Confirm primitives are available
-curl -s https://gateway.spraay.app/scan | jq '.total_primitives'
-# Expected: 151 or higher
+python scripts/spraay_gateway.py scan
+# Expected: 151 or higher total primitives
 ```
 
 ## Resources

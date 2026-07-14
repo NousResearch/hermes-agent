@@ -227,6 +227,76 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
 
+    def test_413_strips_vision_payloads_when_compression_cannot_reduce_messages(self, agent):
+        """If compression leaves image payloads behind, strip them and retry.
+
+        Browser vision tool results can contain base64 image parts. A 413 can
+        persist even after summarisation when the remaining recent tool result
+        still carries binary data; Hermes should evict the image payload and
+        keep the text/placeholder context instead of failing immediately.
+        """
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="Recovered after image eviction", finish_reason="stop")
+        request_payloads = []
+
+        def _side_effect(**kwargs):
+            request_payloads.append(kwargs)
+            if len(request_payloads) == 1:
+                raise err_413
+            return ok_resp
+
+        agent.client.chat.completions.create.side_effect = _side_effect
+
+        image_part = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + ("a" * 2000)},
+        }
+        prefill = [
+            {"role": "user", "content": "please inspect this page"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_vision",
+                        "type": "function",
+                        "function": {"name": "browser_vision", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_vision",
+                "name": "browser_vision",
+                "content": [
+                    {"type": "text", "text": "Screenshot of the dashboard"},
+                    image_part,
+                ],
+            },
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            # Simulate the bad production case: compression ran, but the
+            # recent vision tool message survived so message count did not drop.
+            mock_compress.side_effect = lambda msgs, *_a, **_k: (msgs, "compressed prompt")
+            result = agent.run_conversation("continue", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after image eviction"
+        assert len(request_payloads) == 2
+        first_tool = next(m for m in request_payloads[0]["messages"] if m.get("role") == "tool")
+        retried_tool = next(m for m in request_payloads[1]["messages"] if m.get("role") == "tool")
+        assert "Screenshot of the dashboard" in str(first_tool["content"])
+        assert "data:image" not in str(retried_tool["content"])
+        assert "Screenshot of the dashboard" in str(retried_tool["content"])
+        assert not getattr(agent, "_no_list_tool_content_models", set())
+
     def test_413_clears_conversation_history_on_persist(self, agent):
         """After 413-triggered compression, _persist_session must receive None history.
 
@@ -440,6 +510,48 @@ class TestHTTP413Compression:
         assert result.get("partial") is True
         assert "413" in result["error"]
 
+    def test_413_retries_on_token_only_compression(self, agent):
+        """Same message COUNT but fewer TOKENS must count as progress and retry.
+
+        Regression for #39550/#23767: tool-result pruning / in-place
+        summarization can shrink request size without dropping the message
+        count. The old gate (len(messages) < original_len) treated that as
+        'cannot compress further' and aborted; the fix re-estimates tokens and
+        retries when they drop materially.
+        """
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="OK after token-only compaction", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
+
+        # 3 large messages in, 3 much smaller messages out (same count, far
+        # fewer tokens) — exactly the token-only-progress case.
+        prefill = [
+            {"role": "user", "content": "x" * 4000},
+            {"role": "assistant", "content": "y" * 4000},
+            {"role": "user", "content": "z" * 4000},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            # Same message count (3) but ~10x smaller content → token drop.
+            mock_compress.return_value = (
+                [
+                    {"role": "user", "content": "x" * 300},
+                    {"role": "assistant", "content": "y" * 300},
+                    {"role": "user", "content": "z" * 300},
+                ],
+                "compressed prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert result["completed"] is True
+        assert result["final_response"] == "OK after token-only compaction"
+
 
 class TestPreflightCompression:
     """Preflight compression should compress history before the first API call."""
@@ -553,6 +665,7 @@ class TestPreflightCompression:
         agent.status_callback = lambda ev, msg: status_messages.append((ev, msg))
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=114_000),
             patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=114_000),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -604,6 +717,7 @@ class TestPreflightCompression:
             return 125_000 if _rough_calls["n"] == 1 else 40_000
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.conversation_loop.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
@@ -728,6 +842,7 @@ class TestPreflightCompression:
         agent.client.chat.completions.create.side_effect = [ok_resp]
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
             # Compression no-ops (returns input unchanged) — mirrors an aux
             # summary-model timeout where the messages can't be reduced.
@@ -760,6 +875,7 @@ class TestPreflightCompression:
         agent.client.chat.completions.create.side_effect = [ok_resp]
 
         with (
+            patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch("agent.conversation_loop.estimate_request_tokens_rough", return_value=144_669),
             patch.object(agent, "_compress_context", side_effect=lambda msgs, *a, **k: (msgs, agent._cached_system_prompt)),
             patch.object(agent, "_persist_session"),

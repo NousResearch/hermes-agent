@@ -2018,7 +2018,17 @@ export const en: Translations = {
     proNeedsSubscription: 'Pro models need a paid Nous subscription.',
     free: 'Free',
     freeTier: 'Free tier',
-    priceTitle: 'Input / Output price per million tokens'
+    priceTitle: 'Input / Output price per million tokens',
+    customModel: {
+      add: 'Custom model',
+      heading: 'Add a custom model',
+      provider: 'Provider',
+      modelId: 'Model ID',
+      placeholder: 'e.g. claude-opus-4.8',
+      addButton: 'Add',
+      badge: 'custom',
+      remove: 'Remove custom model'
+    }
   },
 
   modelVisibility: {

@@ -1959,7 +1959,17 @@ export const ja = defineLocale({
     proNeedsSubscription: 'Pro モデルには有料の Nous サブスクリプションが必要です。',
     free: '無料',
     freeTier: '無料プラン',
-    priceTitle: '100 万トークンあたりの入力/出力価格'
+    priceTitle: '100 万トークンあたりの入力/出力価格',
+    customModel: {
+      add: 'カスタムモデル',
+      heading: 'カスタムモデルを追加',
+      provider: 'プロバイダー',
+      modelId: 'モデル ID',
+      placeholder: '例: claude-opus-4.8',
+      addButton: '追加',
+      badge: 'カスタム',
+      remove: 'カスタムモデルを削除'
+    }
   },
 
   modelVisibility: {

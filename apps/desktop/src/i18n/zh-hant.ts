@@ -1895,7 +1895,17 @@ export const zhHant = defineLocale({
     proNeedsSubscription: 'Pro 模型需要付費 Nous 訂閱。',
     free: '免費',
     freeTier: '免費層',
-    priceTitle: '每百萬 Token 的輸入/輸出價格'
+    priceTitle: '每百萬 Token 的輸入/輸出價格',
+    customModel: {
+      add: '自訂模型',
+      heading: '新增自訂模型',
+      provider: '提供方',
+      modelId: '模型 ID',
+      placeholder: '例如 claude-opus-4.8',
+      addButton: '新增',
+      badge: '自訂',
+      remove: '移除自訂模型'
+    }
   },
 
   modelVisibility: {

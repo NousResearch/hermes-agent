@@ -2182,7 +2182,17 @@ export const zh: Translations = {
     proNeedsSubscription: 'Pro 模型需要付费 Nous 订阅。',
     free: '免费',
     freeTier: '免费层',
-    priceTitle: '每百万 token 的输入/输出价格'
+    priceTitle: '每百万 token 的输入/输出价格',
+    customModel: {
+      add: '自定义模型',
+      heading: '添加自定义模型',
+      provider: '提供方',
+      modelId: '模型 ID',
+      placeholder: '例如 claude-opus-4.8',
+      addButton: '添加',
+      badge: '自定义',
+      remove: '移除自定义模型'
+    }
   },
 
   modelVisibility: {

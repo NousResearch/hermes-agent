@@ -1650,6 +1650,16 @@ export interface Translations {
     free: string
     freeTier: string
     priceTitle: string
+    customModel: {
+      add: string
+      heading: string
+      provider: string
+      modelId: string
+      placeholder: string
+      addButton: string
+      badge: string
+      remove: string
+    }
   }
 
   modelVisibility: {

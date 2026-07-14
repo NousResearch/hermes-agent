@@ -124,6 +124,48 @@ export function persistStringRecord(key: string, value: Record<string, string>) 
   writeKey(key, JSON.stringify(value))
 }
 
+export function storedStringArrayRecord(key: string): Record<string, string[]> {
+  try {
+    const value = window.localStorage.getItem(key)
+
+    if (!value) {
+      return {}
+    }
+
+    const parsed = JSON.parse(value)
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const out: Record<string, string[]> = {}
+
+    for (const [entryKey, entryValue] of Object.entries(parsed)) {
+      if (!Array.isArray(entryValue)) {
+        continue
+      }
+
+      const items = entryValue.filter((item): item is string => typeof item === 'string' && item.length > 0)
+
+      if (items.length > 0) {
+        out[entryKey] = items
+      }
+    }
+
+    return out
+  } catch {
+    return {}
+  }
+}
+
+export function persistStringArrayRecord(key: string, value: Record<string, string[]>) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Local preference; restricted storage should not break the app.
+  }
+}
+
 export function arraysEqual(left: string[], right: string[]) {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }

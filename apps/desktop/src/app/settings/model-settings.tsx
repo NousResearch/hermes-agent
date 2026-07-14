@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -26,6 +27,7 @@ import type {
 import { useI18n } from '@/i18n'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $customModels, addCustomModel, mergeCustomModels } from '@/store/custom-models'
 import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 
@@ -196,6 +198,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // place — mirrors the onboarding ApiKeyForm but scoped to the model picker.
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
+  // Free-typed model id for the selected provider (gated/beta/non-discoverable
+  // models the backend catalog doesn't list). Persisted per provider.
+  const [customModelDraft, setCustomModelDraft] = useState('')
+  const customModels = useStore($customModels)
 
   // Every profile-scoped async here captures this and bails before writing back,
   // so a request in flight when the user switches profiles can't paint profile
@@ -267,7 +273,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     [providers, selectedProvider]
   )
 
-  const selectedProviderModels = selectedProviderRow?.models ?? []
+  // Fold the user's custom (typed) models into the selectable list so they
+  // persist and stay pickable here, not only in the picker dialog.
+  const selectedProviderModels = mergeCustomModels(selectedProvider, selectedProviderRow?.models, customModels)
 
   // An unconfigured provider was picked: no credentials yet, so there are no
   // models to choose. `api_key` providers can be activated inline (paste key);
@@ -275,10 +283,25 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const needsSetup = !!selectedProvider && !isProviderReady(selectedProviderRow)
   const setupIsApiKey = needsSetup && selectedProviderRow?.auth_type === 'api_key' && !!selectedProviderRow?.key_env
 
-  // Clear any half-typed key when switching provider so it can't leak across.
+  // Clear any half-typed key/model when switching provider so it can't leak across.
   useEffect(() => {
     setApiKeyDraft('')
+    setCustomModelDraft('')
   }, [selectedProvider])
+
+  // Persist a typed model against the selected provider and select it, so a
+  // custom id becomes the pending main-model choice (Apply then writes it).
+  const addCustomModelForSelected = useCallback(() => {
+    const model = customModelDraft.trim()
+
+    if (!selectedProvider || !model) {
+      return
+    }
+
+    addCustomModel(selectedProvider, model)
+    setSelectedModel(model)
+    setCustomModelDraft('')
+  }, [customModelDraft, selectedProvider])
 
   const auxDraftProviderModels = useMemo(
     () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
@@ -702,6 +725,27 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               >
                 {applying && <Loader2 className="size-3.5 animate-spin" />}
                 {applying ? m.applying : t.common.apply}
+              </Button>
+              <Input
+                aria-label={t.modelPicker.customModel.heading}
+                className={cn('min-w-48 flex-1 font-mono', CONTROL_TEXT)}
+                onChange={event => setCustomModelDraft(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    addCustomModelForSelected()
+                  }
+                }}
+                placeholder={t.modelPicker.customModel.placeholder}
+                value={customModelDraft}
+              />
+              <Button
+                disabled={!selectedProvider || !customModelDraft.trim()}
+                onClick={addCustomModelForSelected}
+                size="sm"
+                variant="outline"
+              >
+                {t.modelPicker.customModel.add}
               </Button>
             </>
           )}

@@ -89,6 +89,17 @@ class TestFindStaleDashboardPids:
 
         assert _ps_line(12345, "hermes dashboard").split()[:2] == ["0", "12345"]
 
+    def test_posix_scan_without_getuid_fails_closed(self, monkeypatch):
+        monkeypatch.delattr(os, "getuid", raising=False)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --port 9119") + "\n",
+                stderr="",
+            )
+
+            assert _find_stale_dashboard_pids() == []
+
     def test_no_matches_returns_empty(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(

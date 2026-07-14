@@ -5945,7 +5945,10 @@ def _find_stale_dashboard_pids(
                 timeout=10,
             )
             if result.returncode == 0:
-                current_uid = os.getuid()
+                getuid = getattr(os, "getuid", None)
+                if getuid is None:
+                    return []
+                current_uid = getuid()
                 for line in getattr(result, "stdout", "").split("\n"):
                     stripped = line.strip()
                     if not stripped or "grep" in stripped:

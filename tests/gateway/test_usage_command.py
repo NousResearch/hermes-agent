@@ -76,20 +76,20 @@ class TestUsageCachedAgent:
         runner = _make_runner(SK, cached_agent=agent)
         event = MagicMock()
 
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
-            mock_cost.return_value = MagicMock(amount_usd=0.1234, status="estimated")
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
             result = await runner._handle_usage_command(event)
 
         assert "claude-sonnet-4.6" in result
         assert "35,000" in result  # input tokens
         assert "10,000" in result  # output tokens
-        assert "5,000" in result   # cache read
-        assert "2,000" in result   # cache write
         assert "50,000" in result  # total
-        assert "$0.1234" in result
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
+        # Cost and cache-hit reporting is removed everywhere.
+        assert "$" not in result
+        assert "Cache read" not in result
+        assert "Cache write" not in result
+        assert "Cost" not in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
@@ -161,20 +161,6 @@ class TestUsageCachedAgent:
         assert "Cache read" not in result
         assert "Cache write" not in result
 
-    @pytest.mark.asyncio
-    async def test_cost_included_status(self):
-        """Subscription-included providers show 'included' instead of dollar amount."""
-        agent = _make_mock_agent(provider="openai-codex")
-        runner = _make_runner(SK, cached_agent=agent)
-        event = MagicMock()
-
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
-            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
-            result = await runner._handle_usage_command(event)
-
-        assert "Cost: included" in result
-
 
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""
@@ -188,11 +174,11 @@ class TestUsageAccountSection:
         event = MagicMock()
 
         monkeypatch.setattr(
-            "gateway.run.fetch_account_usage",
+            "gateway.slash_commands.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.run.render_account_usage_lines",
+            "gateway.slash_commands.render_account_usage_lines",
             lambda snapshot, markdown=False: [
                 "📈 **Account limits**",
                 "Provider: openai-codex (Pro)",
@@ -223,30 +209,36 @@ class TestUsageAccountSection:
             {"role": "user", "content": "earlier"},
         ]
 
-        calls = {}
+        calls = []
 
         async def _fake_to_thread(fn, *args, **kwargs):
-            calls["args"] = args
-            calls["kwargs"] = kwargs
+            # /usage dispatches BOTH the account fetch (fetch_account_usage, called
+            # with the provider positionally) and the Nous credits fetch
+            # (nous_credits_lines, markdown-only) through to_thread — record every
+            # call rather than last-wins so we can pick out the account fetch.
+            calls.append({"args": args, "kwargs": kwargs})
             return fn(*args, **kwargs)
 
         monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
         monkeypatch.setattr(
-            "gateway.run.fetch_account_usage",
+            "gateway.slash_commands.fetch_account_usage",
             lambda provider, base_url=None, api_key=None: object(),
         )
         monkeypatch.setattr(
-            "gateway.run.render_account_usage_lines",
+            "gateway.slash_commands.render_account_usage_lines",
             lambda snapshot, markdown=False: [
                 "📈 **Account limits**",
                 "Provider: openai-codex (Pro)",
             ],
         )
+        # The credits block routes through the shared nous_credits_lines() helper;
+        # stub it so this account-section test stays hermetic (no portal/auth lookup).
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
 
         event = MagicMock()
         result = await runner._handle_usage_command(event)
 
-        assert calls["args"] == ("openai-codex",)
-        assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+        account_call = next(c for c in calls if c["args"] == ("openai-codex",))
+        assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result

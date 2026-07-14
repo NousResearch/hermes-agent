@@ -17,6 +17,36 @@ See also:
 - [Bundled Skills Catalog](/reference/skills-catalog)
 - [Official Optional Skills Catalog](/reference/optional-skills-catalog)
 
+## Starting with a blank slate
+
+By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:
+
+**At install time** (applies to the default `~/.hermes` profile):
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-skills
+```
+
+**At profile-create time** (named profiles):
+
+```bash
+hermes profile create research --no-skills
+```
+
+**On an already-installed profile** (default or named), toggle it at runtime:
+
+```bash
+hermes skills opt-out            # stop future seeding — nothing on disk is touched
+hermes skills opt-out --remove   # also delete UNMODIFIED bundled skills (confirms first)
+hermes skills opt-in --sync      # undo: remove the marker and re-seed now
+```
+
+All three paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
+
+:::note Safe by default
+`hermes skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Hermes installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.
+:::
+
 ## Using Skills
 
 Every installed skill is automatically available as a slash command:
@@ -40,6 +70,42 @@ You can also interact with skills through natural conversation:
 hermes chat --toolsets skills -q "What skills do you have?"
 hermes chat --toolsets skills -q "Show me the axolotl skill"
 ```
+
+## Learning a skill from sources (`/learn`)
+
+`/learn` is the fast way to turn something you already know — or a pile of
+reference material — into a reusable skill, without hand-writing the
+`SKILL.md`. It is open-ended: point it at *anything you can describe* and the
+agent gathers the material with the tools it already has, then authors a skill
+that follows the [house authoring standards](#skillmd-format) (≤60-char
+description, the standard section order, Hermes-tool framing, no invented
+commands).
+
+```bash
+# A local SDK or doc directory — read with read_file / search_files
+/learn the REST client in ~/projects/acme-sdk, focus on auth + pagination
+
+# An online doc page — fetched with web_extract
+/learn https://docs.example.com/api/quickstart
+
+# The workflow you just walked the agent through in this conversation
+/learn how I just deployed the staging server
+
+# Pasted notes / a described procedure
+/learn filing an expense: open the portal, New > Expense, attach the receipt, submit
+```
+
+Because the live agent does the sourcing, `/learn` works the same in the CLI,
+the messaging gateway, the TUI, and the dashboard — and on any terminal backend
+(local, Docker, remote), since there is no separate ingestion engine. In the
+**dashboard**, the Skills page has a **Learn a skill** button that opens a panel
+with a directory field, a URL field, and an open-ended text box; it composes a
+`/learn` request and runs it in chat.
+
+There is no model-tool footprint: `/learn` builds a standards-guided prompt and
+hands it to the agent as a normal turn. The agent saves the result with the
+`skill_manage` tool, so the [write-approval gate](#gating-agent-skill-writes-skillswrite_approval)
+applies if you have it on.
 
 ## Progressive Disclosure
 
@@ -349,6 +415,12 @@ A bundle is just a YAML alias — it doesn't install skills for you. The skills 
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.
 
+Skills and memory work together in the self-improvement loop: memory stores
+small durable facts that should always be in context, while skills store longer
+procedures that should load only when relevant. The background review can
+suggest or stage skill changes after a session, but the write-approval gate
+below lets you require human review before those changes land.
+
 ### When the Agent Creates Skills
 
 - After completing a complex task (5+ tool calls) successfully
@@ -370,6 +442,43 @@ The agent can create, update, and delete its own skills via the `skill_manage` t
 :::tip
 The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
 :::
+
+### Gating agent skill writes (`skills.write_approval`)
+
+By default the agent writes skills freely — including from the [background
+self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+that runs after a turn. If you'd rather approve every skill write first
+(small models that misjudge what they learned, secure environments, or just
+wanting eyes on the self-improvement loop), turn on the write-approval gate:
+
+```yaml
+skills:
+  write_approval: false     # false = write freely (default) | true = require approval
+```
+
+When `write_approval: true`, every `skill_manage` write (create / edit /
+patch / delete / write_file / remove_file) is **staged** instead of committed —
+a SKILL.md is too large to review inline, so staging applies regardless of
+whether the write came from a foreground turn or the background review.
+Staged writes survive restarts under `~/.hermes/pending/skills/` and are
+reviewed with the same familiar approve/deny flow as dangerous commands:
+
+```
+/skills pending             # list staged skill writes + a one-line gist each
+/skills diff <id>           # full unified diff (best viewed in CLI or dashboard)
+/skills approve <id>        # apply it (or 'all')
+/skills reject <id>         # drop it (or 'all')
+/skills approval on         # turn the gate on (or 'off') and persist it
+```
+
+The review surface works in the interactive CLI and on messaging platforms
+(diff output is truncated for chat bubbles — read the full diff on the CLI or
+in the pending JSON file). Memory writes have the same gate under
+`memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+
+> The separate `skills.guard_agent_created` setting is a content scanner
+> (dangerous-pattern heuristics), not an approval gate — the two are
+> independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
 ## Skills Hub
 

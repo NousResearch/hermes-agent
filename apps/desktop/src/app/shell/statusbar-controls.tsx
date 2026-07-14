@@ -2,7 +2,13 @@ import type { ComponentProps, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+
+// Shared chrome styling for interactive statusbar items (button / link / menu
+// trigger). The 'text' variant intentionally omits hover/transition/disabled.
+const STATUSBAR_ACTION_CLASS =
+  'inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45'
 
 export interface StatusbarMenuItem {
   id: string
@@ -26,13 +32,18 @@ export interface StatusbarItem {
   disabled?: boolean
   hidden?: boolean
   href?: string
+  menuAlign?: 'center' | 'end' | 'start'
   menuClassName?: string
   menuContent?: ReactNode
   menuItems?: readonly StatusbarMenuItem[]
-  onSelect?: () => void
+  onSelect?: (modifiers: StatusbarSelectModifiers) => void
   title?: string
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'
+}
+
+export interface StatusbarSelectModifiers {
+  shiftKey: boolean
 }
 
 export type StatusbarItemSide = 'left' | 'right'
@@ -54,14 +65,18 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
       )}
       {...props}
     >
-      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto">
+      {/* `overflow-x-clip` (not `overflow-x-auto`) so a wide status item — for
+          example "Connecting…" on a fresh/untitled session — can't paint a
+          horizontal scrollbar across the bottom of the window. Items already
+          `truncate` their labels, so clipping is the right behavior. */}
+      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
         {leftItems
           .filter(item => !item.hidden)
           .map(item => (
             <StatusbarItemView item={item} key={`left:${item.id}`} navigate={navigate} />
           ))}
       </div>
-      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-auto">
+      <div className="flex min-w-0 items-stretch gap-0.5 overflow-x-clip">
         {items
           .filter(item => !item.hidden)
           .map(item => (
@@ -81,119 +96,103 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     </>
   )
 
-  const title = item.title ?? (typeof item.label === 'string' ? item.label : undefined)
-
   if (item.variant === 'menu' && (item.menuContent || (item.menuItems && item.menuItems.length > 0))) {
     return (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            className={cn(
-              'inline-flex h-full cursor-pointer items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
-              item.className
-            )}
-            disabled={item.disabled}
-            title={title}
-            type="button"
+      <Tip label={item.title}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button className={cn(STATUSBAR_ACTION_CLASS, item.className)} disabled={item.disabled} type="button">
+              {content}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align={item.menuAlign ?? 'start'}
+            className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
+            side="top"
+            sideOffset={8}
           >
-            {content}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          className={cn('w-56', item.menuContent && 'p-0', item.menuClassName)}
-          side="top"
-          sideOffset={8}
-        >
-          {item.menuContent
-            ? item.menuContent
-            : (item.menuItems ?? [])
-                .filter(menuItem => !menuItem.hidden)
-                .map(menuItem => (
-                  <DropdownMenuItem
-                    className={cn('gap-2 text-foreground focus:bg-accent [&_svg]:size-4', menuItem.className)}
-                    disabled={menuItem.disabled}
-                    key={menuItem.id}
-                    onSelect={() => {
-                      if (menuItem.to) {
-                        navigate(menuItem.to)
-                      }
+            {item.menuContent
+              ? item.menuContent
+              : (item.menuItems ?? [])
+                  .filter(menuItem => !menuItem.hidden)
+                  .map(menuItem => (
+                    <DropdownMenuItem
+                      className={cn('gap-2 text-foreground focus:bg-accent [&_svg]:size-4', menuItem.className)}
+                      disabled={menuItem.disabled}
+                      key={menuItem.id}
+                      onSelect={() => {
+                        if (menuItem.to) {
+                          navigate(menuItem.to)
+                        }
 
-                      menuItem.onSelect?.()
-                    }}
-                  >
-                    {menuItem.href ? (
-                      <a
-                        className="inline-flex w-full items-center gap-2"
-                        href={menuItem.href}
-                        rel="noreferrer"
-                        target="_blank"
-                        title={menuItem.title ?? menuItem.label}
-                      >
-                        {menuItem.icon}
-                        <span className="truncate">{menuItem.label}</span>
-                      </a>
-                    ) : (
-                      <>
-                        {menuItem.icon}
-                        <span className="truncate">{menuItem.label}</span>
-                      </>
-                    )}
-                  </DropdownMenuItem>
-                ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
+                        menuItem.onSelect?.()
+                      }}
+                    >
+                      {menuItem.href ? (
+                        <a
+                          className="inline-flex w-full items-center gap-2"
+                          href={menuItem.href}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          {menuItem.icon}
+                          <span className="truncate">{menuItem.label}</span>
+                        </a>
+                      ) : (
+                        <>
+                          {menuItem.icon}
+                          <span className="truncate">{menuItem.label}</span>
+                        </>
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Tip>
     )
   }
 
   if (item.variant === 'text' && !item.onSelect && !item.to && !item.href) {
     return (
-      <div
-        className={cn(
-          'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
-          item.className
-        )}
-      >
-        {content}
-      </div>
+      <Tip label={item.title}>
+        <div
+          className={cn(
+            'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
+            item.className
+          )}
+        >
+          {content}
+        </div>
+      </Tip>
     )
   }
 
   if (item.href || item.variant === 'link') {
     return (
-      <a
-        className={cn(
-          'inline-flex h-full cursor-pointer items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
-          item.className
-        )}
-        href={item.href}
-        rel="noreferrer"
-        target="_blank"
-        title={title}
-      >
-        {content}
-      </a>
+      <Tip label={item.title}>
+        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+          {content}
+        </a>
+      </Tip>
     )
   }
 
   return (
-    <button
-      className={cn(
-        'inline-flex h-full cursor-pointer items-center gap-1 rounded-none px-1.5 text-[0.6875rem] text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground disabled:cursor-default disabled:opacity-45',
-        item.className
-      )}
-      disabled={item.disabled}
-      onClick={() => {
-        if (item.to) {
-          navigate(item.to)
-        }
+    <Tip label={item.title}>
+      <button
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        disabled={item.disabled}
+        onClick={event => {
+          if (item.to) {
+            navigate(item.to)
+          }
 
-        item.onSelect?.()
-      }}
-      title={title}
-      type="button"
-    >
-      {content}
-    </button>
+          item.onSelect?.({ shiftKey: event.shiftKey })
+        }}
+        type="button"
+      >
+        {content}
+      </button>
+    </Tip>
   )
 }

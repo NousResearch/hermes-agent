@@ -31,6 +31,11 @@ def curator_env(tmp_path, monkeypatch):
 
     # Default: no config file → curator defaults. Tests can override.
     monkeypatch.setattr(curator, "_load_config", lambda: {})
+    # Pin prune_builtins OFF by default so transition tests don't pick up
+    # built-ins unless they explicitly enable it. Both config-reading paths
+    # are pinned (curator reads via _load_config; skill_usage reads config
+    # directly). Tests opt in with _enable_prune_builtins(...).
+    monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
 
     return {"home": home, "curator": curator, "usage": usage}
 
@@ -286,6 +291,170 @@ def test_bundled_skill_not_touched_by_transitions(curator_env):
 
 
 # ---------------------------------------------------------------------------
+# prune_builtins: curator may archive bundled built-ins after inactivity
+# ---------------------------------------------------------------------------
+
+def _enable_prune_builtins(curator_env, monkeypatch):
+    """Flip curator.prune_builtins on for both config-reading paths."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": True})
+    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: True)
+
+
+def _disable_prune_builtins(curator_env, monkeypatch):
+    """Flip curator.prune_builtins off for both config-reading paths."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": False})
+    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
+
+
+def test_prune_builtins_default_on(curator_env):
+    # Shipped default is ON: with no explicit config, built-ins are eligible.
+    c = curator_env["curator"]
+    # _load_config returns {} (fixture) → default True surfaces.
+    assert c.get_prune_builtins() is True
+
+
+def test_prune_builtins_off_excludes_bundled(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+
+    # Explicitly off → bundled is not a candidate (the opt-out path).
+    _disable_prune_builtins(curator_env, monkeypatch)
+    assert c.get_prune_builtins() is False
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 0
+    assert (skills_dir / "bundled").exists()
+
+
+def test_prune_builtins_seeds_clock_on_first_sight(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # First pass: built-in has no record yet → it's seeded, NOT archived,
+    # even though it's "old" on disk. The inactivity clock starts now.
+    counts = c.apply_automatic_transitions()
+    assert counts["checked"] == 1
+    assert counts["seeded"] == 1
+    assert counts["archived"] == 0
+    assert (skills_dir / "bundled").exists()
+    # A record now exists with created_at ~ now.
+    assert isinstance(u.load_usage().get("bundled"), dict)
+
+
+def test_prune_builtins_archives_stale_bundled_and_suppresses(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Seed a record whose last activity is far past the archive cutoff.
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data["bundled"] = u._empty_record()
+    data["bundled"]["last_used_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 1
+    # Directory moved into .archive/, suppression recorded so update won't restore.
+    assert not (skills_dir / "bundled").exists()
+    assert (skills_dir / ".archive" / "bundled").exists()
+    assert "bundled" in u.read_suppressed_names()
+
+
+def test_prune_builtins_restore_clears_suppression(curator_env, monkeypatch):
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled")
+    (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    ok, _ = u.archive_skill("bundled")
+    assert ok
+    assert "bundled" in u.read_suppressed_names()
+
+    ok, _ = u.restore_skill("bundled")
+    assert ok
+    assert (skills_dir / "bundled").exists()
+    assert "bundled" not in u.read_suppressed_names()
+
+
+def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypatch):
+    """A protected built-in (e.g. `plan`) is never archived, even when it is a
+    stale bundled skill under prune_builtins — it backs a load-bearing slash
+    command and must survive every curator pass."""
+    u = curator_env["usage"]
+    c = curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Force a record that is far past the archive cutoff.
+    super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    data = u.load_usage()
+    data[name] = u._empty_record()
+    data[name]["last_used_at"] = super_old
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] == 0
+    # Not even enumerated as a candidate → not "checked".
+    assert name not in u.list_agent_created_skill_names()
+    assert (skills_dir / name).exists()
+    assert name not in u.read_suppressed_names()
+
+
+def test_protected_builtin_is_not_curation_eligible(curator_env, monkeypatch):
+    """is_curation_eligible() returns False for protected built-ins regardless
+    of prune_builtins, and archive_skill() refuses them directly."""
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))
+    _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    assert u.is_protected_builtin(name) is True
+    assert u.is_curation_eligible(name) is False
+    ok, msg = u.archive_skill(name)
+    assert ok is False
+    assert (skills_dir / name).exists()
+
+
+def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "hubskill")
+    hub_dir = skills_dir / ".hub"
+    hub_dir.mkdir(parents=True, exist_ok=True)
+    (hub_dir / "lock.json").write_text(
+        '{"version": 1, "installed": {"hubskill": {"install_path": "hubskill"}}}',
+        encoding="utf-8",
+    )
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    # Even with prune_builtins on, hub-installed skills stay off-limits.
+    assert u.is_curation_eligible("hubskill") is False
+    ok, msg = u.archive_skill("hubskill")
+    assert ok is False
+    assert "hub-installed" in msg
+    assert (skills_dir / "hubskill").exists()
+
+
+# ---------------------------------------------------------------------------
 # run_curator_review orchestration
 # ---------------------------------------------------------------------------
 
@@ -351,7 +520,7 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
                 "tool_calls": [], "error": None}
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
-    c.run_curator_review(synchronous=True, dry_run=True)
+    c.run_curator_review(synchronous=True, dry_run=True, consolidate=True)
     assert "DRY-RUN" in captured["prompt"]
     assert "DO NOT" in captured["prompt"]
 
@@ -402,7 +571,11 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
     captured = []
-    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)
+    c.run_curator_review(
+        on_summary=lambda s: captured.append(s),
+        synchronous=True,
+        consolidate=True,
+    )
 
     assert len(calls) == 1
     assert "skill CURATOR" in calls[0] or "CURATOR" in calls[0]
@@ -424,6 +597,69 @@ def test_run_review_skips_llm_when_no_candidates(curator_env, monkeypatch):
 
     assert calls == []  # LLM not invoked
     assert any("skipped" in s for s in captured)
+
+
+def test_consolidate_default_off(curator_env):
+    """Consolidation (the LLM umbrella pass) is OFF by default — only the
+    deterministic inactivity prune runs unless the user opts in."""
+    c = curator_env["curator"]
+    assert c.get_consolidate() is False
+
+
+def test_consolidate_enabled_via_config(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"consolidate": True})
+    assert c.get_consolidate() is True
+
+
+def test_run_review_skips_llm_when_consolidate_off(curator_env, monkeypatch):
+    """With consolidation off (the default), a run does the deterministic
+    prune but never spawns the LLM consolidation fork — even with candidates
+    present. The run is still recorded and a 'consolidation off' summary is
+    surfaced."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    calls = []
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda prompt: (calls.append(prompt), "never-called")[1],
+    )
+
+    captured = []
+    c.run_curator_review(on_summary=lambda s: captured.append(s), synchronous=True)
+
+    assert calls == []  # LLM consolidation fork not invoked
+    assert any("consolidation off" in s for s in captured)
+    # The run is still recorded (deterministic prune happened).
+    state = c.load_state()
+    assert state["last_run_at"] is not None
+    assert state["run_count"] >= 1
+
+
+def test_run_review_consolidate_override_runs_llm(curator_env, monkeypatch):
+    """Passing consolidate=True overrides the config default (off) and drives
+    the LLM consolidation pass — mirrors `hermes curator run --consolidate`."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "a")
+    u.mark_agent_created("a")
+
+    calls = []
+    monkeypatch.setattr(
+        c, "_run_llm_review",
+        lambda prompt: (calls.append(prompt), {
+            "final": "", "summary": "s", "model": "", "provider": "",
+            "tool_calls": [], "error": None,
+        })[1],
+    )
+
+    c.run_curator_review(synchronous=True, consolidate=True)
+    assert len(calls) == 1
 
 
 def test_maybe_run_curator_respects_disabled(curator_env, monkeypatch):
@@ -499,8 +735,8 @@ def test_state_atomic_write_no_tmp_leftovers(curator_env):
     c = curator_env["curator"]
     c.save_state({"paused": True})
     parent = c._state_file().parent
-    for p in parent.iterdir():
-        assert not p.name.startswith(".curator_state_"), f"tmp leftover: {p.name}"
+    tmp_files = [p.name for p in parent.iterdir() if p.name.endswith(".tmp")]
+    assert tmp_files == []
 
 
 def test_state_preserves_last_report_path(curator_env):
@@ -883,3 +1119,54 @@ def test_curator_slot_is_canonical_aux_task():
 
     # 4. web/src/pages/ModelsPage.tsx is checked at build time; the tsx
     #    array and this tuple share a ``Must match _AUX_TASK_SLOTS`` comment.
+
+
+def test_review_fork_runs_under_background_review_origin(curator_env, monkeypatch):
+    """The curator LLM fork must tag itself as background_review.
+
+    This is the keystone that makes skill_manager_tool's
+    ``_background_review_write_guard`` fire during a curation pass. Without
+    ``_memory_write_origin = "background_review"`` on the fork, the agent
+    inherits the default ``assistant_tool`` origin, ``is_background_review()``
+    stays False, and the external/bundled/hub-installed skill_manage guards
+    never trigger — leaving the LLM agent free to mutate skills.external_dirs
+    skills (GH-47688). turn_context.py binds this attribute onto the
+    write-origin ContextVar at turn start, so asserting it is set is the
+    enforceable invariant linking the fork to the guard.
+    """
+    curator = curator_env["curator"]
+
+    # The curator_env fixture stubs out _run_llm_review wholesale; this test
+    # exercises the real implementation, so reload the module to restore it.
+    import importlib
+    importlib.reload(curator)
+    monkeypatch.setattr(curator, "_load_config", lambda: {})
+
+    captured = {}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            # AIAgent.__init__ normally sets this default; mirror it so the
+            # production assignment in _run_llm_review is what flips it.
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 10
+            self._skill_nudge_interval = 10
+            self.platform = kwargs.get("platform")
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            # Capture the origin AT RUN TIME — i.e. after _run_llm_review has
+            # finished configuring the fork, which is exactly when it matters.
+            captured["write_origin"] = self._memory_write_origin
+            return {"final_response": "no change"}
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured.get("write_origin") == "background_review", (
+        "curator review fork did not set _memory_write_origin to "
+        "'background_review' — the skill_manage background-review write "
+        "guard would not fire (GH-47688 regression)"
+    )

@@ -457,12 +457,7 @@ class SessionManager:
             else:
                 # Update model_config (contains cwd) if changed.
                 try:
-                    with db._lock:
-                        db._conn.execute(
-                            "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                            (cwd_json, model_str, state.session_id),
-                        )
-                        db._conn.commit()
+                    db.update_session_meta(state.session_id, cwd_json, model_str)
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
@@ -622,6 +617,10 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
+        # Codex app-server sessions are spawned lazily on the first turn. Stamp
+        # the ACP workspace onto the agent so the Codex runtime starts from the
+        # editor/session cwd instead of the Hermes daemon's process cwd.
+        agent.session_cwd = cwd
         # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
         # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print

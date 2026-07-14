@@ -3,14 +3,16 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
+import { Codicon } from '@/components/ui/codicon'
 import { FadeText } from '@/components/ui/fade-text'
-import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { type Translations, useI18n } from '@/i18n'
+import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $activeSessionId } from '@/store/session'
 import {
   $subagentsBySession,
+  allSubagents,
   buildSubagentTree,
   type SubagentNode,
   type SubagentStatus,
@@ -21,11 +23,11 @@ import { OverlayView } from '../overlays/overlay-view'
 
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
-function statusGlyph(status: SubagentStatus): ReactNode {
+function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
   if (status === 'running' || status === 'queued') {
     return (
-      <BrailleSpinner
-        ariaLabel="Running"
+      <GlyphSpinner
+        ariaLabel={a.running}
         className="size-3.5 shrink-0 text-[0.95rem] text-muted-foreground/80"
         spinner="breathe"
       />
@@ -33,10 +35,10 @@ function statusGlyph(status: SubagentStatus): ReactNode {
   }
 
   if (status === 'failed' || status === 'interrupted') {
-    return <AlertCircle aria-label="Failed" className="size-3.5 shrink-0 text-destructive" />
+    return <AlertCircle aria-label={a.failed} className="size-3.5 shrink-0 text-destructive" />
   }
 
-  return <CheckCircle2 aria-label="Done" className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
+  return <CheckCircle2 aria-label={a.done} className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
 }
 
 const STREAM_TONE: Record<SubagentStreamEntry['kind'], string> = {
@@ -75,73 +77,71 @@ interface AgentsViewProps {
 }
 
 export function AgentsView({ onClose }: AgentsViewProps) {
-  const activeSessionId = useStore($activeSessionId)
+  const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
 
-  const activeSubagents = useMemo(
-    () => (activeSessionId ? (subagentsBySession[activeSessionId] ?? []) : []),
-    [activeSessionId, subagentsBySession]
-  )
-
-  const tree = useMemo(() => buildSubagentTree(activeSubagents), [activeSubagents])
+  // Aggregate every session, matching the status-bar indicator — a subagent
+  // running in a background session must still be visible here, or the two
+  // desync ("Agents N running" vs an empty tree).
+  const tree = useMemo(() => buildSubagentTree(allSubagents(subagentsBySession)), [subagentsBySession])
 
   return (
     <OverlayView
-      closeLabel="Close agents"
+      closeLabel={t.agents.close}
       contentClassName="px-5 pt-5 pb-4 sm:px-6"
       onClose={onClose}
       rootClassName="mx-auto max-w-3xl"
     >
       <header className="mb-3 shrink-0">
-        <h2 className="text-sm font-semibold text-foreground">Spawn tree</h2>
-        <p className="text-xs text-muted-foreground/80">Live subagent activity for the current turn.</p>
+        <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
+        <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
       </header>
       <SubagentTree tree={tree} />
     </OverlayView>
   )
 }
 
-const fmtDuration = (seconds?: number) => {
+const fmtDuration = (seconds: number | undefined, a: Translations['agents']) => {
   if (!seconds || seconds <= 0) {
     return ''
   }
 
   if (seconds < 60) {
-    return `${seconds.toFixed(1)}s`
+    return a.durationSeconds(seconds.toFixed(1))
   }
 
   const m = Math.floor(seconds / 60)
   const s = Math.round(seconds % 60)
 
-  return `${m}m ${s}s`
+  return a.durationMinutes(m, s)
 }
 
-const fmtTokens = (value?: number) => {
+const fmtTokens = (value: number | undefined, a: Translations['agents']) => {
   if (!value) {
     return ''
   }
 
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}k tok` : `${value} tok`
+  return value >= 1000 ? a.tokensK((value / 1000).toFixed(1)) : a.tokens(value)
 }
 
-const fmtAge = (updatedAt: number, nowMs: number) => {
+const fmtAge = (updatedAt: number, nowMs: number, a: Translations['agents']) => {
   const s = Math.max(0, Math.round((nowMs - updatedAt) / 1000))
 
   if (s < 2) {
-    return 'now'
+    return a.ageNow
   }
 
   if (s < 60) {
-    return `${s}s ago`
+    return a.ageSeconds(s)
   }
 
   const m = Math.floor(s / 60)
 
   if (m < 60) {
-    return `${m}m ago`
+    return a.ageMinutes(m)
   }
 
-  return `${Math.floor(m / 60)}h ago`
+  return a.ageHours(Math.floor(m / 60))
 }
 
 const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>
@@ -149,7 +149,7 @@ const flatten = (nodes: readonly SubagentNode[]): SubagentNode[] =>
 
 interface RootGroup {
   id: string
-  label: string
+  delegationIndex: number
   nodes: SubagentNode[]
   taskCount: number
 }
@@ -173,18 +173,19 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
 
     if (node.taskCount > 1) {
       n += 1
-      groups.push({ id: `delegation-${n}`, label: `Delegation ${n}`, nodes: [node], taskCount: node.taskCount })
+      groups.push({ id: `delegation-${n}`, delegationIndex: n, nodes: [node], taskCount: node.taskCount })
 
       continue
     }
 
-    groups.push({ id: node.id, label: '', nodes: [node], taskCount: node.taskCount })
+    groups.push({ id: node.id, delegationIndex: 0, nodes: [node], taskCount: node.taskCount })
   }
 
   return groups
 }
 
 function SubagentTree({ tree }: { tree: SubagentNode[] }) {
+  const { t } = useI18n()
   const flat = useMemo(() => flatten(tree), [tree])
   const groups = useMemo(() => groupDelegations(tree), [tree])
   const [nowMs, setNowMs] = useState(() => Date.now())
@@ -209,22 +210,20 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   if (tree.length === 0) {
     return (
       <div className="grid place-items-center gap-3 py-12 text-center">
-        <Sparkles className="size-6 text-muted-foreground/60" />
-        <p className="text-sm font-medium text-foreground/90">No live subagents</p>
-        <p className="max-w-md text-xs leading-relaxed text-muted-foreground/75">
-          When a turn delegates work, child agents stream their progress here.
-        </p>
+        <Codicon className="text-muted-foreground/60" name="hubot" size="1.5rem" />
+        <p className="text-sm font-medium text-foreground/90">{t.agents.emptyTitle}</p>
+        <p className="max-w-md text-xs leading-relaxed text-muted-foreground/75">{t.agents.emptyDesc}</p>
       </div>
     )
   }
 
   const summary = [
-    `${flat.length} ${flat.length === 1 ? 'agent' : 'agents'}`,
-    active > 0 ? `${active} active` : '',
-    failed > 0 ? `${failed} failed` : '',
-    tools > 0 ? `${tools} tools` : '',
-    files > 0 ? `${files} files` : '',
-    tokens > 0 ? fmtTokens(tokens) : '',
+    t.agents.agentsCount(flat.length),
+    active > 0 ? t.agents.activeCount(active) : '',
+    failed > 0 ? t.agents.failedCount(failed) : '',
+    tools > 0 ? t.agents.toolsCount(tools) : '',
+    files > 0 ? t.agents.filesCount(files) : '',
+    tokens > 0 ? fmtTokens(tokens, t.agents) : '',
     cost > 0 ? `$${cost.toFixed(2)}` : ''
   ].filter(Boolean)
 
@@ -243,6 +242,8 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
 }
 
 function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) {
+  const { t } = useI18n()
+
   if (group.nodes.length === 1 && group.taskCount <= 1) {
     return <SubagentRow node={group.nodes[0]!} nowMs={nowMs} />
   }
@@ -252,8 +253,9 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
   return (
     <section className="grid min-w-0 gap-3">
       <p className="text-[0.66rem] font-medium uppercase tracking-wider text-muted-foreground/70">
-        {group.label} <span className="text-muted-foreground/50">·</span> {group.nodes.length} workers
-        {activeWorkers > 0 ? <span className="text-primary/85"> · {activeWorkers} active</span> : null}
+        {group.delegationIndex > 0 ? t.agents.delegation(group.delegationIndex) : ''}{' '}
+        <span className="text-muted-foreground/50">·</span> {t.agents.workers(group.nodes.length)}
+        {activeWorkers > 0 ? <span className="text-primary/85"> · {t.agents.workersActive(activeWorkers)}</span> : null}
       </p>
       <div className="grid min-w-0 gap-4">
         {group.nodes.map(node => (
@@ -275,6 +277,7 @@ function StreamLine({
   parentRunning: boolean
   rowKey: string
 }) {
+  const { t } = useI18n()
   const enterRef = useEnterAnimation(parentRunning, `subagent-stream:${rowKey}`)
   const isMono = entry.kind === 'tool'
   const tone = entry.isError ? 'text-destructive' : STREAM_TONE[entry.kind]
@@ -285,8 +288,8 @@ function StreamLine({
       <span className={cn('min-w-0 flex-1 wrap-anywhere', tone, isMono && 'font-mono text-[0.69rem]')}>
         {entry.text}
         {active ? (
-          <BrailleSpinner
-            ariaLabel="Streaming"
+          <GlyphSpinner
+            ariaLabel={t.agents.streaming}
             className="ml-1 inline-block size-2.5 align-middle text-muted-foreground/70"
             spinner="breathe"
           />
@@ -297,6 +300,7 @@ function StreamLine({
 }
 
 function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
+  const { t } = useI18n()
   const running = node.status === 'running' || node.status === 'queued'
   const elapsed = useElapsedSeconds(running, `subagent:${node.id}`)
 
@@ -317,10 +321,10 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
 
   const subtitle = [
     node.model,
-    fmtDuration(durationSeconds),
-    node.toolCount ? `${node.toolCount} tools` : '',
-    fmtTokens((node.inputTokens ?? 0) + (node.outputTokens ?? 0)),
-    `updated ${fmtAge(node.updatedAt, nowMs)}`
+    fmtDuration(durationSeconds, t.agents),
+    node.toolCount ? t.agents.toolsCount(node.toolCount) : '',
+    fmtTokens((node.inputTokens ?? 0) + (node.outputTokens ?? 0), t.agents),
+    t.agents.updatedAgo(fmtAge(node.updatedAt, nowMs, t.agents))
   ].filter(Boolean)
 
   return (
@@ -331,7 +335,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
         onClick={() => setOpen(v => !v)}
         type="button"
       >
-        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status)}</span>
+        <span className="mt-0.5 flex h-[1.1rem] shrink-0 items-center">{statusGlyph(node.status, t.agents)}</span>
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span
             className={cn(
@@ -351,7 +355,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
       </button>
 
       {visibleRows.length > 0 ? (
-        <div className="grid min-w-0 gap-1 pl-6">
+        <div className="grid min-w-0 gap-1 pl-6" data-selectable-text="true">
           {visibleRows.map((entry, i) => (
             <StreamLine
               active={running && i === visibleRows.length - 1}
@@ -365,8 +369,10 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
       ) : null}
 
       {open && fileLines.length > 0 ? (
-        <div className="grid min-w-0 gap-0.5 pl-6">
-          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">Files</p>
+        <div className="grid min-w-0 gap-0.5 pl-6" data-selectable-text="true">
+          <p className="text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">
+            {t.agents.files}
+          </p>
           {fileLines.slice(0, 8).map(line => (
             <p className="wrap-break-word font-mono text-[0.67rem] leading-relaxed text-muted-foreground/80" key={line}>
               {line}
@@ -374,7 +380,7 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
           ))}
           {fileLines.length > 8 ? (
             <p className="font-mono text-[0.67rem] leading-relaxed text-muted-foreground/65">
-              +{fileLines.length - 8} more files
+              {t.agents.moreFiles(fileLines.length - 8)}
             </p>
           ) : null}
         </div>

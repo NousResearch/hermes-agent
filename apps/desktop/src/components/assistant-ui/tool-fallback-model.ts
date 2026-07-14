@@ -1,4 +1,6 @@
+import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { summarizeShellCommand } from '@/lib/summarize-command'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
@@ -19,6 +21,12 @@ export interface SearchResultRow {
   url: string
 }
 
+export interface ToolTitleAction {
+  prefix: string
+  suffix: string
+  text: string
+}
+
 interface CountMetric {
   count: number
   noun: string
@@ -35,10 +43,22 @@ export interface ToolView {
   previewTarget?: string
   rawArgs: string
   rawResult: string
+  /** Set for tools whose output naturally contains ANSI escape codes
+   *  (terminal/execute_code) so the renderer knows to run them through
+   *  the ANSI parser instead of printing them as literals. */
+  rendersAnsi?: boolean
   searchHits?: SearchResultRow[]
+  /** When the backend reports stderr as a separate stream (terminal /
+   *  execute_code), the renderer shows it as its own labeled, neutrally
+   *  tinted block under stdout — distinct from an error tone. */
+  stderr?: string
+  /** When set, the renderer uses stdout+stderr as separate sections and
+   *  ignores the merged `detail`. */
+  stdout?: string
   status: ToolStatus
   subtitle: string
   title: string
+  titleAction?: ToolTitleAction
   tone: ToolTone
 }
 
@@ -46,6 +66,12 @@ interface ToolMeta {
   done: string
   icon?: string
   pending: string
+  pendingAction: string
+  tone: ToolTone
+}
+
+interface ToolMetaSpec {
+  icon?: string
   tone: ToolTone
 }
 
@@ -60,40 +86,175 @@ export interface MessageRunningStateSlice {
   }
 }
 
-const TOOL_META: Record<string, ToolMeta> = {
-  browser_click: { done: 'Clicked page element', pending: 'Clicking page element', icon: 'globe', tone: 'browser' },
-  browser_fill: { done: 'Filled form field', pending: 'Filling form field', icon: 'globe', tone: 'browser' },
-  browser_navigate: { done: 'Opened page', pending: 'Opening page', icon: 'globe', tone: 'browser' },
+const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
+
+export function isFileEditTool(toolName: string): boolean {
+  return FILE_EDIT_TOOL_NAMES.has(toolName)
+}
+
+export interface DiffLineStats {
+  added: number
+  removed: number
+}
+
+export function countDiffLineStats(diff: string): DiffLineStats {
+  let added = 0
+  let removed = 0
+
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      added += 1
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      removed += 1
+    }
+  }
+
+  return { added, removed }
+}
+
+function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  return (
+    firstStringField(args, ['path', 'file', 'filepath']) ||
+    firstStringField(result, ['path', 'file', 'filepath', 'resolved_path']) ||
+    htmlPathFromInlineDiff(firstStringField(result, ['inline_diff', 'diff']))
+  )
+}
+
+function fileEditBasename(path: string): string {
+  const normalized = path.replace(/\\/g, '/').trim()
+
+  return normalized.split('/').filter(Boolean).pop() || normalized
+}
+
+function numericField(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key]
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function readFileLineLabel(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  if (numericField(args, 'offset') === undefined && numericField(args, 'limit') === undefined) {
+    return ''
+  }
+
+  const content = firstStringField(result, ['content'])
+  const offset = numericField(args, 'offset')
+  const limit = numericField(args, 'limit')
+
+  if (offset !== undefined && offset > 0) {
+    if (limit === undefined || limit <= 1) {
+      return `L${offset}`
+    }
+
+    return `L${offset}-${offset + limit - 1}`
+  }
+
+  const lines = content
+    .split('\n')
+    .map(line => /^(\d+)\|/.exec(line)?.[1])
+    .filter((line): line is string => !!line)
+    .map(Number)
+
+  if (lines.length === 0) {
+    return ''
+  }
+
+  const start = lines[0]!
+  const end = lines[lines.length - 1]!
+
+  return start === end ? `L${start}` : `L${start}-${end}`
+}
+
+function readFileDisplayTarget(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  const inherited = firstStringField(args, ['context', 'preview'])
+
+  if (inherited) {
+    return inherited
+  }
+
+  const path = firstStringField(args, ['path', 'file', 'filepath'])
+
+  if (!path) {
+    return ''
+  }
+
+  const lineLabel = readFileLineLabel(args, result)
+
+  return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
+}
+
+const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
+  browser_click: {
+    icon: 'globe',
+    tone: 'browser'
+  },
+  browser_fill: {
+    icon: 'globe',
+    tone: 'browser'
+  },
+  browser_navigate: {
+    icon: 'globe',
+    tone: 'browser'
+  },
   browser_snapshot: {
-    done: 'Captured page snapshot',
-    pending: 'Capturing page snapshot',
     icon: 'globe',
     tone: 'browser'
   },
   browser_take_screenshot: {
-    done: 'Captured screenshot',
-    pending: 'Capturing screenshot',
     icon: 'file-media',
     tone: 'browser'
   },
-  browser_type: { done: 'Typed on page', pending: 'Typing on page', icon: 'globe', tone: 'browser' },
-  edit_file: { done: 'Edited file', pending: 'Editing file', icon: 'edit', tone: 'file' },
-  execute_code: { done: 'Ran code', pending: 'Running code', icon: 'terminal', tone: 'terminal' },
-  image_generate: { done: 'Generated image', pending: 'Generating image', icon: 'file-media', tone: 'image' },
-  list_files: { done: 'Listed files', pending: 'Listing files', icon: 'files', tone: 'file' },
-  read_file: { done: 'Read file', pending: 'Reading file', icon: 'file', tone: 'file' },
-  search_files: { done: 'Searched files', pending: 'Searching files', icon: 'search', tone: 'file' },
+  browser_type: {
+    icon: 'globe',
+    tone: 'browser'
+  },
+  clarify: {
+    icon: 'question',
+    tone: 'agent'
+  },
+  cronjob: {
+    icon: 'watch',
+    tone: 'agent'
+  },
+  edit_file: { icon: 'edit', tone: 'file' },
+  execute_code: {
+    icon: 'terminal',
+    tone: 'terminal'
+  },
+  image_generate: {
+    icon: 'file-media',
+    tone: 'image'
+  },
+  list_files: {
+    icon: 'files',
+    tone: 'file'
+  },
+  patch: { icon: 'edit', tone: 'file' },
+  read_file: { icon: 'file', tone: 'file' },
+  search_files: {
+    icon: 'search',
+    tone: 'file'
+  },
   session_search_recall: {
-    done: 'Searched session history',
-    pending: 'Searching session history',
     icon: 'search',
     tone: 'agent'
   },
-  terminal: { done: 'Ran command', pending: 'Running command', icon: 'terminal', tone: 'terminal' },
-  todo: { done: 'Updated todos', pending: 'Updating todos', icon: 'tools', tone: 'agent' },
-  web_extract: { done: 'Read webpage', pending: 'Reading webpage', icon: 'globe', tone: 'web' },
-  web_search: { done: 'Searched web', pending: 'Searching web', icon: 'search', tone: 'web' },
-  write_file: { done: 'Edited file', pending: 'Editing file', icon: 'edit', tone: 'file' }
+  terminal: {
+    icon: 'terminal',
+    tone: 'terminal'
+  },
+  todo: { icon: 'tools', tone: 'agent' },
+  vision_analyze: {
+    icon: 'eye',
+    tone: 'image'
+  },
+  web_extract: { icon: 'globe', tone: 'web' },
+  web_search: { icon: 'search', tone: 'web' },
+  write_file: { icon: 'edit', tone: 'file' }
+}
+
+function isToolTitleKey(name: string): name is ToolTitleKey {
+  return name in TOOL_META
 }
 
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
@@ -115,27 +276,45 @@ function titleForTool(name: string): string {
   )
 }
 
-const PREFIX_META: { icon?: string; prefix: string; tone: ToolTone; verb: string }[] = [
-  { prefix: 'browser_', verb: 'Browser', icon: 'globe', tone: 'browser' },
-  { prefix: 'web_', verb: 'Web', icon: 'globe', tone: 'web' }
+const PREFIX_META: { icon?: string; labelKey: string; prefix: string; tone: ToolTone }[] = [
+  { prefix: 'browser_', labelKey: 'browser', icon: 'globe', tone: 'browser' },
+  { prefix: 'web_', labelKey: 'web', icon: 'globe', tone: 'web' }
 ]
 
 function toolMeta(name: string): ToolMeta {
-  if (TOOL_META[name]) {
-    return TOOL_META[name]
+  if (isToolTitleKey(name)) {
+    const meta = TOOL_META[name]
+
+    return {
+      done: translateNow(`assistant.tool.titles.${name}.done`),
+      pending: translateNow(`assistant.tool.titles.${name}.pending`),
+      pendingAction: translateNow(`assistant.tool.titles.${name}.pendingAction`),
+      icon: meta.icon,
+      tone: meta.tone
+    }
   }
 
   const action = titleForTool(name)
   const prefix = PREFIX_META.find(p => name.startsWith(p.prefix))
 
-  return prefix
-    ? {
-        done: `${prefix.verb} ${action}`,
-        pending: `Running ${prefix.verb.toLowerCase()} ${action.toLowerCase()}`,
-        icon: prefix.icon,
-        tone: prefix.tone
-      }
-    : { done: action, pending: `Running ${action.toLowerCase()}`, tone: 'default' }
+  if (prefix) {
+    const prefixLabel = translateNow(`assistant.tool.prefixes.${prefix.labelKey}`)
+
+    return {
+      done: translateNow('assistant.tool.titleTemplates.prefixedDone', prefixLabel, action),
+      pending: translateNow('assistant.tool.titleTemplates.runningPrefixedTool', prefixLabel, action),
+      pendingAction: translateNow('assistant.tool.actions.running'),
+      icon: prefix.icon,
+      tone: prefix.tone
+    }
+  }
+
+  return {
+    done: action,
+    pending: translateNow('assistant.tool.titleTemplates.runningTool', action),
+    pendingAction: translateNow('assistant.tool.actions.running'),
+    tone: 'default'
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -182,8 +361,26 @@ function contextValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+// Each tool result is server-capped (~100KB), but a turn over a big directory
+// stacks many rows; painting/serializing them all floods the renderer (freeze,
+// then OOM). Clamp every inline-painted payload to a bounded slice — the row's
+// Copy button still reads the uncapped `view.detail` for the full output.
+export const MAX_TOOL_RENDER_CHARS = 20_000
+
+export function clampForDisplay(value: string, max = MAX_TOOL_RENDER_CHARS): string {
+  if (value.length <= max) {
+    return value
+  }
+
+  const omitted = value.length - max
+
+  return `${value.slice(0, max)}\n\n… ${omitted.toLocaleString()} more characters truncated — use Copy for the full output.`
+}
+
 function prettyJson(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+
+  return clampForDisplay(raw ?? '')
 }
 
 function parseMaybeObject(value: unknown): Record<string, unknown> {
@@ -731,9 +928,20 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return firstStringField(result, ['message', 'reason', 'detail']) || `Tool returned status "${result.status}".`
   }
 
+  // A non-zero exit code alone is a weak failure signal: grep returns 1 on
+  // no-match, diff returns 1 on differences, piped commands surface the last
+  // stage's code, etc. — all routinely produce useful output and aren't
+  // failures. Only treat it as an error when the command produced no real
+  // output to show; otherwise render the output normally (not red).
   const exit = numberValue(result.exit_code)
 
-  return exit !== null && exit !== 0 ? `Command failed with exit code ${exit}.` : ''
+  if (exit !== null && exit !== 0) {
+    const hasOutput = Boolean(firstStringField(result, ['output', 'stdout', 'stderr'])?.trim())
+
+    return hasOutput ? '' : `Command failed with exit code ${exit}.`
+  }
+
+  return ''
 }
 
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {
@@ -770,8 +978,8 @@ function toolPreviewTarget(toolName: string, args: Record<string, unknown>, resu
     return looksLikeUrl(explicit) ? explicit : findFirstUrl(args, result)
   }
 
-  if (toolName === 'write_file' || toolName === 'edit_file') {
-    return htmlPathFromInlineDiff(firstStringField(result, ['inline_diff']))
+  if (isFileEditTool(toolName)) {
+    return htmlPathFromInlineDiff(firstStringField(result, ['inline_diff', 'diff']))
   }
 
   return ''
@@ -831,9 +1039,17 @@ function stripDividerLines(value: string): string {
 }
 
 export function inlineDiffFromResult(result: unknown): string {
-  const value = parseMaybeObject(result).inline_diff
+  const record = parseMaybeObject(result)
 
-  return typeof value === 'string' ? stripInlineDiffChrome(value) : ''
+  for (const key of ['inline_diff', 'diff']) {
+    const value = record[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return stripInlineDiffChrome(value)
+    }
+  }
+
+  return ''
 }
 
 // Falls back to a string only when there's something concrete to render —
@@ -871,6 +1087,87 @@ function fallbackDetailText(args: unknown, result: unknown): string {
   }
 
   return formatToolResultSummary(args) || minimalValueSummary(args)
+}
+
+function cronScalar(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.trim()
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+
+  return ''
+}
+
+function formatCronTime(iso: string): string {
+  const ts = Date.parse(iso)
+
+  if (Number.isNaN(ts)) {
+    return iso
+  }
+
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Record<string, unknown>): string {
+  const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
+
+  if (jobs) {
+    return jobs.length ? `${jobs.length} cron job${jobs.length === 1 ? '' : 's'}` : 'No cron jobs'
+  }
+
+  const message = firstStringField(resultRecord, ['message'])
+
+  if (message) {
+    return message
+  }
+
+  const action = firstStringField(argsRecord, ['action']) || 'manage'
+  const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
+  const label = `${action[0]?.toUpperCase() ?? ''}${action.slice(1)}`
+
+  return name ? `${label} ${name}` : `Cron ${action}`
+}
+
+function cronjobDetail(argsRecord: Record<string, unknown>, resultRecord: Record<string, unknown>): string {
+  const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
+
+  if (jobs) {
+    if (!jobs.length) {
+      return 'No cron jobs scheduled'
+    }
+
+    return jobs
+      .slice(0, 20)
+      .map(job => {
+        const row = isRecord(job) ? job : {}
+        const name = firstStringField(row, ['name', 'id']) || 'job'
+        const sched = firstStringField(row, ['schedule_display', 'schedule'])
+
+        return sched ? `- ${name} · ${sched}` : `- ${name}`
+      })
+      .join('\n')
+  }
+
+  const nextRun = cronScalar(resultRecord.next_run_at)
+
+  const rows: [string, string][] = [
+    ['Schedule', cronScalar(resultRecord.schedule)],
+    ['Repeat', cronScalar(resultRecord.repeat)],
+    ['Delivery', cronScalar(resultRecord.deliver)],
+    ['Next run', nextRun ? formatCronTime(nextRun) : '']
+  ]
+
+  const lines = rows.filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`)
+
+  return lines.length ? lines.join('\n') : fallbackDetailText(argsRecord, resultRecord)
 }
 
 function toolSubtitle(
@@ -941,20 +1238,27 @@ function toolSubtitle(
       }
     }
 
-    const command = firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord)
+    const command = firstStringField(argsRecord, ['context', 'preview', 'command', 'code']) || contextValue(argsRecord)
 
-    return command ? compactPreview(command, 120) : 'Executed command'
+    return command ? '' : 'Executed command'
   }
 
-  if (toolName === 'read_file' || toolName === 'write_file' || toolName === 'edit_file') {
-    const path =
-      firstStringField(argsRecord, ['path', 'file', 'filepath']) ||
-      htmlPathFromInlineDiff(firstStringField(resultRecord, ['inline_diff']))
+  if (toolName === 'read_file' || isFileEditTool(toolName)) {
+    const isEdit = isFileEditTool(toolName)
 
-    return (
-      path ||
-      (firstStringField(resultRecord, ['inline_diff']) ? 'Changed file' : fallbackDetailText(argsRecord, resultRecord))
-    )
+    const path = isEdit
+      ? fileEditPath(argsRecord, resultRecord)
+      : firstStringField(argsRecord, ['path', 'file', 'filepath'])
+
+    if (path) {
+      return path
+    }
+
+    if (!isEdit) {
+      return fallbackDetailText(argsRecord, resultRecord)
+    }
+
+    return inlineDiffFromResult(resultRecord) ? 'Changed file' : ''
   }
 
   if (toolName === 'web_extract') {
@@ -964,6 +1268,10 @@ function toolSubtitle(
       findFirstUrl(argsRecord, resultRecord)
 
     return url ? hostnameOf(url) : 'Fetched webpage'
+  }
+
+  if (toolName === 'cronjob') {
+    return cronjobSubtitle(argsRecord, resultRecord)
   }
 
   return (
@@ -983,10 +1291,6 @@ function toolDetailLabel(toolName: string): string {
     return 'Snapshot summary'
   }
 
-  if (toolName === 'terminal' || toolName === 'execute_code') {
-    return 'Command output'
-  }
-
   return ''
 }
 
@@ -1002,6 +1306,10 @@ function toolDetailText(
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
+    // Streams are split out into ToolView.stdout / ToolView.stderr by
+    // buildToolView so the renderer can label them separately. The merged
+    // fallback here is only used when the backend doesn't expose either
+    // stream individually.
     const output = firstStringField(resultRecord, ['output', 'stdout', 'stderr'])
 
     const lines = Array.isArray(resultRecord.lines)
@@ -1036,7 +1344,7 @@ function toolDetailText(
     }
   }
 
-  if (part.toolName === 'read_file') {
+  if (part.toolName === 'read_file' && part.result !== undefined) {
     const content = firstStringField(resultRecord, ['content', 'text', 'data', 'body'])
 
     if (content) {
@@ -1044,8 +1352,22 @@ function toolDetailText(
     }
   }
 
-  if (part.toolName === 'write_file' || part.toolName === 'edit_file') {
-    return inlineDiffFromResult(part.result) ? '' : fallbackDetailText(argsRecord, resultRecord)
+  if (isFileEditTool(part.toolName)) {
+    if (inlineDiffFromResult(part.result)) {
+      return ''
+    }
+
+    const summary = firstStringField(resultRecord, ['message', 'summary'])
+
+    if (summary) {
+      return summary
+    }
+
+    if (fileEditPath(argsRecord, resultRecord)) {
+      return ''
+    }
+
+    return fallbackDetailText(argsRecord, resultRecord)
   }
 
   if (part.toolName === 'web_search') {
@@ -1062,10 +1384,26 @@ function toolDetailText(
       .replace(/\bDuration\s+S\s*:/gi, 'Duration:')
   }
 
+  if (part.toolName === 'cronjob') {
+    return cronjobDetail(argsRecord, resultRecord)
+  }
+
   return fallbackDetailText(argsRecord, resultRecord)
 }
 
 export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string; text: string } {
+  const copy = {
+    command: translateNow('assistant.tool.copyCommand'),
+    content: translateNow('assistant.tool.copyContent'),
+    file: translateNow('assistant.tool.copyFile'),
+    output: translateNow('assistant.tool.copyOutput'),
+    path: translateNow('assistant.tool.copyPath'),
+    query: translateNow('assistant.tool.copyQuery'),
+    results: translateNow('assistant.tool.copyResults'),
+    url: translateNow('assistant.tool.copyUrl'),
+    generic: translateNow('common.copy')
+  }
+
   const args = parseMaybeObject(part.args)
   const result = parseMaybeObject(part.result)
   const detail = view.detail.trim()
@@ -1073,25 +1411,25 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy output', text: detail }
+      return { label: copy.output, text: detail }
     }
 
     const command = firstStringField(args, ['command', 'code']) || contextValue(args)
 
     if (command) {
-      return { label: 'Copy command', text: command }
+      return { label: copy.command, text: command }
     }
   }
 
   if (part.toolName === 'web_extract') {
     if (hasSubstantialOutput) {
-      return { label: 'Copy content', text: detail }
+      return { label: copy.content, text: detail }
     }
 
     const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
 
     if (url) {
-      return { label: 'Copy URL', text: url }
+      return { label: copy.url, text: url }
     }
   }
 
@@ -1099,7 +1437,7 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     const url = firstStringField(args, ['url', 'target']) || findFirstUrl(args, result)
 
     if (url) {
-      return { label: 'Copy URL', text: url }
+      return { label: copy.url, text: url }
     }
   }
 
@@ -1107,76 +1445,155 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     if (view.searchHits?.length) {
       const text = view.searchHits.map(hit => [hit.title, hit.url, hit.snippet].filter(Boolean).join('\n')).join('\n\n')
 
-      return { label: 'Copy results', text }
+      return { label: copy.results, text }
     }
 
     const query = firstStringField(args, ['search_term', 'query']) || contextValue(args)
 
     if (query) {
-      return { label: 'Copy query', text: query }
+      return { label: copy.query, text: query }
     }
   }
 
-  if (part.toolName === 'read_file') {
+  if (part.toolName === 'read_file' && part.result !== undefined) {
     if (hasSubstantialOutput) {
-      return { label: 'Copy file', text: detail }
+      return { label: copy.file, text: detail }
     }
 
     const path = firstStringField(args, ['path', 'file', 'filepath'])
 
     if (path) {
-      return { label: 'Copy path', text: path }
+      return { label: copy.path, text: path }
     }
   }
 
-  if (part.toolName === 'write_file' || part.toolName === 'edit_file') {
-    const path = firstStringField(args, ['path', 'file', 'filepath'])
+  if (isFileEditTool(part.toolName)) {
+    if (view.inlineDiff.trim()) {
+      return { label: copy.file, text: view.inlineDiff }
+    }
+
+    const path = fileEditPath(args, result)
 
     if (path) {
-      return { label: 'Copy path', text: path }
+      return { label: copy.path, text: path }
     }
   }
 
   if (detail) {
-    return { label: 'Copy output', text: detail }
+    return { label: copy.output, text: detail }
   }
 
-  return { label: 'Copy', text: view.title }
+  return { label: copy.generic, text: view.title }
+}
+
+interface ToolTitleParts {
+  action?: ToolTitleAction
+  title: string
+}
+
+function titlePartsFromAction(title: string, action?: string): ToolTitleParts {
+  if (!action) {
+    return { title }
+  }
+
+  const actionStart = title.indexOf(action)
+
+  if (actionStart < 0) {
+    return { title }
+  }
+
+  return {
+    action: {
+      prefix: title.slice(0, actionStart),
+      suffix: title.slice(actionStart + action.length),
+      text: action
+    },
+    title
+  }
 }
 
 function dynamicTitle(
   part: ToolPart,
   args: Record<string, unknown>,
   result: Record<string, unknown>,
-  fallback: string
-): string {
+  fallback: ToolTitleParts
+): ToolTitleParts {
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
+
+  const titledAction = (action: string, title: string): ToolTitleParts =>
+    titlePartsFromAction(title, part.result === undefined ? action : undefined)
 
   if (part.toolName === 'web_extract') {
     const url = findFirstUrl(args, result)
+    const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
 
-    return url ? `${verb('Reading', 'Read')} ${hostnameOf(url)}` : fallback
+    return url
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url)))
+      : fallback
   }
 
   if (part.toolName === 'browser_navigate') {
     const url = findFirstUrl(args, result)
+    const action = verb(translateNow('assistant.tool.actions.opening'), translateNow('assistant.tool.actions.opened'))
 
-    return url ? `${verb('Opening', 'Opened')} ${hostnameOf(url)}` : fallback
+    return url
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, hostnameOf(url)))
+      : fallback
   }
 
   if (part.toolName === 'web_search') {
     const query = firstStringField(args, ['search_term', 'query']) || contextValue(args)
 
-    return query ? `${verb('Searching', 'Searched')} “${compactPreview(query, 48)}”` : fallback
+    const action = verb(
+      translateNow('assistant.tool.actions.searching'),
+      translateNow('assistant.tool.actions.searched')
+    )
+
+    return query
+      ? titledAction(
+          action,
+          translateNow('assistant.tool.titleTemplates.actionQuoted', action, compactPreview(query, 48))
+        )
+      : fallback
+  }
+
+  if (part.toolName === 'read_file') {
+    const target = readFileDisplayTarget(args, result)
+    const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
+
+    return target
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, target))
+      : fallback
   }
 
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
-    const command = firstStringField(args, ['command', 'code']) || contextValue(args)
+    const command =
+      firstStringField(args, ['context', 'preview']) ||
+      firstStringField(args, ['command', 'code']) ||
+      contextValue(args)
 
     if (command) {
-      const verbText = part.toolName === 'execute_code' ? verb('Running code', 'Ran code') : verb('Running', 'Ran')
+      const action =
+        part.toolName === 'execute_code'
+          ? verb(translateNow('assistant.tool.actions.runningCode'), translateNow('assistant.tool.actions.ranCode'))
+          : verb(translateNow('assistant.tool.actions.running'), translateNow('assistant.tool.actions.ran'))
 
-      return `${verbText} · ${compactPreview(command, 160)}`
+      return titledAction(
+        action,
+        translateNow(
+          'assistant.tool.titleTemplates.actionCommand',
+          action,
+          compactPreview(summarizeShellCommand(command), 160)
+        )
+      )
+    }
+  }
+
+  if (isFileEditTool(part.toolName)) {
+    const path = fileEditPath(args, result)
+
+    if (path) {
+      return { title: fileEditBasename(path) }
     }
   }
 
@@ -1190,10 +1607,23 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const status = toolStatus(part, resultRecord)
   const error = toolErrorText(part, resultRecord)
   const baseTitle = part.result === undefined ? meta.pending : meta.done
-  const title = dynamicTitle(part, argsRecord, resultRecord, baseTitle)
+
+  const titleParts = dynamicTitle(
+    part,
+    argsRecord,
+    resultRecord,
+    titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
+  )
+
+  const title = titleParts.title
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
-  const keepSubtitleWithTitle = part.toolName === 'terminal' || part.toolName === 'execute_code'
+
+  const keepSubtitleWithTitle =
+    part.toolName === 'terminal' ||
+    part.toolName === 'execute_code' ||
+    (isFileEditTool(part.toolName) && Boolean(baseSubtitle.trim()))
+
   const subtitle = titleEnriched && !error && !keepSubtitleWithTitle ? '' : baseSubtitle
   const detailBody = stripDividerLines(toolDetailText(part, argsRecord, resultRecord))
 
@@ -1209,6 +1639,18 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
 
   const resultCount = status === 'error' ? null : toolResultCount(part, argsRecord, resultRecord)
 
+  // For shell/code tools we surface stdout and stderr as separate labeled
+  // streams in the renderer. Many CLIs use stderr for informational
+  // messages (npm progress, git hints), so we deliberately don't paint
+  // stderr destructively even though it's tagged.
+  const rendersAnsi = part.toolName === 'terminal' || part.toolName === 'execute_code'
+  const stdout = rendersAnsi ? firstStringField(resultRecord, ['stdout']) : ''
+  const stderrRaw = rendersAnsi ? firstStringField(resultRecord, ['stderr']) : ''
+  // Only attach stderr when the backend actually returned it as its own
+  // field — otherwise the merged `detail` already covers it and double-
+  // rendering would duplicate output.
+  const hasSplitStreams = rendersAnsi && (Boolean(stdout) || Boolean(stderrRaw))
+
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
@@ -1220,131 +1662,14 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     previewTarget: toolPreviewTarget(part.toolName, argsRecord, resultRecord),
     rawArgs: prettyJson(part.args),
     rawResult: prettyJson(part.result),
+    rendersAnsi: rendersAnsi || undefined,
     searchHits: searchHits?.length ? searchHits : undefined,
+    stderr: hasSplitStreams ? stderrRaw || undefined : undefined,
+    stdout: hasSplitStreams ? stdout || undefined : undefined,
     status,
     subtitle,
     title,
+    titleAction: titleParts.action,
     tone: meta.tone
   }
-}
-
-function isToolPart(part: unknown): part is ToolPart {
-  if (!part || typeof part !== 'object') {
-    return false
-  }
-
-  const row = part as Record<string, unknown>
-
-  return row.type === 'tool-call' && typeof row.toolName === 'string'
-}
-
-export function groupToolParts(content: unknown): ToolPart[][] {
-  if (!Array.isArray(content)) {
-    return []
-  }
-
-  const groups: ToolPart[][] = []
-  let current: ToolPart[] = []
-
-  for (const part of content) {
-    // todo parts render in their own hoisted panel; skip from grouped tools.
-    if (isToolPart(part) && part.toolName !== 'todo') {
-      current.push(part)
-
-      continue
-    }
-
-    if (current.length) {
-      groups.push(current)
-      current = []
-    }
-  }
-
-  if (current.length) {
-    groups.push(current)
-  }
-
-  return groups
-}
-
-export function groupStatus(parts: ToolPart[]): ToolStatus {
-  if (parts.some(p => p.result === undefined)) {
-    return 'running'
-  }
-
-  const statuses = parts.map(part => toolStatus(part, parseMaybeObject(part.result)))
-  const hasError = statuses.includes('error')
-
-  if (!hasError) {
-    return 'success'
-  }
-
-  return statuses.at(-1) === 'success' ? 'warning' : 'error'
-}
-
-export function groupTitle(parts: ToolPart[]): string {
-  const prefix = PREFIX_META.find(p => parts.every(part => part.toolName.startsWith(p.prefix)))
-  const verb = prefix?.verb || 'Tool'
-
-  return `${verb} actions · ${parts.length} steps`
-}
-
-export function groupPreviewTargets(parts: ToolPart[]): string[] {
-  const seen = new Set<string>()
-  const targets: string[] = []
-
-  for (const part of parts) {
-    const view = buildToolView(part, inlineDiffFromResult(part.result))
-    const target = view.previewTarget
-
-    if (target && isPreviewableTarget(target) && !seen.has(target)) {
-      seen.add(target)
-      targets.push(target)
-    }
-  }
-
-  return targets
-}
-
-export function groupFailedStepCount(parts: ToolPart[]): number {
-  return parts.filter(part => toolStatus(part, parseMaybeObject(part.result)) === 'error').length
-}
-
-export function groupTotalDurationLabel(parts: ToolPart[]): string {
-  const seconds = parts.reduce((sum, part) => {
-    const value = numberValue(parseMaybeObject(part.result).duration_s)
-
-    return sum + (value && value > 0 ? value : 0)
-  }, 0)
-
-  if (!seconds) {
-    return ''
-  }
-
-  return formatDurationSeconds(seconds)
-}
-
-export function groupTailSubtitle(parts: ToolPart[]): string {
-  const tail = parts.at(-1)
-
-  return tail ? buildToolView(tail, '').subtitle : ''
-}
-
-export function groupCopyText(parts: ToolPart[]): string {
-  return parts
-    .map(part => {
-      const view = buildToolView(part, '')
-      const lines = [view.title]
-
-      if (view.subtitle && view.subtitle !== view.title) {
-        lines.push(view.subtitle)
-      }
-
-      if (view.detail && view.detail !== view.subtitle) {
-        lines.push(view.detail)
-      }
-
-      return lines.join('\n')
-    })
-    .join('\n\n')
 }

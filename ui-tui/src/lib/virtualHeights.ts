@@ -72,6 +72,7 @@ export const estimatedMsgHeight = (
   {
     compact,
     details,
+    leadGap = false,
     thinkingVisible = details,
     toolsVisible = details,
     userPrompt = '',
@@ -79,6 +80,7 @@ export const estimatedMsgHeight = (
   }: {
     compact: boolean
     details: boolean
+    leadGap?: boolean
     thinkingVisible?: boolean
     toolsVisible?: boolean
     userPrompt?: string
@@ -120,7 +122,9 @@ export const estimatedMsgHeight = (
     const hasVisibleDetails = hasVisibleTools || hasVisibleThinking
 
     if (hasVisibleDetails) {
-      h += (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) + (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
+      h +=
+        (hasVisibleTools ? (msg.tools?.length ?? 0) : 0) +
+        (hasVisibleThinking ? wrappedLines(msg.thinking ?? '', bodyWidth) : 0)
 
       if (msg.role === 'assistant' && /\S/.test(msg.text)) {
         h += 2
@@ -129,8 +133,19 @@ export const estimatedMsgHeight = (
   }
 
   if (msg.role === 'user' || msg.kind === 'diff') {
+    // Top + bottom blank line.
     h += 2
   } else if (msg.kind === 'slash') {
+    h++
+  }
+
+  // Group-boundary blank line owned by BlockSlot: model prose, reasoning/tool
+  // trails, and notes/errors each start a new visual group when the block
+  // above them is a different kind. The caller resolves the boundary against
+  // the previous row (see domain/blockLayout.ts::hasLeadGap) and passes the
+  // result here so the estimate matches the rendered marginTop before Yoga
+  // remeasures. user / diff / slash never set this — they own their margins.
+  if (leadGap) {
     h++
   }
 

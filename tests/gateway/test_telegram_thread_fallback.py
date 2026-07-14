@@ -116,7 +116,7 @@ def _inject_fake_telegram(monkeypatch):
 
 
 def _make_adapter():
-    from gateway.platforms.telegram import TelegramAdapter
+    from plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = object.__new__(TelegramAdapter)
@@ -137,7 +137,7 @@ def _make_adapter():
 
 def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
     """Reply-derived thread ids in ordinary groups must not create topic lanes."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -171,7 +171,7 @@ def test_non_forum_group_reply_thread_id_does_not_fork_session_key():
 
 def test_forum_group_topic_message_preserves_thread_session_key():
     """Real Telegram forum-topic messages should still route by topic id."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -201,7 +201,7 @@ def test_forum_group_topic_message_preserves_thread_session_key():
 
 def test_forum_general_topic_without_message_thread_id_keeps_thread_context():
     """Forum General-topic messages should keep synthetic thread context."""
-    from gateway.platforms import telegram as telegram_mod
+    import plugins.platforms.telegram.adapter as telegram_mod
 
     adapter = _make_adapter()
     message = SimpleNamespace(
@@ -1127,7 +1127,7 @@ async def test_base_send_image_fallback_preserves_metadata():
     from gateway.platforms.base import BasePlatformAdapter
 
     class _ConcreteBaseAdapter(BasePlatformAdapter):
-        async def connect(self):
+        async def connect(self, *, is_reconnect: bool = False):
             return True
 
         async def disconnect(self):

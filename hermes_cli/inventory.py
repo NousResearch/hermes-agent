@@ -115,7 +115,10 @@ def build_models_payload(
     picker_hints: bool = False,
     canonical_order: bool = False,
     pricing: bool = False,
-    max_models: int = 50,
+    capabilities: bool = False,
+    force_fresh_nous_tier: bool = False,
+    refresh: bool = False,
+    max_models: int | None = None,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
     needs from a single substrate call.
@@ -134,6 +137,18 @@ def build_models_payload(
       show $/Mtok columns and gate paid models on free accounts —
       mirroring the ``hermes model`` CLI picker. Adds network calls
       (pricing fetch + Nous tier check); only set for interactive pickers.
+    - ``capabilities``: add a per-row ``capabilities`` map
+      ``{model: {fast, reasoning}}`` so pickers can gate the model-options
+      controls (fast toggle / reasoning) to what each model actually
+      supports, instead of offering knobs the backend would reject.
+    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
+      selecting Portal-recommended Nous models and applying tier gating. Keep
+      this false for UI picker opens; explicit auth/model flows can opt in
+      when they need freshly-purchased credits to show up immediately.
+    - ``refresh``: bust the per-provider model-id disk cache so every row
+      re-fetches its live catalog. Set only for an explicit user-triggered
+      "refresh models" action; normal picker opens leave it false to stay
+      snappy on the 1h cache.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -143,23 +158,114 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
+        force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
+        refresh=refresh,
     )
 
+    moa_row = _moa_provider_row(ctx)
+    if moa_row is not None:
+        rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
+    # --- Deduplicate: remove models from aggregators that overlap with
+    # user-defined providers.  When a local proxy (e.g. litellm-proxy)
+    # serves a model whose name also appears in an aggregator's curated
+    # catalog, the picker would show the model under both providers.
+    # Selecting it from the aggregator row sets model.provider to the
+    # aggregator (e.g. openrouter) instead of the user's proxy — silently
+    # breaking the call.  Filtering at the payload level keeps the
+    # aggregator rows honest: they only show models the user can't get
+    # from a more-specific provider.  (#45954)
+    try:
+        from hermes_cli.providers import is_routing_aggregator as _is_routing_aggregator
+    except Exception:
+        _is_routing_aggregator = None  # type: ignore[assignment]
+
+    if _is_routing_aggregator is not None:
+        user_models: set[str] = set()
+        for row in rows:
+            if row.get("is_user_defined"):
+                user_models.update(m.lower() for m in (row.get("models") or []))
+        if user_models:
+            for row in rows:
+                # A user's own configured provider is never an "aggregator
+                # duplicate" of itself: user_models is built from these very
+                # rows, and is_routing_aggregator() reports True for every
+                # custom:* slug.  Without this guard the dedup strips a
+                # user-defined custom provider's entire model list (all of it
+                # lives in user_models), emptying its picker row.
+                if row.get("is_user_defined"):
+                    continue
+                slug = row.get("slug", "")
+                # Only strip overlaps from TRUE routing aggregators (OpenRouter,
+                # custom:* proxies). Flat-namespace resellers (opencode-go /
+                # opencode-zen) serve every listed model as a first-party model,
+                # so their rows must keep models that a user's proxy happens to
+                # share a name with — otherwise a subscription provider's own
+                # catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently
+                # gutted in the picker. (#47077)
+                if not _is_routing_aggregator(slug):
+                    continue
+                original = row.get("models") or []
+                filtered = [m for m in original if m.lower() not in user_models]
+                if len(filtered) < len(original):
+                    row["models"] = filtered
+                    row["total_models"] = len(filtered)
+
     if include_unconfigured:
-        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows)
+        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+    if capabilities:
+        _apply_capabilities(rows)
 
     return {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+
+
+def _apply_capabilities(rows: list[dict]) -> None:
+    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+
+    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
+    enforces). `reasoning` comes from the models.dev catalog when known and
+    defaults to True otherwise — the effort dial is broadly accepted and a
+    no-op on models that ignore it, whereas hiding it from a capable-but-
+    uncatalogued model is the worse failure.
+    """
+    from hermes_cli.models import model_supports_fast_mode
+
+    try:
+        from agent.models_dev import get_model_capabilities
+    except Exception:
+        get_model_capabilities = None  # type: ignore[assignment]
+
+    for row in rows:
+        slug = row.get("slug") or ""
+        caps: dict[str, dict[str, bool]] = {}
+
+        for model in row.get("models") or []:
+            reasoning = True
+            if get_model_capabilities is not None and slug:
+                try:
+                    meta = get_model_capabilities(slug, model)
+                    if meta is not None:
+                        reasoning = bool(meta.supports_reasoning)
+                except Exception:
+                    reasoning = True
+
+            caps[model] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+            }
+
+        row["capabilities"] = caps
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
@@ -248,7 +354,11 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
-def _apply_pricing(rows: list[dict]) -> None:
+def _apply_pricing(
+    rows: list[dict],
+    *,
+    force_fresh_nous_tier: bool = False,
+) -> None:
     """Enrich each provider row with per-model pricing + Nous tier gating.
 
     Mutates ``rows`` in-place. For every row whose provider supports live
@@ -314,7 +424,9 @@ def _apply_pricing(rows: list[dict]) -> None:
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = check_nous_free_tier(force_fresh=True)
+                    nous_free_tier = check_nous_free_tier(
+                        force_fresh=force_fresh_nous_tier
+                    )
                 row["free_tier"] = bool(nous_free_tier)
                 if nous_free_tier:
                     _selectable, unavailable = partition_nous_models_by_tier(
@@ -328,3 +440,28 @@ def _apply_pricing(rows: list[dict]) -> None:
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _moa_provider_row(ctx: ConfigContext) -> dict | None:
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        cfg = normalize_moa_config(load_config().get("moa") or {})
+        models = list(cfg.get("presets", {}).keys())
+        if not models:
+            return None
+        return {
+            "slug": "moa",
+            "name": "Mixture of Agents",
+            "is_current": (ctx.current_provider or "").lower() == "moa",
+            "is_user_defined": False,
+            "models": models,
+            "total_models": len(models),
+            "source": "virtual",
+            "authenticated": True,
+            "auth_type": "virtual",
+            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
+        }
+    except Exception:
+        return None

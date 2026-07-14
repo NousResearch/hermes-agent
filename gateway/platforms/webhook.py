@@ -36,7 +36,8 @@ import logging
 import re
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -56,6 +57,11 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix
+# names a profile this gateway does not serve (→ 404). Distinct from None
+# (no prefix / multiplexing off → handle as the default profile).
+_PROFILE_REJECTED = object()
+
 _BUILTIN_DELIVER_PLATFORMS = {
     "telegram", "discord", "slack", "signal", "sms", "whatsapp",
     "matrix", "mattermost", "homeassistant", "email", "dingtalk",
@@ -67,6 +73,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+_RATE_WINDOW_SECONDS = 60.0
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -122,6 +129,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # back to the "log" deliver type.
         self._delivery_info: Dict[str, dict] = {}
         self._delivery_info_created: Dict[str, float] = {}
+        self._delivery_info_order: Deque[tuple[float, str]] = deque()
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -130,9 +138,10 @@ class WebhookAdapter(BasePlatformAdapter):
         # Prevents duplicate agent runs when webhook providers retry.
         self._seen_deliveries: Dict[str, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
+        self._seen_deliveries_next_prune_at: float = 0.0
 
         # Rate limiting: per-route timestamps in a fixed window.
-        self._rate_counts: Dict[str, List[float]] = {}
+        self._rate_counts: Dict[str, Deque[float]] = {}
         self._rate_limit: int = int(config.extra.get("rate_limit", 30))  # per minute
 
         # Body size limit (auth-before-body pattern)
@@ -144,7 +153,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
 
@@ -185,6 +194,14 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        # Multi-profile multiplexing: a /p/<profile>/webhooks/<route> prefix
+        # routes the inbound event to that profile. Same handler; the profile is
+        # captured from the path and stamped onto the SessionSource so the agent
+        # turn resolves that profile's config/skills/credentials. Only honored
+        # when gateway.multiplex_profiles is on (the handler validates).
+        app.router.add_post(
+            "/p/{profile}/webhooks/{route_name}", self._handle_webhook
+        )
 
         # Port conflict detection — fail fast if port is already in use
         import socket as _socket
@@ -271,15 +288,57 @@ class WebhookAdapter(BasePlatformAdapter):
         on each POST so the dict size is bounded by ``rate_limit * TTL``
         even if many webhooks fire and never receive a final response.
         """
+        if len(self._delivery_info_order) < len(self._delivery_info_created):
+            self._delivery_info_order = deque(
+                (created_at, key)
+                for key, created_at in sorted(
+                    self._delivery_info_created.items(), key=lambda item: item[1]
+                )
+            )
         cutoff = now - self._idempotency_ttl
-        stale = [
-            k
-            for k, t in self._delivery_info_created.items()
-            if t < cutoff
-        ]
+        while self._delivery_info_order and self._delivery_info_order[0][0] < cutoff:
+            created_at, key = self._delivery_info_order.popleft()
+            if self._delivery_info_created.get(key) != created_at:
+                continue
+            self._delivery_info.pop(key, None)
+            self._delivery_info_created.pop(key, None)
+
+    def _prune_seen_deliveries(self, now: float) -> None:
+        """Occasionally prune expired delivery IDs without scanning every POST."""
+        if now < self._seen_deliveries_next_prune_at:
+            return
+        cutoff = now - self._idempotency_ttl
+        stale = [k for k, t in self._seen_deliveries.items() if t < cutoff]
         for k in stale:
-            self._delivery_info.pop(k, None)
-            self._delivery_info_created.pop(k, None)
+            self._seen_deliveries.pop(k, None)
+        self._seen_deliveries_next_prune_at = now + min(60.0, max(1.0, self._idempotency_ttl / 10))
+
+    def _record_rate_limit_hit(self, route_name: str, now: float) -> bool:
+        """Return True if route is still within limit after recording this hit."""
+        window = self._rate_counts.get(route_name)
+        if not isinstance(window, deque):
+            new_window: Deque[float] = deque(window or ())
+            self._rate_counts[route_name] = new_window
+            window = new_window
+        cutoff = now - _RATE_WINDOW_SECONDS
+        while window and window[0] < cutoff:
+            window.popleft()
+        if len(window) >= self._rate_limit:
+            return False
+        window.append(now)
+        return True
+
+    def _record_delivery_id(self, delivery_id: str, now: float) -> bool:
+        """Return True when this delivery should be processed."""
+        seen_at = self._seen_deliveries.get(delivery_id)
+        if seen_at is not None and now - seen_at < self._idempotency_ttl:
+            return False
+        if seen_at is not None:
+            self._seen_deliveries.pop(delivery_id, None)
+        self._seen_deliveries[delivery_id] = now
+        if len(self._seen_deliveries) > max(self._rate_limit * 2, 128):
+            self._prune_seen_deliveries(now)
+        return True
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -351,6 +410,35 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    def _resolve_request_profile(self, request: "web.Request"):
+        """Resolve + validate the /p/<profile>/ URL prefix on a webhook request.
+
+        Returns:
+          - ``None`` when no profile prefix is present, or multiplexing is off
+            (the prefix is ignored, request handled as the default profile).
+          - the profile name (str) when present, multiplexing is on, and the
+            profile is one this gateway serves.
+          - ``_PROFILE_REJECTED`` when a prefix is present but the profile is
+            unknown/unconfigured (handler returns 404).
+        """
+        profile = (request.match_info.get("profile") or "").strip()
+        if not profile:
+            return None
+        runner = self.gateway_runner
+        cfg = getattr(runner, "config", None)
+        if not getattr(cfg, "multiplex_profiles", False):
+            # Prefix supplied but multiplexing is off — ignore it, behave as
+            # the single-profile gateway (don't 404 a would-be valid route).
+            return None
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+        except Exception:
+            return _PROFILE_REJECTED
+        if profile not in served:
+            return _PROFILE_REJECTED
+        return profile
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -359,9 +447,25 @@ class WebhookAdapter(BasePlatformAdapter):
         route_name = request.match_info.get("route_name", "")
         route_config = self._routes.get(route_name)
 
+        # Multi-profile: resolve + validate the /p/<profile>/ prefix if present.
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED:
+            return web.json_response(
+                {"error": "Unknown or unconfigured profile"}, status=404
+            )
+
         if not route_config:
             return web.json_response(
                 {"error": f"Unknown route: {route_name}"}, status=404
+            )
+
+        # Disabled routes are kept in the subscriptions file (so the dashboard
+        # can re-enable them) but reject incoming events.  Default-enabled:
+        # only an explicit ``enabled: false`` turns a route off, matching the
+        # mcp_servers ``enabled`` semantics.
+        if route_config.get("enabled", True) is False:
+            return web.json_response(
+                {"error": f"Route disabled: {route_name}"}, status=403
             )
 
         # ── Auth-before-body ─────────────────────────────────────
@@ -404,13 +508,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         # ── Rate limiting (after auth) ───────────────────────────
         now = time.time()
-        window = self._rate_counts.setdefault(route_name, [])
-        window[:] = [t for t in window if now - t < 60]
-        if len(window) >= self._rate_limit:
+        if not self._record_rate_limit_hit(route_name, now):
             return web.json_response(
                 {"error": "Rate limit exceeded"}, status=429
             )
-        window.append(now)
 
         # Parse payload
         try:
@@ -495,13 +596,7 @@ class WebhookAdapter(BasePlatformAdapter):
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
         now = time.time()
-        # Prune expired entries
-        self._seen_deliveries = {
-            k: v
-            for k, v in self._seen_deliveries.items()
-            if now - v < self._idempotency_ttl
-        }
-        if delivery_id in self._seen_deliveries:
+        if not self._record_delivery_id(delivery_id, now):
             logger.info(
                 "[webhook] Skipping duplicate delivery %s", delivery_id
             )
@@ -509,7 +604,6 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "duplicate", "delivery_id": delivery_id},
                 status=200,
             )
-        self._seen_deliveries[delivery_id] = now
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we
@@ -585,6 +679,7 @@ class WebhookAdapter(BasePlatformAdapter):
         }
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
+        self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
 
         # Build source and event
@@ -595,6 +690,8 @@ class WebhookAdapter(BasePlatformAdapter):
             user_id=f"webhook:{route_name}",
             user_name=route_name,
         )
+        if profile and isinstance(profile, str):
+            source.profile = profile
         event = MessageEvent(
             text=prompt,
             message_type=MessageType.TEXT,

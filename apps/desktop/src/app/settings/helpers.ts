@@ -8,6 +8,13 @@ export const includesQuery = (v: unknown, q: string) => asText(v).toLowerCase().
 
 export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 
+/** Strip leading emoji from toolset titles (CLI registry prefixes labels with icons). */
+export const stripToolsetLabel = (label: string): string =>
+  label.replace(/^[\p{Emoji}\p{Extended_Pictographic}\s]+/u, '').trim() || label
+
+export const toolsetDisplayLabel = (toolset: Pick<ToolsetInfo, 'label' | 'name'>): string =>
+  stripToolsetLabel(asText(toolset.label || toolset.name))
+
 export const toolNames = (t: ToolsetInfo) => (Array.isArray(t.tools) ? t.tools.map(asText).filter(Boolean) : [])
 
 export const withoutKey = <T>(record: Record<string, T>, key: string) => {
@@ -19,9 +26,30 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
 
 export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
 
-export const providerGroup = (key: string) => PROVIDER_GROUPS.find(g => key.startsWith(g.prefix))?.name ?? 'Other'
+// Longest-prefix match so a more specific group like ``MINIMAX_CN_`` is
+// chosen over its shorter parent ``MINIMAX_``. Falls back to the bucket
+// "Other" used by the Keys settings view for un-grouped env vars.
+export const providerGroup = (key: string) => {
+  let best: (typeof PROVIDER_GROUPS)[number] | undefined
 
-export const providerPriority = (name: string) => PROVIDER_GROUPS.find(g => g.name === name)?.priority ?? 99
+  for (const candidate of PROVIDER_GROUPS) {
+    if (!key.startsWith(candidate.prefix)) {
+      continue
+    }
+
+    if (!best || candidate.prefix.length > best.prefix.length) {
+      best = candidate
+    }
+  }
+
+  return best?.name ?? 'Other'
+}
+
+export const providerMeta = (name: string) =>
+  PROVIDER_GROUPS.find(g => g.name === name && (g.description || g.docsUrl)) ??
+  PROVIDER_GROUPS.find(g => g.name === name)
+
+export const providerPriority = (name: string) => providerMeta(name)?.priority ?? 99
 
 const POLLUTING_PATH_PARTS = new Set(['__proto__', 'constructor', 'prototype'])
 

@@ -1,13 +1,16 @@
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ContextMenuItem } from '@/components/ui/context-menu'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 type CopyPayload = string | (() => Promise<string> | string)
-type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'tool-row'
+type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
 
@@ -58,10 +61,10 @@ export function CopyButton({
   children,
   className,
   disabled = false,
-  errorMessage = 'Copy failed',
+  errorMessage,
   haptic = true,
   iconClassName,
-  label = 'Copy',
+  label,
   onCopied,
   onCopyError,
   preventDefault = false,
@@ -70,6 +73,9 @@ export function CopyButton({
   text,
   title
 }: CopyButtonProps) {
+  const { t } = useI18n()
+  const resolvedErrorMessage = errorMessage ?? t.common.copyFailed
+  const resolvedLabel = label ?? t.common.copy
   const [status, setStatus] = React.useState<CopyStatus>('idle')
   const resetRef = React.useRef<number | null>(null)
 
@@ -137,10 +143,10 @@ export function CopyButton({
   const visibleChildren =
     (showLabel ?? (appearance !== 'icon' && appearance !== 'tool-row'))
       ? status === 'copied'
-        ? 'Copied'
+        ? t.common.copied
         : status === 'error'
-          ? 'Failed'
-          : (children ?? label)
+          ? t.common.failed
+          : (children ?? resolvedLabel)
       : null
 
   const content = (
@@ -150,12 +156,16 @@ export function CopyButton({
     </>
   )
 
-  const feedbackLabel = status === 'copied' ? 'Copied' : status === 'error' ? errorMessage : (title ?? label)
-  const ariaLabel = status === 'idle' ? label : feedbackLabel
+  const feedbackLabel =
+    status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
 
-  if (appearance === 'menu-item') {
+  const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
+
+  if (appearance === 'menu-item' || appearance === 'context-menu-item') {
+    const MenuItem = appearance === 'menu-item' ? DropdownMenuItem : ContextMenuItem
+
     return (
-      <DropdownMenuItem
+      <MenuItem
         className={className}
         disabled={disabled}
         onSelect={event => {
@@ -164,7 +174,7 @@ export function CopyButton({
         }}
       >
         {content}
-      </DropdownMenuItem>
+      </MenuItem>
     )
   }
 
@@ -178,7 +188,6 @@ export function CopyButton({
         )}
         disabled={disabled}
         onClick={event => void copy(event)}
-        title={feedbackLabel}
         type="button"
       >
         {content}
@@ -188,34 +197,37 @@ export function CopyButton({
 
   if (appearance === 'tool-row') {
     return (
-      <button
-        aria-label={ariaLabel}
-        className={cn(
-          'grid size-6 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent/55 hover:text-foreground focus-visible:opacity-100 group-hover/tool-row:opacity-100 disabled:opacity-40',
-          className
-        )}
-        disabled={disabled}
-        onClick={event => void copy(event)}
-        title={feedbackLabel}
-        type="button"
-      >
-        {icon}
-      </button>
+      <Tip label={feedbackLabel}>
+        <button
+          aria-label={ariaLabel}
+          className={cn(
+            'grid size-6 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent/55 hover:text-foreground focus-visible:opacity-100 group-hover/tool-row:opacity-100 disabled:opacity-40',
+            className
+          )}
+          disabled={disabled}
+          onClick={event => void copy(event)}
+          type="button"
+        >
+          {icon}
+        </button>
+      </Tip>
     )
   }
 
-  return (
+  const button = (
     <Button
       aria-label={ariaLabel}
       className={className}
       disabled={disabled}
       onClick={event => void copy(event)}
       size={buttonSize ?? (appearance === 'icon' ? 'icon' : 'default')}
-      title={feedbackLabel}
       type="button"
       variant={buttonVariant}
     >
       {content}
     </Button>
   )
+
+  // Only icon-only buttons need a tooltip; the text variant already shows its label.
+  return appearance === 'icon' ? <Tip label={feedbackLabel}>{button}</Tip> : button
 }

@@ -54,6 +54,12 @@ def _toplevel_chown_loop(text: str) -> str:
     return block
 
 
+def _path_guard_functions(text: str) -> str:
+    start = text.index("path_has_symlink_component() {")
+    end = text.index("\n\nchown_hermes_tree() {", start)
+    return text[start:end]
+
+
 def test_toplevel_chown_loop_present(stage2_text: str) -> None:
     block = _toplevel_chown_loop(stage2_text)
     # The reported-broken files must be covered.
@@ -100,6 +106,7 @@ def _run_loop(text: str, present_files: list[str]) -> list[str]:
         script = (
             "set -e\n"
             f'HERMES_HOME="{home}"\n'
+            f"{_path_guard_functions(text)}\n"
             f'chown() {{ for a in "$@"; do :; done; echo "${{a##*/}}" >> "{dpath}/chown.log"; }}\n'
             + block
         )
@@ -129,6 +136,72 @@ def test_loop_skips_nonallowlisted_host_file(stage2_text: str) -> None:
     assert "host_secret.json" not in touched, (
         "the allowlist loop must not touch non-allowlisted files (#19788)"
     )
+
+
+def test_loop_skips_symlinked_allowlisted_file(stage2_text: str, tmp_path: Path) -> None:
+    """Even allowlisted state files must not be chowned through symlinks."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    block = _toplevel_chown_loop(stage2_text)
+
+    home = tmp_path / "home"
+    home.mkdir()
+    outside_auth = tmp_path / "outside-auth.json"
+    outside_auth.touch()
+    (home / "auth.json").symlink_to(outside_auth)
+
+    log = tmp_path / "chown.log"
+    script = (
+        "set -e\n"
+        f'HERMES_HOME="{home}"\n'
+        f"{_path_guard_functions(stage2_text)}\n"
+        f'chown() {{ for a in "$@"; do :; done; echo "${{a##*/}}" >> "{log}"; }}\n'
+        + block
+    )
+    script_path = tmp_path / "harness.sh"
+    script_path.write_text(script)
+
+    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert not log.exists(), "symlinked auth.json must not be passed to chown"
+    assert "refusing chown through symlinked path" in proc.stdout
+
+
+def test_loop_skips_allowlisted_file_under_symlinked_home(
+    stage2_text: str,
+    tmp_path: Path,
+) -> None:
+    """A symlinked $HERMES_HOME must not let file chown reach its target."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash not available")
+    block = _toplevel_chown_loop(stage2_text)
+
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    (real_home / "auth.json").touch()
+    linked_home = tmp_path / "linked-home"
+    try:
+        linked_home.symlink_to(real_home, target_is_directory=True)
+    except (NotImplementedError, OSError):
+        pytest.skip("directory symlinks are not available on this platform")
+
+    log = tmp_path / "chown.log"
+    script = (
+        "set -e\n"
+        f'HERMES_HOME="{linked_home}"\n'
+        f"{_path_guard_functions(stage2_text)}\n"
+        f'chown() {{ for a in "$@"; do :; done; echo "${{a##*/}}" >> "{log}"; }}\n'
+        + block
+    )
+    script_path = tmp_path / "harness.sh"
+    script_path.write_text(script)
+
+    proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert not log.exists(), "must not chown files through symlinked HERMES_HOME"
+    assert "refusing chown through symlinked path" in proc.stdout
 
 
 def test_loop_skips_absent_files(stage2_text: str) -> None:

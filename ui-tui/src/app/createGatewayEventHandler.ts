@@ -164,9 +164,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // instead of one per concern.  Resolves to null on RPC failure; callers
   // treat null as "use defaults".
   let fullConfigPromise: null | Promise<ConfigFullResponse | null> = null
+  let fullConfigSessionId: null | string = null
 
   const getFullConfigOnce = (): Promise<ConfigFullResponse | null> => {
-    fullConfigPromise ??= rpc<ConfigFullResponse>('config.get', { key: 'full' }).catch(() => null)
+    const sessionId = getUiState().sid ?? null
+
+    if (fullConfigPromise && fullConfigSessionId === sessionId) {
+      return fullConfigPromise
+    }
+
+    fullConfigSessionId = sessionId
+    fullConfigPromise = rpc<ConfigFullResponse>('config.get', {
+      key: 'full',
+      ...(sessionId ? { session_id: sessionId } : {})
+    }).catch(() => null)
 
     return fullConfigPromise
   }
@@ -184,14 +195,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // until it resolves we assume the default (on).
   let agentsNudgeEnabled = true
   let agentsNudgeConfigFetched = false
+  let agentsNudgeConfigSessionId: null | string = null
   let agentsNudgedThisTurn = false
 
   const ensureAgentsNudgeConfig = () => {
-    if (agentsNudgeConfigFetched) {
+    const sessionId = getUiState().sid ?? null
+
+    if (agentsNudgeConfigFetched && agentsNudgeConfigSessionId === sessionId) {
       return
     }
 
     agentsNudgeConfigFetched = true
+    agentsNudgeConfigSessionId = sessionId
+    agentsNudgeEnabled = true
     getFullConfigOnce().then(cfg => {
       // Only an explicit `false` disables it; absent/unknown keeps default on.
       if (cfg?.config?.display?.tui_agents_nudge === false) {

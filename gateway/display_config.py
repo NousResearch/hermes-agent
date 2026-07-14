@@ -209,9 +209,10 @@ def resolve_display_setting(
 def resolve_gateway_streaming_enabled(streaming_config: Any, platform_override: Any) -> bool:
     """Resolve whether gateway token streaming should run.
 
-    ``streaming.transport: off`` is a global hard kill switch.  Per-platform
-    defaults/overrides (for example Telegram's streaming=true default) can opt
-    a platform in or out only when the transport itself is still enabled.
+    ``streaming.enabled: false`` and ``streaming.transport: off`` are global
+    hard kill switches. Per-platform defaults/overrides (for example
+    Telegram's streaming=true default) can opt a platform in or out only after
+    both global gates allow streaming.
     """
     transport = getattr(streaming_config, "transport", "auto")
     if isinstance(transport, str):
@@ -223,8 +224,11 @@ def resolve_gateway_streaming_enabled(streaming_config: Any, platform_override: 
     if transport_off:
         return False
 
+    if not bool(getattr(streaming_config, "enabled", False)):
+        return False
+
     if platform_override is None:
-        return bool(getattr(streaming_config, "enabled", False))
+        return True
     return bool(platform_override)
 
 

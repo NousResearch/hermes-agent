@@ -88,6 +88,31 @@ except ImportError:
 try:
     import lark_oapi as lark
     from lark_oapi.api.application.v6 import GetApplicationRequest
+    from lark_oapi.api.cardkit.v1.model.card import Card as CardKitCard
+    try:
+        from lark_oapi.api.cardkit.v1.model.content_card_element_request import (
+            ContentCardElementRequest,
+        )
+        from lark_oapi.api.cardkit.v1.model.content_card_element_request_body import (
+            ContentCardElementRequestBody,
+        )
+        from lark_oapi.api.cardkit.v1.model.create_card_request import CreateCardRequest
+        from lark_oapi.api.cardkit.v1.model.create_card_request_body import (
+            CreateCardRequestBody,
+        )
+        from lark_oapi.api.cardkit.v1.model.settings_card_request import SettingsCardRequest
+        from lark_oapi.api.cardkit.v1.model.settings_card_request_body import (
+            SettingsCardRequestBody,
+        )
+    except ImportError:
+        ContentCardElementRequest = None  # type: ignore[assignment]
+        ContentCardElementRequestBody = None  # type: ignore[assignment]
+        CreateCardRequest = None  # type: ignore[assignment]
+        CreateCardRequestBody = None  # type: ignore[assignment]
+        SettingsCardRequest = None  # type: ignore[assignment]
+        SettingsCardRequestBody = None  # type: ignore[assignment]
+    from lark_oapi.api.cardkit.v1.model.update_card_request import UpdateCardRequest
+    from lark_oapi.api.cardkit.v1.model.update_card_request_body import UpdateCardRequestBody
     from lark_oapi.api.im.v1 import (
         CreateFileRequest,
         CreateFileRequestBody,
@@ -374,6 +399,13 @@ class FeishuNormalizedMessage:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class FeishuStreamingCardState:
+    card_id: str
+    element_id: str
+    sequence: int = 0
+
+
 @dataclass(frozen=True)
 class FeishuAdapterSettings:
     app_id: str  # Canonical bot/app identifier (credential, not from event payloads)
@@ -616,6 +648,47 @@ def _build_markdown_card_payload(
         }
     if actions:
         _attach_feishu_card_inline_actions(card, actions)
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_streaming_card_payload(
+    content: str = "",
+    *,
+    element_id: str = "hermes_stream_md",
+) -> str:
+    """Build a CardKit entity payload for Feishu's native text streaming."""
+    card = {
+        "schema": "2.0",
+        "config": {
+            "wide_screen_mode": True,
+            "streaming_mode": True,
+            "summary": {"content": ""},
+            "streaming_config": {
+                "print_frequency_ms": {
+                    "default": 70,
+                    "android": 70,
+                    "ios": 70,
+                    "pc": 70,
+                },
+                "print_step": {
+                    "default": 1,
+                    "android": 1,
+                    "ios": 1,
+                    "pc": 1,
+                },
+                "print_strategy": "fast",
+            },
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": content or "",
+                    "element_id": element_id,
+                }
+            ]
+        },
+    }
     return json.dumps(card, ensure_ascii=False)
 
 
@@ -1425,6 +1498,31 @@ def check_feishu_requirements() -> bool:
 
     def _import():
         import lark_oapi as lark
+        from lark_oapi.api.cardkit.v1.model.card import Card as CardKitCard
+        try:
+            from lark_oapi.api.cardkit.v1.model.content_card_element_request import (
+                ContentCardElementRequest,
+            )
+            from lark_oapi.api.cardkit.v1.model.content_card_element_request_body import (
+                ContentCardElementRequestBody,
+            )
+            from lark_oapi.api.cardkit.v1.model.create_card_request import CreateCardRequest
+            from lark_oapi.api.cardkit.v1.model.create_card_request_body import (
+                CreateCardRequestBody,
+            )
+            from lark_oapi.api.cardkit.v1.model.settings_card_request import SettingsCardRequest
+            from lark_oapi.api.cardkit.v1.model.settings_card_request_body import (
+                SettingsCardRequestBody,
+            )
+        except ImportError:
+            ContentCardElementRequest = None
+            ContentCardElementRequestBody = None
+            CreateCardRequest = None
+            CreateCardRequestBody = None
+            SettingsCardRequest = None
+            SettingsCardRequestBody = None
+        from lark_oapi.api.cardkit.v1.model.update_card_request import UpdateCardRequest
+        from lark_oapi.api.cardkit.v1.model.update_card_request_body import UpdateCardRequestBody
         from lark_oapi.api.application.v6 import GetApplicationRequest
         from lark_oapi.api.im.v1 import (
             CreateFileRequest, CreateFileRequestBody,
@@ -1445,6 +1543,15 @@ def check_feishu_requirements() -> bool:
         from lark_oapi.ws import Client as FeishuWSClient
         return {
             "lark": lark,
+            "CardKitCard": CardKitCard,
+            "ContentCardElementRequest": ContentCardElementRequest,
+            "ContentCardElementRequestBody": ContentCardElementRequestBody,
+            "CreateCardRequest": CreateCardRequest,
+            "CreateCardRequestBody": CreateCardRequestBody,
+            "SettingsCardRequest": SettingsCardRequest,
+            "SettingsCardRequestBody": SettingsCardRequestBody,
+            "UpdateCardRequest": UpdateCardRequest,
+            "UpdateCardRequestBody": UpdateCardRequestBody,
             "GetApplicationRequest": GetApplicationRequest,
             "CreateFileRequest": CreateFileRequest,
             "CreateFileRequestBody": CreateFileRequestBody,
@@ -1481,10 +1588,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    REQUIRES_EDIT_FINALIZE = True
 
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
+    STREAMING_CARD_STATE_MAX_SIZE: int = 256
+    STREAMING_CARD_ELEMENT_ID = "hermes_stream_md"
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1551,6 +1661,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        self._streaming_cards: "OrderedDict[str, FeishuStreamingCardState]" = OrderedDict()
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -1822,6 +1933,7 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        self._streaming_cards.clear()
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
@@ -1956,6 +2068,27 @@ class FeishuAdapter(BasePlatformAdapter):
         last_response = None
 
         try:
+            if (metadata or {}).get("expect_edits") is True and len(chunks) == 1:
+                try:
+                    streaming_result = await self._send_streaming_card_entity(
+                        chat_id=chat_id,
+                        content=chunks[0],
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[Feishu] CardKit streaming setup failed; using normal card",
+                        exc_info=True,
+                    )
+                    streaming_result = SendResult(success=False, error=str(exc))
+                if streaming_result.success:
+                    return streaming_result
+                logger.warning(
+                    "[Feishu] CardKit streaming unavailable; falling back to a normal "
+                    "interactive card: %s",
+                    streaming_result.error,
+                )
             for chunk in chunks:
                 msg_type, payload = self._build_outbound_payload(chunk)
                 try:
@@ -2011,6 +2144,19 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
+            streaming_state = self._streaming_cards.get(message_id)
+            if streaming_state is not None:
+                result = await self._update_streaming_card_text(streaming_state, content)
+                if finalize:
+                    close_result = await self._close_streaming_card(streaming_state)
+                    if close_result.success:
+                        self._streaming_cards.pop(message_id, None)
+                    if result.success and not close_result.success:
+                        result = close_result
+                if result.success:
+                    result.message_id = message_id
+                return result
+
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
@@ -3055,10 +3201,14 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
+        hermes_command = ""
+        if isinstance(action_value, dict):
+            hermes_command = str(action_value.get("hermes_command") or "").strip()
+        synthetic_text = hermes_command if hermes_command.startswith("/") else f"/card {action_tag}"
         if action_value:
             try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                if not hermes_command:
+                    synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
 
@@ -4597,6 +4747,184 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         return "interactive", _build_markdown_card_payload(content)
 
+    async def _send_streaming_card_entity(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        """Create an empty CardKit entity, seed its text, then send it."""
+        cardkit_v1 = getattr(getattr(self._client, "cardkit", None), "v1", None)
+        card_api = getattr(cardkit_v1, "card", None)
+        element_api = getattr(cardkit_v1, "card_element", None)
+        if (
+            card_api is None
+            or not hasattr(card_api, "create")
+            or element_api is None
+            or not hasattr(element_api, "content")
+        ):
+            return SendResult(success=False, error="Feishu CardKit streaming API unavailable")
+
+        create_request = self._build_create_card_request(
+            card_payload=_build_streaming_card_payload(
+                "",
+                element_id=self.STREAMING_CARD_ELEMENT_ID,
+            )
+        )
+        create_response = await self._run_blocking(card_api.create, create_request)
+        if not self._response_succeeded(create_response):
+            return self._response_error_result(
+                create_response,
+                default_message="card entity creation failed",
+            )
+        card_id = self._extract_response_field(create_response, "card_id")
+        if not card_id:
+            return SendResult(
+                success=False,
+                error="Feishu CardKit create response omitted card_id",
+                raw_response=create_response,
+            )
+
+        state = FeishuStreamingCardState(
+            card_id=str(card_id),
+            element_id=self.STREAMING_CARD_ELEMENT_ID,
+        )
+        seed_result = await self._update_streaming_card_text(state, content)
+        if not seed_result.success:
+            return seed_result
+
+        entity_payload = json.dumps(
+            {"type": "card", "data": {"card_id": str(card_id)}},
+            ensure_ascii=False,
+        )
+        send_response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="interactive",
+            payload=entity_payload,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        result = self._finalize_send_result(send_response, "streaming card send failed")
+        if not result.success or not result.message_id:
+            if result.success:
+                return SendResult(
+                    success=False,
+                    error="Feishu streaming card send response omitted message_id",
+                    raw_response=send_response,
+                )
+            return result
+
+        message_id = str(result.message_id)
+        self._streaming_cards[message_id] = state
+        self._streaming_cards.move_to_end(message_id)
+        while len(self._streaming_cards) > self.STREAMING_CARD_STATE_MAX_SIZE:
+            self._streaming_cards.popitem(last=False)
+        result.message_id = message_id
+        return result
+
+    async def _update_streaming_card_text(
+        self,
+        state: FeishuStreamingCardState,
+        content: str,
+    ) -> SendResult:
+        cardkit_v1 = getattr(getattr(self._client, "cardkit", None), "v1", None)
+        element_api = getattr(cardkit_v1, "card_element", None)
+        if element_api is None or not hasattr(element_api, "content"):
+            return SendResult(success=False, error="Feishu CardKit text streaming API unavailable")
+
+        state.sequence += 1
+        request = self._build_content_card_element_request(
+            card_id=state.card_id,
+            element_id=state.element_id,
+            content=content,
+            sequence=state.sequence,
+            uuid_value=str(uuid.uuid4()),
+        )
+        try:
+            response = await self._run_blocking(element_api.content, request)
+            return self._finalize_send_result(response, "streaming card text update failed")
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Failed to stream text to card %s: %s",
+                state.card_id,
+                exc,
+                exc_info=True,
+            )
+            return SendResult(success=False, error=str(exc))
+
+    async def _close_streaming_card(
+        self,
+        state: FeishuStreamingCardState,
+    ) -> SendResult:
+        cardkit_v1 = getattr(getattr(self._client, "cardkit", None), "v1", None)
+        card_api = getattr(cardkit_v1, "card", None)
+        if card_api is None or not hasattr(card_api, "settings"):
+            return SendResult(success=False, error="Feishu CardKit settings API unavailable")
+
+        state.sequence += 1
+        request = self._build_settings_card_request(
+            card_id=state.card_id,
+            settings=json.dumps({"config": {"streaming_mode": False}}),
+            sequence=state.sequence,
+            uuid_value=str(uuid.uuid4()),
+        )
+        try:
+            response = await self._run_blocking(card_api.settings, request)
+            return self._finalize_send_result(response, "streaming card close failed")
+        except Exception as exc:
+            logger.error(
+                "[Feishu] Failed to close streaming mode for card %s: %s",
+                state.card_id,
+                exc,
+                exc_info=True,
+            )
+            return SendResult(success=False, error=str(exc))
+
+    async def update_card_content(
+        self,
+        *,
+        card_id: str,
+        content: str,
+        sequence: int = 0,
+        uuid_value: Optional[str] = None,
+        header_title: str = "",
+        header_template: str = "indigo",
+        actions: Optional[List[Dict[str, Any]]] = None,
+    ) -> SendResult:
+        """Update a Feishu cardkit card with the same schema 2.0 markdown body.
+
+        This is the adapter-side hook expected by StreamingCard-style callers:
+        create an empty card, then call cardkit ``update`` with increasing
+        sequence values as content streams in.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not card_id:
+            return SendResult(success=False, error="Missing card_id")
+        try:
+            payload = _build_markdown_card_payload(
+                content,
+                header_title=header_title,
+                header_template=header_template,
+                actions=actions,
+            )
+            request = self._build_update_card_request(
+                card_id=card_id,
+                card_payload=payload,
+                sequence=sequence,
+                uuid_value=uuid_value or str(uuid.uuid4()),
+            )
+            card_api = getattr(getattr(getattr(self._client, "cardkit", None), "v1", None), "card", None)
+            if card_api is None or not hasattr(card_api, "update"):
+                return SendResult(success=False, error="Feishu cardkit update API unavailable")
+            response = await self._run_blocking(card_api.update, request)
+            return self._finalize_send_result(response, "card update failed")
+        except Exception as exc:
+            logger.error("[Feishu] Failed to update card %s: %s", card_id, exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
     async def _send_uploaded_file_message(
         self,
         *,
@@ -5004,6 +5332,113 @@ class FeishuAdapter(BasePlatformAdapter):
                 .build()
             )
         return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_update_card_request(
+        *,
+        card_id: str,
+        card_payload: str,
+        sequence: int,
+        uuid_value: str,
+    ) -> Any:
+        if (
+            "CardKitCard" in globals()
+            and "UpdateCardRequestBody" in globals()
+            and "UpdateCardRequest" in globals()
+        ):
+            card = CardKitCard.builder().type("raw").data(card_payload).build()
+            body = (
+                UpdateCardRequestBody.builder()
+                .card(card)
+                .uuid(uuid_value)
+                .sequence(sequence)
+                .build()
+            )
+            return (
+                UpdateCardRequest.builder()
+                .card_id(card_id)
+                .request_body(body)
+                .build()
+            )
+        card = SimpleNamespace(type="raw", data=card_payload)
+        body = SimpleNamespace(card=card, uuid=uuid_value, sequence=sequence)
+        return SimpleNamespace(card_id=card_id, request_body=body)
+
+    @staticmethod
+    def _build_create_card_request(*, card_payload: str) -> Any:
+        create_request = globals().get("CreateCardRequest")
+        create_body = globals().get("CreateCardRequestBody")
+        if create_request is not None and create_body is not None:
+            body = (
+                create_body.builder()
+                .type("card_json")
+                .data(card_payload)
+                .build()
+            )
+            return create_request.builder().request_body(body).build()
+        return SimpleNamespace(
+            request_body=SimpleNamespace(type="card_json", data=card_payload)
+        )
+
+    @staticmethod
+    def _build_content_card_element_request(
+        *,
+        card_id: str,
+        element_id: str,
+        content: str,
+        sequence: int,
+        uuid_value: str,
+    ) -> Any:
+        content_request = globals().get("ContentCardElementRequest")
+        content_body = globals().get("ContentCardElementRequestBody")
+        if content_request is not None and content_body is not None:
+            body = (
+                content_body.builder()
+                .uuid(uuid_value)
+                .content(content)
+                .sequence(sequence)
+                .build()
+            )
+            return (
+                content_request.builder()
+                .card_id(card_id)
+                .element_id(element_id)
+                .request_body(body)
+                .build()
+            )
+        body = SimpleNamespace(uuid=uuid_value, content=content, sequence=sequence)
+        return SimpleNamespace(
+            card_id=card_id,
+            element_id=element_id,
+            request_body=body,
+        )
+
+    @staticmethod
+    def _build_settings_card_request(
+        *,
+        card_id: str,
+        settings: str,
+        sequence: int,
+        uuid_value: str,
+    ) -> Any:
+        settings_request = globals().get("SettingsCardRequest")
+        settings_body = globals().get("SettingsCardRequestBody")
+        if settings_request is not None and settings_body is not None:
+            body = (
+                settings_body.builder()
+                .settings(settings)
+                .uuid(uuid_value)
+                .sequence(sequence)
+                .build()
+            )
+            return (
+                settings_request.builder()
+                .card_id(card_id)
+                .request_body(body)
+                .build()
+            )
+        body = SimpleNamespace(settings=settings, uuid=uuid_value, sequence=sequence)
+        return SimpleNamespace(card_id=card_id, request_body=body)
 
     @staticmethod
     def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:

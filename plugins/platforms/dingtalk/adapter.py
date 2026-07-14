@@ -808,18 +808,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                                     msg_type = MessageType.VIDEO
                             else:
                                 media_types.append("application/octet-stream")
-                                if msg_type == MessageType.TEXT:
+                                if msg_type in (MessageType.TEXT, MessageType.PHOTO):
                                     msg_type = MessageType.DOCUMENT
 
         msg_type_str = getattr(message, "message_type", "") or ""
         if msg_type_str == "picture" and not media_urls:
             msg_type = MessageType.PHOTO
-        elif msg_type_str == "richText":
-            msg_type = (
-                MessageType.PHOTO
-                if any("image" in t for t in media_types)
-                else MessageType.TEXT
-            )
+        elif msg_type_str == "richText" and not media_urls:
+            msg_type = MessageType.TEXT
 
         return msg_type, media_urls, media_types
 

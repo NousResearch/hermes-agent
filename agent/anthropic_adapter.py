@@ -1284,8 +1284,33 @@ def resolve_anthropic_token() -> Optional[str]:
       5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
+
+    When the user has suppressed the ``claude_code`` source for anthropic
+    (via ``hermes auth remove`` / ``suppressed_sources`` in auth.json), the
+    Claude Code keychain/file credentials are never read here: resolving
+    them would shadow the hermes-managed credential_pool entry, and the
+    refresh path would consume Claude Code's single-use rotating refresh
+    token, invalidating the user's Claude Code login.
     """
-    creds = read_claude_code_credentials()
+    _cc_suppressed = False
+    try:
+        from hermes_cli.auth import is_source_suppressed as _is_suppressed
+
+        _cc_suppressed = _is_suppressed("anthropic", "claude_code")
+    except Exception:
+        pass
+    if not _cc_suppressed:
+        # Also honor a global-root suppression marker so profiles without
+        # their own auth.json (e.g. freshly created ones) inherit the policy.
+        try:
+            _root_auth = Path.home() / ".hermes" / "auth.json"
+            if _root_auth.exists():
+                _supp = json.loads(_root_auth.read_text()).get("suppressed_sources", {})
+                _cc_suppressed = "claude_code" in _supp.get("anthropic", [])
+        except Exception:
+            pass
+
+    creds = None if _cc_suppressed else read_claude_code_credentials()
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
@@ -1304,9 +1329,10 @@ def resolve_anthropic_token() -> Optional[str]:
         return cc_token
 
     # 3. Claude Code credential file
-    resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
-    if resolved_claude_token:
-        return resolved_claude_token
+    if not _cc_suppressed:
+        resolved_claude_token = _resolve_claude_code_token_from_credentials(creds)
+        if resolved_claude_token:
+            return resolved_claude_token
 
     # 4. Hermes credential_pool OAuth entry.
     resolved_pool_token = _resolve_anthropic_pool_token()

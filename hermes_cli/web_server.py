@@ -3360,14 +3360,33 @@ def _gateway_display_command(profile: Optional[str], verb: str) -> str:
     return " ".join(["hermes", *_gateway_subcommand(profile, verb)])
 
 
-# Slack member IDs (users U..., Enterprise Grid W...). Kept in sync with the
-# frontend SLACK_MEMBER_ID_RE in web/src/pages/ChannelsPage.tsx.
+# Kept in sync with the corresponding frontend validation in ChannelsPage.tsx.
+_TELEGRAM_BOT_TOKEN_RE = re.compile(r"\d+:[A-Za-z0-9_-]{30,}")
+_TELEGRAM_USER_ID_RE = re.compile(r"\d+")
 _SLACK_MEMBER_ID_RE = re.compile(r"[UW][A-Z0-9]{2,}")
 
 
 def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
     """Reject platform credentials that are clearly in the wrong field."""
-    if platform_id != "slack" or not value:
+    if not value:
+        return
+
+    if platform_id == "telegram":
+        if key == "TELEGRAM_BOT_TOKEN" and not _TELEGRAM_BOT_TOKEN_RE.fullmatch(value):
+            raise HTTPException(
+                status_code=400,
+                detail="Telegram bot token must be the complete token from @BotFather, such as 123456789:ABC…",
+            )
+        if key == "TELEGRAM_ALLOWED_USERS":
+            user_ids = [part.strip() for part in value.split(",") if part.strip()]
+            if any(not _TELEGRAM_USER_ID_RE.fullmatch(user_id) for user_id in user_ids):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Telegram allowed users must be comma-separated numeric user IDs.",
+                )
+        return
+
+    if platform_id != "slack":
         return
 
     if key == "SLACK_BOT_TOKEN" and not value.startswith("xoxb-"):
@@ -7684,9 +7703,6 @@ async def cancel_whatsapp_onboarding(pairing_id: str):
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
 _TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
-_TELEGRAM_USER_ID_RE = re.compile(r"^\d+$")
-
-
 @dataclass
 class _TelegramOnboardingPairing:
     poll_token: str

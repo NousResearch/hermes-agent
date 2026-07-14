@@ -25,6 +25,8 @@ from typing import Any, Callable, Dict, List
 
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 
+from agent.turn_finalizer import _should_spawn_background_review
+
 logger = logging.getLogger(__name__)
 
 
@@ -796,13 +798,15 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("external memory sync raised", exc_info=True)
 
-    # Background review fork — same cadence + signature as the default
-    # path (line ~15449). Only fires when a trigger actually tripped AND
-    # we have a real final response.
-    if (
-        turn.final_text
-        and not turn.interrupted
-        and (should_review_memory or should_review_skills)
+    # Background review fork — use the same standing-goal-aware gate as the
+    # chat-completions finalizer. The gateway judges the goal only after this
+    # function returns, so maintenance must not race an active continuation.
+    if _should_spawn_background_review(
+        final_response=turn.final_text,
+        interrupted=turn.interrupted,
+        should_review_memory=should_review_memory,
+        should_review_skills=should_review_skills,
+        session_id=getattr(agent, "session_id", None),
     ):
         try:
             agent._spawn_background_review(

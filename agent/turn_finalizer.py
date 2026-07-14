@@ -66,6 +66,36 @@ def _drop_verification_continuation_scaffolding(messages) -> None:
     ]
 
 
+def _goal_active_for_session(session_id: str | None) -> bool:
+    """Best-effort check for an active standing goal on ``session_id``."""
+    if not session_id:
+        return False
+    try:
+        from hermes_cli.goals import GoalManager
+
+        return GoalManager(session_id=session_id).is_active()
+    except Exception:
+        return False
+
+
+def _should_spawn_background_review(
+    *,
+    final_response: str | None,
+    interrupted: bool,
+    should_review_memory: bool,
+    should_review_skills: bool,
+    session_id: str | None,
+) -> bool:
+    """Return whether post-turn memory/skill review should start."""
+    if not final_response or interrupted:
+        return False
+    if not (should_review_memory or should_review_skills):
+        return False
+    # The caller runs the standing-goal judge only after the agent turn
+    # returns. Starting maintenance first can race the synthetic continuation.
+    return not _goal_active_for_session(session_id)
+
+
 def finalize_turn(
     agent,
     *,
@@ -588,9 +618,15 @@ def finalize_turn(
         messages=messages,
     )
 
-    # Background memory/skill review — runs AFTER the response is delivered
-    # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    # Background memory/skill review — runs only when no standing-goal
+    # continuation can claim the next turn.
+    if _should_spawn_background_review(
+        final_response=final_response,
+        interrupted=interrupted,
+        should_review_memory=_should_review_memory,
+        should_review_skills=_should_review_skills,
+        session_id=agent.session_id,
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

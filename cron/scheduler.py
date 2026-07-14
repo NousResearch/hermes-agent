@@ -238,7 +238,15 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
+from cron.jobs import (
+    advance_next_run,
+    claim_dispatch,
+    get_due_jobs,
+    heartbeat_run_claim,
+    mark_job_run,
+    save_job_output,
+    validate_trusted_cron_workdir,
+)
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -3100,6 +3108,9 @@ def run_job(
                 "Job '%s': MCP initialization failed (non-fatal): %s",
                 job_id, _mcp_exc,
             )
+
+        if _job_workdir:
+            validate_trusted_cron_workdir(_job_workdir, _cfg.get("cron", {}))
 
         agent = AIAgent(
             model=model,

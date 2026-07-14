@@ -894,7 +894,70 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         _save_jobs_unlocked(jobs)
 
 
-def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
+def _load_cron_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return cron_cfg if isinstance(cron_cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _as_trusted_workdir_paths(cron_cfg: Dict[str, Any]) -> List[Path]:
+    raw = cron_cfg.get("trusted_workdirs", [])
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    trusted: List[Path] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        path = Path(item.strip()).expanduser()
+        if not path.is_absolute():
+            continue
+        try:
+            trusted.append(path.resolve())
+        except Exception:
+            continue
+    return trusted
+
+
+def is_trusted_cron_workdir(workdir: str, cron_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True when *workdir* is explicitly trusted for cron context files."""
+    try:
+        resolved = Path(workdir).expanduser().resolve()
+    except Exception:
+        return False
+    for trusted in _as_trusted_workdir_paths(cron_cfg if cron_cfg is not None else _load_cron_config()):
+        try:
+            if resolved == trusted or resolved.is_relative_to(trusted):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def validate_trusted_cron_workdir(
+    workdir: str,
+    cron_cfg: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Raise a clear error if an agent cron job workdir is not trusted."""
+    if is_trusted_cron_workdir(workdir, cron_cfg):
+        return
+    raise ValueError(
+        f"Cron workdir {workdir!r} is not trusted for unattended "
+        "context-file ingestion. Add the directory, or one of its parents, "
+        "to cron.trusted_workdirs in config.yaml before scheduling an agent "
+        "job with workdir. Jobs without workdir are unchanged; no_agent script "
+        "jobs may still use workdir as a process cwd without this trust entry."
+    )
+
+
+def _normalize_workdir(workdir: Optional[str], *, require_trusted: bool = False) -> Optional[str]:
     """Normalize and validate a cron job workdir.
 
     Rules:
@@ -924,7 +987,10 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
         raise ValueError(f"Cron workdir does not exist: {resolved}")
     if not resolved.is_dir():
         raise ValueError(f"Cron workdir is not a directory: {resolved}")
-    return str(resolved)
+    normalized = str(resolved)
+    if require_trusted:
+        validate_trusted_cron_workdir(normalized)
+    return normalized
 
 
 def _resolve_default_model_snapshot() -> Optional[str]:
@@ -1121,8 +1187,11 @@ def create_job(
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
-    normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_workdir = _normalize_workdir(
+        workdir,
+        require_trusted=not normalized_no_agent,
+    )
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -1307,10 +1376,20 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 if _wd in {None, "", False}:
                     updates["workdir"] = None
                 else:
-                    updates["workdir"] = _normalize_workdir(_wd)
+                    updates["workdir"] = _normalize_workdir(
+                        _wd,
+                        require_trusted=not bool(
+                            updates.get("no_agent", job.get("no_agent"))
+                        ),
+                    )
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            became_agent_job = bool(job.get("no_agent")) and not bool(
+                updated.get("no_agent")
+            )
+            if updated.get("workdir") and became_agent_job:
+                validate_trusted_cron_workdir(updated["workdir"])
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

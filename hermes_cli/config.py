@@ -2675,6 +2675,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Agent jobs ingest project context from workdir unattended, so trust
+        # absolute parent directories explicitly. Script-only jobs only use
+        # workdir as cwd and do not require this trust boundary.
+        "trusted_workdirs": [],
         # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
         # and the agent has it in context (no "what is Task #2?" amnesia).
         # Default False preserves the historical isolation guarantee (cron

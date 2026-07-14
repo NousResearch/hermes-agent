@@ -263,6 +263,21 @@ def _tool_search_scoped_names(agent) -> frozenset:
     return names
 
 
+def _session_tool_scope_block(agent, function_name: str) -> Optional[str]:
+    """Reject direct calls that are absent from this session's tool schema.
+
+    Some agent-runtime tools bypass ``model_tools.handle_function_call`` and
+    therefore need the same authoritative scope check at this dispatch layer.
+    Older test doubles without ``valid_tool_names`` retain legacy behavior.
+    """
+    if not hasattr(agent, "valid_tool_names"):
+        return None
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None or function_name in valid_tool_names:
+        return None
+    return f"'{function_name}' is not available in this session."
+
+
 def _apply_tool_request_middleware_for_agent(
     agent,
     *,
@@ -396,10 +411,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # scope check), so we enforce session toolset scope HERE. A tool
         # the session was not granted is rejected before any checkpoint,
         # hook, or dispatch fires.
-        _ts_scope_block = None
+        _ts_scope_block = _session_tool_scope_block(agent, function_name)
         try:
             from tools import tool_search as _ts
-            if function_name == _ts.TOOL_CALL_NAME:
+            if _ts_scope_block is None and function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
@@ -415,13 +430,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        middleware_trace = []
+        if _ts_scope_block is None:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
 
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
         # We must know whether the tool will execute before touching
@@ -1070,10 +1087,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
         # underlying tool directly, so session toolset scope is enforced here).
-        _ts_scope_block: Optional[str] = None
+        _ts_scope_block: Optional[str] = _session_tool_scope_block(
+            agent, function_name
+        )
         try:
             from tools import tool_search as _ts
-            if function_name == _ts.TOOL_CALL_NAME:
+            if _ts_scope_block is None and function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
                     if _underlying in _tool_search_scoped_names(agent):
@@ -1087,13 +1106,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        middleware_trace = []
+        if _ts_scope_block is None:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None

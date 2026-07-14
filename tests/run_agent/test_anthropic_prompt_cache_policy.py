@@ -377,6 +377,45 @@ class TestExplicitOverrides:
         assert (should, native) == (True, False)
 
 
+class TestOpenRouterExplicitCacheControlAllowlist:
+    """DeepSeek V4-Flash on OpenRouter needs explicit cache_control markers.
+
+    Verified on production 2026-05-31: enabling markers moved cache-hit
+    rate from 0% to 98%.  Only the two canonical V4-Flash slugs are in the
+    allowlist; Qwen on OpenRouter is deliberately excluded (falls through
+    to the existing (False, False) path).
+    """
+
+    def test_deepseek_v4_flash_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_v4_flash_dated_slug_on_openrouter_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash-20260423",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_deepseek_v4_flash_on_non_openrouter_gateway_does_not_cache(self):
+        # Allowlist is scoped to OpenRouter only; same slug on another
+        # gateway falls through to (False, False).
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.deepseek.com/v1",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Long-lived prefix cache policy (cross-session 1h tier)
 # ─────────────────────────────────────────────────────────────────────

@@ -1610,6 +1610,14 @@ def dump_api_request_debug(
         return None
 
 
+# OpenRouter model IDs that require explicit `cache_control` markers for prompt
+# caching (verified on production Hermes). Kept intentionally minimal.
+_OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS: frozenset[str] = frozenset({
+    # DeepSeek V4-Flash: verified on prod 2026-05-31 (0% -> 98% cache hits).
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash-20260423",
+})
+
 
 def anthropic_prompt_cache_policy(
     agent,
@@ -1717,6 +1725,8 @@ def anthropic_prompt_cache_policy(
     if is_native_anthropic:
         return True, True
     if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
+        return True, False
+    if is_openrouter and model_lower in _OPENROUTER_EXPLICIT_CACHE_CONTROL_MODEL_IDS:
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter

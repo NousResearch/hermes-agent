@@ -813,6 +813,11 @@ def _run_review_in_thread(
                     quiet_mode=True,
                 )
             }
+            # Allow read-only file tools — they have no side effects and
+            # are needed for the review agent to inspect config, prior
+            # outputs, or skill references (issue #45877).
+            review_whitelist.add("read_file")
+            review_whitelist.add("search_files")
             set_thread_tool_whitelist(
                 review_whitelist,
                 deny_msg_fmt=(

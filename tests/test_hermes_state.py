@@ -608,6 +608,370 @@ class TestMessageStorage:
 
 
 
+    def test_dict_content_round_trip(self, db):
+        """Dict-shaped content (e.g. provider wrappers) also round-trips."""
+        db.create_session(session_id="s1", source="cli")
+        content = {"parts": [{"text": "hi"}]}
+
+        db.append_message("s1", role="user", content=content)
+        msgs = db.get_messages("s1")
+        assert msgs[0]["content"] == content
+
+    def test_string_content_unchanged_by_encoding(self, db):
+        """Plain strings must not be wrapped — FTS search and legacy
+        consumers depend on raw-string storage for text content.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="plain text")
+
+        # Peek at the raw column to confirm no encoding was applied
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT content FROM messages WHERE session_id = ?", ("s1",)
+            ).fetchone()
+        assert row["content"] == "plain text"
+
+    def test_replace_messages_persists_tool_name(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must write
+        tool_name to the DB for messages built by make_tool_result_message."""
+        from agent.tool_dispatch_helpers import make_tool_result_message
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": "do something"},
+                make_tool_result_message("web_search", "some results", "c1"),
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        tool_msg = next(m for m in msgs if m["role"] == "tool")
+        assert tool_msg["tool_name"] == "web_search"
+
+    def test_tool_effect_disposition_round_trips_through_session_db(self, db):
+        from agent.tool_dispatch_helpers import make_tool_result_message
+
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [make_tool_result_message(
+                "write_file", "worker detached", "c1", effect_disposition="unknown"
+            )],
+        )
+
+        assert db.get_messages_as_conversation("s1")[0]["effect_disposition"] == "unknown"
+
+    def test_replace_messages_handles_multimodal_content(self, db):
+        """`replace_messages` (used by /retry, /undo, /compress) must also
+        handle list content without crashing."""
+        db.create_session(session_id="s1", source="cli")
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ]
+
+        db.replace_messages(
+            "s1",
+            [
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": "I see a screenshot."},
+            ],
+        )
+
+        msgs = db.get_messages("s1")
+        assert len(msgs) == 2
+        assert msgs[0]["content"] == content
+        assert msgs[1]["content"] == "I see a screenshot."
+
+    def test_get_messages_as_conversation(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Hello")
+        db.append_message("s1", role="assistant", content="Hi!")
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 2
+        assert conv[0]["role"] == "user"
+        assert conv[0]["content"] == "Hello"
+        assert isinstance(conv[0]["timestamp"], float)
+        assert conv[1]["role"] == "assistant"
+        assert conv[1]["content"] == "Hi!"
+        assert isinstance(conv[1]["timestamp"], float)
+
+    def test_get_messages_as_conversation_orders_by_id_not_timestamp(self, db):
+        """Replay must follow AUTOINCREMENT id (insertion order), never the
+        wall-clock timestamp.
+
+        ``append_message`` stamps each row with ``time.time()``, which is not
+        monotonic — on WSL2, after an NTP step, or when a VM/laptop resumes
+        from sleep the clock can jump backwards mid-conversation. A later
+        row then carries an *earlier* timestamp than the row before it. If
+        ``get_messages_as_conversation`` ordered by ``timestamp`` it would
+        sort an assistant ``tool_calls`` row after its ``tool`` response,
+        orphaning the tool call and triggering an HTTP 400 on the next
+        completion. Ordering by ``id`` keeps the real insertion order
+        regardless of clock skew. See c03acca50.
+        """
+        db.create_session(session_id="s1", source="cli")
+
+        # Simulate a clock regression across a single tool round-trip: the
+        # assistant tool_calls row is inserted first but stamped LATER than
+        # the tool response that follows it.
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}},
+        ]
+        db.append_message(
+            "s1", role="assistant", content="", tool_calls=tool_calls,
+            timestamp=1000.0,
+        )
+        db.append_message(
+            "s1", role="tool", content="result", tool_name="web_search",
+            tool_call_id="call_1", timestamp=999.0,
+        )
+        db.append_message("s1", role="user", content="thanks", timestamp=998.0)
+
+        conv = db.get_messages_as_conversation("s1")
+
+        # Insertion order is preserved even though timestamps decrease.
+        assert [m["role"] for m in conv] == ["assistant", "tool", "user"]
+        # The tool response stays immediately after the assistant tool_calls
+        # row — the adjacency invariant the model API enforces.
+        assert conv[0]["tool_calls"][0]["id"] == "call_1"
+        assert conv[1]["role"] == "tool"
+        assert conv[1]["tool_call_id"] == "call_1"
+
+    def test_platform_message_id_round_trips(self, db):
+        """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
+        survive append → get_messages_as_conversation under the
+        ``message_id`` key so platform recall flows can match by exact id."""
+        db.create_session(session_id="s_pmi", source="yuanbao")
+        db.append_message(
+            "s_pmi",
+            role="user",
+            content="hi",
+            platform_message_id="abc-123",
+        )
+        db.append_message("s_pmi", role="assistant", content="hello")
+
+        conv = db.get_messages_as_conversation("s_pmi")
+        user_msg = next(m for m in conv if m["role"] == "user")
+        assistant_msg = next(m for m in conv if m["role"] == "assistant")
+        assert user_msg.get("message_id") == "abc-123"
+        # Assistant row had no platform id — must not gain one spuriously.
+        assert "message_id" not in assistant_msg
+
+    def test_replace_messages_preserves_platform_message_id(self, db):
+        """``rewrite_transcript`` (which goes through replace_messages) must
+        keep the platform_message_id round-trip working for /retry, /undo,
+        /compress and yuanbao's recall rewrite path."""
+        db.create_session(session_id="s_rep", source="yuanbao")
+        db.replace_messages(
+            "s_rep",
+            [
+                {"role": "user", "content": "x", "message_id": "ext-1"},
+                {"role": "assistant", "content": "y"},
+            ],
+        )
+        conv = db.get_messages_as_conversation("s_rep")
+        assert next(m for m in conv if m["role"] == "user").get("message_id") == "ext-1"
+        assert "message_id" not in next(m for m in conv if m["role"] == "assistant")
+
+    def test_replace_messages_preserves_internal_source_message_id(self, db):
+        db.create_session(session_id="s_source_replace", source="desktop")
+        db.replace_messages(
+            "s_source_replace",
+            [
+                {
+                    "role": "user",
+                    "content": "queued source",
+                    "_source_message_id": "desktop-rewrite-1",
+                }
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s_source_replace")
+        assert conv[0]["message_id"] == "desktop-rewrite-1"
+        assert db.has_platform_message_id(
+            "s_source_replace", "desktop-rewrite-1"
+        )
+
+    def test_archive_and_compact_preserves_internal_source_message_id(self, db):
+        db.create_session(session_id="s_source_compact", source="desktop")
+        db.append_message(
+            "s_source_compact",
+            role="user",
+            content="pre-compaction turn",
+        )
+
+        inserted = db.archive_and_compact(
+            "s_source_compact",
+            [
+                {
+                    "role": "user",
+                    "content": "compacted live source",
+                    "_source_message_id": "desktop-compact-1",
+                }
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s_source_compact")
+        assert inserted == 1
+        assert [message["content"] for message in conv] == [
+            "compacted live source"
+        ]
+        assert conv[0]["message_id"] == "desktop-compact-1"
+        assert db.has_platform_message_id(
+            "s_source_compact", "desktop-compact-1"
+        )
+
+    def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message("child", role="assistant", content="second answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv] == [
+            "first prompt",
+            "first answer",
+            "second prompt",
+            "second answer",
+        ]
+
+    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
+    def test_get_resume_conversations_matches_separate_reads(self, db):
+        """The one-fetch resume projections must be byte-identical to the two
+        separate get_messages_as_conversation reads they replace — the whole
+        point of the single-SELECT optimization (desktop audit P1). Includes a
+        dangling tool-call tail so repair_alternation drops rows and the model /
+        display lengths diverge (exercises session.resume's prefix computation).
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message(
+            "child", role="assistant", content="second answer", finish_reason="stop"
+        )
+        # Dangling assistant(tool_calls) tail with no tool response → repair
+        # drops it, so model_history is shorter than display_history.
+        db.append_message(
+            "child",
+            role="assistant",
+            content="",
+            tool_calls=[
+                {"id": "t1", "type": "function", "function": {"name": "x", "arguments": "{}"}}
+            ],
+        )
+
+        model_expected = db.get_messages_as_conversation("child", repair_alternation=True, include_row_ids=True)
+        display_expected = db.get_messages_as_conversation("child", include_ancestors=True, include_row_ids=True)
+
+        model_history, display_history = db.get_resume_conversations("child")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+        # Sanity: the tail really did diverge the two projections.
+        assert len(display_history) > len(model_history)
+
+    def test_get_resume_conversations_single_session_no_ancestors(self, db):
+        db.create_session("solo", "cli")
+        db.append_message("solo", role="user", content="hi")
+        db.append_message("solo", role="assistant", content="hello")
+
+        model_expected = db.get_messages_as_conversation("solo", repair_alternation=True, include_row_ids=True)
+        display_expected = db.get_messages_as_conversation("solo", include_ancestors=True, include_row_ids=True)
+        model_history, display_history = db.get_resume_conversations("solo")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+
+    def test_get_resume_conversations_dedupes_replayed_ancestor_user(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        model_expected = db.get_messages_as_conversation("child", repair_alternation=True, include_row_ids=True)
+        display_expected = db.get_messages_as_conversation("child", include_ancestors=True, include_row_ids=True)
+        model_history, display_history = db.get_resume_conversations("child")
+
+        assert model_history == model_expected
+        assert display_history == display_expected
+
+    def test_get_ancestor_display_prefix_single_session_returns_empty(self, db):
+        """A session with no compression ancestors has an empty prefix."""
+        db.create_session("solo", "cli")
+        db.append_message("solo", role="user", content="hi")
+        db.append_message("solo", role="assistant", content="hello")
+
+        assert db.get_ancestor_display_prefix("solo") == []
+
+    def test_get_ancestor_display_prefix_returns_ancestor_only_messages(self, db):
+        """The prefix contains ONLY ancestor messages, not tip messages.
+
+        Previously the prefix was calculated as
+        display_history[:len(display) - len(raw)], which overcounts when
+        repair_message_sequence removes messages from the MIDDLE of the
+        tip history — the length difference includes both ancestor messages
+        AND repair-removed tip messages, but the slice captures the first N
+        display messages (tip messages when there are no ancestors),
+        causing duplication in _live_session_payload. (#65919)
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="ancestor prompt")
+        db.append_message("root", role="assistant", content="ancestor reply")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="tip prompt")
+        db.append_message("child", role="assistant", content="tip reply")
+        # A verification candidate that repair_message_sequence collapses
+        # (consecutive-assistant merge replaces it with the next assistant).
+        db.append_message(
+            "child",
+            role="assistant",
+            content="verification candidate",
+            finish_reason="verification_required",
+        )
+        db.append_message("child", role="assistant", content="post-verification reply")
+
+        prefix = db.get_ancestor_display_prefix("child")
+        # Only the ancestor messages, not any tip messages.
+        assert len(prefix) == 2
+        assert prefix[0]["role"] == "user"
+        assert prefix[0]["content"] == "ancestor prompt"
+        assert prefix[1]["role"] == "assistant"
+        assert prefix[1]["content"] == "ancestor reply"
+
+        # The old broken calculation would produce a non-empty prefix
+        # (because repair collapses the verification candidate, making
+        # len(display) > len(raw)), even though there are 2 ancestor
+        # messages — it would overcount.
+        raw, display = db.get_resume_conversations("child")
+        old_prefix_len = max(0, len(display) - len(raw))
+        assert len(prefix) <= old_prefix_len
+
+    def test_finish_reason_stored(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
+
+        messages = db.get_messages("s1")
+        assert messages[0]["finish_reason"] == "stop"
 
     def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
         db.create_session(session_id="s1", source="cli")

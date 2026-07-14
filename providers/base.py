@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,11 @@ def _profile_user_agent() -> str:
 @dataclass
 class ProviderProfile:
     """Base provider profile — subclass or instantiate with overrides."""
+
+    # Opt in only when this provider's live /models response is authoritative
+    # for provider-enforced context limits. ClassVar preserves the constructor
+    # contract for existing profiles and out-of-tree plugins.
+    use_live_model_metadata: ClassVar[bool] = False
 
     # ── Identity ─────────────────────────────────────────────
     name: str
@@ -172,17 +177,17 @@ class ProviderProfile:
         """
         return self.default_max_tokens
 
-    def fetch_models(
+    def fetch_model_metadata(
         self,
         *,
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 8.0,
-    ) -> list[str] | None:
-        """Fetch the live model list from the provider's models endpoint.
+    ) -> list[dict[str, Any]] | None:
+        """Fetch raw entries from the provider's models endpoint.
 
-        Returns a list of model ID strings, or None if the fetch failed or
-        the provider does not support live model listing.
+        Returns model dictionaries without discarding provider metadata, or
+        None if the fetch failed or the provider has no live catalog.
 
         Resolution order for the endpoint URL:
           1. self.models_url  (explicit override — use when the models
@@ -196,8 +201,8 @@ class ProviderProfile:
         and forwards self.default_headers. Override to customise auth, path,
         response shape, or to return None for providers with no REST catalog.
 
-        Callers must always fall back to the static _PROVIDER_MODELS list
-        when this returns None.
+        Override this hook when a provider needs custom catalog auth, response
+        parsing, or filtering. ``fetch_models`` derives its IDs from this hook.
         """
         effective_base = base_url or self.base_url
         url = (self.models_url or "").strip()
@@ -226,7 +231,28 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            return [item for item in items if isinstance(item, dict)]
         except Exception as exc:
-            logger.debug("fetch_models(%s): %s", self.name, exc)
+            logger.debug("fetch_model_metadata(%s): %s", self.name, exc)
             return None
+
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch live model IDs, preserving the existing picker contract."""
+        items = self.fetch_model_metadata(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+        )
+        if items is None:
+            return None
+        return [
+            model_id
+            for item in items
+            if isinstance(model_id := item.get("id"), str) and model_id
+        ]

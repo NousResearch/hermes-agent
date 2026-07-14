@@ -936,6 +936,124 @@ class TestNousPortalContextResolution:
 # get_model_context_length — resolution order
 # =========================================================================
 
+class TestProviderProfileLiveMetadataContextResolution:
+    def test_opted_in_profile_uses_its_catalog_when_base_url_is_omitted(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                provider="vendor",
+            )
+
+        assert context_length == 65_536
+        profile.fetch_model_metadata.assert_called_once_with(
+            api_key="",
+            base_url=None,
+        )
+
+    def test_opted_in_known_provider_uses_live_context_before_persistent_cache(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/small-model", "context_length": 40_960},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.model_metadata.get_cached_context_length",
+                return_value=999_999,
+            ) as mock_cache,
+        ):
+            context_length = get_model_context_length(
+                model="vendor/small-model",
+                base_url="https://api.vendor.test/v1",
+                api_key="test-key",
+                provider="vendor",
+            )
+
+        assert context_length == 40_960
+        mock_cache.assert_not_called()
+        profile.fetch_model_metadata.assert_called_once_with(
+            api_key="test-key",
+            base_url="https://api.vendor.test/v1",
+        )
+
+    def test_url_inferred_opt_in_uses_live_context(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "max_model_len": 131_072},
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile) as mock_profile,
+            patch(
+                "agent.model_metadata._infer_provider_from_url",
+                return_value="vendor",
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="custom",
+            )
+
+        assert context_length == 131_072
+        mock_profile.assert_called_with("vendor")
+
+    def test_default_profile_does_not_probe_known_provider_endpoint(self):
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(name="vendor")
+        with (
+            patch(
+                "providers.get_provider_profile",
+                return_value=profile,
+            ),
+            patch(
+                "providers.base.ProviderProfile.fetch_model_metadata"
+            ) as mock_metadata,
+            patch(
+                "agent.model_metadata._is_known_provider_base_url",
+                return_value=True,
+            ),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=262_144,
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="vendor",
+            )
+
+        assert context_length == 262_144
+        mock_metadata.assert_not_called()
+
+    def test_live_probe_failure_preserves_provider_fallback_chain(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.fetch_model_metadata.return_value = None
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.models_dev.lookup_models_dev_context",
+                return_value=202_752,
+            ),
+        ):
+            context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="vendor",
+            )
+
+        assert context_length == 202_752
+
+
 class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_known_model_from_api(self, mock_fetch):

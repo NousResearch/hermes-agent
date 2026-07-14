@@ -1135,6 +1135,53 @@ def _resolve_endpoint_context_length(
     return None
 
 
+def _resolve_profile_context_length(
+    profile: Any,
+    model: str,
+    base_url: str,
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve context length through a provider profile's catalog hook."""
+    try:
+        entries = profile.fetch_model_metadata(
+            api_key=api_key,
+            base_url=base_url or None,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Provider %s live metadata lookup failed: %s",
+            getattr(profile, "name", "unknown"),
+            exc,
+        )
+        return None
+    if not entries:
+        return None
+
+    matched = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("id") == model
+        ),
+        None,
+    )
+    if matched is None:
+        valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+        if len(valid_entries) == 1:
+            matched = valid_entries[0]
+        else:
+            matched = next(
+                (
+                    entry
+                    for entry in valid_entries
+                    if isinstance(entry.get("id"), str)
+                    and (model in entry["id"] or entry["id"] in model)
+                ),
+                None,
+            )
+    return _extract_context_length(matched) if matched else None
+
+
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
     from hermes_constants import get_hermes_home
@@ -2169,9 +2216,10 @@ def get_model_context_length(
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
-    1. Persistent cache (previously discovered via probing).  Nous URLs,
-       LM Studio, and Codex OAuth bypass the cache here so their provider
-       metadata can be reconciled against the authoritative live source.
+    1. Persistent cache (previously discovered via probing). Nous URLs,
+       LM Studio, Codex OAuth, and provider profiles that opt into live
+       metadata bypass the cache so their authoritative source can be
+       reconciled.
     1b. AWS Bedrock static table (must precede custom-endpoint probe)
     2. Active endpoint metadata (/models for explicit custom endpoints)
     3. Local server query (for local endpoints)
@@ -2267,13 +2315,39 @@ def get_model_context_length(
         and base_url_host_matches(base_url, "amazonaws.com")
     )
 
+    # Resolve the effective provider before cache lookup so out-of-tree profiles
+    # can opt into authoritative live metadata by provider name or endpoint URL.
+    effective_provider = provider
+    if not effective_provider or effective_provider in {"openrouter", "custom"}:
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
+    provider_profile = None
+    use_live_model_metadata = False
+    if effective_provider:
+        try:
+            from providers import get_provider_profile
+
+            provider_profile = get_provider_profile(effective_provider)
+            use_live_model_metadata = (
+                getattr(provider_profile, "use_live_model_metadata", False) is True
+            )
+        except Exception:
+            pass
+
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
     # via /api/v1/models/load), so a stale cached value would mask reloads.
     # Codex OAuth is excluded because the authenticated /models catalogue is
     # account-specific and a fallback must never suppress later revalidation.
-    if base_url and not _skip_persistent_context_cache(base_url, provider):
+    if (
+        base_url
+        and not use_live_model_metadata
+        and not _skip_persistent_context_cache(base_url, provider)
+    ):
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale 32k cache entries for Kimi-family models.
@@ -2410,16 +2484,31 @@ def get_model_context_length(
                 save_context_length(model, base_url, ctx)
             return ctx
 
-    # 2. Active endpoint metadata for truly custom/unknown endpoints.
+    # 2. Active endpoint metadata for truly custom/unknown endpoints and
+    # provider profiles that explicitly declare their /models response
+    # authoritative for provider-enforced context limits.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their
     # /models endpoint may report a provider-imposed limit (e.g. Copilot
     # returns 128k) instead of the model's full context (400k).  models.dev
     # has the correct per-provider values and is checked at step 5+.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+    if use_live_model_metadata and provider_profile is not None:
+        context_length = _resolve_profile_context_length(
+            provider_profile,
+            model,
+            base_url,
+            api_key=api_key,
+        )
+        if context_length is not None:
+            return context_length
+
+    unknown_endpoint = (
+        _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url)
+    )
+    if base_url and unknown_endpoint and not use_live_model_metadata:
         context_length = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if context_length is not None:
             return context_length
-        if not _is_known_provider_base_url(base_url):
+        if unknown_endpoint:
             # 2b. Ollama native /api/show — any URL might be an Ollama server
             # (local, cloud, or custom hosting).  Non-Ollama servers return
             # 404/405 quickly.  Fall through on failure.
@@ -2477,13 +2566,8 @@ def get_model_context_length(
     # These are provider-specific and take priority over the generic OR cache,
     # since the same model can have different context limits per provider
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
-    # If provider is generic (openrouter/custom/empty), try to infer from URL.
-    effective_provider = provider
-    if not effective_provider or effective_provider in {"openrouter", "custom"}:
-        if base_url:
-            inferred = _infer_provider_from_url(base_url)
-            if inferred:
-                effective_provider = inferred
+    # If provider was generic (openrouter/custom/empty), it was inferred from
+    # the URL before cache resolution above.
 
     # 5a. Copilot live /models API — max_prompt_tokens from the user's account.
     # This catches account-specific models (e.g. claude-opus-4.6-1m) that

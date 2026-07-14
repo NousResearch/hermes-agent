@@ -114,6 +114,11 @@ from typing import Any
 from providers.base import ProviderProfile
 
 class AcmeProfile(ProviderProfile):
+    # Opt in only when /models reports the provider-enforced context limit.
+    # Hermes bypasses its persistent context cache and checks the live endpoint
+    # before models.dev or hardcoded family defaults.
+    use_live_model_metadata = True
+
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Provider-specific message preprocessing. Runs after codex
         sanitization, before developer-role swap. Default: pass-through."""
@@ -141,7 +146,23 @@ class AcmeProfile(ProviderProfile):
         Bearer auth. Override for: custom auth (Anthropic), no REST endpoint
         (Bedrock → None), or public/unauthenticated catalogs (OpenRouter)."""
         return super().fetch_models(api_key=api_key, timeout=timeout)
+
+    def fetch_model_metadata(self, *, api_key=None, base_url=None, timeout=8.0):
+        """Raw live catalog entries used by fetch_models and, when opted in,
+        context-length resolution. Override this instead of fetch_models when
+        custom auth or response parsing must preserve model metadata."""
+        return super().fetch_model_metadata(
+            api_key=api_key, base_url=base_url, timeout=timeout
+        )
 ```
+
+`use_live_model_metadata` is a class-only, default-off opt-in. Enable it only
+when `fetch_model_metadata()` returns an accurate `context_length`,
+`max_model_len`, or equivalent supported field. The default hook honors
+`models_url`, Bearer authentication, and `default_headers`; override it for
+other catalog contracts. A failed live probe falls through to the normal
+provider-aware resolution chain and does not affect providers that leave the
+flag disabled.
 
 ## Hook reference examples
 

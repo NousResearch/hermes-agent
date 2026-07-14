@@ -37,14 +37,6 @@ def test_stop_consumed_when_enabled():
     assert "not queued" in r.message.lower() or "Stopped" in r.message
 
 
-def test_legacy_frontdesk_flag_still_enables():
-    from agent.concierge import handle_concierge
-
-    session = {"frontdesk_live_enabled": True}
-    r = handle_concierge("지금 뭐 하고 있어?", session=session)
-    assert r is not None
-    assert r.action == "status"
-
 
 def test_status_no_model_when_enabled():
     from agent.concierge import handle_concierge
@@ -86,7 +78,7 @@ def test_plain_question_falls_through_to_main():
 
 
 def test_shim_still_imports():
-    from agent.one_room_control import handle_one_room_control, one_room_control_enabled
+    from agent.concierge import handle_concierge, concierge_enabled
 
-    assert one_room_control_enabled(session={"concierge_live_enabled": True}) is True
-    assert handle_one_room_control("멈춰", session={"concierge_live_enabled": True}) is not None
+    assert concierge_enabled(session={"concierge_live_enabled": True}) is True
+    assert handle_concierge("멈춰", session={"concierge_live_enabled": True}) is not None

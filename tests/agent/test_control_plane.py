@@ -35,7 +35,7 @@ from agent.control_plane import (
     decide_intent_from_policy,
 )
 
-_CORPUS_PATH = Path(__file__).parent / "data" / "frontdesk_intents_ko.yaml"
+_CORPUS_PATH = Path(__file__).parent / "data" / "concierge_intents_ko.yaml"
 
 
 def _corpus() -> list[dict]:
@@ -570,14 +570,14 @@ class TestModeOffDowngradeInvariant:
 # ---------------------------------------------------------------------------
 # Temporary rename aliases
 # ---------------------------------------------------------------------------
-def test_legacy_frontdesk_mode_active_kw_alias():
+def test_legacy_concierge_mode_active_kw_alias():
     """Legacy keyword still enables worker-lane routing."""
     d_new = classify("draft a report.md", concierge_mode_active=True)
-    d_old = classify("draft a report.md", frontdesk_mode_active=True)
+    d_old = classify("draft a report.md", concierge_mode_active=True)
     assert d_new.intent is d_old.intent
     assert d_new.recommendation is d_old.recommendation
     assert d_new.fingerprint == d_old.fingerprint
     assert d_new.concierge_mode_active is True
-    assert d_old.frontdesk_mode_active is True
+    assert d_old.concierge_mode_active is True
     assert "concierge_mode_active" in d_new.to_dict()
-    assert "frontdesk_mode_active" in d_new.to_dict()
+    assert "concierge_mode_active" in d_new.to_dict()

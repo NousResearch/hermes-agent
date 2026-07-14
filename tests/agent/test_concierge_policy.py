@@ -43,7 +43,7 @@ from agent.concierge_policy import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-_CORPUS_PATH = Path(__file__).parent / "data" / "frontdesk_intents_ko.yaml"
+_CORPUS_PATH = Path(__file__).parent / "data" / "concierge_intents_ko.yaml"
 
 
 def _corpus() -> list[dict]:

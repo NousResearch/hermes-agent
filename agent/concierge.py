@@ -1,11 +1,12 @@
-"""Concierge mode: thin NL gate → Kanban (opt-in).
+"""Product name: Concierge (only).
+
+Concierge mode: thin NL gate → Kanban (opt-in).
 
 Product name: **Concierge** (user-facing). Historical aliases:
-``frontdesk`` / ``one-room control`` — accepted only as config/API compat.
 
 Hard rules:
 - Opt-in only via ``orchestration.concierge_live_enabled`` in config.yaml
-  (legacy: ``frontdesk_live_enabled``, ``one_room_control_enabled``).
+
   No user-facing ``HERMES_*`` behavior flags.
 - Returned non-None results are *consumed*: surfaces must not enqueue or
   send them to the main model.
@@ -24,24 +25,15 @@ __all__ = [
     "concierge_enabled",
     "handle_concierge",
     # temporary aliases during rename
-    "OneRoomResult",
-    "one_room_control_enabled",
-    "handle_one_room_control",
 ]
 
 # Session/owner/config keys that mean "concierge mode on", in priority order.
 _ENABLE_KEYS = (
     "concierge_live_enabled",
-    "one_room_control_enabled",
-    "frontdesk_live_enabled",
 )
 _ENABLE_ATTRS = (
     "concierge_live_enabled",
     "_concierge_live_enabled",
-    "one_room_control_enabled",
-    "_one_room_control_enabled",
-    "frontdesk_live_enabled",
-    "_frontdesk_live_enabled",
 )
 
 
@@ -56,7 +48,6 @@ class ConciergeResult:
 
 
 # Back-compat alias for imports/tests mid-rename.
-OneRoomResult = ConciergeResult
 
 
 def concierge_enabled(owner: Any = None, *, session: dict | None = None) -> bool:
@@ -97,7 +88,6 @@ def concierge_enabled(owner: Any = None, *, session: dict | None = None) -> bool
 
 
 # Back-compat
-one_room_control_enabled = concierge_enabled
 
 
 def _format_kanban_status(*, board: str | None = None, limit: int = 12) -> str:
@@ -362,4 +352,3 @@ def handle_concierge(
 
 
 # Back-compat
-handle_one_room_control = handle_concierge

@@ -26,8 +26,7 @@ What this module does NOT do:
   surface-adapter responsibilities; the control plane just returns the
   decision object.
 * It does **not** consult any runtime state.  Mode gating is supplied by the
-  caller via the ``concierge_mode_active`` keyword (legacy alias:
-  ``frontdesk_mode_active``); the module has no idea
+  caller via the ``concierge_mode_active`` keyword (); the module has no idea
   whether a worker lane is registered, a turn is in flight, or a queue is
   empty.  Verifying any of those is the surface adapter's job.
 * It does **not** mutate inputs or any imported object.  Every dataclass is
@@ -36,7 +35,7 @@ What this module does NOT do:
 Hard boundaries (PRD §9.2 / design review §9.2):
 
 * No persona changes.
-* No ``/mode concierge`` (legacy frontdesk) exposure.
+* No ``/mode concierge`` exposure.
 * No worker dispatch wiring.
 * No mutation of ``_pending_input`` or the existing ``/busy integrated`` drain
   semantics.
@@ -53,10 +52,6 @@ from agent.concierge_policy import (
     ConciergePolicyDecision,
     ConciergeRecommendation,
     ConciergeSignal,
-    FrontdeskConfidence,
-    FrontdeskPolicyDecision,
-    FrontdeskRecommendation,
-    FrontdeskSignal,
     classify_request,
     fingerprint as _fingerprint,
 )
@@ -178,10 +173,6 @@ class ControlPlaneDecision:
     def should_steer(self) -> bool:
         return self.recommendation is Recommendation.STEER
 
-    @property
-    def frontdesk_mode_active(self) -> bool:
-        """Temporary alias for :attr:`concierge_mode_active`."""
-        return self.concierge_mode_active
 
     # -- serialization --------------------------------------------------
     def to_dict(self) -> dict:
@@ -195,7 +186,6 @@ class ControlPlaneDecision:
             "raw_text": self.raw_text,
             "concierge_mode_active": self.concierge_mode_active,
             # temporary alias key during rename
-            "frontdesk_mode_active": self.concierge_mode_active,
             "fingerprint": self.fingerprint,
             "notes": list(self.notes),
         }
@@ -214,7 +204,7 @@ class WorkerTaskSpec:
 
     Field meanings:
 
-    * ``title`` — short human-readable label ("draft frontdesk PRD review").
+    * ``title`` — short human-readable label ("draft Concierge PRD review").
     * ``user_intent`` — the verbatim (or minimally trimmed) user fragment.
     * ``context`` — optional caller-supplied background prose.
     * ``requested_artifacts`` — filenames the user explicitly asked for; the
@@ -349,7 +339,6 @@ def decide_intent_from_policy(
     policy_decision: ConciergePolicyDecision,
     *,
     concierge_mode_active: bool | None = None,
-    frontdesk_mode_active: bool | None = None,
 ) -> tuple[Intent, Recommendation]:
     """Map a policy verdict to ``(Intent, Recommendation)``.
 
@@ -359,12 +348,8 @@ def decide_intent_from_policy(
     semantically-correct ``NEW_TASK_MAIN`` (matching the *effective* routing).
     Design review §3.1 mode-gating invariant.
 
-    ``frontdesk_mode_active`` is a temporary alias for ``concierge_mode_active``.
     """
-    if concierge_mode_active is None:
-        mode = bool(frontdesk_mode_active) if frontdesk_mode_active is not None else False
-    else:
-        mode = bool(concierge_mode_active)
+    mode = bool(concierge_mode_active) if concierge_mode_active is not None else False
     rec = policy_decision.recommendation
     signals = policy_decision.signals
 
@@ -429,7 +414,7 @@ def classify(
     *,
     lang_hint: str | None = None,
     concierge_mode_active: bool | None = None,
-    frontdesk_mode_active: bool | None = None,
+    
 ) -> ControlPlaneDecision:
     """Classify a single user-input fragment into a :class:`ControlPlaneDecision`.
 
@@ -449,19 +434,13 @@ def classify(
         are downgraded to ``MAIN`` so legacy callers keep their existing
         behaviour — this is the central invariant that makes Phase 2 substrate
         safe to land without any UX change.
-    frontdesk_mode_active:
-        Temporary alias for ``concierge_mode_active``.
-
     Returns
     -------
     ControlPlaneDecision
         A frozen dataclass with the dispatcher's verdict.  Never raises for
         any string input.
     """
-    if concierge_mode_active is None:
-        mode = bool(frontdesk_mode_active) if frontdesk_mode_active is not None else False
-    else:
-        mode = bool(concierge_mode_active)
+    mode = bool(concierge_mode_active) if concierge_mode_active is not None else False
     policy_decision = classify_request(text, lang_hint=lang_hint)
     intent, recommendation = decide_intent_from_policy(
         policy_decision, concierge_mode_active=mode

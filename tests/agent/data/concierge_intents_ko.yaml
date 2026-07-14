@@ -1,4 +1,4 @@
-# Korean intent corpus for the frontdesk control-plane classifier (Phase 2).
+# Korean intent corpus for the concierge control-plane classifier (Phase 2).
 # Schema: id, text, expected_intent, expected_recommendation, notes
 #
 # Verified against agent.control_plane.classify / agent.concierge_policy.classify_request.
@@ -201,7 +201,7 @@
   notes: "status anchor: 어떤 lane"
 
 # --------------------------------------------------------------------------
-# NEW_TASK_MAIN  (10 rows — classify with frontdesk_mode_active=False)
+# NEW_TASK_MAIN  (10 rows — classify with concierge_mode_active=False)
 # --------------------------------------------------------------------------
 - id: 31
   text: "이 파일 읽어줘"
@@ -264,67 +264,67 @@
   notes: "explicit main override (여기서 해)"
 
 # --------------------------------------------------------------------------
-# NEW_TASK_WORKER  (10 rows — classify with frontdesk_mode_active=True)
+# NEW_TASK_WORKER  (10 rows — classify with concierge_mode_active=True)
 # --------------------------------------------------------------------------
 - id: 41
   text: "조사해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "research anchor (조사해); frontdesk_mode_active=True required"
+  notes: "research anchor (조사해); concierge_mode_active=True required"
 
 - id: 42
   text: "보고서 써줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "artifact anchor (보고서); frontdesk_mode_active=True"
+  notes: "artifact anchor (보고서); concierge_mode_active=True"
 
 - id: 43
   text: "리포트 작성해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "artifact anchor (리포트 + 작성해줘); frontdesk_mode_active=True"
+  notes: "artifact anchor (리포트 + 작성해줘); concierge_mode_active=True"
 
 - id: 44
   text: "수정해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "code_edit anchor (수정해줘); frontdesk_mode_active=True"
+  notes: "code_edit anchor (수정해줘); concierge_mode_active=True"
 
 - id: 45
   text: "구현해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "code_edit anchor (구현해줘); frontdesk_mode_active=True"
+  notes: "code_edit anchor (구현해줘); concierge_mode_active=True"
 
 - id: 46
   text: "크롤링해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "research anchor (크롤링); frontdesk_mode_active=True"
+  notes: "research anchor (크롤링); concierge_mode_active=True"
 
 - id: 47
   text: "백그라운드로 돌려"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "explicit worker override (백그라운드); frontdesk_mode_active=True"
+  notes: "explicit worker override (백그라운드); concierge_mode_active=True"
 
 - id: 48
   text: "워커에 맡겨"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "explicit worker override (워커에 맡겨); frontdesk_mode_active=True"
+  notes: "explicit worker override (워커에 맡겨); concierge_mode_active=True"
 
 - id: 49
   text: "초안 잡아줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "artifact anchor (초안); frontdesk_mode_active=True"
+  notes: "artifact anchor (초안); concierge_mode_active=True"
 
 - id: 50
   text: "분석해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "research anchor (분석해); frontdesk_mode_active=True"
+  notes: "research anchor (분석해); concierge_mode_active=True"
 
 # --------------------------------------------------------------------------
 # STEER  (12 rows)
@@ -409,61 +409,61 @@
   text: "고마워, 근데 보고서도 작성해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+artifact: classifier yields WORKER_LANE (mode=True); frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+artifact: classifier yields WORKER_LANE (mode=True); concierge_mode_active=True"
 
 - id: 64
   text: "감사합니다, 그리고 조사해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+research: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
 
 - id: 65
   text: "수고했어, 추가로 리팩터해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
 
 - id: 66
   text: "고맙습니다, 근데 이것도 고쳐줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
 
 - id: 67
   text: "감사, 추가로 분석해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+research: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
 
 - id: 68
   text: "감사합니다, 추가로 초안 잡아줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+artifact: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True"
 
 - id: 69
   text: "수고, 근데 구현해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
 
 - id: 70
   text: "고마워, 그리고 탐색해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+research: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
 
 - id: 71
   text: "고마워, 근데 네가 직접 해줘"
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "ack-leading-but-steer+explicit_main: MAIN wins; frontdesk_mode_active=False"
+  notes: "ack-leading-but-steer+explicit_main: MAIN wins; concierge_mode_active=False"
 
 - id: 72
   text: "고마워, 근데 이건 백그라운드로 해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "ack-leading-but-steer+explicit_worker: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "ack-leading-but-steer+explicit_worker: WORKER_LANE; concierge_mode_active=True"
 
 # --------------------------------------------------------------------------
 # STOP-leading-but-actually-STEER edge cases (5+ rows)
@@ -472,31 +472,31 @@
   text: "중단, 추가로 조사해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+research: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "stop-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
 
 - id: 74
   text: "취소, 근데 그리고 보고서 써줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+artifact: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "stop-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True"
 
 - id: 75
   text: "됐어, 근데 이건 고쳐줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+code_edit: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "stop-leading-but-steer+code_edit: WORKER_LANE; concierge_mode_active=True"
 
 - id: 76
   text: "잠깐, 추가로 리포트 작성해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+artifact: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "stop-leading-but-steer+artifact: WORKER_LANE; concierge_mode_active=True"
 
 - id: 77
   text: "그만, 근데 크롤링도 해줘"
   expected_intent: NEW_TASK_WORKER
   expected_recommendation: WORKER_LANE
-  notes: "stop-leading-but-steer+research: WORKER_LANE; frontdesk_mode_active=True"
+  notes: "stop-leading-but-steer+research: WORKER_LANE; concierge_mode_active=True"
 
 # --------------------------------------------------------------------------
 # NOISE  (5 rows)
@@ -542,10 +542,10 @@
   text: "조사해줘"
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "DUPLICATE handled by surface, classifier yields MAIN (frontdesk_mode_active=False); deduplication is a surface-layer concern, not classifier"
+  notes: "DUPLICATE handled by surface, classifier yields MAIN (concierge_mode_active=False); deduplication is a surface-layer concern, not classifier"
 
 - id: 84
   text: "보고서 작성해줘"
   expected_intent: NEW_TASK_MAIN
   expected_recommendation: MAIN
-  notes: "DUPLICATE handled by surface, classifier yields MAIN (frontdesk_mode_active=False); deduplication is a surface-layer concern"
+  notes: "DUPLICATE handled by surface, classifier yields MAIN (concierge_mode_active=False); deduplication is a surface-layer concern"

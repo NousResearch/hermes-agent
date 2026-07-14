@@ -5534,7 +5534,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
         except Exception:
             logger.warning(
-                "one-room control gate failed for busy session %s; falling through",
+                "concierge gate failed for busy session %s; falling through",
                 session_key,
                 exc_info=True,
             )
@@ -10395,7 +10395,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return ""
             except Exception:
                 logger.warning(
-                    "one-room control gate failed for idle session %s; falling through",
+                    "concierge gate failed for idle session %s; falling through",
                     _quick_key,
                     exc_info=True,
                 )

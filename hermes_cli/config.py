@@ -989,7 +989,6 @@ DEFAULT_CONFIG = {
     "max_live_sessions": 16,
     # Concierge mode (opt-in): natural-language STOP/STATUS/WORKER gate
     # that routes durable work through Kanban. Off by default.
-    # Legacy keys frontdesk_live_enabled / one_room_control_enabled still work.
     "orchestration": {
         "concierge_live_enabled": False,
     },

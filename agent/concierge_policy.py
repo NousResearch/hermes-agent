@@ -38,7 +38,7 @@ Hard boundaries (PRD §3.1 Non-goals + design review §9.2):
 
 * No persona changes here.
 * No worker-lane registration.
-* No exposure of ``/mode concierge`` (legacy: frontdesk).
+* No exposure of ``/mode concierge`` (legacy removed).
 * No mutation of any caller-supplied object.
 """
 
@@ -648,7 +648,7 @@ def fingerprint(
     text: str,
     *,
     concierge_mode_active: bool | None = None,
-    frontdesk_mode_active: bool | None = None,
+    
 ) -> str:
     """Return a stable sha1 fingerprint of (text, mode) for replay tests.
 
@@ -657,12 +657,8 @@ def fingerprint(
     transcript-replay test can distinguish a fragment classified with concierge
     on vs. off.
 
-    ``frontdesk_mode_active`` is a temporary alias for ``concierge_mode_active``.
     """
-    if concierge_mode_active is None:
-        mode = bool(frontdesk_mode_active) if frontdesk_mode_active is not None else False
-    else:
-        mode = bool(concierge_mode_active)
+    mode = bool(concierge_mode_active) if concierge_mode_active is not None else False
     h = hashlib.sha1()
     h.update(text.encode("utf-8"))
     h.update(b"\x1f")
@@ -889,12 +885,3 @@ def classify_request(
         debug_label="main:default",
         raw_text=raw,
     )
-
-
-# --------------------------------------------------------------------------
-# Temporary aliases (product rename frontdesk → concierge)
-# --------------------------------------------------------------------------
-FrontdeskRecommendation = ConciergeRecommendation
-FrontdeskConfidence = ConciergeConfidence
-FrontdeskSignal = ConciergeSignal
-FrontdeskPolicyDecision = ConciergePolicyDecision

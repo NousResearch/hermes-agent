@@ -11088,11 +11088,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 platform_name = source.platform.value if source.platform else ""
                 had_activity = getattr(session_entry, 'reset_had_activity', False)
-                # Suspended sessions always notify (they were explicitly stopped
-                # or crashed mid-operation) — skip the policy check.
-                should_notify = reset_reason == "suspended" or (
+                # Suspended sessions used to always notify, ignoring
+                # session_reset.notify. That made Telegram noisy after routine
+                # gateway restarts from a live chat. Keep the fresh-session
+                # context note for the agent, but let the user-facing banner
+                # obey the same notify/exclude policy for every reset reason.
+                should_notify = (
                     policy.notify
-                    and had_activity
+                    and (reset_reason == "suspended" or had_activity)
                     and platform_name not in policy.notify_exclude_platforms
                 )
                 if should_notify:

@@ -59,18 +59,33 @@
     envFileContent = lib.concatStringsSep "\n" (
       lib.mapAttrsToList (k: v: "${k}=${v}") cfg.environment
     );
-    # Build documents derivation (from 0xrsydn)
+    # Build documents derivation (from 0xrsydn).
+    # Handles nested attr keys (e.g. ".hermes/memories/USER.md") by creating
+    # the corresponding subdirectory inside $out before writing the file.
     documentDerivation = pkgs.runCommand "hermes-documents" { } (
       ''
         mkdir -p $out
       '' + lib.concatStringsSep "\n" (
-        lib.mapAttrsToList (name: value:
-          if builtins.isPath value || lib.isStorePath value
-          then "cp ${value} $out/${name}"
-          else "cat > $out/${name} <<'HERMES_DOC_EOF'\n${value}\nHERMES_DOC_EOF"
+        lib.mapAttrsToList (name: value: let
+          dir = builtins.dirOf name;
+          mkdirCmd = lib.optionalString (dir != "." && dir != "") "mkdir -p $out/${dir}";
+          copyCmd =
+            if builtins.isPath value || lib.isStorePath value
+            then "cp ${value} $out/${name}"
+            else "cat > $out/${name} <<'HERMES_DOC_EOF'\n${value}\nHERMES_DOC_EOF";
+        in
+          lib.concatStringsSep "\n" (lib.filter (s: s != "") [ mkdirCmd copyCmd ])
         ) cfg.documents
       )
     );
+
+    # Preserve the established workspace destination for legacy filename-only
+    # keys. Nested keys are explicit stateDir-relative destinations, allowing
+    # documents under .hermes/ without changing existing configurations.
+    documentTarget = name:
+      if builtins.dirOf name == "."
+      then "${cfg.workingDirectory}/${name}"
+      else "${cfg.stateDir}/${name}";
 
     containerName = "hermes-agent";
     containerDataDir = "/data";     # stateDir mount point inside container
@@ -318,13 +333,24 @@
         type = types.attrsOf (types.either types.str types.path);
         default = { };
         description = ''
-          Workspace files (SOUL.md, USER.md, etc.). Keys are filenames,
-          values are inline strings or paths. Installed into workingDirectory.
+          Hermes documents to install. Filename-only keys retain their legacy
+          destination in `workingDirectory`. Keys containing a directory are
+          destination paths relative to `stateDir` (default `/var/lib/hermes`).
+          Values are inline strings or store paths. Parent directories of nested
+          keys are created at activation time.
+
+          Examples:
+          - `USER.md` → `workingDirectory/USER.md` (legacy-compatible)
+          - `.hermes/SOUL.md` → `''${stateDir}/.hermes/SOUL.md` (= `$HERMES_HOME/SOUL.md`)
+          - `.hermes/memories/USER.md` → `''${stateDir}/.hermes/memories/USER.md`
+          - `workspace/AGENTS.md` → `''${stateDir}/workspace/AGENTS.md` (the default `workingDirectory`)
         '';
         example = literalExpression ''
           {
-            "SOUL.md" = "You are a helpful AI assistant.";
             "USER.md" = ./documents/USER.md;
+            ".hermes/SOUL.md" = "You are a helpful AI assistant.";
+            ".hermes/memories/USER.md" = ./documents/USER.md;
+            "workspace/AGENTS.md" = ./documents/AGENTS.md;
           }
         '';
       };
@@ -846,9 +872,12 @@
             '') cfg.environmentFiles)}
           ''}
 
-          # Link documents into workspace
+          # Install filename-only documents into the workspace for backwards
+          # compatibility. Nested keys are stateDir-relative, so
+          # `.hermes/SOUL.md` lands in $HERMES_HOME. `install -D` creates any
+          # missing parent directories.
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
-            install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
+            install -D -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${documentTarget name}
           '') cfg.documents)}
 
         # ── Declarative plugins ─────────────────────────────────────────

@@ -286,6 +286,7 @@ Run `nix build .#configKeys && cat result` to see every leaf config key extracte
     # ── Documents ──────────────────────────────────────────────────────
     documents = {
       "USER.md" = ./documents/USER.md;
+      ".hermes/SOUL.md" = "You are a helpful AI assistant.";
     };
 
     # ── MCP Servers ────────────────────────────────────────────────────
@@ -413,22 +414,31 @@ The file is only copied if `auth.json` doesn't already exist (unless `authFileFo
 
 ## Documents
 
-The `documents` option installs files into the agent's working directory (the `workingDirectory`, which the agent reads as its workspace). Hermes looks for specific filenames by convention:
+The `documents` option preserves the existing behavior for filename-only keys: they are installed in `workingDirectory`. Keys with a directory component are explicit paths relative to `${services.hermes-agent.stateDir}` (default `/var/lib/hermes`). This allows documents under `$HERMES_HOME` without relocating existing workspace files.
 
-- **`USER.md`** — context about the user the agent is interacting with.
-- Any other files you place here are visible to the agent as workspace files.
-
-The agent identity file is separate: Hermes loads its primary `SOUL.md` from `$HERMES_HOME/SOUL.md`, which in the NixOS module is `${services.hermes-agent.stateDir}/.hermes/SOUL.md`. Putting `SOUL.md` in `documents` only creates a workspace file and will not replace the main persona file.
+- Use a filename-only key such as `USER.md` for a workspace file (legacy-compatible).
+- Use `.hermes/...` for files Hermes reads from `$HERMES_HOME`.
+- Any other nested key lands exactly where you name it under `stateDir`.
 
 ```nix
 {
   services.hermes-agent.documents = {
-    "USER.md" = ./documents/USER.md;  # path reference, copied from Nix store
+    "USER.md" = ./documents/USER.md;
+    ".hermes/SOUL.md" = "You are a helpful AI assistant.";
+    ".hermes/memories/USER.md" = ./documents/USER.md;
+    "project/AGENTS.md" = ./documents/AGENTS.md;
   };
 }
 ```
 
-Values can be inline strings or path references. Files are installed on every `nixos-rebuild switch`.
+This keeps nested targets explicit while retaining compatibility for existing workspace files:
+
+- `USER.md` -> `${services.hermes-agent.workingDirectory}/USER.md`
+- `.hermes/SOUL.md` -> `${services.hermes-agent.stateDir}/.hermes/SOUL.md`
+- `.hermes/memories/USER.md` -> `${services.hermes-agent.stateDir}/.hermes/memories/USER.md`
+- `project/AGENTS.md` -> `${services.hermes-agent.stateDir}/project/AGENTS.md`
+
+Values can be inline strings or path references. Nested parent directories are created automatically, and files are installed on every `nixos-rebuild switch`.
 
 ---
 
@@ -584,7 +594,7 @@ Host                                    Container
   │   └── mcp-tokens/                      (OAuth tokens for MCP servers)
   ├── home/                                ──►  /home/hermes    (rw)
   └── workspace/                           (agent working directory)
-      ├── SOUL.md                          (from documents option)
+      ├── USER.md                          (from the legacy documents key)
       └── (agent-created files)
 
 Container writable layer (apt/pip/npm):   /usr, /usr/local, /tmp
@@ -854,7 +864,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `documents` | `attrsOf (either str path)` | `{}` | Workspace files. Keys are filenames, values are inline strings or paths. Installed into `workingDirectory` on activation |
+| `documents` | `attrsOf (either str path)` | `{}` | Filename-only keys install to `workingDirectory`; nested keys install under `stateDir`, with parent directories created on activation |
 
 ### MCP Servers
 
@@ -919,7 +929,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 │   └── logs/
 ├── home/                            # Agent HOME
 └── workspace/                       # Agent working directory
-    ├── SOUL.md                      # From documents option
+    ├── USER.md                      # From legacy filename-only documents key
     └── (agent-created files)
 ```
 

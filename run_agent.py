@@ -1212,6 +1212,7 @@ class AIAgent:
         return (
             hostname.endswith(".openai.azure.com")
             or hostname.endswith(".services.ai.azure.com")
+            or hostname.endswith(".api.ai.azure.com")
         )
 
     def _is_github_copilot_url(self, base_url: str = None) -> bool:

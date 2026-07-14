@@ -9,6 +9,7 @@ Covers:
   - Edge cases: empty messages, consecutive roles, image content
 """
 
+import base64
 import json
 from contextlib import contextmanager
 from types import ModuleType
@@ -346,6 +347,10 @@ class TestConvertMessagesToConverse:
         image_blocks = [b for b in content if "image" in b]
         assert len(image_blocks) == 1
         assert image_blocks[0]["image"]["format"] == "png"
+        # Verify bytes are decoded (not base64 double-encoded)
+        img_bytes = image_blocks[0]["image"]["source"]["bytes"]
+        assert isinstance(img_bytes, bytes), f"Expected bytes, got {type(img_bytes)}"
+        assert img_bytes == base64.b64decode("iVBORw0KGgo=")
 
     def test_multiple_system_messages_merged(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -361,6 +366,30 @@ class TestConvertMessagesToConverse:
         assert system[1]["text"] == "Rule 2"
 
 
+    def test_image_data_url_not_double_encoded(self):
+        """Regression test: base64 data must be decoded to bytes, not passed as string.
+
+        Bedrock's Converse API expects raw bytes in ImageBlock.source.bytes.
+        boto3 base64-encodes bytes on the wire. Passing a base64 ASCII string
+        causes double-encoding and Bedrock rejects it with 'Invalid or
+        unsupported image format'.  See #33317.
+        """
+        import base64 as b64
+        from agent.bedrock_adapter import _convert_content_to_converse
+        raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+        b64_str = b64.b64encode(raw).decode("ascii")
+        content = [
+            {"type": "text", "text": "describe"},
+            {"type": "image_url", "image_url": {
+                "url": f"data:image/png;base64,{b64_str}",
+            }},
+        ]
+        blocks = _convert_content_to_converse(content)
+        image_blocks = [b for b in blocks if "image" in b]
+        assert len(image_blocks) == 1
+        src_bytes = image_blocks[0]["image"]["source"]["bytes"]
+        assert isinstance(src_bytes, bytes)
+        assert src_bytes == raw
 # ---------------------------------------------------------------------------
 # Response normalization: Converse → OpenAI
 # ---------------------------------------------------------------------------

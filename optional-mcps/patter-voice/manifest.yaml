@@ -26,13 +26,13 @@ transport:
     - "--stdio"
 
 # Build from a pinned, immutable commit — manifests never float HEAD. This SHA
-# is patter-mcp HEAD as of 2026-06-02 (merge of PR #5). Bumping to a newer
-# server revision is a manifest edit + PR, and users pull it by re-running
-# `hermes mcp install patter-voice`.
+# is patter-mcp HEAD as of 2026-07-14 (merge of PR #6, getpatter SDK 0.7.0).
+# Bumping to a newer server revision is a manifest edit + PR, and users pull it
+# by re-running `hermes mcp install patter-voice`.
 install:
   type: git
   url: https://github.com/PatterAI/patter-mcp.git
-  ref: e89dd8c9274c0ab923ecaa3a9216c27d8a635760
+  ref: c87b1b17e05c8d73fe02e0e65b6661b9a691a47b
   # Run in the cloned dir after checkout. `npm run build` invokes tsup and
   # emits dist/index.js (the getpatter-mcp bin).
   bootstrap:

@@ -157,7 +157,7 @@ def test_manifest_install_ref_is_immutable_sha_pin():
 
 
 def test_manifest_prompts_exactly_the_env_vars_the_server_reads():
-    """The prompted env vars must mirror what patter-mcp@e89dd8c9 and the getpatter
+    """The prompted env vars must mirror what patter-mcp@c87b1b17 and the getpatter
     SDK actually read from the environment: the hardcoded Twilio trio + the default
     Realtime engine's OPENAI_API_KEY, plus the optional Deepgram / ElevenLabs vars
     (ELEVENLABS_AGENT_ID drives the elevenlabs_convai engine).

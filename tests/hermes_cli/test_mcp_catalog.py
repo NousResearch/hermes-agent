@@ -166,6 +166,22 @@ class TestManifestParsing:
         assert e.install.ref == "v1.0.0"
         assert e.install.bootstrap == ["pip install -r requirements.txt"]
 
+    def test_http_transport_headers(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+            },
+            auth={"type": "api_key"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.transport.type == "http"
+        assert e.transport.headers == {"Authorization": "Bearer ${DEMO_KEY}"}
+
     def test_invalid_manifest_skipped(self, catalog_dir):
         # Broken: wrong manifest_version
         _write_manifest(catalog_dir, "bad", {
@@ -306,6 +322,26 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_writes_headers(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${DEMO_KEY}"},
+            },
+            auth={"type": "api_key"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_catalog import install_entry
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert server["headers"] == {"Authorization": "Bearer secret-val"}
 
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(

@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+name: chatblocks
+description: Create, build, and publish persistent canvas blocks through the hosted Chatblocks MCP server.
+source: https://docs.chatblocks.ai/mcp/setup
+transport:
+  type: http
+  url: https://chatblocks.ai/api/mcp/v1
+  headers:
+    Authorization: "Bearer ${CHATBLOCKS_API_KEY}"
+auth:
+  type: api_key
+  env:
+    - name: CHATBLOCKS_API_KEY
+      prompt: "Chatblocks cb_live_* API key"
+      required: true
+      secret: true
+tools:
+  default_enabled:
+    - canvases.list
+    - canvases.get
+    - blocks.list
+    - blocks.init
+    - blocks.setFiles
+    - blocks.build
+    - blocks.publish
+    - placements.create
+post_install: |
+  Create a Chatblocks key from the canvas agent-connect overlay, or use
+  https://chatblocks.ai/api/agent/bootstrap for agent-first setup. Restart
+  Hermes after install so the Chatblocks tools load.
+
+  Existing-account config shape:
+
+    mcp_servers:
+      chatblocks:
+        url: "https://chatblocks.ai/api/mcp/v1"
+        headers:
+          Authorization: "Bearer ${CHATBLOCKS_API_KEY}"

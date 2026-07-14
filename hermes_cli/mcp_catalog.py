@@ -76,6 +76,7 @@ class TransportSpec:
     command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
+    headers: Dict[str, str] = field(default_factory=dict)
     version: Optional[str] = None  # informational, pinned
 
 
@@ -184,11 +185,15 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    headers_raw = transport_raw.get("headers") or {}
+    if not isinstance(headers_raw, dict):
+        raise CatalogError(f"{path}: transport.headers must be a mapping")
     transport = TransportSpec(
         type=t_type,
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
+        headers={str(k): str(v) for k, v in headers_raw.items()},
         version=transport_raw.get("version"),
     )
     if t_type == "stdio" and not transport.command:
@@ -470,6 +475,8 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
     elif t.type == "http":
         cfg["url"] = t.url
+        if t.headers:
+            cfg["headers"] = dict(t.headers)
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
     return cfg

@@ -124,10 +124,30 @@ def is_write_denied(path: str) -> bool:
                 return True
         except Exception:
             pass
+        # gateway/pairing.py resolves the live pairing store via
+        # get_hermes_dir("platforms/pairing", "pairing") — new installs (and
+        # any install whose legacy `pairing/` is empty) use the consolidated
+        # `platforms/pairing/` location, not the legacy one. Block both so a
+        # write is denied regardless of which layout is currently active.
+        for pairing_rel in ("pairing", os.path.join("platforms", "pairing")):
+            try:
+                pairing_real = os.path.realpath(os.path.join(base_real, pairing_rel))
+                if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+                    return True
+            except Exception:
+                pass
+        # Multiplex gateways serve secondary profiles via
+        # PairingStore(profile=name) (gateway/pairing.py), which stores
+        # per-profile DM-pairing credentials at
+        # <HERMES_HOME>/profiles/<name>/pairing/. Profile names aren't known
+        # ahead of time, so match the shape of the path rather than a fixed
+        # name.
         try:
-            pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
-            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return True
+            profiles_real = os.path.realpath(os.path.join(base_real, "profiles"))
+            if resolved == profiles_real or resolved.startswith(profiles_real + os.sep):
+                rel_parts = os.path.relpath(resolved, profiles_real).split(os.sep)
+                if len(rel_parts) >= 2 and rel_parts[1] == "pairing":
+                    return True
         except Exception:
             pass
 

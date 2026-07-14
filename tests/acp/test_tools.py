@@ -636,3 +636,51 @@ class TestExtractLocations:
         args = {"command": "echo hi"}
         locs = extract_locations(args)
         assert locs == []
+
+
+# ---------------------------------------------------------------------------
+# read_file fence truncation
+# ---------------------------------------------------------------------------
+
+
+class TestReadFileFenceTruncation:
+    def _read_file_text(self, content: str) -> str:
+        import json
+
+        result = build_tool_complete(
+            "tc-fence",
+            "read_file",
+            json.dumps({"content": content, "path": "big.txt"}),
+            function_args={"path": "big.txt"},
+        )
+        return result.content[0].content.text
+
+    def test_short_payload_is_fenced_and_untruncated(self):
+        text = self._read_file_text("1| hello\n2| world")
+        fence_lines = [ln for ln in text.splitlines() if ln and set(ln) == {"`"}]
+        assert len(fence_lines) == 2
+        assert "truncated" not in text
+
+    def test_long_payload_keeps_closing_fence(self):
+        content = "\n".join(f"{i:4}| line {i} of a fairly long file" for i in range(400))
+        assert len(content) > 5000
+        text = self._read_file_text(content)
+        lines = text.splitlines()
+        fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
+        # Both the opening and the closing fence must survive truncation.
+        assert len(fence_lines) == 2
+        assert fence_lines[0] == fence_lines[1]
+        # The truncation note must sit after the closing fence, not inside it.
+        assert lines[-1].startswith("... (")
+        assert lines[-2] == fence_lines[1]
+        assert f"({len(content)} chars total, truncated)" in lines[-1]
+
+    def test_long_payload_with_backticks_keeps_fence_unbroken(self):
+        chunk = "1| some text with a ```python fence inside\n"
+        content = chunk * 200
+        assert len(content) > 5000
+        text = self._read_file_text(content)
+        lines = text.splitlines()
+        fence_lines = [ln for ln in lines if ln and set(ln) == {"`"}]
+        assert len(fence_lines) == 2
+        assert len(fence_lines[0]) > 3

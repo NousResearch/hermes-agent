@@ -253,6 +253,26 @@ def _fenced_text(text: str, language: str = "") -> str:
     return f"{fence}{language}\n{text}\n{fence}"
 
 
+def _fenced_truncated_text(header: str, content: str, limit: int = 5000) -> str:
+    """Fence ``content`` under an overall size budget, keeping the fence closed.
+
+    Truncating after fencing (``_truncate_text(_fenced_text(...))``) cuts off
+    the closing fence, so the truncation note — and anything the ACP client
+    renders after this message — ends up inside an unterminated code block.
+    Cut the payload instead, then fence the shortened text and append the
+    note after the closing fence.
+    """
+    full = f"{header}\n\n{_fenced_text(content)}"
+    if len(full) <= limit:
+        return full
+    keep = max(0, limit - len(header) - 150)
+    clipped = content[:keep]
+    return (
+        f"{header}\n\n{_fenced_text(clipped)}"
+        f"\n... ({len(content)} chars total, truncated)"
+    )
+
+
 def _format_todo_result(result: Optional[str]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
@@ -309,7 +329,7 @@ def _format_read_file_result(result: Optional[str], args: Optional[Dict[str, Any
     # Hermes read_file output is line-numbered with `|`. If we send it as raw
     # Markdown, Zed can interpret pipes as tables and collapse the layout.
     # Fence the payload so file lines stay readable and literal.
-    return _truncate_text(f"{header}\n\n{_fenced_text(content)}")
+    return _fenced_truncated_text(header, content)
 
 
 def _format_search_files_result(result: Optional[str]) -> Optional[str]:

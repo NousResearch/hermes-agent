@@ -111,6 +111,36 @@ class TestResolveAutoMainFirst:
         # aggregator's base_url.
         assert mock_resolve.call_args.kwargs.get("explicit_base_url") in (None, "")
 
+    def test_moa_resolution_failure_falls_through_without_virtual_provider(self):
+        """A broken MoA preset must not reach the HTTP resolver as ``moa``."""
+        fallback_client = MagicMock()
+        with patch(
+            "hermes_cli.config.load_config", return_value={"moa": {}}
+        ), patch(
+            "hermes_cli.moa_config.resolve_moa_preset",
+            side_effect=KeyError("missing preset"),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve, patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(fallback_client, "fallback-model", "configured"),
+        ):
+            from agent.auxiliary_client import _resolve_auto
+
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "moa",
+                    "model": "missing-preset",
+                    "base_url": "moa://local",
+                    "api_key": "virtual-key",
+                },
+                task="title_generation",
+            )
+
+        assert client is fallback_client
+        assert model == "fallback-model"
+        mock_resolve.assert_not_called()
+
     def test_nous_main_uses_main_model_for_aux(self, monkeypatch):
         """Nous Portal main user → aux uses their picked Nous model, not free-tier MiMo."""
         # No OPENROUTER_API_KEY → ensures if main failed we'd fall to chain

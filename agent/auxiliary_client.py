@@ -4249,6 +4249,16 @@ def _resolve_auto(
                 runtime_api_mode = ""
         except Exception:
             logger.debug("MoA aux resolution to aggregator failed", exc_info=True)
+        # A failed or recursive preset resolution must not let the virtual
+        # provider/model pair reach the HTTP resolver.  The preset name is not
+        # a real model ID on any provider; fall through to the configured
+        # fallback chain instead.
+        if str(main_provider).strip().lower() == "moa":
+            main_provider = ""
+            main_model = ""
+            runtime_base_url = ""
+            runtime_api_key = ""
+            runtime_api_mode = ""
 
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):

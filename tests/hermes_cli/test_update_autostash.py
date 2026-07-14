@@ -563,6 +563,8 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
+        if "rebase" in joined and "--abort" in joined:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rebase" in joined and f"origin/{current_branch}" in joined:
             if rebase_fails:
                 return SimpleNamespace(stdout="", stderr="CONFLICT\n", returncode=1)
@@ -638,6 +640,51 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
     reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
     assert len(reset_calls) == 0
+
+
+def test_cmd_update_rebase_failure_preserves_local_commits_without_reset(
+    monkeypatch, tmp_path, capsys
+):
+    """When rebase fails with local commits, abort the rebase, preserve the backup
+    branch, never execute reset --hard, and exit with recoverable state.
+
+    Regression test for #44380: ensure the safe update recovery feature correctly
+    handles rebase conflicts by aborting gracefully and leaving local commits
+    accessible via the backup branch, rather than discarding them.
+    """
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True,
+        local_ahead_count="2",
+        rebase_fails=True,
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    # Assert rebase --abort was executed
+    rebase_abort_calls = [c for c in recorded if "rebase" in c and "--abort" in c]
+    assert len(rebase_abort_calls) == 1
+    assert rebase_abort_calls[0] == ["git", "rebase", "--abort"]
+
+    # Assert no reset --hard was executed (local commits must not be discarded)
+    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
+    assert reset_calls == []
+
+    # Assert a backup branch was created
+    backup_branch_calls = [
+        c for c in recorded if c[:2] == ["git", "branch"] and "hermes-local-backup" in " ".join(c)
+    ]
+    assert len(backup_branch_calls) == 1
+
+    # Verify user-facing output mentions backup branch preservation
+    out = capsys.readouterr().out
+    assert "Could not rebase local commits" in out
+    assert "hermes-local-backup" in out
+    assert "local commits are preserved" in out
 
 
 # ---------------------------------------------------------------------------

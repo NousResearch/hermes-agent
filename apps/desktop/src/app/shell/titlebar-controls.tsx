@@ -1,12 +1,15 @@
 import { useStore } from '@nanostores/react'
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
+import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { Check, Cloud, Globe, Loader2, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import { toggleKeybindPanel } from '@/store/keybinds'
@@ -18,6 +21,8 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { notify, notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -46,6 +51,237 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
   onOpenSettings: () => void
 }
 
+interface GatewayToggleProps {
+  activeGatewayProfile: string
+}
+
+export function GatewayToggle({ activeGatewayProfile }: GatewayToggleProps) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const [config, setConfig] = useState<DesktopConnectionConfig | null>(null)
+  const [switching, setSwitching] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    const refreshConfig = async () => {
+      const desktop = window.hermesDesktop
+
+      if (!desktop?.getConnectionConfig) {
+        return
+      }
+
+      try {
+        const cfg = await desktop.getConnectionConfig(activeGatewayProfile)
+
+        setConfig(cfg)
+      } catch (err) {
+        console.error('Failed to get connection config:', err)
+      }
+    }
+
+    void refreshConfig()
+
+    const offConnectionApplied = window.hermesDesktop?.onConnectionApplied?.(() => {
+      void refreshConfig()
+    })
+
+    return () => {
+      offConnectionApplied?.()
+    }
+  }, [activeGatewayProfile])
+
+  const isConfigured = (mode: 'local' | 'remote' | 'cloud') => {
+    if (mode === 'local') {
+      return true
+    }
+
+    if (!config) {
+      return false
+    }
+
+    const hasUrl = Boolean(config.remoteUrl?.trim())
+
+    if (!hasUrl) {
+      return false
+    }
+
+    if (mode === 'remote') {
+      if (config.remoteAuthMode === 'oauth') {
+        return config.remoteOauthConnected
+      }
+
+      return config.remoteTokenSet
+    }
+
+    if (mode === 'cloud') {
+      return config.remoteOauthConnected
+    }
+
+    return false
+  }
+
+  const handleSelectMode = async (mode: 'local' | 'remote' | 'cloud') => {
+    if (config?.mode === mode) {
+      return
+    }
+
+    if (!isConfigured(mode)) {
+      triggerHaptic('warning')
+
+      notify({
+        kind: 'warning',
+        title: t.settings.gateway.incompleteTitle,
+        message: mode === 'cloud'
+          ? t.settings.gateway.cloudNeedsSignIn
+          : (config?.remoteAuthMode === 'oauth'
+            ? t.settings.gateway.incompleteSignIn
+            : t.settings.gateway.incompleteToken)
+      })
+
+      navigate('/settings?tab=gateway')
+
+      return
+    }
+
+    const desktop = window.hermesDesktop
+
+    if (!desktop?.applyConnectionConfig) {
+      return
+    }
+
+    triggerHaptic('tap')
+    setSwitching(true)
+
+    try {
+      const payload = {
+        mode,
+        profile: activeGatewayProfile === 'default' ? undefined : activeGatewayProfile,
+        remoteAuthMode: config?.remoteAuthMode ?? 'token',
+        remoteUrl: config?.remoteUrl ?? '',
+        cloudOrg: config?.cloudOrg ?? ''
+      }
+
+      const next = await desktop.applyConnectionConfig(payload)
+
+      setConfig(next)
+
+      notify({
+        kind: 'success',
+        title: t.settings.gateway.restartingTitle,
+        message: t.settings.gateway.restartingMessage
+      })
+    } catch (err: any) {
+      if (err?.needsOauthLogin && config?.remoteUrl) {
+        try {
+          const result = await desktop.oauthLoginConnectionConfig(config.remoteUrl)
+
+          if (result.connected) {
+            const nextPayload = {
+              mode,
+              profile: activeGatewayProfile === 'default' ? undefined : activeGatewayProfile,
+              remoteAuthMode: 'oauth',
+              remoteUrl: config.remoteUrl,
+              cloudOrg: config.cloudOrg
+            }
+
+            const next = await desktop.applyConnectionConfig(nextPayload)
+
+            setConfig(next)
+
+            notify({
+              kind: 'success',
+              title: t.settings.gateway.restartingTitle,
+              message: t.settings.gateway.restartingMessage
+            })
+          } else {
+            notify({
+              kind: 'warning',
+              title: t.boot.failure.signInIncompleteTitle,
+              message: t.boot.failure.signInIncompleteMessage
+            })
+          }
+        } catch (loginErr) {
+          notifyError(loginErr, t.settings.gateway.signInFailed)
+        }
+      } else {
+        notifyError(err, t.settings.gateway.applyFailed)
+      }
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  const activeMode = config?.mode ?? 'local'
+
+  const icon = useMemo(() => {
+    if (switching) {
+      return <Loader2 className="size-4 animate-spin" />
+    }
+
+    switch (activeMode) {
+      case 'local':
+        return <Monitor className="size-4" />
+
+      case 'cloud':
+        return <Cloud className="size-4" />
+
+      case 'remote':
+        return <Globe className="size-4" />
+
+      default:
+        return <Monitor className="size-4" />
+    }
+  }, [activeMode, switching])
+
+  return (
+    <DropdownMenu onOpenChange={setOpen} open={switching ? false : open}>
+      <Tip label={t.settings.gateway.title}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label={t.settings.gateway.title}
+            className={cn(titlebarButtonClass, 'bg-transparent select-none')}
+            disabled={switching}
+            size="icon-titlebar"
+            type="button"
+            variant="ghost"
+          >
+            {icon}
+          </Button>
+        </DropdownMenuTrigger>
+      </Tip>
+
+      <DropdownMenuContent align="end" className="w-48" side="bottom" sideOffset={8}>
+        <DropdownMenuItem
+          className="gap-2 text-foreground focus:bg-accent [&_svg]:size-4"
+          onClick={() => void handleSelectMode('local')}
+        >
+          <Monitor className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">{t.settings.gateway.localTitle}</span>
+          {activeMode === 'local' && <Check className="ml-auto size-4 shrink-0 text-primary" />}
+        </DropdownMenuItem>
+
+        <DropdownMenuItem
+          className="gap-2 text-foreground focus:bg-accent [&_svg]:size-4"
+          onClick={() => void handleSelectMode('remote')}
+        >
+          <Globe className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">{t.settings.gateway.remoteTitle}</span>
+          {activeMode === 'remote' && <Check className="ml-auto size-4 shrink-0 text-primary" />}
+        </DropdownMenuItem>
+
+        <DropdownMenuItem
+          className="gap-2 text-foreground focus:bg-accent [&_svg]:size-4"
+          onClick={() => void handleSelectMode('cloud')}
+        >
+          <Cloud className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">{t.settings.gateway.cloudTitle}</span>
+          {activeMode === 'cloud' && <Check className="ml-auto size-4 shrink-0 text-primary" />}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
@@ -54,6 +290,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
   const panesFlipped = useStore($panesFlipped)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -190,6 +427,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleSystemToolsBeforeSettings.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
+        <GatewayToggle activeGatewayProfile={activeGatewayProfile} />
         {settingsTool && <TitlebarToolButton navigate={navigate} tool={settingsTool} />}
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
       </div>

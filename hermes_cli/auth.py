@@ -434,6 +434,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "siliconflow": ProviderConfig(
+        id="siliconflow",
+        name="SiliconFlow",
+        auth_type="api_key",
+        inference_base_url="https://api.siliconflow.cn/v1",
+        api_key_env_vars=("SILICONFLOW_API_KEY",),
+        base_url_env_var="SILICONFLOW_BASE_URL",
+    ),
     "azure-foundry": ProviderConfig(
         id="azure-foundry",
         name="Azure Foundry",

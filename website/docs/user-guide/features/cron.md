@@ -512,12 +512,11 @@ Outputs are concatenated in the order listed.
 
 ## Provider recovery
 
-Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
+Cron jobs inherit your configured fallback providers and credential pool rotation. The fallback chain applies at one specific point: if the **primary provider fails authentication while the job's agent is being constructed**, the scheduler walks `fallback_providers` (or the legacy `fallback_model`) from `config.yaml` and constructs the agent with the first provider that resolves. The agent is also constructed with your [credential pool](/user-guide/configuration#credential-pool-strategies), so credential rotation for the same provider applies as configured.
 
-- **Fall back to an alternate provider** if you have `fallback_providers` (or the legacy `fallback_model`) configured in `config.yaml`
-- **Rotate to the next credential** in your [credential pool](/user-guide/configuration#credential-pool-strategies) for the same provider
+A rate limit or usage cap that hits **after** the agent is constructed — for example a plan's quota running out mid-window — is not an authentication failure and does not re-trigger the fallback chain for that run. The run fails and is reported through the job's normal failure delivery; the next scheduled run resolves the provider again.
 
-This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
+For unattended fleets: pin `provider` / `model` per job, monitor the primary provider's quota directly, and treat `fallback_providers` as protection against authentication outages rather than quota exhaustion.
 
 ## Schedule formats
 
@@ -731,6 +730,8 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+`~/.hermes/` is data, not code: `hermes update` replaces the install but does not touch `~/.hermes/cron/jobs.json`, so registered jobs, their schedules, and their pinned providers and models survive updates. If you edit `jobs.json` by hand, back it up first — the file is the scheduler's single source of truth.
 
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 

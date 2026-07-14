@@ -580,9 +580,11 @@ class MemoryStore:
                         f"{pos}: unknown action. Use add, replace, or remove.",
                     )
 
-            # Budget check against the FINAL state only.
+            # Budget check against the FINAL state only. limit == 0 means
+            # unlimited (see add()/replace()) -- skip the check rather than
+            # rejecting every non-empty batch.
             new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
-            if new_total > limit:
+            if limit > 0 and new_total > limit:
                 current = self._char_count(target)
                 return self._consolidation_failure({
                     "success": False,

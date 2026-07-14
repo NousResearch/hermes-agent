@@ -1426,7 +1426,7 @@ display:
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "context_pct", "cwd"]  # also: provider, account, context, quota; optional underline: true
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
@@ -1473,24 +1473,48 @@ Tool progress requires a gateway adapter that can display progress updates safel
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. Off by default so replies stay clean; opt in when you want every gateway reply to carry provenance such as model, provider, account, context usage, or remaining quota.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
+    fields: ["provider", "account", "model", "context", "quota"]
+    underline: true
 ```
 
-The `/footer` slash command toggles this at runtime in any session.
+Supported `fields` (order is preserved; omit any field to hide it):
 
-Example footer appended to a Telegram/Discord/Slack reply:
+| Field | What it shows |
+|-------|---------------|
+| `model` | Model id used for the turn |
+| `provider` | Provider / auth path that served the turn |
+| `account` | Compact account/plan label when available |
+| `context` | Absolute context usage (`used/limit`) |
+| `context_pct` | Context usage as a percentage |
+| `quota` | Compact remaining quota windows returned by the provider |
+| `cwd` | Working directory, with `$HOME` collapsed to `~` |
+
+Notes:
+
+- Default fields remain `["model", "context_pct", "cwd"]` when `fields` is unset.
+- `underline: true` prepends a short separator line before the footer.
+- `quota` only renders windows a provider actually returns; providers without usage APIs stay silent for that field.
+- Account/quota lookups use the exact runtime credential that served the turn, so credential-pool rotation does not show another account's limits.
+- Quota results are cached briefly per credential so footer rendering does not hit provider usage APIs on every message.
+- Unknown field names are ignored.
+- Per-platform overrides live under `display.platforms.<platform>.runtime_footer`.
+
+The `/footer` slash command toggles the global footer setting at runtime in any session (`on|off|status`).
+
+Example footer appended to a Telegram/Discord/Slack/Feishu reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+──────────────
+xai-oauth · lance*** · grok-4.5 · ctx 18.2k/256k · 5h 72% · 7d 41%
 ```
 
-Only the **final** message of a turn gets the footer; interim updates stay clean.
+Only the **final** message of a turn gets the footer; interim updates stay clean. When streaming already delivered the final text piecemeal, the footer may be sent as a separate trailing message.
 
 ### Per-platform progress overrides
 

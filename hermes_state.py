@@ -5330,6 +5330,17 @@ class SessionDB:
     # Export and cleanup
     # =========================================================================
 
+    def _get_session_lineage_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Like get_session but only fetches the 4 columns needed by lineage traversal."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, parent_session_id, end_reason, model_config "
+                "FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        return dict(row) if row else None
+
     def _is_branch_child_row(self, session: Dict[str, Any]) -> bool:
         raw = session.get("model_config")
         if not raw:
@@ -5344,18 +5355,18 @@ class SessionDB:
         parent_id = child.get("parent_session_id")
         if not parent_id or self._is_branch_child_row(child):
             return False
-        parent = self.get_session(parent_id)
+        parent = self._get_session_lineage_row(parent_id)
         return bool(parent and parent.get("end_reason") == "compression")
 
     def get_compression_lineage(self, session_id: str) -> List[str]:
         """Return compression ancestors through tip in chronological order."""
-        session = self.get_session(session_id)
+        session = self._get_session_lineage_row(session_id)
         if not session or self._is_branch_child_row(session):
             return [session_id] if session else []
 
         root = session
         while self._is_compression_child_row(root):
-            parent = self.get_session(root["parent_session_id"])
+            parent = self._get_session_lineage_row(root["parent_session_id"])
             if not parent:
                 break
             root = parent
@@ -5366,7 +5377,8 @@ class SessionDB:
             with self._lock:
                 rows = self._conn.execute(
                     """
-                    SELECT * FROM sessions
+                    SELECT id, parent_session_id, end_reason, model_config
+                    FROM sessions
                     WHERE parent_session_id = ?
                     ORDER BY started_at ASC
                     """,

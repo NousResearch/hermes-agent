@@ -52,14 +52,6 @@ _SENSITIVE_RUNTIME_EVALUATE_PATTERNS = (
         r"\b(?:window|globalThis)\s*\[\s*['\"`](?:localStorage|sessionStorage)['\"`]\s*\]",
         re.IGNORECASE,
     ),
-    re.compile(
-        r"\b(?:(?:window|globalThis|self)\s*(?:\?\s*)?\.\s*)?(?:indexedDB|caches|CacheStorage)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:window|globalThis|self)\s*(?:\?\s*\.)?\s*\[\s*['\"`](?:indexedDB|caches|CacheStorage)['\"`]\s*\]",
-        re.IGNORECASE,
-    ),
 )
 _JS_IDENTIFIER_STRING_CONCAT_RE = re.compile(
     r"(['\"`])([A-Za-z_$][A-Za-z0-9_$]*)\1\s*\+\s*(['\"`])([A-Za-z_$][A-Za-z0-9_$]*)\3"
@@ -247,10 +239,7 @@ def _sensitive_cdp_access_reason(method: str, params: Dict[str, Any]) -> Optiona
         source = None
 
     if isinstance(source, str) and _runtime_source_reads_sensitive_state(source):
-        return (
-            f"{method} source reads document.cookie/localStorage/"
-            "sessionStorage/indexedDB/caches"
-        )
+        return f"{method} source reads document.cookie/localStorage/sessionStorage"
 
     return None
 

@@ -98,13 +98,27 @@ def _warn_if_gateway_not_running() -> None:
 
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
-    from cron.jobs import list_jobs
+    from cron.jobs import find_unsatisfiable_repeat_jobs, list_jobs
 
     jobs = list_jobs(include_disabled=show_all)
 
     if not jobs:
         print(color("No scheduled jobs.", Colors.DIM))
         print(color("Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
+        # Still surface stuck legacy jobs even if none are "active".
+        warnings = find_unsatisfiable_repeat_jobs()
+        if warnings:
+            print()
+            print(color(
+                f"⚠ {len(warnings)} job(s) have unsatisfiable one-shot+repeat "
+                "(e.g. completed at 1/N). Use 'every …' for finite periodic runs.",
+                Colors.YELLOW,
+            ))
+            for w in warnings:
+                print(color(
+                    f"  - {w.get('job_id')} {w.get('name')}: {w.get('warning')}",
+                    Colors.YELLOW,
+                ))
         return
 
     print()
@@ -178,6 +192,20 @@ def cron_list(show_all: bool = False):
         if delivery_err:
             print(f"    {color('⚠ Delivery failed:', Colors.YELLOW)} {delivery_err}")
 
+        print()
+
+    warnings = find_unsatisfiable_repeat_jobs()
+    if warnings:
+        print(color(
+            f"⚠ {len(warnings)} job(s) have unsatisfiable one-shot+repeat "
+            "(e.g. completed at 1/N). Use 'every …' for finite periodic runs.",
+            Colors.YELLOW,
+        ))
+        for w in warnings:
+            print(color(
+                f"  - {w.get('job_id')} {w.get('name')}: {w.get('warning')}",
+                Colors.YELLOW,
+            ))
         print()
 
     _warn_if_gateway_not_running()
@@ -317,6 +345,11 @@ def cron_create(args):
     print(color(f"Created job: {result['job_id']}", Colors.GREEN))
     print(f"  Name: {result['name']}")
     print(f"  Schedule: {result['schedule']}")
+    if result.get("semantics"):
+        print(f"  Semantics: {result['semantics']}")
+    if result.get("expected_next_ticks"):
+        ticks = result["expected_next_ticks"]
+        print(f"  Next ticks: {', '.join(ticks)}")
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
@@ -326,6 +359,8 @@ def cron_create(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
+    if result.get("repeat"):
+        print(f"  Repeat: {result['repeat']}")
     print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0

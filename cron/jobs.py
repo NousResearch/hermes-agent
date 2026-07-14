@@ -473,6 +473,162 @@ def parse_duration(s: str) -> int:
     return value * multipliers[unit]
 
 
+def validate_repeat_for_schedule(
+    schedule: Dict[str, Any],
+    times: Optional[int],
+) -> None:
+    """Reject schedule+repeat combinations that can never satisfy the count.
+
+    Bare relative durations (``20m``, ``2h``) and ISO timestamps are one-shot
+    delays (``kind == "once"``). They fire at most once, so ``repeat > 1`` can
+    never complete N times — the scheduler runs once, records ``1/N``, then
+    marks the job completed with no ``next_run_at`` (HARNESS-P1 / fleet-update
+    drop). Recurring forms (``every 20m``, cron expressions) support finite
+    ``repeat`` correctly.
+
+    ``times is None`` means forever (recurring only). ``times <= 1`` is fine
+    for one-shots. Callers should normalize ``repeat <= 0`` to ``None`` first.
+    """
+    if times is None or times <= 1:
+        return
+    kind = (schedule or {}).get("kind")
+    if kind != "once":
+        return
+    display = (
+        (schedule or {}).get("display")
+        or (schedule or {}).get("run_at")
+        or "once"
+    )
+    raise ValueError(
+        f"repeat={times} cannot be satisfied by one-shot schedule ({display}). "
+        "Bare relative durations like '20m'/'2h' and ISO timestamps are one-shot "
+        "delays, not intervals. Use 'every 20m' (or a cron expression) with "
+        f"repeat={times} for N periodic executions, or omit/set repeat=1 for a "
+        "single run."
+    )
+
+
+def describe_schedule_semantics(
+    schedule: Dict[str, Any],
+    times: Optional[int] = None,
+) -> str:
+    """Human-readable interpretation of a parsed schedule + optional repeat."""
+    schedule = schedule or {}
+    kind = schedule.get("kind")
+    display = schedule.get("display") or kind or "unknown"
+    if kind == "once":
+        return (
+            f"one-shot ({display}); fires once then completes "
+            "(not an interval — use 'every …' for recurring)"
+        )
+    if kind == "interval":
+        base = f"recurring interval ({display})"
+    elif kind == "cron":
+        base = f"recurring cron ({display})"
+    else:
+        base = f"schedule ({display})"
+    if times is None:
+        return f"{base}; runs forever until removed/paused"
+    if times == 1:
+        return f"{base}; runs once then auto-removes"
+    return f"{base}; finite repeat {times} times then auto-removes"
+
+
+def preview_next_runs(
+    schedule: Dict[str, Any],
+    n: int = 2,
+    last_run_at: Optional[str] = None,
+) -> List[str]:
+    """Return up to ``n`` expected next fire timestamps for a schedule.
+
+    Used by tool/CLI responses so callers see the interpreted semantics
+    (e.g. one-shot has one tick; ``every 20m`` has two successive ticks).
+    """
+    if n <= 0:
+        return []
+    ticks: List[str] = []
+    cursor = last_run_at
+    for _ in range(n):
+        nxt = compute_next_run(schedule, cursor)
+        if not nxt:
+            break
+        ticks.append(nxt)
+        # Advance the cursor so the next preview tick is after this one.
+        # For one-shots, a non-None last_run makes compute_next_run return None.
+        cursor = nxt
+    return ticks
+
+
+def find_unsatisfiable_repeat_jobs(
+    jobs: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Operator diagnostic: jobs whose schedule can never reach repeat N.
+
+    Detects the stuck ``1/N`` completed shape from one-shot + ``repeat>1``
+    (and any still-scheduled legacy jobs with that illegal combo). Safe /
+    read-only — does not mutate the job store. Existing jobs are preserved
+    for migration compatibility; this only surfaces warnings.
+    """
+    if jobs is None:
+        jobs = load_jobs()
+    issues: List[Dict[str, Any]] = []
+    for job in jobs:
+        schedule = job.get("schedule") or {}
+        repeat = job.get("repeat") or {}
+        times = repeat.get("times")
+        if times is None or times <= 1:
+            continue
+        kind = schedule.get("kind")
+        completed = int(repeat.get("completed") or 0)
+        state = job.get("state") or (
+            "scheduled" if job.get("enabled", True) else "paused"
+        )
+        if kind == "once":
+            issues.append(
+                {
+                    "job_id": job.get("id"),
+                    "name": job.get("name"),
+                    "schedule": job.get("schedule_display")
+                    or schedule.get("display")
+                    or kind,
+                    "completed": completed,
+                    "times": times,
+                    "state": state,
+                    "enabled": job.get("enabled", True),
+                    "warning": (
+                        f"one-shot schedule cannot satisfy repeat "
+                        f"{completed}/{times}; use 'every …' (or a cron "
+                        "expression) for N periodic executions"
+                    ),
+                }
+            )
+        elif (
+            state == "completed"
+            and completed > 0
+            and completed < times
+            and not job.get("next_run_at")
+        ):
+            # Defensive: completed early with remaining count and no next tick.
+            issues.append(
+                {
+                    "job_id": job.get("id"),
+                    "name": job.get("name"),
+                    "schedule": job.get("schedule_display")
+                    or schedule.get("display")
+                    or kind,
+                    "completed": completed,
+                    "times": times,
+                    "state": state,
+                    "enabled": job.get("enabled", True),
+                    "warning": (
+                        f"job completed at {completed}/{times} with no "
+                        "next_run_at — finite repeat was not fully satisfied"
+                    ),
+                }
+            )
+    return issues
+
+
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     Parse schedule string into structured format.
@@ -484,12 +640,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         - For "cron": "expr" (cron expression)
     
     Examples:
-        "30m"              → once in 30 minutes
+        "30m"              → once in 30 minutes  (NOT every 30 minutes)
         "2h"               → once in 2 hours
         "every 30m"        → recurring every 30 minutes
         "every 2h"         → recurring every 2 hours
         "0 9 * * *"        → cron expression
         "2026-02-03T14:00" → once at timestamp
+
+    Note: bare relative durations are one-shot delays. For N periodic
+    executions use ``every 30m`` (or a cron expression) with ``repeat=N``.
     """
     schedule = schedule.strip()
     original = schedule
@@ -1106,6 +1265,10 @@ def create_job(
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
+    # Reject one-shot + repeat>1 before anything is persisted. Bare '20m' is a
+    # one-shot delay; it can never satisfy N periodic executions (HARNESS-P1).
+    validate_repeat_for_schedule(parsed_schedule, repeat)
+
     # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
@@ -1357,6 +1520,37 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                             f"{ONESHOT_GRACE_SECONDS}s in the past and cannot be scheduled."
                         )
                     updated["next_run_at"] = updated_next_run
+
+            # Reject one-shot + repeat>1 on update too (schedule and/or repeat
+            # may have changed independently). Normalize repeat<=0 like create.
+            if "repeat" in updates or schedule_changed:
+                repeat_state = updated.get("repeat")
+                if not isinstance(repeat_state, dict):
+                    repeat_state = {"times": None, "completed": 0}
+                times = repeat_state.get("times")
+                if times is not None and isinstance(times, (int, float)) and times <= 0:
+                    times = None
+                    repeat_state = {**repeat_state, "times": None}
+                    updated["repeat"] = repeat_state
+                # One-shots default to repeat=1 when times is unset so we
+                # don't leave a forever-once ghost after schedule edits.
+                if (
+                    (updated.get("schedule") or {}).get("kind") == "once"
+                    and times is None
+                ):
+                    times = 1
+                    updated["repeat"] = {
+                        **repeat_state,
+                        "times": 1,
+                        "completed": int(repeat_state.get("completed") or 0),
+                    }
+                else:
+                    updated["repeat"] = {
+                        **repeat_state,
+                        "times": times,
+                        "completed": int(repeat_state.get("completed") or 0),
+                    }
+                validate_repeat_for_schedule(updated.get("schedule") or {}, times)
 
             if inference_fields_changed:
                 provider_snapshot, model_snapshot = _compute_provider_model_snapshots(

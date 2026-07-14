@@ -563,16 +563,30 @@ every 1d     → Every day
 | Interval (`every 2h`) | forever | Runs until removed |
 | Cron expression | forever | Runs until removed |
 
-You can override it:
+**Important:** bare relative durations (`20m`, `2h`) are **one-shot delays**, not
+intervals. They are not the same as `every 20m`. Requesting `repeat > 1` with a
+one-shot schedule is rejected at create/update time, because a one-shot can never
+satisfy N periodic executions (it would otherwise run once, record `1/N`, and
+complete with no `next_run_at`).
+
+You can override the default for recurring schedules:
 
 ```python
+# Correct: 8 runs every 20 minutes
 cronjob(
     action="create",
     prompt="...",
-    schedule="every 2h",
-    repeat=5,
+    schedule="every 20m",
+    repeat=8,
 )
+
+# Wrong (rejected): bare '20m' is one-shot, cannot repeat 8 times
+# cronjob(action="create", prompt="...", schedule="20m", repeat=8)
 ```
+
+`hermes cron list` and `cronjob(action='list')` also warn about any legacy jobs
+stuck at `1/N` completed with a one-shot schedule (migration-safe diagnostic;
+existing jobs are not auto-deleted).
 
 ## Managing jobs programmatically
 

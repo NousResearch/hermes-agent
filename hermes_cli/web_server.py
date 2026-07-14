@@ -15626,6 +15626,352 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     from hermes_cli.dashboard_auth.prefix import normalise_prefix
     return normalise_prefix(raw)
 
+# ===========================================================================
+# Rule-Injector API Routes
+# ===========================================================================
+# These routes were originally in a separate fragment. They provide CRUD
+# operations for the rule-injector plugin's rules.json via the dashboard API.
+
+import uuid as _ri_uuid
+
+class _RuleInjectorTriggerBase(BaseModel):
+    """Base model for trigger configuration."""
+    type: str  # keyword | regex | tool_name | tool_result_contains | result_truncated | empty_result | attempt_count | post_compaction | compound | result_contains_keywords | semantic | keyword_flexible
+    scope: Optional[str] = "latest_user_message"
+    keywords: Optional[List[str]] = None
+    patterns: Optional[List[str]] = None
+    tool_names: Optional[List[str]] = None
+    match_all: Optional[bool] = False
+    case_insensitive: Optional[bool] = True
+    min_attempts: Optional[int] = 0
+    exclude_if_skill_loaded: Optional[List[str]] = None
+    result_truncated: Optional[bool] = False
+    empty_result: Optional[bool] = False
+    result_contains_keywords: Optional[List[str]] = None
+    conditions: Optional[List[Dict[str, Any]]] = None
+    # Semantic matching fields
+    references: Optional[List[str]] = None  # reference phrases for semantic similarity
+    threshold: Optional[float] = 0.75  # cosine similarity threshold (0-1)
+    operator: Optional[str] = "and"  # compound operator: "and" | "or"
+
+
+class _RuleInjectorInjectBase(BaseModel):
+    """Base model for injection content."""
+    context: Optional[str] = None
+    result_suffix: Optional[str] = None
+    message: Optional[str] = None
+
+
+class _RuleInjectorRuleBase(BaseModel):
+    """Base model for rule-injector rules."""
+    id: Optional[str] = None
+    name: str
+    description: str = ""
+    enabled: bool = True
+    hook: str = "pre_llm_call"  # pre_llm_call | transform_tool_result | pre_verify
+    priority: int = 10
+    trigger: Dict[str, Any] = {}
+    inject: Dict[str, Any] = {}
+
+
+class _RuleInjectorRuleCreate(_RuleInjectorRuleBase):
+    pass
+
+
+class _RuleInjectorRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    hook: Optional[str] = None
+    priority: Optional[int] = None
+    trigger: Optional[Dict[str, Any]] = None
+    inject: Optional[Dict[str, Any]] = None
+
+
+def _get_rules_path() -> Path:
+    """Get the path to the rule-injector rules.json file."""
+    return Path(get_hermes_home()) / "plugins" / "rule-injector" / "rules.json"
+
+
+def _load_rules_file() -> dict:
+    """Load rules from the JSON file."""
+    path = _get_rules_path()
+    if not path.exists():
+        return {"version": 1, "rules": []}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {"version": 1, "rules": []}
+
+
+def _save_rules_file(data: dict):
+    """Atomic save to rules.json."""
+    path = _get_rules_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+
+
+def _validate_trigger_for_hook(hook: str, trigger: dict) -> None:
+    """Validate that trigger type is compatible with the hook."""
+    trigger_type = trigger.get("type", "keyword")
+    valid_for_hook = {
+        "pre_llm_call": {"keyword", "regex", "attempt_count", "post_compaction", "compound", "semantic", "keyword_flexible"},
+        "transform_tool_result": {"tool_name", "tool_result_contains", "result_truncated", "empty_result", "result_contains_keywords", "compound", "semantic", "keyword_flexible"},
+        "pre_verify": {"keyword", "attempt_count", "compound", "semantic", "keyword_flexible"},
+    }
+    if hook not in valid_for_hook:
+        raise HTTPException(status_code=400, detail=f"Unknown hook: {hook}")
+    if trigger_type not in valid_for_hook[hook]:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Trigger type '{trigger_type}' not valid for hook '{hook}'. Valid: {valid_for_hook[hook]}"
+        )
+
+
+@app.get("/api/rule-injector/rules")
+async def get_rule_injector_rules(request: Request):
+    """List all rule-injector rules."""
+    _require_token(request)
+    data = _load_rules_file()
+    return {"ok": True, "rules": data.get("rules", [])}
+
+
+@app.post("/api/rule-injector/rules")
+async def create_rule_injector_rule(request: Request, body: _RuleInjectorRuleCreate):
+    """Create a new rule."""
+    _require_token(request)
+    
+    # Validate trigger compatibility with hook
+    if body.trigger:
+        _validate_trigger_for_hook(body.hook, body.trigger)
+    
+    data = _load_rules_file()
+    rules = data.get("rules", [])
+
+    # Generate ID if not provided
+    rule_id = body.id or str(_ri_uuid.uuid4())[:8]
+    # Ensure unique
+    if any(r.get("id") == rule_id for r in rules):
+        raise HTTPException(status_code=400, detail="Rule ID already exists")
+
+    now = datetime.utcnow().isoformat() + "Z"
+    rule = {
+        "id": rule_id,
+        "name": body.name,
+        "description": body.description,
+        "enabled": body.enabled,
+        "hook": body.hook,
+        "priority": body.priority,
+        "trigger": body.trigger,
+        "inject": body.inject,
+        "created_at": now,
+        "updated_at": now,
+    }
+    rules.append(rule)
+    data["rules"] = rules
+    _save_rules_file(data)
+    return {"ok": True, "rule": rule}
+
+
+@app.put("/api/rule-injector/rules/{rule_id}")
+async def update_rule_injector_rule(request: Request, rule_id: str, body: _RuleInjectorRuleUpdate):
+    """Update an existing rule."""
+    _require_token(request)
+    data = _load_rules_file()
+    rules = data.get("rules", [])
+
+    for i, rule in enumerate(rules):
+        if rule.get("id") == rule_id:
+            update_data = body.dict(exclude_unset=True)
+            
+            # Validate trigger if being updated
+            if "trigger" in update_data and "hook" in update_data:
+                _validate_trigger_for_hook(update_data["hook"], update_data["trigger"])
+            elif "trigger" in update_data:
+                _validate_trigger_for_hook(rule["hook"], update_data["trigger"])
+            
+            for key, value in update_data.items():
+                rule[key] = value
+            rule["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            rules[i] = rule
+            data["rules"] = rules
+            _save_rules_file(data)
+            return {"ok": True, "rule": rule}
+
+    raise HTTPException(status_code=404, detail="Rule not found")
+
+
+@app.delete("/api/rule-injector/rules/{rule_id}")
+async def delete_rule_injector_rule(request: Request, rule_id: str):
+    """Delete a rule."""
+    _require_token(request)
+    data = _load_rules_file()
+    rules = data.get("rules", [])
+
+    original_len = len(rules)
+    rules = [r for r in rules if r.get("id") != rule_id]
+    if len(rules) == original_len:
+        raise HTTPException(status_code=404, detail="Rule not found")
+
+    data["rules"] = rules
+    _save_rules_file(data)
+    return {"ok": True, "deleted_id": rule_id}
+
+
+@app.patch("/api/rule-injector/rules/{rule_id}/toggle")
+async def toggle_rule_injector_rule(request: Request, rule_id: str):
+    """Toggle a rule's enabled state without deleting it."""
+    _require_token(request)
+    data = _load_rules_file()
+    rules = data.get("rules", [])
+
+    for i, rule in enumerate(rules):
+        if rule.get("id") == rule_id:
+            rule["enabled"] = not rule.get("enabled", True)
+            rule["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            rules[i] = rule
+            data["rules"] = rules
+            _save_rules_file(data)
+            return {"ok": True, "rule": rule}
+
+    raise HTTPException(status_code=404, detail="Rule not found")
+
+
+@app.get("/api/rule-injector/export")
+async def export_rule_injector_rules(request: Request):
+    """Export all rules as JSON for backup/import."""
+    _require_token(request)
+    data = _load_rules_file()
+    return {"ok": True, "export": data, "count": len(data.get("rules", []))}
+
+
+@app.post("/api/rule-injector/import")
+async def import_rule_injector_rules(request: Request):
+    """Import rules from exported JSON. Supports merge or replace mode."""
+    _require_token(request)
+    body = await request.json()
+    
+    import_data = body.get("export")
+    if not import_data:
+        raise HTTPException(status_code=400, detail="Missing 'export' field")
+    
+    mode = body.get("mode", "merge")  # merge or replace
+    
+    if not isinstance(import_data, dict) or "rules" not in import_data:
+        raise HTTPException(status_code=400, detail="Invalid export format")
+    
+    current_data = _load_rules_file()
+    current_rules = current_data.get("rules", [])
+    import_rules = import_data.get("rules", [])
+    
+    if mode == "replace":
+        new_rules = import_rules
+    else:
+        # Merge: update existing by ID, add new
+        current_by_id = {r["id"]: r for r in current_rules}
+        for r in import_rules:
+            current_by_id[r["id"]] = r
+        new_rules = list(current_by_id.values())
+    
+    # Validate all rules
+    for r in new_rules:
+        if r.get("trigger"):
+            _validate_trigger_for_hook(r["hook"], r["trigger"])
+    
+    current_data["rules"] = new_rules
+    current_data["version"] = import_data.get("version", 1)
+    _save_rules_file(current_data)
+    
+    return {"ok": True, "count": len(new_rules), "mode": mode}
+
+
+@app.get("/api/rule-injector/trigger-types")
+async def get_trigger_types(request: Request):
+    """Get available trigger types per hook for dashboard form generation."""
+    _require_token(request)
+    
+    trigger_types = {
+        "pre_llm_call": [
+            {"value": "keyword", "label": "Keyword Match", "description": "Match keywords in user message or context"},
+            {"value": "regex", "label": "Regex Match", "description": "Match regex patterns"},
+            {"value": "attempt_count", "label": "Attempt Count", "description": "Fire after N fix attempts on same problem"},
+            {"value": "post_compaction", "label": "Post Compaction", "description": "Fire after conversation compaction"},
+            {"value": "compound", "label": "Compound (AND/OR)", "description": "Combine multiple sub-conditions with AND or OR logic"},
+            {"value": "semantic", "label": "Semantic Match", "description": "Match using sentence-transformer embeddings (cosine similarity ≥ threshold)"},
+            {"value": "keyword_flexible", "label": "Keyword (Flexible)", "description": "Substring match without word boundaries — works in JSON/tool results"},
+        ],
+        "transform_tool_result": [
+            {"value": "tool_name", "label": "Tool Name", "description": "Fire when specific tool is called"},
+            {"value": "tool_result_contains", "label": "Tool Result Contains", "description": "Match keywords in tool output"},
+            {"value": "result_truncated", "label": "File Truncated", "description": "Fire when read_file returns truncated result"},
+            {"value": "empty_result", "label": "Empty Result", "description": "Fire when tool returns empty/zero results"},
+            {"value": "result_contains_keywords", "label": "Result Has Keywords", "description": "Match source code keywords in result"},
+            {"value": "compound", "label": "Compound (AND/OR)", "description": "Combine multiple sub-conditions with AND or OR logic"},
+            {"value": "semantic", "label": "Semantic Match", "description": "Match using sentence-transformer embeddings (cosine similarity ≥ threshold)"},
+            {"value": "keyword_flexible", "label": "Keyword (Flexible)", "description": "Substring match without word boundaries — works in JSON/tool results"},
+        ],
+        "pre_verify": [
+            {"value": "keyword", "label": "Keyword Match", "description": "Match keywords in recent context"},
+            {"value": "attempt_count", "label": "Attempt Count", "description": "Fire after N fix attempts"},
+            {"value": "compound", "label": "Compound (AND/OR)", "description": "Combine multiple sub-conditions with AND or OR logic"},
+            {"value": "semantic", "label": "Semantic Match", "description": "Match using sentence-transformer embeddings (cosine similarity ≥ threshold)"},
+            {"value": "keyword_flexible", "label": "Keyword (Flexible)", "description": "Substring match without word boundaries — works in JSON/tool results"},
+        ],
+    }
+    
+    return {"ok": True, "trigger_types": trigger_types}
+
+
+@app.post("/api/rule-injector/reorder")
+async def reorder_rule_injector_rules(request: Request):
+    """Reorder rules by priority (batch update)."""
+    _require_token(request)
+    body = await request.json()
+    
+    updates = body.get("rules", [])
+    if not isinstance(updates, list):
+        raise HTTPException(status_code=400, detail="Expected 'rules' array")
+    
+    data = _load_rules_file()
+    rules = data.get("rules", [])
+    rules_by_id = {r["id"]: r for r in rules}
+    
+    for update in updates:
+        rule_id = update.get("id")
+        priority = update.get("priority")
+        if rule_id in rules_by_id and priority is not None:
+            rules_by_id[rule_id]["priority"] = priority
+            rules_by_id[rule_id]["updated_at"] = datetime.utcnow().isoformat() + "Z"
+    
+    data["rules"] = list(rules_by_id.values())
+    _save_rules_file(data)
+    return {"ok": True, "count": len(rules_by_id)}
+
+# Serve the standalone rule-injector dashboard HTML with token injection
+@app.get("/rule-injector")
+async def serve_rule_injector_dashboard(request: Request):
+    """Serve the standalone rule-injector.html with session token injected."""
+    ri_path = WEB_DIST / "rule-injector.html"
+    if not ri_path.exists():
+        raise HTTPException(status_code=404, detail="rule-injector.html not found")
+    html = ri_path.read_text(encoding="utf-8")
+    # Inject the session token so the standalone page can authenticate API calls
+    token = _SESSION_TOKEN
+    bootstrap = f'<script>window.__HERMES_SESSION_TOKEN__="{token}";</script>'
+    html = html.replace("</head>", f"{bootstrap}</head>", 1)
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+
+
 
 def mount_spa(application: FastAPI):
     """Mount the built SPA. Falls back to index.html for client-side routing.

@@ -698,6 +698,110 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "npm install -g agent-browser && agent-browser install" in out
 
 
+def _doctor_env_for_agent_browser(monkeypatch, tmp_path):
+    """Shared non-Termux fixture setup for the agent-browser npx-resolution
+    branch in run_doctor (hermes_cli/doctor.py ~1557-1605)."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(
+        doctor_mod.shutil,
+        "which",
+        lambda cmd: "/usr/bin/node" if cmd in {"node", "npm"} else None,
+    )
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+
+def test_run_doctor_reports_agent_browser_resolves_via_npx(monkeypatch, tmp_path):
+    """When agent-browser has no local/global install, _find_agent_browser
+    falls through to 'npx agent-browser' — doctor must report that as OK
+    (#43564: agent-browser is no longer a root package.json dependency, so
+    this is the expected common case now, not a warning)."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    warm_calls = []
+    monkeypatch.setattr(
+        bt, "warm_agent_browser_npx_cache", lambda *a, **kw: warm_calls.append(1) or True
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "agent-browser" in out
+    assert "resolves via npx on first use" in out
+    assert "agent-browser not installed" not in out
+    # --fix was not requested: the warm-up must not fire on a plain check.
+    assert not warm_calls
+
+
+def test_run_doctor_fix_warms_npx_cache_when_agent_browser_resolves_via_npx(
+    monkeypatch, tmp_path
+):
+    """`hermes doctor --fix` must actually call warm_agent_browser_npx_cache()
+    when agent-browser resolves via npx, and report success."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    warm_calls = []
+    monkeypatch.setattr(
+        bt, "warm_agent_browser_npx_cache", lambda *a, **kw: warm_calls.append(1) or True
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert warm_calls, "warm_agent_browser_npx_cache() must be called under --fix"
+    assert "Warmed npx cache for agent-browser" in out
+    assert "Could not warm npx cache" not in out
+
+
+def test_run_doctor_fix_reports_when_npx_warmup_fails(monkeypatch, tmp_path):
+    """If warm_agent_browser_npx_cache() fails (offline, npx missing from
+    PATH at call time, etc.), doctor must say so instead of silently
+    claiming success — and must not count it as a fix."""
+    _doctor_env_for_agent_browser(monkeypatch, tmp_path)
+
+    import tools.browser_tool as bt
+    monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+    monkeypatch.setattr(bt, "warm_agent_browser_npx_cache", lambda *a, **kw: False)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=True))
+    out = buf.getvalue()
+
+    assert "Could not warm npx cache (offline or npx unavailable)" in out
+    assert "Warmed npx cache for agent-browser" not in out
+
+
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

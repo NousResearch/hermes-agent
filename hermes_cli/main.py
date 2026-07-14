@@ -6984,8 +6984,8 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    node_failures = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
+    node_failures = _update_node_dependencies()
 
     # Sync skills
     try:
@@ -9203,12 +9203,13 @@ def _npm_manifest_paths() -> tuple[Path, ...]:
 
     The workspace list is pulled from the root package.json's `workspaces`
     globs (npm's own source of truth) rather than hardcoded, so adding a
-    workspace can never silently escape the skip key. The root install
-    (step 1, --workspaces=false) still hoists shared deps for EVERY
-    workspace — desktop included — so all of them belong in the key, not
-    just the ones step 2 installs. Falls back to hashing just root
-    manifests if package.json is unreadable (never skips more than main
-    would have installed).
+    workspace can never silently escape the skip key. Every workspace
+    manifest belongs in the key — desktop included, even though the
+    install only names ui-tui and web — because the single lockfile spans
+    the whole workspace graph, so any manifest edit can put the lockfile
+    out of sync and change what the install must do. Falls back to hashing
+    just root manifests if package.json is unreadable (never skips more
+    than main would have installed).
     """
     root_pkg = PROJECT_ROOT / "package.json"
     paths = [PROJECT_ROOT / "package-lock.json", root_pkg]
@@ -9334,7 +9335,7 @@ def _resolve_node_runtime_npm() -> str | None:
 
 
 def _update_node_dependencies() -> list[str]:
-    """Refresh Node deps in the repo root and update workspaces.
+    """Refresh Node deps for the ui-tui and web workspaces.
 
     Returns the list of labels whose npm install failed (empty on success),
     so the caller can treat a Node refresh failure as a partial update rather
@@ -9356,7 +9357,7 @@ def _update_node_dependencies() -> list[str]:
             print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
             print("    Install Node.js inside the WSL distro (nvm, or your distro's")
             print("    package manager), then re-run `hermes update`.")
-            failed = ["repo root"]
+            failed = []
             if any(
                 (PROJECT_ROOT / workspace / "package.json").exists()
                 for workspace in ("ui-tui", "web")
@@ -9375,12 +9376,15 @@ def _update_node_dependencies() -> list[str]:
         logger.info("npm lockfile unchanged, skipping npm install")
         return []
 
-    # With a single workspace lockfile the root install would cover ALL
-    # workspaces — but apps/desktop pulls in Electron as a devDependency,
-    # and its postinstall downloads a ~200MB binary.  Most users don't
-    # need desktop during `hermes update`, so we install root-only first
-    # then add just the workspaces the CLI/TUI/web build actually requires.
-    # Desktop deps are installed on demand by the desktop launcher
+    # Root package.json has no dependencies of its own (agent-browser and
+    # @streamdown/math were moved out — see #43564): agent-browser resolves
+    # at runtime via `npx agent-browser` (tools/browser_tool.py), and
+    # @streamdown/math is a desktop-only import now declared in
+    # apps/desktop/package.json. That means a plain workspace-scoped install
+    # can never prune anything root-only, so we only need to name the
+    # workspaces the CLI/TUI/web build actually requires. apps/desktop pulls
+    # in Electron as a devDependency with a ~200MB postinstall download, so
+    # it's deliberately never named here — desktop deps install on demand
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
 
@@ -9391,53 +9395,50 @@ def _update_node_dependencies() -> list[str]:
         print("    deps). Fix npm and re-run `hermes update`.")
         return list(labels)
 
-    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+    install_args = [
+        "--no-fund", "--no-audit", "--progress=false",
+        "--workspace", "ui-tui", "--workspace", "web",
+    ]
 
     from hermes_constants import with_hermes_node_path
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
-    # Step 1: root install (no workspace recursion).
     # NOTE: capture_output=False here is deliberate (#18840) — optional
-    # postinstall scripts (e.g. @askjo/camofox-browser's browser-binary fetch)
-    # print download progress, and capturing it makes a long download look
-    # hung. The chatty npm-deprecation noise during `hermes update` comes from
-    # the *desktop* build, not this step; that one is captured to update.log.
-    root_args = [*extra_args, "--workspaces=false"]
-    root_result = _run_npm_install_deterministic(
+    # postinstall scripts print download progress, and capturing it makes a
+    # long download look hung. The chatty npm-deprecation noise during
+    # `hermes update` comes from the *desktop* build, not this step; that
+    # one is captured to update.log.
+    result = _run_npm_install_deterministic(
         npm,
         PROJECT_ROOT,
-        extra_args=tuple(root_args),
+        extra_args=tuple(install_args),
         capture_output=False,
         env=nixos_env,
     )
-    if root_result.returncode != 0:
-        print("  ⚠ npm install failed in repo root")
-        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
+    if result.returncode == 0:
+        _record_npm_lockfile_hash(shared_hermes_root)
+        print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
+        failures: list[str] = []
+    else:
+        print("  ⚠ npm install failed")
+        stderr = (result.stderr or "").strip() if result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        return _partial_update_failure("repo root")
+        failures = _partial_update_failure("ui-tui, web workspaces")
 
-    # Step 2: install only the workspaces update needs (ui-tui, web).
-    # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
-    ws_result = _run_npm_install_deterministic(
-        npm,
-        PROJECT_ROOT,
-        extra_args=tuple(ws_args),
-        capture_output=False,
-        env=nixos_env,
-    )
-    if ws_result.returncode == 0:
-        _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
-        return []
+    # Fire-and-forget: warm npx's cache for agent-browser so the first
+    # browser-tool call in a session doesn't pay a registry fetch that used
+    # to happen here for free back when agent-browser was an eager root
+    # dependency (see #43564). Independent of the workspace install result
+    # above — never blocks or fails `hermes update`.
+    try:
+        from tools.browser_tool import warm_agent_browser_npx_cache
+        warm_agent_browser_npx_cache()
+    except Exception:
+        pass
 
-    print("  ⚠ npm workspace install failed")
-    stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
-    if stderr:
-        print(f"    {stderr.splitlines()[-1]}")
-    return _partial_update_failure("ui-tui, web workspaces")
+    return failures
 
 
 class _UpdateOutputStream:
@@ -11269,8 +11270,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "to finish import-based venv repair."
             )
 
-        node_failures = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
+        node_failures = _update_node_dependencies()
 
         # Rebuild the desktop app if the source tree changed since the last
         # build.  ``hermes desktop --build-only`` uses the content-hash stamp

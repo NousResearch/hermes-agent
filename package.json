@@ -11,7 +11,7 @@
     "tests-js"
   ],
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "postinstall": "echo '✅ Node dependencies installed. Run: python run_agent.py --help'",
     "install:root": "npm install --workspaces=false",
     "install:web": "npm install --workspace web",
     "install:tui": "npm install --workspace ui-tui",
@@ -34,10 +34,6 @@
     "url": "https://github.com/NousResearch/Hermes-Agent/issues"
   },
   "homepage": "https://github.com/NousResearch/Hermes-Agent#readme",
-  "dependencies": {
-    "@streamdown/math": "^1.0.2",
-    "agent-browser": "^0.26.0"
-  },
   "overrides": {
     "lodash": "4.18.1",
     "yauzl": "^3.3.1"

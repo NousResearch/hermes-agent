@@ -46,6 +46,9 @@ def _make_message(
     reply_to_caption=None,
     reply_to_id=42,
     quote_text=None,
+    forward_origin=None,
+    forward_sender_name=None,
+    forward_date=None,
 ):
     chat = SimpleNamespace(id=111, type="private", title=None, full_name="Alice")
     user = SimpleNamespace(id=42, full_name="Alice")
@@ -72,6 +75,9 @@ def _make_message(
         quote=quote,
         date=None,
         forum_topic_created=None,
+        forward_origin=forward_origin,
+        forward_sender_name=forward_sender_name,
+        forward_date=forward_date,
     )
 
 
@@ -142,3 +148,49 @@ def test_empty_quote_text_falls_back_to_full_reply():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Prior message body"
+
+
+def test_forwarded_text_gets_explicit_context_prefix():
+    """Forwarded text should be marked as forwarded before it reaches the agent."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(
+        text="Please review this proposal",
+        forward_origin=SimpleNamespace(
+            sender_user=SimpleNamespace(full_name="Bob Example", username="bob", id=7)
+        ),
+    )
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+    adapter._apply_forwarded_context(event, msg)
+
+    assert event.text == (
+        "[Forwarded Telegram message from Bob Example.]\n\n"
+        "Please review this proposal"
+    )
+
+
+def test_forwarded_caption_gets_context_prefix():
+    """Forwarded media captions should keep the forwarded marker too."""
+    adapter = _make_adapter()
+    event = SimpleNamespace(text="diagram caption")
+    msg = _make_message(
+        text="",
+        forward_sender_name="Hidden Sender",
+    )
+
+    adapter._apply_forwarded_context(event, msg)
+
+    assert event.text == "[Forwarded Telegram message from Hidden Sender.]\n\ndiagram caption"
+
+
+def test_forwarded_without_sender_still_marked():
+    """Some Telegram forwards hide sender details but still expose forward_date."""
+    adapter = _make_adapter()
+    event = SimpleNamespace(text="anonymous forwarded text")
+    msg = _make_message(text="", forward_date=object())
+
+    adapter._apply_forwarded_context(event, msg)
+
+    assert event.text == "[Forwarded Telegram message.]\n\nanonymous forwarded text"

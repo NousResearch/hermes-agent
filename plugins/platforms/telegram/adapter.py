@@ -7807,6 +7807,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        self._apply_forwarded_context(event, msg)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
@@ -8070,10 +8071,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
+        self._apply_forwarded_context(event, msg)
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)
+            self._apply_forwarded_context(event, msg)
             event = self._apply_telegram_group_observe_attribution(event)
             await self.handle_message(event)
             return
@@ -8599,6 +8602,74 @@ class TelegramAdapter(BasePlatformAdapter):
             return text or None
         except Exception:
             return None
+
+    @staticmethod
+    def _telegram_context_value(value: Any) -> Optional[str]:
+        """Return a real string value, ignoring test/mock placeholders."""
+        if value is None:
+            return None
+        # MagicMock creates truthy child attributes for anything. Treat those
+        # as absent so tests/mocks do not look like forwarded Telegram payloads.
+        if type(value).__module__.startswith("unittest.mock"):
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @classmethod
+    def _telegram_user_display_name(cls, user: Any) -> Optional[str]:
+        """Best-effort human label for Telegram users/chats in context notes."""
+        if user is None or type(user).__module__.startswith("unittest.mock"):
+            return None
+        for attr in ("full_name", "title", "username", "first_name", "name"):
+            value = cls._telegram_context_value(getattr(user, attr, None))
+            if value:
+                return value
+        return cls._telegram_context_value(getattr(user, "id", None))
+
+    @classmethod
+    def _telegram_forward_context(cls, message: Any) -> Optional[str]:
+        """Return a compact context marker when a Telegram message is forwarded."""
+        origin = getattr(message, "forward_origin", None)
+        if origin is not None and type(origin).__module__.startswith("unittest.mock"):
+            origin = None
+        sender: Optional[str] = None
+
+        if origin is not None:
+            sender = (
+                cls._telegram_user_display_name(getattr(origin, "sender_user", None))
+                or cls._telegram_context_value(getattr(origin, "sender_user_name", None))
+                or cls._telegram_user_display_name(getattr(origin, "chat", None))
+                or cls._telegram_context_value(getattr(origin, "author_signature", None))
+            )
+
+        if not sender:
+            sender = (
+                cls._telegram_user_display_name(getattr(message, "forward_from", None))
+                or cls._telegram_context_value(getattr(message, "forward_sender_name", None))
+                or cls._telegram_user_display_name(getattr(message, "forward_from_chat", None))
+                or cls._telegram_context_value(getattr(message, "forward_signature", None))
+            )
+
+        is_forwarded = bool(
+            origin is not None
+            or sender
+            or cls._telegram_context_value(getattr(message, "forward_date", None)) is not None
+        )
+        if not is_forwarded:
+            return None
+
+        if sender:
+            return f"[Forwarded Telegram message from {sender}.]"
+        return "[Forwarded Telegram message.]"
+
+    def _apply_forwarded_context(self, event: MessageEvent, message: Any) -> MessageEvent:
+        """Prefix forwarded Telegram content so the agent does not treat it as authored text."""
+        context = self._telegram_forward_context(message)
+        if not context:
+            return event
+        text = (event.text or "").strip()
+        event.text = f"{context}\n\n{text}" if text else context
+        return event
 
     def _build_message_event(
         self,

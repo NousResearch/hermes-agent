@@ -2,9 +2,16 @@
 > อ่านตามลำดับ: plan.md (plan_id: QAQC — active · shortcut Use QA QC) → plan-grd.md (แผน GRD จบแล้ว + คิว GRD-P5..P9) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
 
 # Overview & Progress — Hermes Agent
-อัปเดตล่าสุด: 2026-07-14 (เคลียร์ branch codex ค้าง + main สะอาดตรง origin) · branch งาน: `main` · main HEAD = origin/main `7087b8fcd` · ป้าย: [fact] เว้นแต่ระบุ
+อัปเดตล่าสุด: 2026-07-14 (Use Migrate Web P1-P3-I1 · Close Chat) · branch งาน: `control_webengine_flow` HEAD `aa868a18f` · ป้าย: [fact] เว้นแต่ระบุ
 
 ## สถานะล่าสุด
+- **2026-07-14 (แชท Fable · branch `control_webengine_flow`): Shortcut `Use Migrate Web` — P1+P2 จบ · P3-I1 จบ · รอสลับ Opus ทำ I2** [fact]
+  - **แผน MW ทั้งหมดอยู่ `.project/plan.md` หัวข้อ "Plan — MW"** (แผน active จริงของ branch นี้ · plan-anchor ยังอ่าน QAQC เป็นหลัก → เลขงาน MW ใช้ --no-plan)
+  - P1: วิเคราะห์ 5 ชุดข้อมูล (FLOW v2 + Workshop + TOR 3 โปรเจกต์ + คลัง Obsidian + คำสั่งเพิ่ม) → บัญชี 55 กลุ่ม + จุดเคาะ 13 จุด เจ้าของอนุมัติครบ
+  - P2: SPEC v1.2 (`.project/mw-spec-draft.md`) เจ้าของอนุมัติ · เครื่องตรวจ `scripts/mw-spec-check.py` PASS (ตารางแม่ 55/55 · baseline sha256)
+  - P3-I1: prompt `use-migrate-web.md` + `use-migrate-web-flow13.md` (เนื้อต้นฉบับ 439 บรรทัดตรง 100% + embedded_sha256) + registry row — Codex ตรวจ 2 รอบ แก้ครบ
+  - **งานถัดไปของแชทใหม่ (Opus): `Use New Chat` → `Use AI Relay` → ทำ MW-P3-I2 ตามแผนส่งมอบใน plan.md (เครื่องมือ 7 ตัว เริ่มที่ I2d work-locks)** · ข้อจำกัด relay บนเครื่องนี้จดไว้ในแผนแล้ว (review พัง → ใช้ cross-check MCP)
+
 - **2026-07-14: เคลียร์ของค้างส่งต่อทีมอื่น — main สะอาดตรง origin/main** [fact · ตรวจ git state จริง tier 3]
   - ต้นเหตุ: branch `codex/block-ai-worktree-creation` (Codex สร้าง 07-12) ค้างอยู่ พร้อม dirty 19 แก้+8 ใหม่ · วันรุ่งขึ้น (07-13) งานชุดเดียวกันถูกทำใหม่สะอาดกว่า merge เข้า origin/main ผ่าน PR #30/#31/#32/#33 + portal routing ไปแล้ว → branch นี้กลายเป็นของซ้ำ
   - ทำ: ปัก 2 tag กันตก (`archive/codex-block-worktree-2026-07-12`→`c185b8a0b` เก็บ `CONTROL-CENTER-DESIGN.md`+worktree-block tests · `archive/local-main-orphan-2026-07-11`→`3bcfabfb9` เก็บ orphan DEC-036) + patch สำรอง 3181 บรรทัดใน scratchpad
@@ -27,9 +34,9 @@
 - สาย JARVIS v2: รอเจ้าของทดสอบเสียง P0 แล้วเปิดแชตใหม่ส่ง Use AI Relay [fact]
 
 ## งานถัดไป
-1. **เจ้าของจะเปิด branch ใหม่จาก `main` สะอาด** ทำงานรอบใหม่ (main พร้อมแล้ว 2026-07-14)
-2. GRD-P5 Monitor Hub เริ่มเมื่อเจ้าของสั่ง (แผน GRD merged main แล้ว PR #16)
-3. GRD-P6..P8 รอเจ้าของส่ง "ปัญหาชุดสุดท้าย" ก่อนล็อกดีไซน์
+1. **MW-P3-I2 (Opus · branch `control_webengine_flow`)**: เขียนเครื่องมือ 7 ตัวของ Use Migrate Web (เริ่ม work-locks) ตามแผนส่งมอบใน `.project/plan.md` → Use New Chat + Use AI Relay
+2. MW-P3-I3/I4 (test ID + สัญญา §13) · MW-P4 ทดสอบจริง RoadSafeFund · MW-P5 ปิด 1 PR (เจ้าของกด merge)
+3. (คิวเดิม) GRD-P5..P8 + QAQC-P5 รอเจ้าของสั่ง
 
 ## ข้อห้าม/กติกาล็อก
 - ห้ามเขียนความจำทำงานต่อลง `.hermes/` หรือ root — เขียน `.project/` เท่านั้น (Schema v1.2)

@@ -181,3 +181,15 @@ Reason:
 - future AI agents and the user need to see how the system is controlled
 - launchd schedule alone is not enough; operators need mode/status/source/log commands
 - `trend-discovery ops` is the top-level operational summary
+
+## DEC-MW-001 · Shortcut Use Migrate Web = สายการผลิตเว็บกลางจาก Root Admin (2026-07-14 · เจ้าของอนุมัติ SPEC v1.2)
+Decision: สร้าง Shortcut `Use Migrate Web` เป็น flow กลางทำเว็บทุกโปรเจกต์จากโรงงาน Root Admin (เริ่ม RSF→DRA→ContentThailand) โครง 2 ชั้น (แกน Flow กลาง Hermes + Project Profile `.work/` ต่อเว็บ) · ลูป 13 ขั้น M0-M8 · โหมด MIGRATE/REMEDIATE/BUILD + แทร็ก DATA/FORM/MINISITE/BILINGUAL
+Reason:
+- ต่อยอด Flow 13 ขั้น v2 ที่ผ่านทีมรีวิว 24/24 (ไม่เขียนใหม่ · ทีมไม่ต้องเรียนใหม่)
+- "เสร็จ"=เครื่องตัดสิน ไม่ใช่ AI พูด — แก้ปัญหา AI โกหก/ข้าม Flow ที่รากตามที่เจ้าของเจอซ้ำ
+- ทีม ~10 คนใช้พร้อมกันได้ด้วยล็อกกลาง (work-locks) + Write Permit ต่อเมนู
+- บัญชี 55 กลุ่มไม่ตัดทอนข้อมูลเจ้าของ · เนื้อ Flow ต้นฉบับล็อกด้วย sha256
+
+## DEC-MW-002 · ผู้ตรวจ AI ครบ 2 รอบไม่ผ่าน → เปลี่ยนเป็นเครื่องตรวจ (2026-07-14)
+Decision: ทำ `scripts/mw-spec-check.py` เป็นเครื่องตรวจโครงสร้าง spec แทนผู้ตรวจ AI รอบที่ 3
+Reason: ตรงกติกา relay v2.16 (ผู้ตรวจเดิม+วิธีเดิมได้สูงสุด 2 รอบ) · เครื่องตรวจจับได้ 21 จุดหลวมก่อนผ่าน = พิสูจน์ว่าไม่ใช่พิธีกรรม · ใช้ซ้ำได้ยาวถึง P3-P5

@@ -35,6 +35,9 @@ import asyncio
 import hashlib
 import hmac
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 import logging
 import os
 import socket as _socket
@@ -664,6 +667,66 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+_api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
+    "api_agent_request_reservation", default=None
+)
+
+
+def _admit_api_agent_request(handler):
+    """Reserve an authenticated API turn before its handler first awaits.
+
+    Gateway shutdown and aiohttp requests share an event loop. Keeping the
+    drain check and reservation in one non-awaiting block prevents a request
+    admitted immediately before shutdown from becoming invisible while it is
+    still parsing its body or resolving session state. The mutable reservation
+    is intentionally shared with child tasks so agent/task bookkeeping releases
+    this one slot exactly once.
+    """
+    @wraps(handler)
+    async def _wrapped(self, request, *args, **kwargs):
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
+        reservation = {"active": True}
+        token = _api_agent_request_reservation.set(reservation)
+        self._pending_agent_requests += 1
+        try:
+            return await handler(self, request, *args, **kwargs)
+        finally:
+            if reservation["active"]:
+                reservation["active"] = False
+                self._pending_agent_requests = max(0, self._pending_agent_requests - 1)
+            _api_agent_request_reservation.reset(token)
+
+    return _wrapped
+
+
+def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
+    """Release a pending-work reservation exactly once."""
+    if reservation["active"]:
+        reservation["active"] = False
+        adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+
+
+@contextmanager
+def _reserve_pending_api_work(adapter):
+    """Keep externally-triggered background work visible across awaits.
+
+    A handler can detach the reservation to an asyncio task; its done callback
+    then owns release so shutdown cannot miss the handoff to background work.
+    """
+    reservation = {"active": True, "detached": False}
+    adapter._pending_agent_requests += 1
+    try:
+        yield reservation
+    finally:
+        if not reservation["detached"]:
+            _release_pending_api_work(adapter, reservation)
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -912,6 +975,64 @@ class APIServerAdapter(BasePlatformAdapter):
         # (the /v1/runs path tracks its own in-flight set via
         # _active_run_tasks).
         self._inflight_agent_runs: int = 0
+        # Requests admitted before their handler reaches agent bookkeeping.
+        # Shutdown counts this reservation so the request cannot slip through
+        # the drain between its first await and _run_agent()/task registration.
+        self._pending_agent_requests: int = 0
+
+    def active_agent_work_count(self) -> int:
+        """Return all live agent work owned by this API adapter.
+
+        ``/v1/runs`` registers an asyncio task before it constructs and stores
+        its agent, so ``_active_run_agents`` has a real queued-before-agent gap.
+        Reuse the task-based accounting used by the concurrent-run limit: it
+        covers that gap and excludes completed tasks retained until cleanup.
+        """
+        try:
+            return (
+                int(getattr(self, "_pending_agent_requests", 0))
+                + int(self._inflight_agent_runs)
+                + sum(not task.done() for task in self._active_run_tasks.values())
+            )
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _gateway_is_draining() -> bool:
+        """Whether the owning gateway currently refuses new agent turns."""
+        try:
+            from gateway.run import _gateway_runner_ref
+
+            runner = _gateway_runner_ref()
+            return bool(
+                runner
+                and (
+                    getattr(runner, "_draining", False)
+                    or getattr(runner, "_external_drain_active", False)
+                )
+            )
+        except Exception:
+            return False
+
+    def _draining_response(self) -> Optional["web.Response"]:
+        """Return a retryable response while the gateway drains existing work."""
+        if not self._gateway_is_draining():
+            return None
+        return web.json_response(
+            _openai_error(
+                "Gateway is draining existing work; retry shortly.",
+                code="gateway_draining",
+            ),
+            status=503,
+            headers={"Retry-After": "1"},
+        )
+
+    def _activate_admitted_request(self) -> None:
+        """Transfer this request's drain reservation to agent bookkeeping."""
+        reservation = _api_agent_request_reservation.get()
+        if reservation and reservation["active"]:
+            reservation["active"] = False
+            self._pending_agent_requests = max(0, self._pending_agent_requests - 1)
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
@@ -1919,11 +2040,9 @@ class APIServerAdapter(BasePlatformAdapter):
         fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
 
+    @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -1963,11 +2082,9 @@ class APIServerAdapter(BasePlatformAdapter):
             headers=headers,
         )
 
+    @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -2104,12 +2221,9 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
 
+    @_admit_api_agent_request
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -2311,8 +2425,8 @@ class APIServerAdapter(BasePlatformAdapter):
             # ``tool_progress_callback`` is intentionally not wired here:
             # it would duplicate every emit because ``run_agent`` fires it
             # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
-            # The structured callbacks are strictly richer (they carry the
-            # tool_call id), so they own the chat-completions SSE channel.
+            # The structured callbacks are strictly richer (they carry
+            # the tool_call id), so they own the chat-completions SSE channel.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -3240,12 +3354,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
+    @_admit_api_agent_request
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -3788,6 +3899,9 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
         cron_err = self._check_jobs_available()
         if cron_err:
             return cron_err
@@ -3833,31 +3947,39 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._request_audit_log_suffix(request),
             )
             return web.json_response({"error": "invalid fire token"}, status=401)
+        draining = self._draining_response()
+        if draining is not None:
+            return draining
 
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        job_id = (body or {}).get("job_id")
-        if not job_id:
-            return web.json_response({"error": "missing job_id"}, status=400)
+        with _reserve_pending_api_work(self) as reservation:
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            job_id = (body or {}).get("job_id")
+            if not job_id:
+                return web.json_response({"error": "missing job_id"}, status=400)
 
-        from cron.scheduler_provider import resolve_cron_scheduler
-        provider = resolve_cron_scheduler()
+            from cron.scheduler_provider import resolve_cron_scheduler
+            provider = resolve_cron_scheduler()
 
-        loop = asyncio.get_running_loop()
-        # Fire in the background (202 immediately). fire_due claims via the
-        # store CAS, so a retry while this is in flight is de-duped.
-        task = asyncio.create_task(
-            asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
-        )
-        try:
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        except (TypeError, AttributeError):
-            pass
+            loop = asyncio.get_running_loop()
+            # Fire in the background (202 immediately). fire_due claims via the
+            # store CAS, so a retry while this is in flight is de-duped.
+            task = asyncio.create_task(
+                asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
+            )
+            reservation["detached"] = True
+            task.add_done_callback(
+                lambda _task: _release_pending_api_work(self, reservation)
+            )
+            try:
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+            except (TypeError, AttributeError):
+                pass
 
-        return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
+            return web.json_response({"status": "accepted", "job_id": job_id}, status=202)
 
 
     # ------------------------------------------------------------------
@@ -4011,19 +4133,22 @@ class APIServerAdapter(BasePlatformAdapter):
         """Return a 429 response if the concurrent-run cap is reached, else None.
 
         The cap bounds total in-flight agent activity across every
-        agent-serving endpoint: the non-streaming chat/responses paths
-        (tracked by ``_inflight_agent_runs``) plus the ``/v1/runs`` path
-        (tracked by live entries in ``_active_run_tasks``).  Stream queues are
-        transport state and may disappear while their underlying run remains
-        active, so they must not define run concurrency. A configured value of
-        0 disables the cap entirely.
+        agent-serving endpoint. Reuse the same adapter-owned work count that
+        shutdown draining uses, including an admitted request before it reaches
+        agent/task bookkeeping. Stream queues are transport state and may
+        disappear while their underlying run remains active, so they must not
+        define run concurrency. A configured value of 0 disables the cap.
         """
         limit = self._max_concurrent_runs
         if limit <= 0:
             return None
-        inflight = self._inflight_agent_runs + sum(
-            not task.done() for task in self._active_run_tasks.values()
-        )
+        inflight = self.active_agent_work_count()
+        # The current request owns one reservation until it hands off to
+        # _run_agent() or /v1/runs task registration. It must not consume its
+        # own last available slot; other admitted requests remain counted.
+        reservation = _api_agent_request_reservation.get()
+        if reservation and reservation["active"]:
+            inflight -= 1
         if inflight >= limit:
             return web.json_response(
                 _openai_error(
@@ -4141,6 +4266,7 @@ class APIServerAdapter(BasePlatformAdapter):
             finally:
                 clear_session_vars(tokens)
 
+        self._activate_admitted_request()
         self._inflight_agent_runs += 1
         try:
             return await loop.run_in_executor(None, _run)
@@ -4215,12 +4341,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _callback
 
+    @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
         # Long-term memory scope header (see chat_completions for details).
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
@@ -4542,6 +4665,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_approval_sessions.pop(run_id, None)
                 self._stopping_run_ids.discard(run_id)
 
+        self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
         try:

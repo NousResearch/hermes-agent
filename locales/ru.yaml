@@ -364,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Ориентировочный контекст: ~{count} токенов"
     detailed_after_first:     "_(Подробное использование доступно после первого ответа агента)_"
     no_data:                  "Данные об использовании для этого сеанса отсутствуют."
+    unknown_subcommand:       "Неизвестная подкоманда /usage: `{args}`. Попробуйте `/usage` или `/usage reset [--force]`."
+    reset_wrong_provider:     "Накопленные сбросы лимитов доступны только с провайдером openai-codex. Сначала переключитесь через `/model`."
 
   credits:
     not_logged_in:            "Вы не вошли в Nous Portal. Войдите, чтобы увидеть баланс кредитов и пополнить его."

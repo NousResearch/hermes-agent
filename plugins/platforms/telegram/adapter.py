@@ -9,6 +9,7 @@ Uses python-telegram-bot library for:
 
 import asyncio
 import dataclasses
+import faulthandler
 import inspect
 import json
 import logging
@@ -16,6 +17,7 @@ import os
 import html as _html
 import re
 import threading
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -45,6 +47,35 @@ def _consume_abandoned_task(task: asyncio.Task) -> None:
         logger.debug("Abandoned Telegram init task failed after timeout", exc_info=True)
 
 
+# Grace period after the wall-clock deadline fires: if the event loop still
+# hasn't processed the expiry callback by then, the loop thread itself is
+# blocked in a synchronous call — the exact state in which every asyncio-based
+# timeout (including this helper's own expiry hand-off) goes silent, so the
+# gateway hangs at "attempt 1/8" with no further output (#63309).
+_LOOP_BLOCKED_DUMP_GRACE = 5.0
+
+
+def _dump_loop_blocked_diagnostics(timeout: float, grace: float) -> None:
+    """Emit diagnostics from the deadline timer thread when the loop is stuck.
+
+    Runs OFF the event loop, so it works precisely when the loop cannot. The
+    faulthandler dump names the frame the loop thread is blocked in — the one
+    piece of information #63309-class hangs otherwise never surface.
+    """
+    logger.warning(
+        "[Telegram] init deadline (%.0fs) expired but the event loop has not "
+        "processed the expiry after a further %.0fs — the loop thread appears "
+        "BLOCKED in a synchronous call, which is why no timeout fires (#63309). "
+        "Dumping all thread stacks to stderr to identify the blocking frame.",
+        timeout,
+        grace,
+    )
+    try:
+        faulthandler.dump_traceback(all_threads=True)
+    except Exception:
+        logger.debug("faulthandler traceback dump failed", exc_info=True)
+
+
 async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=None):
     """Await with a wall-clock deadline that does not depend on loop timers.
 
@@ -66,17 +97,34 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
     deadline = loop.create_future()
+    # Set the moment the loop actually runs the expiry callback (or the helper
+    # exits normally). threading.Event so the watchdog thread can read it
+    # without touching asyncio state from off-loop.
+    loop_processed_expiry = threading.Event()
 
     def _mark_expired() -> None:
+        loop_processed_expiry.set()
         if not deadline.done():
             deadline.set_result(None)
 
     def _expire_from_thread() -> None:
         loop.call_soon_threadsafe(_mark_expired)
 
+    def _watchdog_check() -> None:
+        # The deadline fired _LOOP_BLOCKED_DUMP_GRACE ago but the loop never
+        # ran _mark_expired: the loop thread is stuck in a synchronous call.
+        # Diagnose from this thread — the loop can't.
+        if not loop_processed_expiry.is_set():
+            _dump_loop_blocked_diagnostics(timeout, _LOOP_BLOCKED_DUMP_GRACE)
+
     timer = threading.Timer(max(timeout, 0.0), _expire_from_thread)
     timer.daemon = True
     timer.start()
+    watchdog = threading.Timer(
+        max(timeout, 0.0) + _LOOP_BLOCKED_DUMP_GRACE, _watchdog_check
+    )
+    watchdog.daemon = True
+    watchdog.start()
     try:
         done, _ = await asyncio.wait(
             {task, deadline},
@@ -99,6 +147,11 @@ async def _await_with_thread_deadline(awaitable, timeout: float, *, on_abandon=N
         raise asyncio.TimeoutError()
     finally:
         timer.cancel()
+        watchdog.cancel()
+        # cancel() cannot stop a Timer whose callback is already running;
+        # setting the event closes that race so a completed await can never
+        # be misreported as a blocked loop.
+        loop_processed_expiry.set()
 
 
 async def _run_abandon_cleanup(on_abandon) -> None:
@@ -422,6 +475,16 @@ _UPDATER_STOP_TIMEOUT = 15.0
 # reconnect ladder from stalling indefinitely and allows the heartbeat loop to
 # trigger its own recovery path. Refs: NousResearch/hermes-agent#59614
 _UPDATER_START_TIMEOUT = 30.0
+# A generation is not healthy until the dedicated getUpdates request returns
+# successfully. This exceeds a normal long-poll cycle for healthy idle bots.
+_POLLING_PROGRESS_TIMEOUT = 60.0
+_POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar(
+    "telegram_polling_generation", default=None
+)
+
+
+class _PollingLifecycleAbort(RuntimeError):
+    """Internal control flow for polling startup fenced by teardown."""
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -581,6 +644,11 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
+        self._polling_generation: int = 0
+        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting: bool = False
+        self._polling_progress_verifier_task: Optional[asyncio.Task] = None
+        self._polling_teardown_started: bool = False
         self._polling_error_callback_ref = None
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         # Consecutive heartbeat probes that saw queued updates the running
@@ -596,10 +664,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # error_callback ever fires and the gateway silently stops receiving
         # messages with the process still alive (#55769).
         self._polling_not_running_count: int = 0
-        # After sustained reconnect storms the PTB httpx pool can return
-        # SendResult(success=True) for sends that never actually transmit.
-        # _handle_polling_network_error sets this; _verify_polling_after_reconnect
-        # clears it once getMe() confirms the Bot client is healthy.
+        # A polling generation stays degraded until the dedicated getUpdates
+        # request makes successful progress. start_polling() return and getMe()
+        # success on the general request path are not polling-health signals.
         # While True, send() short-circuits to a failure so callers
         # (cron live-adapter branch) fall through to standalone delivery.
         self._send_path_degraded: bool = False
@@ -1892,6 +1959,139 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, exc_info=True,
             )
 
+    def _begin_polling_generation(self) -> tuple[int, asyncio.Event]:
+        """Start accepting progress for a new getUpdates polling generation."""
+        if getattr(self, "_polling_teardown_started", False):
+            self._polling_progress_accepting = False
+            self._send_path_degraded = True
+            progress = getattr(self, "_polling_progress_event", None)
+            if progress is None:
+                progress = asyncio.Event()
+                self._polling_progress_event = progress
+            return getattr(self, "_polling_generation", 0), progress
+
+        verifier = getattr(self, "_polling_progress_verifier_task", None)
+        if verifier is not None and not verifier.done():
+            verifier.cancel()
+        self._polling_progress_verifier_task = None
+        self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+        self._polling_progress_event = asyncio.Event()
+        self._polling_progress_accepting = True
+        self._send_path_degraded = True
+        return self._polling_generation, self._polling_progress_event
+
+    def _record_polling_progress(self, generation: int) -> None:
+        """Record successful getUpdates I/O for the current generation only."""
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if not self._polling_progress_accepting:
+            return
+        if generation != self._polling_generation:
+            return
+        self._polling_progress_event.set()
+        self._polling_network_error_count = 0
+        self._polling_conflict_count = 0
+        self._send_path_degraded = False
+
+    def _instrument_polling_request(self, request):
+        """Wrap one dedicated PTB getUpdates request with progress tracking."""
+        do_request = request.do_request
+
+        async def _do_request(*args, **kwargs):
+            generation = _POLLING_GENERATION_CONTEXT.get()
+            result = await do_request(*args, **kwargs)
+            status_code, payload = result
+            if generation is not None and 200 <= status_code < 300:
+                try:
+                    # Use the request's own parser so health observation agrees
+                    # exactly with PTB's authoritative response handling (e.g.
+                    # UTF-8 replacement decoding and BOM rejection).
+                    envelope = request.parse_json_payload(payload)
+                except Exception:
+                    # Instrumentation is observational: PTB still parses the
+                    # untouched payload and owns the resulting exception.
+                    pass
+                else:
+                    if (
+                        isinstance(envelope, dict)
+                        and envelope.get("ok") is True
+                        and "result" in envelope
+                    ):
+                        self._record_polling_progress(generation)
+            return result
+
+        request.do_request = _do_request
+        return request
+
+    async def _start_polling_once(
+        self,
+        app,
+        *,
+        drop_pending_updates: bool,
+        error_callback,
+    ) -> None:
+        """Start one generation and verify real getUpdates progress."""
+        if getattr(self, "_polling_teardown_started", False):
+            raise _PollingLifecycleAbort("Telegram polling teardown started")
+        generation, progress = self._begin_polling_generation()
+        if not self._polling_progress_accepting:
+            raise _PollingLifecycleAbort("Telegram polling teardown started")
+
+        def _generation_error_callback(error: Exception) -> None:
+            if getattr(self, "_polling_teardown_started", False):
+                return
+            if generation != self._polling_generation:
+                return
+            if error_callback is not None:
+                callback_context_token = _POLLING_GENERATION_CONTEXT.set(None)
+                try:
+                    error_callback(error)
+                finally:
+                    _POLLING_GENERATION_CONTEXT.reset(callback_context_token)
+
+        context_token = _POLLING_GENERATION_CONTEXT.set(generation)
+        try:
+            await asyncio.wait_for(
+                app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=drop_pending_updates,
+                    error_callback=_generation_error_callback,
+                ),
+                timeout=_UPDATER_START_TIMEOUT,
+            )
+        finally:
+            _POLLING_GENERATION_CONTEXT.reset(context_token)
+        if getattr(self, "_polling_teardown_started", False):
+            self._polling_progress_accepting = False
+            self._send_path_degraded = True
+            raise _PollingLifecycleAbort("Telegram polling teardown started")
+        self._schedule_polling_progress_verifier(generation, progress)
+
+    def _schedule_polling_progress_verifier(
+        self, generation: int, progress: asyncio.Event
+    ) -> None:
+        """Own exactly one tracked verifier for the current generation."""
+        if getattr(self, "_polling_teardown_started", False):
+            self._polling_progress_accepting = False
+            self._send_path_degraded = True
+            return
+        previous = getattr(self, "_polling_progress_verifier_task", None)
+        if previous is not None and not previous.done():
+            previous.cancel()
+
+        task = asyncio.get_running_loop().create_task(
+            self._verify_polling_after_reconnect(generation, progress)
+        )
+        self._polling_progress_verifier_task = task
+        self._background_tasks.add(task)
+
+        def _clear_finished_verifier(finished: asyncio.Task) -> None:
+            self._background_tasks.discard(finished)
+            if self._polling_progress_verifier_task is finished:
+                self._polling_progress_verifier_task = None
+
+        task.add_done_callback(_clear_finished_verifier)
+
     def _get_general_request_drain_lock(self) -> asyncio.Lock:
         lock = getattr(self, "_general_request_drain_lock", None)
         if lock is None:
@@ -1944,6 +2144,8 @@ class TelegramAdapter(BasePlatformAdapter):
         adapter: the gateway process stays alive and the existing reconnect
         ladder (``_handle_polling_network_error``) recovers in the background.
         """
+        if getattr(self, "_polling_teardown_started", False):
+            return
         if self.has_fatal_error:
             return
         if self._polling_error_task and not self._polling_error_task.done():
@@ -1995,6 +2197,8 @@ class TelegramAdapter(BasePlatformAdapter):
         network error was scheduled for background recovery instead of raising
         (keeping the gateway process alive).
         """
+        if getattr(self, "_polling_teardown_started", False):
+            return False
         if not (self._app and self._app.updater):
             raise RuntimeError("Telegram application/updater not initialized")
         try:
@@ -2004,16 +2208,17 @@ class TelegramAdapter(BasePlatformAdapter):
             # TimeoutError (OSError subclass), so the except below classifies
             # it via _looks_like_network_error and schedules background
             # recovery instead of blocking connect() indefinitely.
-            await asyncio.wait_for(
-                self._app.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=drop_pending_updates,
-                    error_callback=error_callback,
-                ),
-                timeout=_UPDATER_START_TIMEOUT,
+            await self._start_polling_once(
+                self._app,
+                drop_pending_updates=drop_pending_updates,
+                error_callback=error_callback,
             )
             return True
+        except _PollingLifecycleAbort:
+            return False
         except Exception as err:
+            if getattr(self, "_polling_teardown_started", False):
+                return False
             if self._looks_like_polling_conflict(err):
                 logger.warning(
                     "[%s] Telegram polling bootstrap conflict; gateway stays alive "
@@ -2042,6 +2247,8 @@ class TelegramAdapter(BasePlatformAdapter):
         MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
         the supervisor restarts the gateway process.
         """
+        if getattr(self, "_polling_teardown_started", False):
+            return
         if self.has_fatal_error:
             return
 
@@ -2070,6 +2277,9 @@ class TelegramAdapter(BasePlatformAdapter):
             self.name, attempt, MAX_NETWORK_RETRIES, delay, safe_error,
         )
         await asyncio.sleep(delay)
+
+        if getattr(self, "_polling_teardown_started", False):
+            return
 
         # Capture a stable local reference: self._app can be reassigned to None
         # by a concurrent disconnect() while we're suspended across the awaits
@@ -2101,64 +2311,39 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception:
             pass
 
+        if getattr(self, "_polling_teardown_started", False):
+            return
         await self._drain_polling_connections()
+
+        if getattr(self, "_polling_teardown_started", False):
+            return
 
         try:
             if not app:
                 raise RuntimeError("Telegram application was torn down during reconnect")
-            # Guard start_polling() with a timeout: when the connection pool is
-            # in a degraded state (e.g., after _drain_polling_connections()), the
-            # httpx client may hold a stale socket that neither connects nor times
-            # out within PTB's internal flow. Bounding start_polling() prevents
-            # the reconnect ladder from stalling indefinitely and allows the
-            # heartbeat loop to trigger its own recovery path.
-            # Refs: NousResearch/hermes-agent#59614
-            try:
-                await asyncio.wait_for(
-                    app.updater.start_polling(
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=False,
-                        error_callback=self._polling_error_callback_ref,
-                    ),
-                    timeout=_UPDATER_START_TIMEOUT,
-                )
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    "start_polling() timed out — connection pool may be wedged"
-                )
+            await self._start_polling_once(
+                app,
+                drop_pending_updates=False,
+                error_callback=self._polling_error_callback_ref,
+            )
             logger.info(
-                "[%s] Telegram polling resumed after network error (attempt %d)",
+                "[%s] Telegram polling restarted after network error (attempt %d); "
+                "health pending getUpdates progress",
                 self.name, attempt,
             )
-            self._polling_network_error_count = 0
-            # start_polling() succeeding IS the recovery signal: the long-poll
-            # connection is live again, so clear the degraded flag immediately
-            # rather than blocking all outbound sends for the full
-            # HEARTBEAT_PROBE_DELAY window. The deferred probe below is a
-            # defensive re-check — if it later detects a silent wedge (PTB
-            # running=True but consumer task dead) it re-enters the ladder,
-            # which re-sets _send_path_degraded. Without this clear here, a
-            # clean reconnect leaves the flag stuck True until the 60s probe
-            # (or forever, if the probe is never scheduled), blocking the send
-            # path even though the bot has fully recovered. See #35205.
-            self._send_path_degraded = False
-            # start_polling() returning is necessary but not sufficient:
-            # PTB's Updater can be left in a state where `running` is True
-            # but the underlying long-poll task is wedged on a stale httpx
-            # connection and never makes progress. No error_callback fires
-            # in that state, so the reconnect ladder won't advance on its
-            # own. Schedule a deferred probe to detect the wedge and
-            # re-enter the ladder if needed.
-            if not self.has_fatal_error:
-                probe = asyncio.ensure_future(self._verify_polling_after_reconnect())
-                self._background_tasks.add(probe)
-                probe.add_done_callback(self._background_tasks.discard)
+        except _PollingLifecycleAbort:
+            return
         except Exception as retry_err:
+            if getattr(self, "_polling_teardown_started", False):
+                return
             safe_retry_error = _redact_telegram_error_text(retry_err)
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, safe_retry_error)
             # start_polling failed — polling is dead and no further error
             # callbacks will fire, so schedule the next retry ourselves.
-            if not self.has_fatal_error:
+            if (
+                not self.has_fatal_error
+                and not getattr(self, "_polling_teardown_started", False)
+            ):
                 task = asyncio.ensure_future(
                     self._handle_polling_network_error(retry_err)
                 )
@@ -2188,9 +2373,9 @@ class TelegramAdapter(BasePlatformAdapter):
         ``_handle_polling_network_error`` — the same path triggered by PTB's own
         ``error_callback`` — which drains the dead pool and restarts polling.
 
-        Unlike ``_verify_polling_after_reconnect`` (a one-shot probe scheduled
-        only after an explicit reconnect), this loop runs for the full lifetime
-        of the polling connection, so it catches a socket that wedges during
+        Unlike the generation verifier (a one-shot progress deadline after
+        every polling start), this loop runs for the full lifetime of the
+        polling connection, so it catches a socket that wedges later during
         steady-state operation without any prior error event.
         """
         HEARTBEAT_INTERVAL = 90   # seconds between probes
@@ -2199,6 +2384,8 @@ class TelegramAdapter(BasePlatformAdapter):
         while True:
             try:
                 await asyncio.sleep(HEARTBEAT_INTERVAL)
+                if getattr(self, "_polling_teardown_started", False):
+                    return
                 if self.has_fatal_error:
                     return
                 bot = self._app.bot if self._app else None
@@ -2255,6 +2442,8 @@ class TelegramAdapter(BasePlatformAdapter):
         report a queue against a live consumer. We detect the stopped updater
         directly and feed the same ladder (#55769).
         """
+        if getattr(self, "_polling_teardown_started", False):
+            return
         # Only meaningful in polling mode; in webhook mode Telegram pushes
         # updates and holds no server-side queue.
         if self._webhook_mode:
@@ -2288,6 +2477,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             if self._polling_not_running_count >= 2:
                 self._polling_not_running_count = 0
+                if getattr(self, "_polling_teardown_started", False):
+                    return
                 logger.warning(
                     "[%s] Telegram updater is not running (long-poll task "
                     "gone); triggering polling restart",
@@ -2322,6 +2513,8 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         if self._polling_pending_stuck_count >= 2:
             self._polling_pending_stuck_count = 0
+            if getattr(self, "_polling_teardown_started", False):
+                return
             logger.warning(
                 "[%s] getUpdates consumer appears wedged (queue not draining); "
                 "triggering polling restart",
@@ -2334,50 +2527,96 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             )
 
-    async def _verify_polling_after_reconnect(self) -> None:
-        """Heartbeat probe scheduled after a successful reconnect.
+    async def _verify_polling_after_reconnect(
+        self,
+        generation: Optional[int] = None,
+        progress: Optional[asyncio.Event] = None,
+    ) -> None:
+        """Require getUpdates progress, using getMe only to classify failure.
 
-        PTB's Updater can survive a botched stop()+start_polling() cycle
-        with `running=True` but a wedged consumer task. No error callback
-        fires, so the reconnect ladder doesn't advance on its own. This
-        probe detects the wedge by:
-
-        1. Sleeping HEARTBEAT_PROBE_DELAY so a healthy long-poll has time
-           to complete at least one cycle.
-        2. Verifying `Updater.running` is still True.
-        3. Probing the bot endpoint with a tight asyncio timeout. A
-           wedged httpx pool fails this probe; a healthy one returns
-           well under the timeout.
-
-        On any failure, re-enter the reconnect ladder so the existing
-        MAX_NETWORK_RETRIES path can ultimately escalate to fatal-error.
+        The generation-bound event is set only by a successful response on the
+        dedicated getUpdates request. A general-path getMe success can classify
+        connectivity, but cannot heal polling health. Connectivity failures
+        enter the guarded recovery ladder; auth/validation errors do not churn.
         """
-        HEARTBEAT_PROBE_DELAY = 60
         PROBE_TIMEOUT = 10
-
-        await asyncio.sleep(HEARTBEAT_PROBE_DELAY)
-
-        if self.has_fatal_error:
+        if getattr(self, "_polling_teardown_started", False):
             return
-        if not (self._app and self._app.updater and self._app.updater.running):
-            logger.warning(
-                "[%s] Updater not running %ds after reconnect — treating as wedged",
-                self.name, HEARTBEAT_PROBE_DELAY,
+        if generation is None:
+            generation = self._polling_generation
+        if progress is None:
+            progress = self._polling_progress_event
+
+        try:
+            await asyncio.wait_for(
+                progress.wait(), timeout=_POLLING_PROGRESS_TIMEOUT
             )
-            await self._handle_polling_network_error(
-                RuntimeError("Updater not running after reconnect heartbeat")
+        except asyncio.TimeoutError:
+            pass
+
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if progress.is_set() or self.has_fatal_error:
+            return
+        if not self._polling_progress_accepting:
+            return
+        if generation != self._polling_generation:
+            return
+        if progress is not self._polling_progress_event:
+            return
+
+        app = self._app
+        if not (app and app.updater and app.updater.running):
+            logger.warning(
+                "[%s] Updater made no getUpdates progress and is not running",
+                self.name,
+            )
+            self._schedule_polling_recovery(
+                RuntimeError("Updater not running after polling progress deadline"),
+                reason="polling progress verifier: updater not running",
             )
             return
 
         try:
-            await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
-            self._send_path_degraded = False
+            await asyncio.wait_for(app.bot.get_me(), PROBE_TIMEOUT)
         except Exception as probe_err:
+            if getattr(self, "_polling_teardown_started", False):
+                return
+            if self.has_fatal_error or not self._polling_progress_accepting:
+                return
+            if generation != self._polling_generation:
+                return
+            if progress is not self._polling_progress_event or progress.is_set():
+                return
+            if not self._looks_like_network_error(probe_err):
+                logger.warning(
+                    "[%s] Polling progress verifier hit a non-connectivity error"
+                    " (not retrying): %s",
+                    self.name, _redact_telegram_error_text(probe_err),
+                )
+                return
             logger.warning(
-                "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
-                self.name, HEARTBEAT_PROBE_DELAY, probe_err,
+                "[%s] Polling progress verifier connectivity probe failed: %s",
+                self.name, _redact_telegram_error_text(probe_err),
             )
-            await self._handle_polling_network_error(probe_err)
+            self._schedule_polling_recovery(
+                probe_err,
+                reason="polling progress verifier connectivity failure",
+            )
+            return
+
+        if getattr(self, "_polling_teardown_started", False):
+            return
+        if self.has_fatal_error or not self._polling_progress_accepting:
+            return
+        if generation != self._polling_generation:
+            return
+        if progress is not self._polling_progress_event or progress.is_set():
+            return
+        self._schedule_polling_recovery(
+            RuntimeError("getUpdates made no progress before verifier deadline"),
+            reason="polling progress verifier: general path healthy but getUpdates stalled",
+        )
 
     def _disarm_ptb_retry_loop(self) -> None:
         """Synchronously stop PTB's internal polling retry loop.
@@ -2443,6 +2682,8 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _handle_polling_conflict(self, error: Exception) -> None:
+        if getattr(self, "_polling_teardown_started", False):
+            return
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
         # Transient 409 Conflict errors arise when the previous gateway process
@@ -2498,7 +2739,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 pass
 
             await asyncio.sleep(RETRY_DELAY)
+            if getattr(self, "_polling_teardown_started", False):
+                return
             await self._drain_polling_connections()
+            if getattr(self, "_polling_teardown_started", False):
+                return
 
             # Capture a stable local reference: self._app can be reassigned to
             # None by a concurrent disconnect() while we're suspended across
@@ -2510,31 +2755,22 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 if not app:
                     raise RuntimeError("Telegram application was torn down during conflict reconnect")
-                # Same watchdog bound as the network-error ladder: an
-                # exhausted pool hangs start_polling() on the conflict path
-                # identically (#59614). Timeout converts to RuntimeError so
-                # the except below logs a readable message and schedules the
-                # next conflict attempt instead of wedging attempt N forever.
-                try:
-                    await asyncio.wait_for(
-                        app.updater.start_polling(
-                            allowed_updates=Update.ALL_TYPES,
-                            drop_pending_updates=False,
-                            error_callback=self._polling_error_callback_ref,
-                        ),
-                        timeout=_UPDATER_START_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    raise RuntimeError(
-                        "start_polling() timed out — connection pool may be wedged"
-                    )
+                await self._start_polling_once(
+                    app,
+                    drop_pending_updates=False,
+                    error_callback=self._polling_error_callback_ref,
+                )
                 logger.info(
-                    "[%s] Telegram polling resumed after conflict retry %d/%d",
+                    "[%s] Telegram polling restarted after conflict retry %d/%d; "
+                    "health pending getUpdates progress",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 )
-                self._polling_conflict_count = 0  # reset counter on success
+                return
+            except _PollingLifecycleAbort:
                 return
             except Exception as retry_err:
+                if getattr(self, "_polling_teardown_started", False):
+                    return
                 logger.warning(
                     "[%s] Telegram polling retry %d/%d failed: %s. "
                     "Scheduling next attempt.",
@@ -2546,7 +2782,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 # a fatal error leaves the adapter in a limbo state: the
                 # gateway process is alive and reports "connected" but
                 # no messages are received or sent.
-                if self._polling_conflict_count < MAX_CONFLICT_RETRIES:
+                if (
+                    self._polling_conflict_count < MAX_CONFLICT_RETRIES
+                    and not getattr(self, "_polling_teardown_started", False)
+                ):
                     # We are inside a running coroutine, so the running loop is
                     # guaranteed to exist. asyncio.get_event_loop() is deprecated
                     # and raises "RuntimeError: There is no current event loop in
@@ -2559,6 +2798,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     return
                 # Fall through to fatal on the last retry.
+
+        if getattr(self, "_polling_teardown_started", False):
+            return
 
         # Exhausted all retries — declare a fatal error so the gateway
         # runner can surface this clearly and the user knows to act.
@@ -3016,6 +3258,14 @@ class TelegramAdapter(BasePlatformAdapter):
             TELEGRAM_WEBHOOK_PORT   Local listen port (default 8443)
             TELEGRAM_WEBHOOK_SECRET Secret token for update verification
         """
+        # Explicit connect() is the only operation allowed to reopen polling
+        # after a completed, serialized teardown. Background recovery never
+        # clears this fence.
+        self._polling_teardown_started = False
+        # Mode selection is re-evaluated on every explicit connection. Keep
+        # webhook state false unless this connection starts its webhook.
+        self._webhook_mode = False
+
         if not TELEGRAM_AVAILABLE:
             logger.error(
                 "[%s] python-telegram-bot not installed. Run: pip install python-telegram-bot",
@@ -3178,6 +3428,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     **request_kwargs, httpx_kwargs=_with_limits()
                 )
 
+            get_updates_request = self._instrument_polling_request(get_updates_request)
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
@@ -3310,6 +3561,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     drop_pending_updates=not is_reconnect,
                 )
                 self._webhook_mode = True
+                self._polling_progress_accepting = False
+                self._send_path_degraded = False
                 logger.info(
                     "[%s] Webhook server listening on 0.0.0.0:%d%s",
                     self.name, webhook_port, webhook_path,
@@ -3326,6 +3579,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 loop = asyncio.get_running_loop()
 
                 def _polling_error_callback(error: Exception) -> None:
+                    if getattr(self, "_polling_teardown_started", False):
+                        return
                     if self._polling_error_task and not self._polling_error_task.done():
                         return
                     if self._looks_like_polling_conflict(error):
@@ -3459,7 +3714,8 @@ class TelegramAdapter(BasePlatformAdapter):
             collect(task)
         for task in list(self._pending_text_batch_tasks.values()):
             collect(task)
-        collect(self._polling_error_task)
+        collect(getattr(self, "_polling_error_task", None))
+        collect(getattr(self, "_polling_progress_verifier_task", None))
 
         for task in pending_tasks:
             task.cancel()
@@ -3472,8 +3728,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_photo_batches.clear()
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
-        if self._polling_error_task is not current_task:
+        if getattr(self, "_polling_error_task", None) is not current_task:
             self._polling_error_task = None
+        if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
+            self._polling_progress_verifier_task = None
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending delayed deliveries, and disconnect."""
@@ -3481,6 +3739,42 @@ class TelegramAdapter(BasePlatformAdapter):
         # that wins the race against teardown and prevents new delayed tasks
         # from being scheduled by late update handlers.
         self._mark_disconnected()
+        self._polling_teardown_started = True
+        self._polling_progress_accepting = False
+        self._polling_generation = getattr(self, "_polling_generation", 0) + 1
+        self._polling_progress_event = asyncio.Event()
+        self._send_path_degraded = True
+
+        # Recovery can be suspended in stop/drain/start while disconnect begins.
+        # Cancel and await both polling lifecycle owners immediately after the
+        # fence, before any other teardown await lets them start a new generation.
+        current_task = asyncio.current_task()
+        lifecycle_tasks: list[asyncio.Task] = []
+        lifecycle_seen: set[int] = set()
+        for task in (
+            getattr(self, "_polling_error_task", None),
+            getattr(self, "_polling_progress_verifier_task", None),
+        ):
+            if not task or task.done() or task is current_task:
+                continue
+            marker = id(task)
+            if marker in lifecycle_seen:
+                continue
+            lifecycle_seen.add(marker)
+            task.cancel()
+            if asyncio.isfuture(task) or asyncio.iscoroutine(task):
+                lifecycle_tasks.append(task)
+        if lifecycle_tasks:
+            await asyncio.gather(*lifecycle_tasks, return_exceptions=True)
+        if getattr(self, "_polling_error_task", None) is not current_task:
+            self._polling_error_task = None
+        if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
+            self._polling_progress_verifier_task = None
+
+        # Cancellation callbacks may have run while awaited; the teardown fence
+        # remains authoritative regardless of their finalizers.
+        self._polling_progress_accepting = False
+        self._send_path_degraded = True
 
         # Cancel deferred post-connect housekeeping (command-menu / DM-topic /
         # status-indicator Bot API calls) so it cannot fire into a half-torn-down
@@ -3494,10 +3788,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Cancel the heartbeat before tearing down the app so the probe task
         # cannot fire get_me() into a half-shutdown bot client.
-        if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
-            self._polling_heartbeat_task.cancel()
+        polling_heartbeat_task = getattr(self, "_polling_heartbeat_task", None)
+        if polling_heartbeat_task and not polling_heartbeat_task.done():
+            polling_heartbeat_task.cancel()
             try:
-                await self._polling_heartbeat_task
+                await polling_heartbeat_task
             except asyncio.CancelledError:
                 pass
         self._polling_heartbeat_task = None

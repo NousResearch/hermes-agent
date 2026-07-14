@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MemoryProviderConfig } from '@/types/hermes'
@@ -97,7 +97,12 @@ afterEach(() => {
 async function renderPanel(provider = 'hindsight') {
   const { ProviderConfigPanel } = await import('./provider-config-panel')
 
-  return render(<ProviderConfigPanel provider={provider} />)
+  let result: ReturnType<typeof render>
+  await act(async () => {
+    result = render(<ProviderConfigPanel provider={provider} />)
+  })
+
+  return result!
 }
 
 describe('ProviderConfigPanel', () => {
@@ -115,9 +120,13 @@ describe('ProviderConfigPanel', () => {
     await renderPanel()
 
     expect(await screen.findByLabelText('API URL')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
+    })
     expect(screen.queryByLabelText('API URL')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Hindsight settings/ }))
+    })
     expect(await screen.findByLabelText('API URL')).toBeTruthy()
   })
 
@@ -125,9 +134,11 @@ describe('ProviderConfigPanel', () => {
     await renderPanel()
 
     const apiUrl = await screen.findByLabelText('API URL')
-    fireEvent.change(apiUrl, { target: { value: 'http://localhost:8888' } })
-    fireEvent.change(screen.getByLabelText('Bank ID'), { target: { value: 'ben-bank' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await act(async () => {
+      fireEvent.change(apiUrl, { target: { value: 'http://localhost:8888' } })
+      fireEvent.change(screen.getByLabelText('Bank ID'), { target: { value: 'ben-bank' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    })
 
     await waitFor(() =>
       expect(saveMemoryProviderConfig).toHaveBeenCalledWith('hindsight', {

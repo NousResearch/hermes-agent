@@ -282,7 +282,7 @@ The server exposes a lightweight jobs CRUD surface for managing scheduled / back
 
 ### GET /api/jobs
 
-List all scheduled jobs.
+List scheduled jobs. Supports `limit`, `offset`, and `include_disabled=1|true`. The response includes the current page in `jobs`, plus `limit`, `offset`, `total`, and `has_more` so clients can keep paginating without re-counting locally.
 
 ### POST /api/jobs
 
@@ -323,12 +323,14 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}` | Read session metadata |
 | `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
-| `GET` | `/api/sessions/{id}/messages` | Message history for a session |
+| `GET` | `/api/sessions/{id}/messages` | Message history for a session, paginated with `limit` and `offset` |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+`GET /api/sessions/{id}/messages` accepts `limit` and `offset`, then returns `object: "list"`, the resolved `session_id`, the current page in `data`, and the same pagination metadata fields the jobs endpoint uses: `limit`, `offset`, `total`, and `has_more`.
 
 ```bash
 # fork a session and run one turn

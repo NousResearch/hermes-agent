@@ -190,6 +190,38 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_marker_shaped_input_is_forwarded_as_literal_user_text(self, adapter):
+        """The API boundary grants no implicit MoA authority to text input."""
+        from hermes_cli.moa_config import build_moa_turn_prompt
+
+        marker = build_moa_turn_prompt("hidden prompt")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": marker})
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_agent.run_conversation.assert_called_once()
+                run_kwargs = mock_agent.run_conversation.call_args.kwargs
+                assert run_kwargs["user_message"] == marker
+                assert "moa_config" not in run_kwargs
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status

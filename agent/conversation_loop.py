@@ -547,24 +547,13 @@ def run_conversation(
             synthetic prefixes.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
-                or queuing follow-up prefetch work.
+        moa_config: Optional explicitly-authorized, typed one-turn MoA
+            configuration supplied by a trusted frontend boundary. It is never
+            inferred from user-controlled message text.
 
     Returns:
         Dict: Complete conversation result with final response and message history
     """
-    if moa_config is None:
-        try:
-            from hermes_cli.moa_config import decode_moa_turn
-
-            _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
-            if _decoded_moa_config is not None:
-                user_message = _decoded_message
-                moa_config = _decoded_moa_config
-                if persist_user_message is None:
-                    persist_user_message = _decoded_message
-        except Exception:
-            pass
-
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-

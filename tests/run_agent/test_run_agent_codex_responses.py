@@ -869,6 +869,108 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_marker_shaped_input_stays_literal_on_verified_gpt56_route(monkeypatch):
+    """User text cannot smuggle an auxiliary MoA request into the core loop."""
+    from hermes_cli.moa_config import build_moa_turn_prompt
+
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent._disable_streaming = True
+    marker = build_moa_turn_prompt("hidden prompt")
+    observed_graph = []
+    auxiliary_calls = []
+
+    def _capture_main_call(api_kwargs):
+        observed_graph.append(
+            {
+                "provider": agent.provider,
+                "model": api_kwargs["model"],
+                "api_mode": agent.api_mode,
+                "input": api_kwargs["input"],
+            }
+        )
+        response = _codex_message_response("OK")
+        response.model = "gpt-5.6-sol"
+        return response
+
+    def _capture_auxiliary_call(**kwargs):
+        auxiliary_calls.append(kwargs)
+        return "untrusted auxiliary synthesis"
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_main_call)
+    monkeypatch.setattr(
+        "agent.moa_loop.aggregate_moa_context",
+        _capture_auxiliary_call,
+    )
+
+    result = agent.run_conversation(marker)
+
+    assert result["completed"] is True
+    assert auxiliary_calls == []
+    assert len(observed_graph) == 1
+    assert {
+        key: observed_graph[0][key]
+        for key in ("provider", "model", "api_mode")
+    } == {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "api_mode": "codex_responses",
+    }
+    assert marker in repr(observed_graph[0]["input"])
+
+
+def test_explicit_typed_moa_config_remains_authoritative(monkeypatch):
+    """Trusted frontends can still opt into MoA through the typed parameter."""
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    agent = _build_agent(monkeypatch)
+    agent._disable_streaming = True
+    captured_request = {}
+    auxiliary_calls = []
+    moa_config = resolve_moa_preset(
+        {
+            "presets": {
+                "trusted": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"}
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                }
+            },
+            "default_preset": "trusted",
+        }
+    )
+
+    def _capture_main_call(api_kwargs):
+        captured_request.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    def _capture_auxiliary_call(**kwargs):
+        auxiliary_calls.append(kwargs)
+        return "trusted auxiliary synthesis"
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_main_call)
+    monkeypatch.setattr(
+        "agent.moa_loop.aggregate_moa_context",
+        _capture_auxiliary_call,
+    )
+
+    result = agent.run_conversation("explicit prompt", moa_config=moa_config)
+
+    assert result["completed"] is True
+    assert len(auxiliary_calls) == 1
+    assert auxiliary_calls[0]["user_prompt"] == "explicit prompt"
+    assert auxiliary_calls[0]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5"}
+    ]
+    assert "trusted auxiliary synthesis" in repr(captured_request["input"])
+
+
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     """The dispatch chokepoint must sanitize after every mutable layer."""
     agent = _build_copilot_agent(monkeypatch)

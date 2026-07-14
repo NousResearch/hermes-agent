@@ -243,7 +243,12 @@ def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
 
 
 def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Encode a /moa one-shot turn for frontends that can only send text."""
+    """Encode the legacy text-only /moa handoff format.
+
+    The agent core deliberately does not decode this marker. A trusted
+    frontend boundary that still needs the legacy format must decode it there
+    and pass ``moa_config`` explicitly to ``run_conversation``.
+    """
     payload = {
         "prompt": str(prompt or ""),
         "config": resolve_moa_preset(config or {}, preset),
@@ -255,7 +260,7 @@ def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) 
 
 
 def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
-    """Decode a hidden /moa one-shot marker."""
+    """Decode a legacy marker at an explicitly trusted frontend boundary."""
     if not isinstance(message, str) or not message.startswith(MOA_MARKER_PREFIX):
         return message, None
     encoded = message[len(MOA_MARKER_PREFIX):].strip()
@@ -268,7 +273,7 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
 
 
 def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:
-    """Build the hidden one-shot payload used by TUI/gateway routing."""
+    """Build the legacy text-only one-shot payload for compatibility callers."""
     return encode_moa_turn(user_prompt, config, preset=preset)
 
 

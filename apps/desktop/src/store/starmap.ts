@@ -38,6 +38,25 @@ export async function loadStarmapGraph(force = false): Promise<void> {
   return inflight
 }
 
+/** Drop one node from the cached graph immediately; return rollback. */
+export function evictStarmapNode(id: string): () => void {
+  const prev = $starmapGraph.get()
+
+  if (!prev) {
+    return () => {}
+  }
+
+  const next: StarmapGraph = {
+    ...prev,
+    nodes: prev.nodes.filter(node => node.id !== id),
+    edges: prev.edges.filter(edge => edge.source !== id && edge.target !== id)
+  }
+
+  $starmapGraph.set(next)
+
+  return () => $starmapGraph.set(prev)
+}
+
 /** Drop the cache so the next open refetches against the now-active profile. */
 export function resetStarmapGraph(): void {
   inflight = null

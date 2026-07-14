@@ -3904,7 +3904,7 @@ class TestProgressMessageThread:
             "channel": "C_CHAN",
             "channel_type": "channel",
             "user": "U_USER",
-            "text": f"<@U_BOT> help me",
+            "text": "<@U_BOT> help me",
             "ts": "2000000000.000001",
             # No thread_ts — top-level channel message
         }

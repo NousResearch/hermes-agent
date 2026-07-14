@@ -25,16 +25,24 @@ def _msys_to_windows_path(cwd: str) -> str:
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
     ``subprocess.Popen(..., cwd=...)`` can find it.
 
+    Also accepts the Cygwin (``/cygdrive/c/...``) and WSL-mount
+    (``/mnt/c/...``) spellings of a drive root. Multi-segment POSIX paths
+    like ``/home/x`` or ``/tmp/foo`` are left untouched.
+
     No-ops on non-Windows hosts or for paths that aren't in MSYS form.
     Returns the input unchanged when no translation applies. This is
     idempotent — calling it on an already-Windows path returns it as-is.
     """
     if not _IS_WINDOWS or not cwd:
         return cwd
-    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root).
-    m = re.match(r'^/([a-zA-Z])(/.*)?$', cwd)
+    # Match leading "/<single letter>/" or exactly "/<letter>" (bare drive root),
+    # plus /cygdrive/<letter>/... and /mnt/<letter>/... variants.
+    m = re.match(r'^/(?:(?:cygdrive|mnt)/)?([a-zA-Z])(/.*)?$', cwd)
     if not m:
         return cwd
+    # Reject /cygdrive or /mnt with no drive letter — the optional group above
+    # already requires the letter. Multi-char first segments (/home, /tmp)
+    # fail the single-letter capture and fall through as no-ops.
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
@@ -56,6 +64,35 @@ def _windows_to_msys_path(cwd: str) -> str:
     drive = m.group(1).lower()
     tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
     return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
+def _bash_safe_path(path: str) -> str:
+    """Return *path* in a form safe to embed in a Git Bash script.
+
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
+    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
+    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
+    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
+    failure class. No-op off Windows and for empty input.
+
+    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
+    Python compatibility; those still need the ``/c/...`` rewrite —
+    MSYS argument conversion treats ``C:/...`` as a Windows path and
+    can corrupt the login-shell ``drivers\\etc`` lookup.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
+
+
+def _quote_bash_path(path: str) -> str:
+    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
+    import shlex
+
+    return shlex.quote(_bash_safe_path(path))
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -152,7 +189,6 @@ def _build_provider_env_blocklist() -> frozenset:
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
         "GOOGLE_API_KEY",
         # Path to a GCP service-account JSON, not a bare key, so
@@ -212,6 +248,16 @@ def _build_provider_env_blocklist() -> frozenset:
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_DELIVERY_KEY",
     })
+    # CLAUDE_CODE_OAUTH_TOKEN is deliberately NOT stripped.  It is set and
+    # owned by the user's Claude Code install (subscription OAuth), not a
+    # Hermes-managed inference credential — Claude subscription auth is not a
+    # working Hermes provider path.  Stripping it broke agent-spawned
+    # ``claude`` CLIs: the child fell through to the shared macOS Keychain /
+    # ``~/.claude/.credentials.json`` store and, on auth failure, cleared it,
+    # logging the user out of their interactive Claude sessions (#55878).
+    # It arrives via the registry loop above (anthropic api_key_env_vars),
+    # so remove it explicitly.
+    blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     return frozenset(blocked)
 
 
@@ -374,6 +420,8 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         sanitized.pop(_marker, None)
 
+    _apply_windows_msys_bash_env_defaults(sanitized)
+
     return sanitized
 
 
@@ -484,6 +532,8 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
 
+    _apply_windows_msys_bash_env_defaults(env)
+
     # Cross-session leak guard, same as the terminal spawn paths: this helper
     # copies os.environ, whose HERMES_SESSION_* mirror is a last-writer-wins
     # global under a concurrent multi-session host. A caller that re-binds the
@@ -508,14 +558,15 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    candidates: list[str] = []
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
-        return custom
+        candidates.append(custom)
 
-    # Prefer our own portable Git install first — this way a broken or
-    # partially-uninstalled system Git can't hijack the bash lookup.  The
-    # install.ps1 installer always drops portable Git here when the user
-    # didn't already have a working system Git.
+    # Prefer our own portable Git install — a broken or partially-uninstalled
+    # system Git (or a stale HERMES_GIT_BASH_PATH pointing at one) must not
+    # brick the terminal.  install.ps1 drops PortableGit here when needed.
     #
     # Layouts (both checked so upgrades between MinGit and PortableGit
     # installs work transparently):
@@ -528,8 +579,8 @@ def _find_bash() -> str:
             os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
             os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
-            if os.path.isfile(candidate):
-                return candidate
+            if os.path.isfile(candidate) and candidate not in candidates:
+                candidates.append(candidate)
 
     # Check known Git for Windows install locations before PATH lookup.
     # On machines with both WSL and Git for Windows, shutil.which("bash")
@@ -538,20 +589,149 @@ def _find_bash() -> str:
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe") if _local_appdata else "",
     ):
-        if candidate and os.path.isfile(candidate):
-            return candidate
+        if candidate and os.path.isfile(candidate) and candidate not in candidates:
+            candidates.append(candidate)
 
     found = shutil.which("bash")
-    if found:
-        return found
+    if found and found not in candidates:
+        candidates.append(found)
+
+    # Prefer the first candidate that can actually start.  A stale
+    # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install
+    # (``Directory \\drivers\\etc does not exist``) must not win over a
+    # healthy portable Git under %LOCALAPPDATA%\\hermes\\git.
+    for candidate in candidates:
+        if _bash_starts(candidate):
+            if candidate != custom and custom and os.path.isfile(custom):
+                logger.warning(
+                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead",
+                    custom,
+                    candidate,
+                )
+            return candidate
+
+    if candidates:
+        # Last resort: return the first path even if the probe failed, so the
+        # caller still sees the real bash error instead of "not found".
+        return candidates[0]
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
+
+
+_bash_starts_cache: dict[str, bool] = {}
+
+
+def _bash_starts(bash: str) -> bool:
+    """True if *bash* can run a trivial non-login command.
+
+    Uses ``--noprofile --norc`` so a broken login post-install
+    (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
+    usable bash.  Cached per path for the process lifetime.
+    """
+    cached = _bash_starts_cache.get(bash)
+    if cached is not None:
+        return cached
+
+    try:
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", "exit 0"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+    except Exception as exc:
+        logger.debug("bash probe error for %s: %s", bash, exc)
+        ok = False
+
+    _bash_starts_cache[bash] = ok
+    return ok
+
+
+_git_bash_bin_dirs_cache: "list[str] | None" = None
+
+
+def _git_bash_bin_dirs() -> list[str]:
+    """Git Bash's coreutils/binary dirs, in ``/etc/profile`` precedence order.
+
+    A non-login ``bash -c`` (the fallback used when ``bash -l`` is broken —
+    the classic Windows ``Directory \\drivers\\etc does not exist`` failure)
+    never sources ``/etc/profile``, so it never gets ``…\\usr\\bin`` on PATH.
+    That directory holds every coreutil the file/terminal tools shell out to
+    (``cat``, ``mktemp``, ``mv``, ``wc``, ``head``, ``stat``, ``chmod``,
+    ``mkdir``, ``find`` …).  Without it, ``write_file`` fails with an empty
+    error (the failure text went to a missing binary's stderr) and terminal
+    commands exit 127.  We derive these dirs from the resolved ``bash.exe`` so
+    the fallback shell can find coreutils regardless of the login shell.
+
+    Returns ``[]`` off Windows or when bash can't be located.  Dirs are
+    returned in the order Git Bash's own ``/etc/profile`` prepends them
+    (mingw first, then usr/bin, then bin) and only if they exist on disk.
+    """
+    global _git_bash_bin_dirs_cache
+    if _git_bash_bin_dirs_cache is not None:
+        return _git_bash_bin_dirs_cache
+
+    if not _IS_WINDOWS:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    dirs: list[str] = []
+    try:
+        bash = _find_bash()
+    except Exception:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    bin_dir = os.path.dirname(bash)          # <root>\bin  or  <root>\usr\bin
+    parent = os.path.dirname(bin_dir)
+    # MinGit ships bash under usr\bin; PortableGit/system Git under bin.
+    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
+
+    # Order mirrors Git-for-Windows /etc/profile so coreutils win over the
+    # same-named Windows System32 tools (find.exe, sort.exe) inside the shell.
+    for candidate in (
+        os.path.join(root, "mingw64", "bin"),
+        os.path.join(root, "mingw32", "bin"),
+        os.path.join(root, "usr", "local", "bin"),
+        os.path.join(root, "usr", "bin"),
+        os.path.join(root, "bin"),
+    ):
+        if os.path.isdir(candidate) and candidate not in dirs:
+            dirs.append(candidate)
+
+    _git_bash_bin_dirs_cache = dirs
+    return dirs
+
+
+def _prepend_git_bash_dirs(existing_path: str) -> str:
+    """Prepend Git Bash's binary dirs to ``existing_path`` if missing.
+
+    No-op off Windows or when the dirs can't be resolved.  First-occurrence
+    wins, so a PATH that already lists a dir keeps its position.  This is what
+    lets the non-login ``bash -c`` fallback find coreutils; in the healthy
+    case the session snapshot re-exports the full login PATH inside the shell,
+    so this only matters when that snapshot is absent.
+    """
+    git_dirs = _git_bash_bin_dirs()
+    if not git_dirs:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    missing = [d for d in git_dirs if d not in entries]
+    if not missing:
+        return existing_path
+    return sep.join([*missing, *entries])
 
 
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
@@ -737,6 +917,29 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     return ":".join(ordered_entries)
 
 
+def _apply_windows_msys_bash_env_defaults(env: dict) -> None:
+    """Disable MSYS argument path conversion for Git Bash subprocesses.
+
+    Git Bash rewrites arguments that look like Unix paths (``/FO``, ``/TN``,
+    ``/Create``) into ``C:/.../git/FO``-style paths, which breaks native
+    Windows commands such as ``tasklist``, ``schtasks``, and ``wmic``.  Hermes
+    runs terminal commands through bash on Windows, so set the standard MSYS
+    opt-out by default.  Users who need conversion can override in their env.
+    Refs #56700.
+
+    ``MSYS_NO_PATHCONV`` is honored by Git for Windows bash only.  MSYS2-proper
+    and Cygwin bash (which ``_find_bash`` can still return via the final
+    ``shutil.which`` fallback) ignore it and honor ``MSYS2_ARG_CONV_EXCL``
+    instead, so set both.  ``*`` disables all argv conversion — the semantic
+    equivalent of ``MSYS_NO_PATHCONV=1``.  Also fixes ``cmd /c`` mangling
+    (#56147).
+    """
+    if not _IS_WINDOWS:
+        return
+    env.setdefault("MSYS_NO_PATHCONV", "1")
+    env.setdefault("MSYS2_ARG_CONV_EXCL", "*")
+
+
 def _path_env_key(run_env: dict) -> str | None:
     """Return the PATH env key to update without altering Windows casing.
 
@@ -777,6 +980,13 @@ def _make_run_env(env: dict) -> dict:
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
+        # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
+        # broken) never sources /etc/profile, so without this cat/mktemp/mv and
+        # friends are missing and every write_file/terminal call fails (empty
+        # error / exit 127).  No-op off Windows and when a login snapshot is
+        # healthy (the snapshot re-exports the full PATH inside the shell).
+        new_path = _prepend_git_bash_dirs(new_path)
         # Ensure the hermes install dir is reachable so plugins can shell out
         # to bare ``hermes`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).
@@ -794,6 +1004,8 @@ def _make_run_env(env: dict) -> dict:
 
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         run_env.pop(_marker, None)
+
+    _apply_windows_msys_bash_env_defaults(run_env)
 
     return run_env
 
@@ -947,6 +1159,10 @@ class LocalEnvironment(BaseEnvironment):
     def _quote_cwd_for_cd(cwd: str) -> str:
         """Use native paths for Python, but Git Bash-friendly paths for cd."""
         return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
+
+    def _quote_shell_path(self, path: str) -> str:
+        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
+        return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

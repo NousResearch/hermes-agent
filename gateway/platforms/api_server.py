@@ -829,6 +829,30 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
+def _identity_scoped_idempotency_key(
+    idempotency_key: str,
+    user_identity: Optional[Dict[str, str]] = None,
+) -> str:
+    """Scope an Idempotency-Key by the request's resolved identity.
+
+    Identity (X-Hermes-User-*/Chat-*/Thread-Id headers, or the OpenAI
+    ``user`` body fallback — both already folded into *user_identity* by
+    ``_parse_user_identity_headers``) changes the agent/memory result for
+    an otherwise identical body, so cached responses must never be shared
+    across identities: without scoping, two callers reusing one key with
+    the same body would read each other's cached result.  Scoping the key
+    (rather than the fingerprint) keeps each identity in its own cache
+    slot, so one identity's retries still hit while another identity can
+    neither read nor evict them.  Identity-less requests keep the raw key
+    unchanged.
+    """
+    if not user_identity:
+        return idempotency_key
+    from hashlib import sha256
+    ident = repr(sorted(user_identity.items()))
+    return f"{idempotency_key}:{sha256(ident.encode('utf-8')).hexdigest()[:16]}"
+
+
 def _derive_chat_session_id(
     system_prompt: Optional[str],
     first_user_message: str,
@@ -2575,6 +2599,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            idempotency_key = _identity_scoped_idempotency_key(idempotency_key, user_identity)
             fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
@@ -3697,6 +3722,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            idempotency_key = _identity_scoped_idempotency_key(idempotency_key, user_identity)
             fp = _make_request_fingerprint(
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],

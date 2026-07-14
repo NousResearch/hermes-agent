@@ -836,3 +836,69 @@ class TestStopRun:
                 body = await events_resp.text()
                 # Stream should have received run.failed and closed
                 assert "run.failed" in body or "stream closed" in body
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/runs — multi-user identity headers
+# ---------------------------------------------------------------------------
+
+
+class TestRunsUserIdentity:
+    """X-Hermes-User-*/Chat-* headers on /v1/runs thread through to the agent,
+    same as on /v1/chat/completions and /v1/responses."""
+
+    @staticmethod
+    def _fast_agent():
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "done"}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        return mock_agent
+
+    @staticmethod
+    async def _wait_for_call(mock_create, timeout: float = 5.0):
+        deadline = time.monotonic() + timeout
+        while mock_create.call_args is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert mock_create.call_args is not None, "agent was never created"
+
+    @pytest.mark.asyncio
+    async def test_identity_headers_threaded_to_agent(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                mock_create.return_value = self._fast_agent()
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        "X-Hermes-User-Id": "user-42",
+                        "X-Hermes-Chat-Id": "group-abc",
+                        "X-Hermes-Chat-Type": "group",
+                    },
+                    json={"input": "hello"},
+                )
+                assert resp.status == 202
+                await self._wait_for_call(mock_create)
+                identity = mock_create.call_args.kwargs["user_identity"]
+                assert identity == {
+                    "user_id": "user-42",
+                    "chat_id": "group-abc",
+                    "chat_type": "group",
+                }
+
+    @pytest.mark.asyncio
+    async def test_no_identity_headers_yield_empty_identity(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                mock_create.return_value = self._fast_agent()
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={"input": "hello"},
+                )
+                assert resp.status == 202
+                await self._wait_for_call(mock_create)
+                assert mock_create.call_args.kwargs["user_identity"] == {}

@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _identity_scoped_idempotency_key,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -4134,6 +4135,9 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+# ---------------------------------------------------------------------------
 # X-Hermes-User-* / Chat-* / Thread-Id headers (multi-user identity)
 # ---------------------------------------------------------------------------
 
@@ -4354,3 +4358,145 @@ class TestUserIdentityHeaders:
             assert features["thread_id_header"] == "X-Hermes-Thread-Id"
             assert features["user_body_fallback"] == "user"
 
+
+
+# ---------------------------------------------------------------------------
+# Identity-scoped idempotency (cross-identity cache isolation)
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityScopedIdempotencyKey:
+    """Unit tests for _identity_scoped_idempotency_key.
+
+    Identity changes the agent/memory result, so the idempotency cache must
+    be partitioned by resolved identity: same key + same body under two
+    identities must never share a cached response.
+    """
+
+    def test_no_identity_keeps_raw_key(self):
+        assert _identity_scoped_idempotency_key("idem-1", {}) == "idem-1"
+        assert _identity_scoped_idempotency_key("idem-1", None) == "idem-1"
+
+    def test_identity_appends_stable_suffix(self):
+        k1 = _identity_scoped_idempotency_key("idem-1", {"user_id": "alice"})
+        k2 = _identity_scoped_idempotency_key("idem-1", {"user_id": "alice"})
+        assert k1 == k2
+        assert k1 != "idem-1"
+        assert k1.startswith("idem-1:")
+
+    def test_different_identities_get_different_keys(self):
+        ka = _identity_scoped_idempotency_key("idem-1", {"user_id": "alice"})
+        kb = _identity_scoped_idempotency_key("idem-1", {"user_id": "bob"})
+        assert ka != kb
+
+    def test_dict_insertion_order_does_not_matter(self):
+        k1 = _identity_scoped_idempotency_key("idem-1", {"user_id": "u", "chat_id": "c"})
+        k2 = _identity_scoped_idempotency_key("idem-1", {"chat_id": "c", "user_id": "u"})
+        assert k1 == k2
+
+
+class TestIdentityScopedIdempotencyEndpoints:
+    """Same Idempotency-Key + identical body across two identities must not
+    share a cached response (chat + Responses); same identity retries and
+    identity-less requests keep normal idempotency semantics."""
+
+    @staticmethod
+    def _mock_run(payloads):
+        """AsyncMock for _run_agent returning successive payloads."""
+        results = [
+            ({"final_response": p, "messages": [], "api_calls": 1},
+             {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            for p in payloads
+        ]
+        return AsyncMock(side_effect=results)
+
+    @pytest.mark.asyncio
+    async def test_chat_cross_identity_does_not_share_cache(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new=self._mock_run(["for-alice", "for-bob"])) as mock_run:
+                r1 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-chat-hdr",
+                             "X-Hermes-User-Id": "alice"},
+                    json=body,
+                )
+                r2 = await cli.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-chat-hdr",
+                             "X-Hermes-User-Id": "bob"},
+                    json=body,
+                )
+            assert r1.status == 200 and r2.status == 200
+            d1, d2 = await r1.json(), await r2.json()
+            assert d1["choices"][0]["message"]["content"] == "for-alice"
+            assert d2["choices"][0]["message"]["content"] == "for-bob"
+            assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_chat_same_identity_retry_hits_cache(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        headers = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-chat-retry",
+                   "X-Hermes-User-Id": "alice"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new=self._mock_run(["first", "second"])) as mock_run:
+                r1 = await cli.post("/v1/chat/completions", headers=headers, json=body)
+                r2 = await cli.post("/v1/chat/completions", headers=headers, json=body)
+            assert r1.status == 200 and r2.status == 200
+            d1, d2 = await r1.json(), await r2.json()
+            assert d1["choices"][0]["message"]["content"] == "first"
+            assert d2["choices"][0]["message"]["content"] == "first"
+            assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_identity_less_requests_keep_old_semantics(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        headers = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-chat-plain"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new=self._mock_run(["first", "second"])) as mock_run:
+                r1 = await cli.post("/v1/chat/completions", headers=headers, json=body)
+                r2 = await cli.post("/v1/chat/completions", headers=headers, json=body)
+            assert r1.status == 200 and r2.status == 200
+            d2 = await r2.json()
+            assert d2["choices"][0]["message"]["content"] == "first"
+            assert mock_run.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_chat_body_user_fallback_also_scopes_cache(self, auth_adapter):
+        """OpenAI body `user` fallback partitions the cache like the header does."""
+        app = _create_app(auth_adapter)
+        base = {"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}]}
+        headers = {"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-chat-body"}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new=self._mock_run(["for-alice", "for-bob"])) as mock_run:
+                r1 = await cli.post("/v1/chat/completions", headers=headers, json={**base, "user": "alice"})
+                r2 = await cli.post("/v1/chat/completions", headers=headers, json={**base, "user": "bob"})
+            assert r1.status == 200 and r2.status == 200
+            d1, d2 = await r1.json(), await r2.json()
+            assert d1["choices"][0]["message"]["content"] == "for-alice"
+            assert d2["choices"][0]["message"]["content"] == "for-bob"
+            assert mock_run.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_responses_cross_identity_does_not_share_cache(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        body = {"model": "hermes-agent", "input": "hi", "store": False}
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new=self._mock_run(["for-alice", "for-bob"])) as mock_run:
+                r1 = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-resp-hdr",
+                             "X-Hermes-User-Id": "alice"},
+                    json=body,
+                )
+                r2 = await cli.post(
+                    "/v1/responses",
+                    headers={"Authorization": "Bearer sk-secret", "Idempotency-Key": "xid-resp-hdr",
+                             "X-Hermes-User-Id": "bob"},
+                    json=body,
+                )
+            assert r1.status == 200 and r2.status == 200
+            assert mock_run.call_count == 2

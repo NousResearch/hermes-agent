@@ -66,6 +66,32 @@ gateway:
     always_singular:       "✅ Befehl genehmigt (Muster dauerhaft genehmigt). Der Agent wird fortgesetzt..."
     always_plural:         "✅ Befehle genehmigt (Muster dauerhaft genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ Befehlsgenehmigung erforderlich
+    card_reason: Grund
+    btn_allow_once: ✅ Einmal erlauben
+    btn_session: ✅ Sitzung
+    btn_always: ✅ Immer
+    btn_deny: ❌ Ablehnen
+    card_source: Genehmigungsdelegation
+    card_command: Befehlsvorschau
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied:       "Abgelehnt."
+    approved_once: "Approved once"
+    approved_session: "Approved for session"
+    approved_always: "Approved permanently"
+    denied: "Denied"
+
+
   background:
     usage:                 "Verwendung: /background <prompt>\nBeispiel: /background Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
     started:               "🔄 Hintergrund-Aufgabe gestartet: \"{preview}\"\nAufgaben-ID: {task_id}\nSie können weiter chatten — die Ergebnisse erscheinen hier, wenn sie fertig sind."

@@ -66,6 +66,32 @@ gateway:
     always_singular:       "✅ Opdrag goedgekeur (patroon permanent goedgekeur). Die agent gaan voort..."
     always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ Opdrag-goedkeuring benodig
+    card_reason: Rede
+    btn_allow_once: ✅ Laat een keer toe
+    btn_session: ✅ Sessie
+    btn_always: ✅ Altyd
+    btn_deny: ❌ Weier
+    card_source: Goedkeuringsdelegering
+    card_command: Opdrag voorskou
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied:       "Geweier."
+    approved_once: "Approved once"
+    approved_session: "Approved for session"
+    approved_always: "Approved permanently"
+    denied: "Denied"
+
+
   background:
     usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
     started:               "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."

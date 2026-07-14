@@ -66,6 +66,32 @@ gateway:
     always_singular:       "✅ 명령이 승인되었습니다 (패턴 영구 승인됨). 에이전트가 재개됩니다..."
     always_plural:         "✅ 명령이 승인되었습니다 (패턴 영구 승인됨) ({count}개). 에이전트가 재개됩니다..."
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ 명령 승인 필요
+    card_reason: 사유
+    btn_allow_once: ✅ 한 번 허용
+    btn_session: ✅ 세션
+    btn_always: ✅ 항상
+    btn_deny: ❌ 거부
+    card_source: 승인 위임
+    card_command: 명령 미리보기
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied:       "거부됨."
+    approved_once: "Approved once"
+    approved_session: "Approved for session"
+    approved_always: "Approved permanently"
+    denied: "Denied"
+
+
   background:
     usage:                 "사용법: /background <prompt>\n예시: /background 오늘 HN 인기 글을 요약해줘\n\n프롬프트를 별도 세션에서 실행합니다. 계속 대화할 수 있으며, 완료되면 결과가 여기에 표시됩니다."
     started:               "🔄 백그라운드 작업이 시작되었습니다: \"{preview}\"\n작업 ID: {task_id}\n계속 대화하실 수 있습니다 — 완료되면 결과가 여기에 표시됩니다."

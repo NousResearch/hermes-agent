@@ -4686,6 +4686,116 @@ class GatewaySlashCommandsMixin:
         lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
         return "\n".join(lines)
 
+    async def _try_handle_delegated_approval(
+        self, event: MessageEvent, choice: str
+    ) -> Optional[str]:
+        """Check if this is a delegated approval and handle it.
+
+        Returns a response string if delegation was handled, or None if
+        this is not a delegated approval (caller should proceed with
+        normal approval logic).
+
+        Shared by /approve and /deny handlers.
+        """
+        from gateway.approval_delegation import resolve_delegation, clear_delegation
+        source = event.source
+        _src_plat = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        _src_chat_id = str(source.chat_id or "")
+        _delegation = resolve_delegation(_src_plat, _src_chat_id)
+
+        if _delegation is None:
+            return None  # Not a delegated approval
+
+        from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+        target_sk = _delegation["session_key"]
+
+        # Clean stale delegations
+        while _delegation is not None and not has_blocking_approval(target_sk):
+            clear_delegation(_src_plat, _src_chat_id, session_key=target_sk)
+            _delegation = resolve_delegation(_src_plat, _src_chat_id)
+            if _delegation:
+                target_sk = _delegation["session_key"]
+
+        if _delegation is None:
+            try:
+                from agent.i18n import t as _t
+                return _t("gateway.approval_delegation.expired")
+            except Exception:
+                return "This approval request has expired."
+
+        # Parse args for choice (only for /approve; /deny always uses "deny")
+        resolve_all = False
+        if choice != "deny":
+            args_str = event.get_command_args() if hasattr(event, 'get_command_args') else ""
+            args = args_str.strip().lower().split() if args_str else []
+            resolve_all = "all" in args
+            remaining = [a for a in args if a != "all"]
+            if any(a in {"always", "permanent", "permanently"} for a in remaining):
+                choice = "always"
+            elif any(a in {"session", "ses"} for a in remaining):
+                choice = "session"
+            else:
+                choice = "once"
+
+        count = resolve_gateway_approval(target_sk, choice, resolve_all=resolve_all)
+        clear_delegation(_src_plat, _src_chat_id, session_key=target_sk)
+
+        if not count:
+            try:
+                from agent.i18n import t as _t
+                return _t("gateway.approval_delegation.expired")
+            except Exception:
+                return "This approval request has expired."
+
+        # Notify original user (cross-platform)
+        user_platform = _delegation.get("user_platform", "")
+        user_chat_id = _delegation.get("user_chat_id", "")
+        user_chat_meta = _delegation.get("user_chat_meta")
+
+        if user_chat_id and user_platform:
+            from gateway.config import Platform as _Plat
+            _user_plat_enum = None
+            try:
+                _user_plat_enum = _Plat(user_platform)
+            except (ValueError, KeyError):
+                pass
+            _user_adapter = self.adapters.get(_user_plat_enum) if _user_plat_enum else None
+            if _user_adapter:
+                try:
+                    from agent.async_utils import safe_schedule_threadsafe
+                    try:
+                        from agent.i18n import t as _t
+                        _notify_key = "admin_approved" if choice != "deny" else "admin_denied"
+                        _notify_msg = _t(f"gateway.approval_delegation.{_notify_key}")
+                    except Exception:
+                        _notify_msg = "✅ Admin approved. Executing..." if choice != "deny" else "❌ Admin denied the operation."
+                    _notify_fut = safe_schedule_threadsafe(
+                        _user_adapter.send(
+                            user_chat_id,
+                            _notify_msg,
+                            metadata=user_chat_meta,
+                        ),
+                        asyncio.get_running_loop(),
+                        logger=logger,
+                        log_message="Delegation user notify error",
+                    )
+                    if _notify_fut is not None:
+                        _notify_fut.result(timeout=15)
+                except Exception:
+                    pass
+
+        logger.info(
+            "Admin resolved delegated approval for session %s (%s)",
+            target_sk[:16], choice,
+        )
+        try:
+            from agent.i18n import t as _t
+            _res_key = "resolved_approved" if choice != "deny" else "resolved_denied"
+            return _t(f"gateway.approval_delegation.{_res_key}", choice=choice)
+        except Exception:
+            return f"{'Approved' if choice != 'deny' else 'Denied'} ({choice})."
+
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).
 
@@ -4708,6 +4818,11 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        # Check if this is a delegated approval
+        _delegated_result = await self._try_handle_delegated_approval(event, "approve")
+        if _delegated_result is not None:
+            return _delegated_result
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,
@@ -4757,6 +4872,11 @@ class GatewaySlashCommandsMixin:
         """
         source = event.source
         session_key = self._session_key_for_source(source)
+
+        # Check if this is a delegated approval
+        _delegated_result = await self._try_handle_delegated_approval(event, "deny")
+        if _delegated_result is not None:
+            return _delegated_result
 
         from tools.approval import (
             resolve_gateway_approval, has_blocking_approval,

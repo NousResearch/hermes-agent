@@ -70,6 +70,32 @@ gateway:
     always_singular:       "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ Údarú ordaithe ag teastáil
+    card_reason: Fáth
+    btn_allow_once: ✅ Ceadaigh uair amháin
+    btn_session: ✅ Seisiún
+    btn_always: ✅ I gcónaí
+    btn_deny: ❌ Diúltaigh
+    card_source: Tarmligean údaráis
+    card_command: Réamhamharc ordaithe
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied:       "Diúltaíodh."
+    approved_once: "Approved once"
+    approved_session: "Approved for session"
+    approved_always: "Approved permanently"
+    denied: "Denied"
+
+
   background:
     usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."

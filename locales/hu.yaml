@@ -66,6 +66,32 @@ gateway:
     always_singular:       "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
     always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
 
+
+  approval_delegation:
+    header: 🔐 Approval Delegation — Dangerous command requires admin approval
+    user_label: 'User: {user} (from {platform})'
+    reason_label: 'Reason: {reason}'
+    reply_hint: Reply /approve to approve | /deny to reject
+    redirected: '[approval-delegation] Redirected approval to admin {platform}:{chat_id}'
+    admin_approved: ✅ Admin approved. Executing...
+    admin_denied: ❌ Admin denied the operation.
+    card_header: ⚠️ Parancsjóváhagyás szükséges
+    card_reason: Ok
+    btn_allow_once: ✅ Engedélyezés egyszer
+    btn_session: ✅ Munkamenet
+    btn_always: ✅ Mindig
+    btn_deny: ❌ Elutasítás
+    card_source: Jóváhagyás-delegálás
+    card_command: Parancs előnézet
+    expired: This approval request has expired.
+    resolved_approved: Approved ({choice}).
+    resolved_denied:       "Elutasítva."
+    approved_once: "Approved once"
+    approved_session: "Approved for session"
+    approved_always: "Approved permanently"
+    denied: "Denied"
+
+
   background:
     usage:                 "Használat: /background <prompt>\nPélda: /background Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
     started:               "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."

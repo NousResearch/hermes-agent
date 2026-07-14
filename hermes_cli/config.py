@@ -2692,6 +2692,19 @@ DEFAULT_CONFIG = {
         # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
         # opt out there).
         "destructive_slash_confirm": True,
+        # Approval delegation — route dangerous-command approvals to
+        # designated admins when the user is not an admin.  Supports
+        # cross-platform delegation (e.g. user on WeChat, admin on Feishu).
+        # Disabled by default (personal users don't need it).
+        "delegation": {
+            "enabled": False,
+            "admins": [],
+            # Example:
+            # admins:
+            #   - platform: feishu
+            #     user_id: "79b3f488"
+            #     # chat_id: "oc_xxx"  # optional, defaults to user_id DM
+        },
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)

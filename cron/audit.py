@@ -14,41 +14,36 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
-_TRUE_VALUES = {"1", "true", "yes", "on"}
 _DEFAULT_MAX_MB = 10
-_config_cache: Optional[Dict[str, Any]] = None
+# Keyed by the active HERMES_HOME so a multi-profile gateway (dashboard cron
+# requests scope HERMES_HOME per profile) never serves one profile's enabled
+# flag / log path to another. See reload_audit_config() to invalidate.
+_config_cache: Dict[str, Dict[str, Any]] = {}
 _config_lock = threading.Lock()
 _write_lock = threading.Lock()
 
 
-def _truthy(value: Any) -> bool:
-    return str(value or "").strip().lower() in _TRUE_VALUES
-
-
 def _load_audit_config() -> Dict[str, Any]:
-    """Load audit config from env/config.yaml, cached until reload."""
-    global _config_cache
-    with _config_lock:
-        if _config_cache is not None:
-            return dict(_config_cache)
+    """Load audit config from ``config.yaml``, cached per active HERMES_HOME.
 
+    Behavioral configuration is exposed through ``config.yaml`` only
+    (``cron.audit_log`` / ``cron.audit_log_path`` / ``cron.audit_log_max_mb``);
+    per AGENTS.md, non-secret settings must not add user-facing ``HERMES_*``
+    env vars.
+    """
     hermes_home = get_hermes_home()
+    cache_key = str(hermes_home)
+
+    with _config_lock:
+        cached = _config_cache.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
     cfg: Dict[str, Any] = {
-        "enabled": _truthy(os.getenv("HERMES_CRON_AUDIT_LOG")),
+        "enabled": False,
         "log_path": str(hermes_home / "cron" / "audit.log"),
         "max_mb": _DEFAULT_MAX_MB,
     }
-
-    env_path = os.getenv("HERMES_CRON_AUDIT_LOG_PATH")
-    if env_path:
-        cfg["log_path"] = env_path
-
-    env_max = os.getenv("HERMES_CRON_AUDIT_LOG_MAX_MB")
-    if env_max:
-        try:
-            cfg["max_mb"] = max(1, int(env_max))
-        except (TypeError, ValueError):
-            logger.debug("Ignoring invalid HERMES_CRON_AUDIT_LOG_MAX_MB=%r", env_max)
 
     try:
         from hermes_cli.config import load_config
@@ -68,15 +63,14 @@ def _load_audit_config() -> Dict[str, Any]:
         logger.debug("Failed to load cron audit config: %s", exc)
 
     with _config_lock:
-        _config_cache = dict(cfg)
+        _config_cache[cache_key] = dict(cfg)
     return cfg
 
 
 def reload_audit_config() -> None:
-    """Clear the cached audit config."""
-    global _config_cache
+    """Clear the cached audit config for all profiles."""
     with _config_lock:
-        _config_cache = None
+        _config_cache.clear()
 
 
 def is_audit_enabled() -> bool:

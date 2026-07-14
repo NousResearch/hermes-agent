@@ -339,7 +339,7 @@ def cron_audit(args) -> int:
     if not entries:
         print(color("No matching cron audit entries found.", Colors.DIM))
         if not log_path.exists() and not is_audit_enabled():
-            print(color("Enable with cron.audit_log: true or HERMES_CRON_AUDIT_LOG=1.", Colors.DIM))
+            print(color("Enable by setting cron.audit_log: true in config.yaml.", Colors.DIM))
         return 0
 
     print()

@@ -601,6 +601,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 disco["jwks_uri"],
                 cache_keys=True,
                 lifespan=_JWKS_CACHE_SECONDS,
+                headers={"User-Agent": "Hermes-Dashboard/1.0"},
             )
         return self._jwks_client
 

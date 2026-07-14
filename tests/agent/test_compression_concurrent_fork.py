@@ -351,8 +351,8 @@ def test_abort_warning_exception_stops_lock_refresher(tmp_path: Path, monkeypatc
     assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 
 
-def test_typeerror_fallback_exception_stops_lock_refresher(tmp_path: Path, monkeypatch) -> None:
-    """A strict-signature fallback failure must still release the refreshed lock."""
+def test_internal_typeerror_stops_lock_refresher_without_retry(tmp_path: Path, monkeypatch) -> None:
+    """An engine TypeError must release the refreshed lock without a second call."""
     real_try_acquire = SessionDB.try_acquire_compression_lock
 
     def _short_ttl(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
@@ -368,18 +368,20 @@ def test_typeerror_fallback_exception_stops_lock_refresher(tmp_path: Path, monke
     agent._compression_lock_ttl_seconds = 1.0
     agent._compression_lock_refresh_interval = 0.1
 
-    def _strict_signature(*_a, **_kw):
-        if "focus_topic" in _kw or "force" in _kw:
-            raise TypeError("strict signature")
-        raise RuntimeError("fallback boom")
+    calls = []
 
-    agent.context_compressor.compress.side_effect = _strict_signature
+    def _internal_typeerror(*_a, **_kw):
+        calls.append(_kw)
+        raise TypeError("engine implementation bug")
+
+    agent.context_compressor.compress.side_effect = _internal_typeerror
 
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
 
-    with pytest.raises(RuntimeError, match="fallback boom"):
+    with pytest.raises(TypeError, match="engine implementation bug"):
         agent._compress_context(messages, "sys", approx_tokens=120_000)
 
+    assert len(calls) == 1
     time.sleep(1.3)
     assert db.try_acquire_compression_lock(parent_sid, "probe", ttl_seconds=1.0) is True
 

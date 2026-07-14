@@ -96,6 +96,44 @@ def _compression_lock_holder(agent: Any) -> str:
     )
 
 
+def _supported_compression_kwargs(
+    compress_fn: Any,
+    *,
+    current_tokens: Optional[int],
+    focus_topic: Optional[str],
+    force: bool,
+    memory_context: str,
+) -> dict:
+    """Return only compression kwargs accepted by an engine callable.
+
+    Context-engine plugins can outlive additions to the optional host contract.
+    Inspecting the callable before invoking it keeps those older signatures
+    compatible without catching an internal ``TypeError`` and executing a
+    stateful compressor twice.
+    """
+    candidates = {
+        "current_tokens": current_tokens,
+        "focus_topic": focus_topic,
+        "force": force,
+        "memory_context": memory_context,
+    }
+    try:
+        parameters = inspect.signature(compress_fn).parameters
+    except (TypeError, ValueError):
+        # ``current_tokens`` has been part of the ContextEngine ABC since its
+        # introduction. Keep the oldest documented call shape when a C-backed
+        # or otherwise opaque callable has no inspectable signature.
+        return {"current_tokens": current_tokens}
+
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    if accepts_kwargs:
+        return candidates
+    return {name: value for name, value in candidates.items() if name in parameters}
+
+
 class _CompressionLockLeaseRefresher:
     def __init__(
         self,
@@ -494,6 +532,9 @@ def compress_context(
     # the actual thread (#36801). Route compaction to the app server's own
     # thread/compact mechanism. Behavior is controlled by
     # ``compression.codex_app_server_auto`` (native|hermes|off).
+    # The memory-provider context handoff below is intentionally Hermes-only:
+    # the app server does not expose its native summary prompt, so there is no
+    # truthful injection point for ``on_pre_compress()`` return text here.
     if getattr(agent, "api_mode", None) == "codex_app_server":
         return _compress_context_via_codex_app_server(
             agent,
@@ -712,9 +753,8 @@ def compress_context(
 
     # Notify external memory provider before compression discards context.
     # The provider's on_pre_compress() may return a string of insights it
-    # wants surfaced inside the compression summary; capture and forward
-    # it to the compressor (fixes #7195 — return value was silently
-    # discarded for every plugin).
+    # wants surfaced inside the compression summary; capture and forward it
+    # instead of silently discarding the provider's return value.
     memory_context = ""
     if agent._memory_manager:
         try:
@@ -724,22 +764,30 @@ def compress_context(
         except Exception:
             pass
 
-    try:
-        compressed = agent.context_compressor.compress(
-            messages,
-            current_tokens=approx_tokens,
-            focus_topic=focus_topic,
-            force=force,
-            memory_context=memory_context,
+    compress_fn = agent.context_compressor.compress
+    compress_kwargs = _supported_compression_kwargs(
+        compress_fn,
+        current_tokens=approx_tokens,
+        focus_topic=focus_topic,
+        force=force,
+        memory_context=memory_context,
+    )
+    if memory_context.strip() and "memory_context" not in compress_kwargs:
+        engine_name = getattr(
+            agent.context_compressor,
+            "name",
+            type(agent.context_compressor).__name__,
         )
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force / memory_context — fall back to calling without them.
-        try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
+        if getattr(agent, "_last_memory_context_unsupported_engine", None) != engine_name:
+            agent._last_memory_context_unsupported_engine = engine_name
+            logger.warning(
+                "context engine %s does not accept memory_context; continuing "
+                "without provider-supplied summary context",
+                engine_name,
+            )
+
+    try:
+        compressed = compress_fn(messages, **compress_kwargs)
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.

@@ -1298,6 +1298,13 @@ _PROVIDER_ALIASES = {
     "lm_studio": "lmstudio",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    # Local OpenAI-compatible servers route through the generic "custom"
+    # provider (same as hermes_cli.auth / hermes_cli.providers aliases).
+    "local": "custom",  # orphan id (no ProviderDef); a custom alias in-plugin
+    "vllm": "custom",
+    "llamacpp": "custom",
+    "llama.cpp": "custom",
+    "llama-cpp": "custom",
 }
 
 

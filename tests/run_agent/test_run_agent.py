@@ -3039,6 +3039,37 @@ class TestConcurrentToolExecution:
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
 
+    def test_timed_out_pre_tool_hook_blocks_before_tool_dispatch(self, agent, monkeypatch):
+        from hermes_cli.plugins import PluginManager
+
+        manager = PluginManager()
+        manager._hook_timeout_seconds = 0.02
+
+        def slow_pre_tool_call(**kwargs):
+            import time
+            time.sleep(0.30)
+
+        manager._hooks["pre_tool_call"] = [slow_pre_tool_call]
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        tool_call = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"test.txt","content":"hello"}',
+            call_id="timeout-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
+            side_effect=AssertionError("checkpoint should not run")
+        )
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
+        assert json.loads(messages[0]["content"])["error"]
+
     def test_sequential_blocked_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Blocked pre_tool_call decisions still terminate observer tool spans."""
         tool_call = _mock_tool_call(name="write_file",

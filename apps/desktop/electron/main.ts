@@ -5890,6 +5890,115 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
+// True when the given pid belongs to a running process whose command line
+// contains "hermes", avoiding false positives from stale gateway.pid files
+// whose PID was recycled by the OS to an unrelated process.
+function isHermesProcess(pid) {
+  try {
+    process.kill(pid, 0) // signal 0 = existence check, no signal sent
+  } catch {
+    return false
+  }
+  // On macOS / Linux, check the command line to avoid PID recycling false positives.
+  try {
+    const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+    return cmdline.includes('hermes')
+  } catch {
+    // /proc not available (macOS) — fall back to ps. Use -o args= to inspect
+    // the full command line, not just the process name.  -o comm= would return
+    // "python3" for any Python process, creating false positives.
+    try {
+      const { execSync } = require('child_process')
+      const out = execSync(`ps -p ${pid} -o args=`, { encoding: 'utf8', timeout: 2000 })
+      return out.includes('hermes')
+    } catch {
+      return false
+    }
+  }
+}
+
+// Seed active-profile.json from the best available signal when the file does
+// not yet exist.  Runs exactly once (no-op once the file exists).  Priority:
+//   1. Legacy ~/.hermes/active_profile (explicit CLI choice via hermes profile use)
+//   2. Running gateway (gateway.pid with verified liveness + hermes identity)
+//   3. state.db heuristics (hybrid recency×size score picks the primary workspace)
+// The stored JSON includes _migrated:true so the renderer can optionally surface
+// a one-time notification that the profile was auto-detected.
+function migrateActiveProfileIfMissing() {
+  if (fs.existsSync(DESKTOP_PROFILE_CONFIG_PATH)) return
+
+  // 1. Legacy CLI sticky file — highest confidence, no _migrated flag needed
+  //    (the user explicitly chose this profile via hermes profile use).
+  const legacyActive = path.join(HERMES_HOME, 'active_profile')
+  try {
+    const name = fs.readFileSync(legacyActive, 'utf8').trim()
+    if (name && PROFILE_NAME_RE.test(name)) {
+      return writeActiveDesktopProfile(name)
+    }
+  } catch { /* not found */ }
+
+  // Gather known profile names from the filesystem
+  const profilesRoot = path.join(HERMES_HOME, 'profiles')
+  let allProfiles = []
+  try {
+    allProfiles = fs.readdirSync(profilesRoot, { withFileTypes: true })
+      .filter(e => e.isDirectory() && (e.name === 'default' || PROFILE_NAME_RE.test(e.name)))
+      .map(e => e.name)
+  } catch { /* no profiles dir */ }
+  if (allProfiles.length === 0) return
+
+  // 2. Running gateway detection — liveness + hermes identity check.
+  //    Also high confidence (the gateway is actively running), so no
+  //    _migrated flag is written — same rationale as priority 1.
+  const running = []
+  for (const name of allProfiles) {
+    const pidFile = path.join(profilesRoot, name, 'gateway.pid')
+    try {
+      const raw = fs.readFileSync(pidFile, 'utf8')
+      const parsed = JSON.parse(raw)
+      if (parsed.pid && isHermesProcess(parsed.pid)) {
+        running.push(name)
+      }
+    } catch { /* pid file missing, malformed, or stale */ }
+  }
+
+  if (running.length === 1) {
+    return writeActiveDesktopProfile(running[0])
+  }
+
+  // 3. state.db heuristics — hybrid recency × size score.
+  //    Only runs for named profiles (not default), since the goal is to
+  //    migrate AWAY from \"default\" when a better candidate exists.
+  //    The default profile's state.db at ~/.hermes/state.db is deliberately
+  //    excluded — the function is a no-op for single-profile users.
+  const candidates = running.length > 1 ? running : allProfiles
+  let best = null
+  let maxScore = -1
+
+  for (const name of candidates) {
+    const dbPath = path.join(profilesRoot, name, 'state.db')
+    try {
+      const stat = fs.statSync(dbPath)
+      const daysSinceModified = Math.max(0, (Date.now() - stat.mtimeMs) / (1000 * 60 * 60 * 24))
+      const recencyWeight = Math.max(0.1, 30 - daysSinceModified)
+      const sizeWeight = Math.log10(Math.max(1024, stat.size))
+      const score = recencyWeight * sizeWeight
+      if (score > maxScore) {
+        maxScore = score
+        best = name
+      }
+    } catch { /* no state.db */ }
+  }
+
+  if (best && best !== 'default') {
+    fs.mkdirSync(path.dirname(DESKTOP_PROFILE_CONFIG_PATH), { recursive: true })
+    writeFileAtomic(
+      DESKTOP_PROFILE_CONFIG_PATH,
+      JSON.stringify({ profile: best, _migrated: true }, null, 2)
+    )
+  }
+}
+
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote
@@ -6801,6 +6910,7 @@ async function startHermes() {
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
     // unaffected.
+    migrateActiveProfileIfMissing()
     const activeProfile = readActiveDesktopProfile()
 
     if (activeProfile) {

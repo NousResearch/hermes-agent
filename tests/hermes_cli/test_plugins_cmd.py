@@ -423,6 +423,28 @@ class TestCmdInstall:
             cmd_install("invalid")
         assert exc_info.value.code == 1
 
+    def test_plugin_yml_install_does_not_warn(self, tmp_path, monkeypatch, capsys):
+        from hermes_cli import plugins_cmd
+
+        target = tmp_path / "plugin-dir"
+        target.mkdir()
+        (target / "plugin.yml").write_text(
+            yaml.dump({"name": "manifest-name", "version": "1.0.0"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(plugins_cmd, "_resolve_git_url", lambda _: ("owner/repo", None))
+        monkeypatch.setattr(
+            plugins_cmd,
+            "_install_plugin_core",
+            lambda *_args, **_kwargs: (target, {"name": "manifest-name"}, "manifest-name"),
+        )
+        monkeypatch.setattr(plugins_cmd, "_prompt_plugin_env_vars", lambda *_args: None)
+        monkeypatch.setattr(plugins_cmd, "_display_after_install", lambda *_args: None)
+
+        plugins_cmd.cmd_install("owner/repo", enable=False)
+
+        assert "doesn't contain plugin.yaml" not in capsys.readouterr().out
+
     @patch("hermes_cli.plugins_cmd._display_after_install")
     @patch("hermes_cli.plugins_cmd.shutil.move")
     @patch("hermes_cli.plugins_cmd.shutil.rmtree")

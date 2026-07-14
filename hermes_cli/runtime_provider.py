@@ -118,6 +118,12 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
       Anthropic Messages protocol (the /coding route accepts Claude
       Code's native request shape).
+    - AWS Bedrock runtime endpoints (bedrock-runtime.<region>.amazonaws.com)
+      use the native Converse API via boto3, not the OpenAI-compat path.
+      Without this detection, ``provider: custom`` with a Bedrock URL
+      silently falls through to ``chat_completions``, which returns
+      ``UnknownOperationException`` and triggers the empty-response retry
+      loop before failing over to the fallback provider.
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
     hostname = base_url_hostname(base_url)
@@ -136,6 +142,10 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
+    if hostname.startswith("bedrock-runtime.") and base_url_host_matches(
+        normalized, "amazonaws.com"
+    ):
+        return "bedrock_converse"
     return None
 
 
@@ -1975,9 +1985,19 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
+        #
+        # Exception: when auth is a Bedrock API bearer token
+        # (AWS_BEARER_TOKEN_BEDROCK), the AnthropicBedrock SDK cannot use it —
+        # that SDK only supports IAM credentials via the boto3 credential chain.
+        # Bearer tokens ARE picked up by boto3's default chain (botocore supports
+        # them natively), so we fall back to bedrock_converse for both Claude and
+        # non-Claude models in this case.  The Converse API supports all Claude
+        # models including Opus 4.7 / Sonnet 4.x and covers prompt caching via
+        # the performanceConfig field.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
-        if is_anthropic_bedrock_model(_current_model):
-            # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
+        _use_bearer_path = auth_source == "AWS_BEARER_TOKEN_BEDROCK"
+        if is_anthropic_bedrock_model(_current_model) and not _use_bearer_path:
+            # Claude on Bedrock + IAM creds → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "anthropic_messages",
@@ -1989,7 +2009,8 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
         else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            # Non-Claude (Nova, DeepSeek, Llama, etc.) OR bearer-token auth
+            # → Converse API via boto3 (bearer token picked up automatically)
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",

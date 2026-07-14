@@ -359,3 +359,82 @@ class TestBedrockOverlayRegistration:
         for alias in ("aws", "aws-bedrock", "amazon-bedrock", "amazon"):
             assert normalize_provider(alias) == "bedrock", \
                 f"alias {alias!r} should normalize to 'bedrock'"
+
+
+# ---------------------------------------------------------------------------
+# 5. Bearer-token routing in resolve_runtime_provider
+# ---------------------------------------------------------------------------
+
+class TestBedrockBearerTokenRouting:
+    """When AWS_BEARER_TOKEN_BEDROCK is the auth source, resolve_runtime_provider
+    must route to bedrock_converse (boto3), not anthropic_messages (AnthropicBedrock SDK).
+
+    The AnthropicBedrock SDK requires IAM credentials (access key + secret or
+    instance role) and raises "could not resolve credentials from session" when
+    only a bearer token is configured.  boto3's default credential chain does
+    support bearer tokens natively, so bedrock_converse is the correct path.
+    """
+
+    def _make_env(self, *, bearer_token="fake-bearer-token-abc123", access_key=None):
+        env = {}
+        if bearer_token:
+            env["AWS_BEARER_TOKEN_BEDROCK"] = bearer_token
+        if access_key:
+            env["AWS_ACCESS_KEY_ID"] = access_key
+            env["AWS_SECRET_ACCESS_KEY"] = "fake-secret"
+        return env
+
+    def test_bearer_token_routes_claude_to_bedrock_converse(self, monkeypatch):
+        """Claude model + bearer token → bedrock_converse, not anthropic_messages."""
+        import os
+        from unittest.mock import patch, MagicMock
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        env = self._make_env()
+        with patch.dict(os.environ, env, clear=False):
+            # Patch botocore credential check so has_aws_credentials() returns True
+            with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+                 patch("agent.bedrock_adapter.resolve_aws_auth_env_var", return_value="AWS_BEARER_TOKEN_BEDROCK"), \
+                 patch("hermes_cli.runtime_provider.load_config", return_value={"model": {"default": "us.anthropic.claude-opus-4-7"}}):
+                result = resolve_runtime_provider(requested="bedrock")
+
+        assert result is not None
+        assert result["api_mode"] == "bedrock_converse", (
+            f"Expected bedrock_converse with bearer token, got {result['api_mode']!r}"
+        )
+        assert result.get("bedrock_anthropic") is not True
+
+    def test_iam_credentials_route_claude_to_anthropic_messages(self, monkeypatch):
+        """Claude model + IAM access key → anthropic_messages (AnthropicBedrock SDK)."""
+        import os
+        from unittest.mock import patch
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        env = self._make_env(bearer_token=None, access_key="AKIAIOSFODNN7EXAMPLE")
+        with patch.dict(os.environ, env, clear=False):
+            with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+                 patch("agent.bedrock_adapter.resolve_aws_auth_env_var", return_value="AWS_ACCESS_KEY_ID"), \
+                 patch("hermes_cli.runtime_provider.load_config", return_value={"model": {"default": "us.anthropic.claude-opus-4-7"}}):
+                result = resolve_runtime_provider(requested="bedrock")
+
+        assert result is not None
+        assert result["api_mode"] == "anthropic_messages", (
+            f"Expected anthropic_messages with IAM creds, got {result['api_mode']!r}"
+        )
+        assert result.get("bedrock_anthropic") is True
+
+    def test_bearer_token_routes_non_claude_to_bedrock_converse(self, monkeypatch):
+        """Non-Claude model + bearer token → bedrock_converse (same as IAM path)."""
+        import os
+        from unittest.mock import patch
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        env = self._make_env()
+        with patch.dict(os.environ, env, clear=False):
+            with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+                 patch("agent.bedrock_adapter.resolve_aws_auth_env_var", return_value="AWS_BEARER_TOKEN_BEDROCK"), \
+                 patch("hermes_cli.runtime_provider.load_config", return_value={"model": {"default": "us.amazon.nova-pro-v1:0"}}):
+                result = resolve_runtime_provider(requested="bedrock")
+
+        assert result is not None
+        assert result["api_mode"] == "bedrock_converse"

@@ -116,6 +116,69 @@ class TestAnthropicMessagesDetection:
         assert _detect_api_mode_for_url("https://api.example.com/anthropic/v1/models") is None
 
 
+class TestBedrockConverseDetection:
+    """AWS Bedrock runtime endpoints should resolve to bedrock_converse.
+
+    Without this detection, ``provider: custom`` with a Bedrock base URL
+    falls through to ``chat_completions``, which hits
+    ``UnknownOperationException`` on the Bedrock endpoint and triggers
+    the empty-response retry loop.
+    """
+
+    def test_bedrock_us_east_1_returns_bedrock_converse(self):
+        assert (
+            _detect_api_mode_for_url(
+                "https://bedrock-runtime.us-east-1.amazonaws.com"
+            )
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_us_west_2_returns_bedrock_converse(self):
+        assert (
+            _detect_api_mode_for_url(
+                "https://bedrock-runtime.us-west-2.amazonaws.com"
+            )
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_eu_west_1_returns_bedrock_converse(self):
+        assert (
+            _detect_api_mode_for_url(
+                "https://bedrock-runtime.eu-west-1.amazonaws.com"
+            )
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_trailing_slash_tolerated(self):
+        assert (
+            _detect_api_mode_for_url(
+                "https://bedrock-runtime.us-east-1.amazonaws.com/"
+            )
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_uppercase_tolerated(self):
+        assert (
+            _detect_api_mode_for_url(
+                "HTTPS://BEDROCK-RUNTIME.US-EAST-1.AMAZONAWS.COM"
+            )
+            == "bedrock_converse"
+        )
+
+    def test_non_bedrock_runtime_amazonaws_does_not_match(self):
+        # Only bedrock-runtime.* hostnames should match, not arbitrary amazonaws.com hosts.
+        assert _detect_api_mode_for_url("https://s3.amazonaws.com") is None
+
+    def test_bedrock_runtime_hostname_suffix_does_not_match(self):
+        # Protects against hostname suffix spoofing.
+        assert (
+            _detect_api_mode_for_url(
+                "https://evil.bedrock-runtime.us-east-1.amazonaws.com"
+            )
+            is None
+        )
+
+
 class TestDefaultCase:
     def test_generic_url_returns_none(self):
         assert _detect_api_mode_for_url("https://api.together.xyz/v1") is None

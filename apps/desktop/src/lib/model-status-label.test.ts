@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  ambiguousModelDisplayNames,
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
+  modelDisplayParts,
   reasoningEffortLabel
 } from './model-status-label'
 
@@ -18,6 +20,28 @@ describe('model-status-label', () => {
   it('strips trailing date-pin snapshots from the display name', () => {
     expect(displayModelName('claude-opus-4-5-20251101')).toBe('Opus 4 5')
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
+  })
+
+  it('preserves provider-prefixed ids only when a picker row needs disambiguation', () => {
+    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast', { preserveProviderPrefix: true })).toEqual({
+      name: 'anthropic/claude-opus-4.8',
+      tag: 'Fast'
+    })
+    expect(modelDisplayParts('anthropic/claude-haiku-4-5-20251001', { preserveProviderPrefix: true })).toEqual({
+      name: 'anthropic/claude-haiku-4-5',
+      tag: ''
+    })
+  })
+
+  it('detects friendly names that collapse distinct model ids', () => {
+    expect([
+      ...ambiguousModelDisplayNames([
+        'anthropic/claude-sonnet-4.6',
+        'openrouter/claude-sonnet-4.6',
+        'openai/gpt-5.5',
+        'openai/gpt-5.5'
+      ])
+    ]).toEqual(['Sonnet 4.6'])
   })
 
   it('maps reasoning effort to compact labels', () => {

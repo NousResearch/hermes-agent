@@ -3086,6 +3086,116 @@ class GatewaySlashCommandsMixin:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
+    async def _handle_auth_relay_command(self, event: MessageEvent) -> str:
+        """Handle /auth-relay — toggle / inspect the operator WhatsApp auth-relay.
+
+        Usage:
+            /auth-relay            → toggle on/off
+            /auth-relay on         → enable (live, no restart) + persist
+            /auth-relay off        → disable (live) + persist
+            /auth-relay status     → show current state + operator target
+
+        The relay routes clarify/approval/secret/sudo prompts to the
+        operator's WhatsApp. When enabled it is applied immediately by
+        re-installing the gateway callbacks; when disabled the callbacks are
+        torn down. The setting is persisted to ``gateway.auth_relay.enabled``
+        so it survives a gateway restart.
+        """
+        from gateway.run import _hermes_home, _load_gateway_config
+        from gateway.auth_relay import (
+            AuthRelayConfig,
+            get_config,
+            is_enabled,
+            set_enabled,
+        )
+
+        config_path = _hermes_home / "config.yaml"
+
+        # --- parse argument -------------------------------------------------
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        live = get_config()
+        currently_active = is_enabled()
+
+        if arg in {"status", "?"}:
+            op = live.operator_chat or "(derived from local WhatsApp config)"
+            kinds = [
+                k for k, on in (
+                    ("clarify", live.clarify),
+                    ("approval", live.approval),
+                    ("secret", live.secret),
+                    ("sudo", live.sudo),
+                ) if on
+            ]
+            state = "ON" if currently_active else "OFF"
+            return (
+                f"🔐 Auth-relay: *{state}*\n"
+                f"Operator: `{op}`\n"
+                f"Relayed prompts: {', '.join(kinds) or '(none)'}\n"
+                f"require_confirm: {live.require_confirm}  timeout: {live.timeout}s"
+            )
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not currently_active
+        else:
+            return (
+                "Usage: /auth-relay [on|off|status]\n"
+                "Routes clarify/approval/secret/sudo prompts to your WhatsApp."
+            )
+
+        # --- persist to config.yaml ----------------------------------------
+        try:
+            user_config: dict = _load_gateway_config()
+            if not isinstance(user_config.get("gateway"), dict):
+                user_config["gateway"] = {}
+            gw = user_config["gateway"]
+            if not isinstance(gw.get("auth_relay"), dict):
+                gw["auth_relay"] = {}
+            gw["auth_relay"]["enabled"] = new_state
+            atomic_config_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("auth_relay: failed to persist enabled=%s: %s", new_state, e)
+            return f"⚠️ Could not save setting to config.yaml: {e}"
+
+        # --- apply live (re-install / tear down callbacks) ------------------
+        # Build a config that keeps the operator_chat + per-kind settings from
+        # the live config, flipping only enabled. set_enabled() derives the
+        # operator target from the local WhatsApp config when empty.
+        active = set_enabled(
+            new_state,
+            AuthRelayConfig(
+                enabled=new_state,
+                operator_chat=live.operator_chat,
+                clarify=live.clarify,
+                approval=live.approval,
+                secret=live.secret,
+                sudo=live.sudo,
+                require_confirm=live.require_confirm,
+                timeout=live.timeout,
+            ),
+        )
+        if new_state and not active:
+            return (
+                "⚠️ Auth-relay enabled but could not activate: no operator WhatsApp "
+                "target resolved (set gateway.auth_relay.operator_chat or ensure "
+                "WHATSAPP_ALLOWED_USERS is configured). Setting saved; restart the "
+                "gateway after fixing."
+            )
+        state = "ON" if active else "OFF"
+        return f"🔐 Auth-relay is now *{state}* (applied live; saved to config.yaml)."
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 

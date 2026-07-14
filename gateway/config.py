@@ -19,6 +19,7 @@ from enum import Enum
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from utils import is_truthy_value
+from gateway.auth_relay import AuthRelayConfig
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,53 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
         if normalized in {"pair", "ignore"}:
             return normalized
     return default
+
+
+def _parse_auth_relay(data: Any) -> "AuthRelayConfig":
+    """Build an ``AuthRelayConfig`` from the ``gateway.auth_relay`` mapping.
+
+    Missing/empty data → disabled config (the safe default).  Per-kind toggles
+    default to True when the feature is enabled so flipping ``enabled: true``
+    turns on the whole relay; individual kinds can be opted out.
+    """
+    if not isinstance(data, dict):
+        return AuthRelayConfig()
+    enabled = _coerce_bool(data.get("enabled"), False)
+    operator_chat = str(data.get("operator_chat") or "").strip()
+    # The operator target is mandatory for the feature to be live.  Without a
+    # destination WhatsApp ID the relay can never deliver a prompt.  Try to
+    # derive it from the locally-stored WhatsApp owner number first; only if
+    # that also fails do we force the feature disabled (so it can't silently
+    # no-op on every auth request).
+    if enabled and not operator_chat:
+        try:
+            from gateway.auth_relay import _default_operator_chat
+            operator_chat = _default_operator_chat()
+        except Exception:
+            operator_chat = ""
+        if not operator_chat:
+            logger.warning(
+                "gateway.auth_relay.enabled=true but no operator_chat set and "
+                "none derivable from local WhatsApp config; relay will stay inactive."
+            )
+            enabled = False
+    require_confirm = _coerce_bool(data.get("require_confirm"), True)
+    try:
+        timeout = int(data.get("timeout", AuthRelayConfig().timeout))
+    except (TypeError, ValueError):
+        timeout = AuthRelayConfig().timeout
+    if timeout <= 0:
+        timeout = AuthRelayConfig().timeout
+    return AuthRelayConfig(
+        enabled=enabled,
+        operator_chat=operator_chat,
+        clarify=_coerce_bool(data.get("clarify"), True),
+        approval=_coerce_bool(data.get("approval"), True),
+        secret=_coerce_bool(data.get("secret"), True),
+        sudo=_coerce_bool(data.get("sudo"), True),
+        require_confirm=require_confirm,
+        timeout=timeout,
+    )
 
 
 def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
@@ -721,6 +769,12 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Auth-relay: route agent authentication prompts (clarify / approval /
+    # secret / sudo) from ANY session to the operator's WhatsApp for remote
+    # approval / credential entry.  Opt-in; see gateway/auth_relay.py.  Parsed
+    # into ``AuthRelayConfig`` at startup.
+    auth_relay: "AuthRelayConfig" = field(default_factory=lambda: AuthRelayConfig())
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -827,6 +881,16 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "auth_relay": {
+                "enabled": self.auth_relay.enabled,
+                "operator_chat": self.auth_relay.operator_chat,
+                "clarify": self.auth_relay.clarify,
+                "approval": self.auth_relay.approval,
+                "secret": self.auth_relay.secret,
+                "sudo": self.auth_relay.sudo,
+                "require_confirm": self.auth_relay.require_confirm,
+                "timeout": self.auth_relay.timeout,
+            },
         }
     
     @classmethod
@@ -919,6 +983,17 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # Auth-relay: parse gateway.auth_relay into AuthRelayConfig.
+        auth_relay_data = data.get("auth_relay")
+        if not isinstance(auth_relay_data, dict):
+            # Also accept the nested gateway.auth_relay form.
+            auth_relay_data = (
+                nested_gateway.get("auth_relay")
+                if isinstance(nested_gateway, dict)
+                else None
+            )
+        auth_relay = _parse_auth_relay(auth_relay_data)
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -941,6 +1016,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            auth_relay=auth_relay,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

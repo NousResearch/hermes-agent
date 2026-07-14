@@ -1140,30 +1140,52 @@ class TelegramAdapter(BasePlatformAdapter):
         media_label: str,
         reset_media: Optional[Any] = None,
     ) -> Any:
-        """Retry stale private-topic media replies once without the topic anchor."""
-        try:
-            return await send_fn(**send_kwargs)
-        except Exception as send_err:
-            if not self._should_retry_without_dm_topic_reply_anchor(
-                send_err,
-                metadata,
-                reply_to_message_id,
-            ):
-                raise
-            logger.warning(
-                "[%s] Reply target deleted for Telegram %s, "
-                "retrying without reply/topic anchor: %s",
-                self.name,
-                media_label,
-                send_err,
-            )
-            if reset_media is not None:
-                reset_media()
-            retry_kwargs = dict(send_kwargs)
-            retry_kwargs["reply_to_message_id"] = None
-            retry_kwargs.pop("message_thread_id", None)
-            retry_kwargs.pop("direct_messages_topic_id", None)
-            return await send_fn(**retry_kwargs)
+        """Send native media, retrying on flood control and stale reply anchors.
+
+        Mirrors the flood-control backoff that plain text send() already has
+        (see the "Telegram flood control on send" loop above) — without this,
+        RetryAfter on a document/video/image/voice send fell straight through
+        to the "couldn't deliver the file attachment" text fallback instead of
+        just waiting out Telegram's cooldown like text messages do.
+        """
+        kwargs = send_kwargs
+        for attempt in range(3):
+            try:
+                return await send_fn(**kwargs)
+            except Exception as send_err:
+                retry_after = getattr(send_err, "retry_after", None)
+                if (retry_after is not None or "retry after" in str(send_err).lower()) and attempt < 2:
+                    wait = float(retry_after) if retry_after is not None else 1.0
+                    safe_send_error = _redact_telegram_error_text(send_err)
+                    logger.warning(
+                        "[%s] Telegram flood control on %s send (attempt %d/3), retrying in %.1fs: %s",
+                        self.name, media_label, attempt + 1, wait, safe_send_error,
+                    )
+                    await asyncio.sleep(wait)
+                    if reset_media is not None:
+                        reset_media()
+                    continue
+
+                if not self._should_retry_without_dm_topic_reply_anchor(
+                    send_err,
+                    metadata,
+                    reply_to_message_id,
+                ):
+                    raise
+                logger.warning(
+                    "[%s] Reply target deleted for Telegram %s, "
+                    "retrying without reply/topic anchor: %s",
+                    self.name,
+                    media_label,
+                    send_err,
+                )
+                if reset_media is not None:
+                    reset_media()
+                kwargs = dict(kwargs)
+                kwargs["reply_to_message_id"] = None
+                kwargs.pop("message_thread_id", None)
+                kwargs.pop("direct_messages_topic_id", None)
+                return await send_fn(**kwargs)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""

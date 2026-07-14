@@ -4,6 +4,7 @@ description: Build comparable company analysis in Excel — operating metrics, v
 version: 1.0.0
 author: Anthropic (adapted by Nous Research)
 license: Apache-2.0
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [finance, valuation, comps, excel, openpyxl, modeling, investment-banking]

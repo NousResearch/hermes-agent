@@ -153,3 +153,134 @@ class TestRelaunch:
             relaunch_mod.relaunch(["--resume", "abc"])
 
         assert calls == [("/usr/bin/hermes", ["/usr/bin/hermes", "--resume", "abc"])]
+
+    def test_windows_uses_subprocess_not_execvp(self, monkeypatch):
+        """On Windows, os.execvp raises OSError "Exec format error" when the
+        target is a .cmd shim or console-script wrapper (both common for
+        hermes).  relaunch() must detect win32 and use subprocess.run +
+        sys.exit instead."""
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: r"C:\Users\test\hermes.exe")
+
+        import subprocess as _subprocess
+
+        captured_argv = []
+
+        def fake_subprocess_run(argv, **kwargs):
+            captured_argv.append(list(argv))
+            class _Result:
+                returncode = 0
+            return _Result()
+
+        monkeypatch.setattr(_subprocess, "run", fake_subprocess_run)
+
+        # execvp MUST NOT be called on Windows — route must go through subprocess
+        execvp_calls = []
+
+        def fake_execvp(*args, **kwargs):
+            execvp_calls.append(args)
+            raise AssertionError("os.execvp must not be called on Windows")
+
+        monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
+
+        with pytest.raises(SystemExit) as exc_info:
+            relaunch_mod.relaunch(["chat"])
+
+        assert exc_info.value.code == 0
+        assert execvp_calls == []
+        assert captured_argv == [[r"C:\Users\test\hermes.exe", "chat"]]
+
+    def test_windows_propagates_child_exit_code(self, monkeypatch):
+        """A non-zero exit from the child should flow through to sys.exit."""
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: r"C:\hermes.exe")
+
+        import subprocess as _subprocess
+
+        def fake_run(argv, **kwargs):
+            class _Result:
+                returncode = 42
+            return _Result()
+
+        monkeypatch.setattr(_subprocess, "run", fake_run)
+        monkeypatch.setattr(relaunch_mod.os, "execvp", lambda *a, **kw: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            relaunch_mod.relaunch(["chat"])
+        assert exc_info.value.code == 42
+
+    def test_windows_surfaces_oserror_with_help(self, monkeypatch, capsys):
+        """When subprocess itself raises OSError (file-not-found / bad format),
+        we must NOT let it bubble up as a cryptic traceback — print a
+        user-readable hint and sys.exit(1)."""
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
+        monkeypatch.setattr(relaunch_mod, "resolve_hermes_bin", lambda: r"C:\missing.exe")
+
+        import subprocess as _subprocess
+
+        def fake_run(argv, **kwargs):
+            raise OSError(2, "No such file or directory")
+
+        monkeypatch.setattr(_subprocess, "run", fake_run)
+        monkeypatch.setattr(relaunch_mod.os, "execvp", lambda *a, **kw: None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            relaunch_mod.relaunch(["chat"])
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "relaunch failed" in err
+        assert "open a new terminal" in err.lower() or "path" in err.lower()
+
+
+class TestResolveHermesBinWindowsPyGuard:
+    """On Windows, resolve_hermes_bin MUST NOT return a .py path.
+    os.access(x, os.X_OK) returns True for .py files on Windows because
+    PATHEXT includes .py when the Python launcher is installed — but
+    subprocess.run can't actually exec a .py directly, so the relaunch
+    would fail with the cryptic "%1 is not a valid Win32 application" error.
+    """
+
+    def test_windows_rejects_py_argv0_falls_through_to_path(self, monkeypatch, tmp_path):
+        """On Windows, if sys.argv[0] is a .py file, we must skip the
+        argv[0] fast-path and fall through to PATH / python -m."""
+        # Build a fake .py script that "passes" the isfile + X_OK checks.
+        script = tmp_path / "main.py"
+        script.write_text("# stub")
+
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
+        monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
+        # Force PATH lookup to return a hermes.exe so the test doesn't
+        # exercise the None-fallback path (that's a separate test).
+        monkeypatch.setattr(
+            relaunch_mod.shutil, "which",
+            lambda name: r"C:\venv\Scripts\hermes.exe" if name == "hermes" else None,
+        )
+
+        bin_path = relaunch_mod.resolve_hermes_bin()
+        # Must NOT be the .py — must be the hermes.exe PATH entry.
+        assert bin_path == r"C:\venv\Scripts\hermes.exe"
+
+    def test_posix_still_accepts_py_argv0(self, monkeypatch, tmp_path):
+        """POSIX behaviour unchanged: argv[0] pointing at an executable
+        script (including .py with a shebang + chmod +x) is fine to return
+        because POSIX exec can route through the shebang line."""
+        if sys.platform == "win32":
+            pytest.skip("POSIX semantics")
+        script = tmp_path / "hermes"
+        script.write_text("#!/usr/bin/env python3\n")
+        script.chmod(0o755)
+        monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
+        assert relaunch_mod.resolve_hermes_bin() == str(script)
+
+    def test_windows_py_argv0_with_no_hermes_on_path_returns_none(self, monkeypatch, tmp_path):
+        """Bulletproof fallback: if argv0 is .py on Windows AND hermes.exe
+        isn't on PATH, return None so the caller falls back to
+        python -m hermes_cli.main."""
+        script = tmp_path / "main.py"
+        script.write_text("# stub")
+
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
+        monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
+        monkeypatch.setattr(relaunch_mod.shutil, "which", lambda name: None)
+
+        assert relaunch_mod.resolve_hermes_bin() is None

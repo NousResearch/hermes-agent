@@ -57,8 +57,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import gateway.platforms.discord as discord_platform  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +371,7 @@ class TestIncomingDocumentHandling:
     async def test_image_attachment_unaffected(self, adapter):
         """Image attachments should still go through the image path, not the document path."""
         with patch(
-            "gateway.platforms.discord.cache_image_from_url",
+            "plugins.platforms.discord.adapter.cache_image_from_url",
             new_callable=AsyncMock,
             return_value="/tmp/cached_image.png",
         ):
@@ -384,3 +384,130 @@ class TestIncomingDocumentHandling:
         assert event.message_type == MessageType.PHOTO
         assert event.media_urls == ["/tmp/cached_image.png"]
         assert event.media_types == ["image/png"]
+
+
+class TestAllowAnyAttachment:
+    """Cover accept-any-file-type inbound handling.
+
+    Authorization to message the agent is the gate, not the file extension.
+    Unknown file types are cached and surfaced to the agent as DOCUMENT events
+    with the source content_type (or application/octet-stream) so gateway/run.py
+    emits a path-pointing context note. The legacy ``allow_any_attachment``
+    config flag is now a no-op — acceptance is unconditional.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_cached_by_default(self, adapter):
+        """Default: unknown extension is cached, not dropped."""
+        with _mock_aiohttp_download(b"\x00\x01\x02 binary payload"):
+            msg = make_message([
+                make_attachment(filename="weird.xyz", content_type="application/x-custom")
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        # Falls back to the source content_type when we have one.
+        assert event.media_types == ["application/x-custom"]
+        assert event.message_type == MessageType.DOCUMENT
+        # We deliberately do NOT inline arbitrary (non-UTF-8) bytes — run.py
+        # emits the path-pointing note based on DOCUMENT + octet-stream MIME.
+        assert "[Content of" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_html_cached_and_inlined(self, adapter):
+        """An .html upload is cached and (being UTF-8 text) inlined."""
+        html = b"<html><body>hi</body></html>"
+        with _mock_aiohttp_download(html):
+            msg = make_message([
+                make_attachment(filename="page.html", content_type="text/html")
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["text/html"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_type_no_content_type_becomes_octet_stream(self, adapter):
+        """No content_type from discord: MIME falls back to octet-stream."""
+        with _mock_aiohttp_download(b"\x00raw bytes\x01"):
+            msg = make_message([
+                make_attachment(filename="mystery.bin", content_type=None)
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_types == ["application/octet-stream"]
+
+    @pytest.mark.asyncio
+    async def test_max_attachment_bytes_caps_uploads(self, adapter):
+        """discord.max_attachment_bytes overrides the historical 32 MiB cap."""
+        adapter.config.extra["max_attachment_bytes"] = 1024  # 1 KiB
+
+        msg = make_message([
+            make_attachment(
+                filename="too_big.xyz",
+                content_type="application/x-custom",
+                size=2048,
+            )
+        ])
+        await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_max_attachment_bytes_zero_means_unlimited(self, adapter):
+        """max_attachment_bytes=0 disables the size cap entirely."""
+        adapter.config.extra["max_attachment_bytes"] = 0
+
+        # 64 MiB — would normally exceed the historical 32 MiB hardcoded cap.
+        with _mock_aiohttp_download(b"x" * 16):
+            msg = make_message([
+                make_attachment(
+                    filename="huge.xyz",
+                    content_type="application/x-custom",
+                    size=64 * 1024 * 1024,
+                )
+            ])
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert len(event.media_urls) == 1
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_doc_unchanged(self, adapter):
+        """Types already in SUPPORTED_DOCUMENT_TYPES keep canonical handling.
+
+        A .txt should still get its content inlined, and the MIME should still
+        be the canonical text/plain — not whatever discord guessed.
+        """
+        file_content = b"still a text file"
+
+        with _mock_aiohttp_download(file_content):
+            msg = make_message(
+                attachments=[make_attachment(filename="notes.txt", content_type="text/plain")],
+                content="check this",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert "[Content of notes.txt]:" in event.text
+        assert "still a text file" in event.text
+        assert event.media_types == ["text/plain"]
+
+    def test_helper_config_overrides_env(self, adapter, monkeypatch):
+        """config.yaml setting wins over env var."""
+        monkeypatch.setenv("DISCORD_ALLOW_ANY_ATTACHMENT", "true")
+        adapter.config.extra["allow_any_attachment"] = False
+        assert adapter._discord_allow_any_attachment() is False
+
+    def test_max_bytes_helper_invalid_value_falls_back(self, adapter):
+        """Garbage in max_attachment_bytes config falls back to 32 MiB."""
+        adapter.config.extra["max_attachment_bytes"] = "not-a-number"
+        assert adapter._discord_max_attachment_bytes() == 32 * 1024 * 1024
+

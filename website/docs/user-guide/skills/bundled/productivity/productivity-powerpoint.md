@@ -17,6 +17,7 @@ Create, read, edit .pptx decks, slides, notes, templates.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/powerpoint` |
 | License | Proprietary. LICENSE.txt has complete terms |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

@@ -4,6 +4,7 @@ description: Set up and use 1Password CLI (op). Use when installing the CLI, ena
 version: 1.0.0
 author: arceus77-7, enhanced by Hermes Agent
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [security, secrets, 1password, op, cli]
@@ -40,7 +41,7 @@ Use this skill when the user wants secrets managed through 1Password instead of 
 
 ### Service Account (recommended for Hermes)
 
-Set `OP_SERVICE_ACCOUNT_TOKEN` in `~/.hermes/.env` (the skill will prompt for this on first load).
+Set `OP_SERVICE_ACCOUNT_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` (the skill will prompt for this on first load).
 No desktop app needed. Supports `op read`, `op inject`, `op run`.
 
 ```bash

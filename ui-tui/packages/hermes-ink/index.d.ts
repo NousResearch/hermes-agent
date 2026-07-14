@@ -21,6 +21,7 @@ export { default as Text } from './src/ink/components/Text.tsx'
 export type { Props as TextProps } from './src/ink/components/Text.tsx'
 export type { Key } from './src/ink/events/input-event.ts'
 export { default as useApp } from './src/ink/hooks/use-app.ts'
+export { useCursorAdvance } from './src/ink/hooks/use-cursor-advance.ts'
 export { useDeclaredCursor } from './src/ink/hooks/use-declared-cursor.ts'
 export { default as useInput } from './src/ink/hooks/use-input.ts'
 export { useHasSelection, useSelection } from './src/ink/hooks/use-selection.ts'
@@ -33,5 +34,8 @@ export { default as measureElement } from './src/ink/measure-element.ts'
 export { createRoot, forceRedraw, default as render, renderSync } from './src/ink/root.ts'
 export type { Instance, RenderOptions, Root } from './src/ink/root.ts'
 export { stringWidth } from './src/ink/stringWidth.ts'
-export { default as TextInput, UncontrolledTextInput } from 'ink-text-input'
-export type { Props as TextInputProps } from 'ink-text-input'
+export type { MouseTrackingMode } from './src/ink/termio/dec.ts'
+export { wrapAnsi } from './src/ink/wrapAnsi.ts'
+// 'ink-text-input' types deliberately not re-exported here; see
+// src/entry-exports.ts for the full rationale (#31227). Use the
+// '@hermes/ink/text-input' subpath when the upstream widget is needed.

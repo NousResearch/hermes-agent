@@ -260,23 +260,6 @@ function applyStylesToWrappedText(
   for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
     const line = lines[lineIdx]!
 
-    // In trim mode, skip leading whitespace that was trimmed from this line.
-    // Only skip if the original has whitespace but the output line doesn't start
-    // with whitespace (meaning it was trimmed). If both have whitespace, the
-    // whitespace was preserved and we shouldn't skip.
-    if (trimEnabled && line.length > 0) {
-      const lineStartsWithWhitespace = /\s/.test(line[0]!)
-
-      const originalHasWhitespace = charIndex < originalPlain.length && /\s/.test(originalPlain[charIndex]!)
-
-      // Only skip if original has whitespace but line doesn't
-      if (originalHasWhitespace && !lineStartsWithWhitespace) {
-        while (charIndex < originalPlain.length && /\s/.test(originalPlain[charIndex]!)) {
-          charIndex++
-        }
-      }
-    }
-
     let styledLine = ''
     let runStart = 0
     let runSegmentIndex = charToSegment[charIndex] ?? 0
@@ -333,26 +316,10 @@ function applyStylesToWrappedText(
     // split lines.
     if (charIndex < originalPlain.length && originalPlain[charIndex] === '\n') {
       charIndex++
-    }
-
-    // In trim mode, skip whitespace that was replaced by newline when wrapping.
-    // We skip whitespace in the original until we reach a character that matches
-    // the first character of the next line. This handles cases like:
-    // - "AB   \tD" wrapped to "AB\n\tD" - skip spaces until we hit the tab
-    // In non-trim mode, whitespace is preserved so no skipping is needed.
-    if (trimEnabled && lineIdx < lines.length - 1) {
-      const nextLine = lines[lineIdx + 1]!
-      const nextLineFirstChar = nextLine.length > 0 ? nextLine[0] : null
-
-      // Skip whitespace until we hit a char that matches the next line's first char
-      while (charIndex < originalPlain.length && /\s/.test(originalPlain[charIndex]!)) {
-        // Stop if we found the character that starts the next line
-        if (nextLineFirstChar !== null && originalPlain[charIndex] === nextLineFirstChar) {
-          break
-        }
-
-        charIndex++
-      }
+    } else if (trimEnabled && lineIdx < lines.length - 1 && /\s/.test(originalPlain[charIndex] ?? '')) {
+      // wrap-trim removes exactly one whitespace character at each soft-wrap boundary.
+      // Keep the style map aligned without eating preserved indentation/spaces.
+      charIndex++
     }
   }
 
@@ -739,12 +706,25 @@ function renderNodeToOutput(
         const content = node.childNodes.find(c => (c as DOMElement).yogaNode) as DOMElement | undefined
 
         const contentYoga = content?.yogaNode
-        // scrollHeight is the intrinsic height of the content wrapper.
-        // Do NOT add getComputedTop() — that's the wrapper's offset
-        // within the viewport (equal to the scroll container's
-        // paddingTop), and innerHeight already subtracts padding, so
-        // including it double-counts padding and inflates maxScroll.
-        const scrollHeight = contentYoga?.getComputedHeight() ?? 0
+        // scrollHeight is the intrinsic height of the content wrapper, but
+        // after terminal resizes Yoga can leave tall descendants overflowing
+        // that wrapper. Use the deepest direct child bottom so sticky-bottom
+        // math can still reach the real final rendered row.
+        let scrollHeight = Math.ceil(contentYoga?.getComputedHeight() ?? 0)
+
+        if (content) {
+          for (const child of content.childNodes) {
+            const childYoga = (child as DOMElement).yogaNode
+
+            if (childYoga) {
+              scrollHeight = Math.max(
+                scrollHeight,
+                Math.ceil(childYoga.getComputedTop() + childYoga.getComputedHeight())
+              )
+            }
+          }
+        }
+
         // Capture previous scroll bounds BEFORE overwriting — the at-bottom
         // follow check compares against last frame's max.
         const prevScrollHeight = node.scrollHeight ?? scrollHeight
@@ -895,7 +875,12 @@ function renderNodeToOutput(
           scrollDrainNode = node
         }
 
-        if ((node.scrollTop ?? 0) !== scrollTopBeforeFollow || node.stickyScroll !== stickyBeforeFollow) {
+        if (
+          (node.scrollTop ?? 0) !== scrollTopBeforeFollow ||
+          node.stickyScroll !== stickyBeforeFollow ||
+          scrollHeight !== prevScrollHeight ||
+          innerHeight !== prevInnerHeight
+        ) {
           node.notifyScrollChange?.()
         }
 
@@ -924,7 +909,14 @@ function renderNodeToOutput(
             const regionTop = Math.floor(y + contentYoga.getComputedTop())
             const regionBottom = regionTop + innerHeight - 1
 
-            if (cached?.y === y && cached.height === height && innerHeight > 0 && Math.abs(delta) < innerHeight) {
+            if (
+              cached?.x === x &&
+              cached.y === y &&
+              cached.width === width &&
+              cached.height === height &&
+              innerHeight > 0 &&
+              Math.abs(delta) < innerHeight
+            ) {
               hint = { top: regionTop, bottom: regionBottom, delta }
               scrollHint = hint
             } else {

@@ -559,6 +559,32 @@ def test_picker_hints_api_key_warning_format():
     assert anthropic["warning"].startswith("paste ")
 
 
+def test_picker_hints_keeps_current_local_ollama_authenticated():
+    """A live local runtime must stay visible even if only the cloud variant
+    has a canonical setup skeleton."""
+    ctx = _empty_ctx(
+        provider="ollama",
+        model="ollama/gemma4:12b-mlx",
+        base_url="http://127.0.0.1:11434/v1",
+    )
+    with _list_auth_returning([]):
+        payload = build_models_payload(
+            ctx, include_unconfigured=True, picker_hints=True,
+        )
+
+    ollama = next(r for r in payload["providers"] if r["slug"] == "ollama")
+    assert ollama["authenticated"] is True
+    assert ollama["is_current"] is True
+    assert ollama["models"] == ["ollama/gemma4:12b-mlx"]
+    assert ollama["source"] == "runtime-local"
+    assert ollama["api_url"] == "http://127.0.0.1:11434/v1"
+
+    ollama_cloud = next(
+        r for r in payload["providers"] if r["slug"] == "ollama-cloud"
+    )
+    assert ollama_cloud["authenticated"] is False
+
+
 # ─── canonical_order ───────────────────────────────────────────────────
 
 

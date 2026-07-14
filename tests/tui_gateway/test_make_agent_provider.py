@@ -51,13 +51,54 @@ def test_make_agent_passes_resolved_provider():
         # the patched config may not take effect when the module was already
         # imported by an earlier test.  Assert the stable part of the call.
         mock_resolve.assert_called_once()
-        assert mock_resolve.call_args.kwargs.get("requested") is None
+        assert mock_resolve.call_args.kwargs.get("requested") == "anthropic"
 
         call_kwargs = mock_agent.call_args
         assert call_kwargs.kwargs["provider"] == "anthropic"
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+def test_resolve_model_prefers_config_without_explicit_tui_provider():
+    fake_cfg = {
+        "model": {
+            "default": "ollama/gemma4:12b-mlx",
+            "provider": "ollama",
+        }
+    }
+
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+    ):
+        os.environ["HERMES_MODEL"] = "deepseek/deepseek-v4-flash"
+
+        from tui_gateway import server
+
+        assert server._resolve_model() == "ollama/gemma4:12b-mlx"
+
+
+def test_resolve_startup_runtime_prefers_config_provider_without_explicit_tui_provider():
+    fake_cfg = {
+        "model": {
+            "default": "ollama/gemma4:12b-mlx",
+            "provider": "ollama",
+        }
+    }
+
+    with (
+        patch.dict(os.environ, {}, clear=True),
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+    ):
+        os.environ["HERMES_MODEL"] = "deepseek/deepseek-v4-flash"
+
+        from tui_gateway import server
+
+        assert server._resolve_startup_runtime() == (
+            "ollama/gemma4:12b-mlx",
+            "ollama",
+        )
 
 
 def test_make_agent_forwards_provider_routing():

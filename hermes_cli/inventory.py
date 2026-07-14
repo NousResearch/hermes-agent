@@ -180,6 +180,7 @@ def build_models_payload(
         probe_custom_providers=probe_custom_providers,
         probe_current_custom_provider=probe_current_custom_provider,
     )
+    rows = _append_current_local_provider_row(rows, ctx)
 
     moa_row = _moa_provider_row(ctx.current_provider)
     if moa_row is not None:
@@ -298,6 +299,48 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────
+
+_LOCAL_RUNTIME_PROVIDER_LABELS = {
+    "ollama": "Ollama",
+    "vllm": "vLLM",
+    "llamacpp": "llama.cpp",
+    "llama.cpp": "llama.cpp",
+    "llama-cpp": "llama.cpp",
+}
+
+
+def _append_current_local_provider_row(
+    rows: list[dict], ctx: ConfigContext
+) -> list[dict]:
+    """Keep the active local runtime visible in picker payloads.
+
+    The authenticated provider inventory only knows about configured/API-key
+    backed providers. Bare local runtimes like ``provider: ollama`` can be the
+    live runtime without ever emitting a row, which leaves the picker showing
+    only the ``ollama-cloud`` setup skeleton and makes the UI look unconfigured.
+    """
+    normalized = (ctx.current_provider or "").strip().lower()
+    if normalized not in _LOCAL_RUNTIME_PROVIDER_LABELS:
+        return rows
+
+    seen = {str(row.get("slug", "")).lower() for row in rows}
+    if normalized in seen:
+        return rows
+
+    current_model = (ctx.current_model or "").strip()
+    current_base_url = (ctx.current_base_url or "").strip()
+    row = {
+        "slug": normalized,
+        "name": _LOCAL_RUNTIME_PROVIDER_LABELS[normalized],
+        "is_current": True,
+        "is_user_defined": True,
+        "models": [current_model] if current_model else [],
+        "total_models": 1 if current_model else 0,
+        "source": "runtime-local",
+    }
+    if current_base_url:
+        row["api_url"] = current_base_url
+    return list(rows) + [row]
 
 
 def _append_unconfigured_rows(

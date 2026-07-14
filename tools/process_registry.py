@@ -2201,7 +2201,9 @@ PROCESS_SCHEMA = {
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
+        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF). "
+        "To start a command, call the terminal tool (optionally background=true); "
+        "process does not have a 'run' action."
     ),
     "parameters": {
         "type": "object",
@@ -2269,8 +2271,22 @@ def _handle_process(args, **kw):
     action = args.get("action", "")
     # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
+    # Coerce non-string actions (some models send structured values)
+    if not isinstance(action, str):
+        action = str(action or "")
+    action_norm = action.strip().lower()
 
-    if action == "list":
+    # Models often invent process(action="run") for what is actually terminal().
+    # Give a pointer instead of the generic unknown-action error (#63477 logs).
+    if action_norm in {"run", "exec", "execute", "start", "command"}:
+        return tool_error(
+            "process has no 'run' action. To execute a command, call the terminal "
+            "tool (set background=true for long-running work, then process "
+            "action=poll/log/wait). Valid process actions: list, poll, log, wait, "
+            "kill, write, submit, close."
+        )
+
+    if action_norm == "list":
         # Surface session-scoped background processes (e.g. a forgotten
         # preview server) in addition to this task's own — they share the
         # gateway session_key and can block session reset (#29177).
@@ -2283,26 +2299,26 @@ def _handle_process(args, **kw):
             {"processes": process_registry.list_sessions(task_id=task_id, session_key=session_key or None)},
             ensure_ascii=False,
         )
-    elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
+    elif action_norm in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
-            return tool_error(f"session_id is required for {action}")
-        if action == "poll":
+            return tool_error(f"session_id is required for {action_norm}")
+        if action_norm == "poll":
             return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
-        elif action == "log":
+        elif action_norm == "log":
             return json.dumps(_redact_process_result(process_registry.read_log(
                 session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
-        elif action == "wait":
+        elif action_norm == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
-        elif action == "kill":
+        elif action_norm == "kill":
             return json.dumps(
                 _redact_process_result(process_registry.kill_process(session_id)),
                 ensure_ascii=False,
             )
-        elif action == "write":
+        elif action_norm == "write":
             return json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
-        elif action == "submit":
+        elif action_norm == "submit":
             return json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
-        elif action == "close":
+        elif action_norm == "close":
             return json.dumps(process_registry.close_stdin(session_id), ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
 

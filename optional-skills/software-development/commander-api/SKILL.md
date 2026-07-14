@@ -116,10 +116,10 @@ are capped at 15 items so a single call can't blow the context budget.
 
 | Subcommand | Endpoint | Purpose |
 |---|---|---|
-| `status` | `/api/projects` + `/api/sprint-nav-status` × N | **Start here for "what's running/pending"** — one call, every tracked project's current sprint + state + done/total/UAT counts |
+| `status` | `GET /api/home` | **Start here for "what's running/pending"** — one call, every tracked project's live `status` (idle/uat-pending/running), UAT count, real backlog count |
 | `health` | `GET /api/health` | Overall health snapshot |
-| `home` | `GET /api/home` | Cross-project rollup (running count, awaiting-UAT, backlog totals) |
-| `nav_status --repo <owner/repo>` | `GET /api/sprint-nav-status` | Current sprint + ticket-column breakdown for one project |
+| `home` | `GET /api/home` | Same data `status` is built from, if you want the full raw payload (aggregate stats too) |
+| `nav_status --repo <owner/repo>` | `GET /api/sprint-nav-status` | Ticket-column breakdown for one project's latest GitHub-tracked sprint — **not a live-running signal**, see Pitfalls |
 | `board --project <id>` | `GET /api/board` | Kanban board for a project |
 | `running --project <id>` | `GET /api/running` | Currently-running agents/jobs for a project |
 | `sprints` | `GET /api/sprints` | List **every** sprint label ever created for the default project (not "pending" — see Pitfalls) |
@@ -145,27 +145,37 @@ This is the main use case: a remote status check standing in for opening
 the dashboard UI. Get it right in one shot.
 
 1. Run **`status`** — one call, no project resolution needed, covers every
-   tracked project. Do not call `board`, `running_sprint`, `sprint_state`,
-   or loop over guessed sprint labels for this ask; `status` already did
-   that correctly. If the user named one specific project, still run
-   `status` (it's one call) and just report that project's entry.
-2. Commander does not expose a literal "pending sprints" list — `sprints`
+   tracked project. Do not call `board`, `running_sprint`, `nav_status`, or
+   loop over guessed sprint labels for this ask; `status` already did that
+   correctly. If the user named one specific project, still run `status`
+   (it's one call) and just report that project's entry.
+2. Read the per-project `status` field — this is Commander's own live
+   computation, the same one its dashboard UI shows, not something this
+   skill derives:
+   - `"running"` — an agent is actively working right now (`running_sprint_label`
+     / `running_elapsed_sec` are present). Nothing else can be dispatched
+     for that project until it finishes.
+   - `"uat-pending"` — no agent is currently running; the most recent
+     sprint's tickets are sitting in UAT awaiting sign-off (`uat_count`).
+     This is idle from a dispatch standpoint, but flag the pending UAT
+     count since that's usually why the user is checking.
+   - `"idle"` — no agent running, nothing awaiting UAT. Fully idle, room to
+     plan or dispatch the next sprint.
+   Commander does not expose a literal "pending sprints" list — `sprints`
    returns *every* label ever created (finished ones included), so
-   `all sprints minus the running one` is **wrong** and will list old,
-   already-merged sprints as if they were queued up. The correct read of
-   `status`'s per-project `state` field:
-   - `"running"` — a sprint is actively being worked; nothing else can be
-     dispatched for that project right now.
-   - `"finished"` (or no entry / `has_sprint: false`) — the project is idle;
-     there's room to plan or dispatch the next sprint. This does *not* mean
-     a specific next sprint is already queued — say "idle, room to run
-     something" rather than inventing a next label. If the user wants to
-     know the next label to use, that's a separate ask (see Sprint Dispatch).
-3. Reply in a **compact list, one line per project** — repo name, sprint
-   number, state, `done/total` done, `uat` count if nonzero. Example shape
-   (not literal wording, adapt to what `status` actually returned):
-   `commander: sprint-103 running (0/6 done, 5 in UAT)`
-   `asset-studio: sprint-8 finished (9/9 done)`
+   `sprints minus the running one` is **wrong** and lists old, already-
+   merged sprints as if they were queued. Don't compute pending that way;
+   `status`'s `status` field is the real signal.
+3. `backlog_open` is the project's real untriaged-issue count (no sprint
+   assigned yet) — mention it when nonzero, especially for an idle project,
+   since that's the natural next question ("room to plan the next sprint
+   from N backlog issues").
+4. Reply in a **compact list, one line per project** — repo name, status,
+   uat_count if nonzero, backlog_open if nonzero. Example shape (not
+   literal wording, adapt to what `status` actually returned):
+   `commander: uat-pending, 5 in UAT, 26 backlog`
+   `perf-coach: running sprint-110.1 (6m elapsed)`
+   `asset-studio: idle, 17 backlog`
    No headers, no per-project subsections, no restating the question, no
    paragraph of caveats — this is a status ping, not a report.
 
@@ -214,14 +224,18 @@ Note the full `owner/repo` form here — see the identifier quirk section.
 
 ### Sprint Monitoring ("how's sprint X doing")
 
-1. `nav_status --repo <owner/repo>` for a snapshot with ticket-column
-   breakdown (or `status` if checking multiple projects at once — see
-   Status Check above). Use `sprint_state <label> --project <repo>` only if
-   you need fields `nav_status` doesn't return.
+1. `status` first for the live signal (is it actually running right now,
+   and for how long — see Status Check above). `nav_status --repo <owner/repo>`
+   adds ticket-column breakdown (backlog/in-progress/sit/uat/done/needs-rework)
+   for the project's latest GitHub-tracked sprint, but its own `state` field
+   means "has a Sprint N Executive Summary issue been posted" — not "is
+   this actively running" — don't quote `nav_status.state` as the answer to
+   "is it running", only `status`'s `status` field answers that.
 2. If the user wants a live tail: `stream /api/sprints/<label>/live/stream --max-seconds 20`
    — one capped read, not an open-ended watch.
-3. Relay state fields plainly; don't re-interpret `state`/`dag`/warnings
-   into your own verdict.
+3. Relay fields plainly; don't re-interpret `state`/`dag`/warnings into your
+   own verdict, and don't conflate `nav_status`'s GitHub-derived `state`
+   with live process state (see Pitfalls).
 
 ### Backlog → Sprint (project is idle, add its backlog/follow-up tickets)
 
@@ -229,9 +243,12 @@ The trigger is usually "project X is idle, clean up/queue its backlog." Two
 real tools exist, and they are not equally safe across multiple projects —
 read the caveat before picking one.
 
-1. First confirm idle: `status` (or `nav_status --repo <owner/repo>`) — if
-   `state: "running"`, stop here and say so; Commander runs one sprint per
-   project at a time, nothing can be added until it finishes.
+1. First confirm idle: `status` — if that project's `status` field is
+   `"running"`, stop here and say so; Commander runs one sprint per project
+   at a time, nothing can be added until it finishes. (`"uat-pending"` and
+   `"idle"` both mean no agent is currently running, so planning is fine —
+   don't use `nav_status` for this check, its `state` field answers a
+   different question, see Pitfalls.)
 2. **Auto-fill the next sprint from the backlog (preferred, multi-project
    safe):** `plan_next` isn't a named shortcut (it's a write) — check
    `milestones <repo>` first (bare repo name) and read the top-level
@@ -296,7 +313,21 @@ schema straight from Commander.
 - `sprints` is a full historical label list, not a "pending" list — don't
   compute "pending" as `sprints` minus the running one, and don't guess a
   next label by incrementing the highest known number. Neither is reliable;
-  see Status Check above for the actual read of `state`.
+  see Status Check above for the actual read of `status`.
+- **`nav_status`'s `state` field is not a live-running signal — confirmed
+  wrong in practice, not just theoretically.** It's derived from GitHub
+  issue labels ("has a Sprint N Executive Summary issue been posted"),
+  cached 30s, and can read `"running"` for a project that finished its
+  actual agent work hours ago and just hasn't been through the finish
+  step yet — this produced a real bad reply (`status: "running"` for a
+  project the user could see was idle in the dashboard UI). The `status`
+  command's `status` field (`idle`/`uat-pending`/`running`, sourced from
+  `/api/home`, the same computation Commander's own dashboard uses) is the
+  only field to answer "is it running right now". Likewise `nav_status`'s
+  `columns.backlog` is the tiny in-sprint kanban backlog column (0-2
+  tickets), not the project's real untriaged backlog — that's `status`'s
+  `backlog_open` (sourced from `/api/home`'s `backlog_count`), which was
+  also wrong in the same bad reply for the same underlying mix-up.
 - `pending-signoff` timed out during testing against a project with a lot
   of history — prefer `status`/`home` for awaiting-UAT counts instead of
   calling it per project.
@@ -327,7 +358,10 @@ schema straight from Commander.
 - `python3 scripts/commander_api.py health` returns `status: 200` with no
   connection error when Commander is running.
 - `python3 scripts/commander_api.py status` returns a `projects` array
-  covering every project from `/api/projects`, each with a real `state`.
+  covering every project from `/api/home`, each with a real `status`
+  (idle/uat-pending/running) that matches what `running_sprint <repo>`
+  and the dashboard UI itself report — cross-check the two if in doubt,
+  don't trust `nav_status.state` as a substitute.
 - `call POST ...` without `--confirm` always exits non-zero and refuses —
   confirming the safety gate is structural, not just documented.
 - A HIGH-RISK path (e.g. `/api/sprints/run`, any `DELETE`) prints the loud

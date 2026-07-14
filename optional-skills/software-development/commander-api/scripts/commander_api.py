@@ -179,37 +179,40 @@ def request(base_url, token, method, path, body=None, query=None, timeout=20):
 
 
 def status_overview(base_url, token):
-    """One-shot cross-project sprint status: exactly the compact facts a
-    monitoring reply needs, gathered here (not left to the model to
-    orchestrate across several calls, or worse, guess at)."""
-    status, projects_body = _fetch_raw(base_url, token, "GET", "/api/projects")
+    """One-shot cross-project sprint status, sourced entirely from
+    GET /api/home's `projects` array — the one place Commander's own
+    dashboard computes a live, authoritative per-project `status`
+    (idle/uat-pending/running) plus the real project-wide backlog count.
+
+    Earlier versions of this command used /api/sprint-nav-status per
+    project instead. Don't go back to that: its `state` field is derived
+    from GitHub issue labels ("has a Sprint N Executive Summary issue been
+    posted"), cached 30s, and answers "has this sprint been formally
+    closed out" — NOT "is an agent actively working right now". It can
+    read "running" for a project that finished its actual work hours ago
+    and just hasn't been through the finish step yet, which reads as a
+    false positive against the real running state /api/home reports.
+    Similarly nav-status's `columns.backlog` is the tiny in-sprint kanban
+    backlog column (0-2 tickets), not the project's real untriaged
+    backlog pool (dozens) — /api/home's `backlog_count` is the right one.
+    """
+    status, home_body = _fetch_raw(base_url, token, "GET", "/api/home")
     if status != 200:
-        return {"error": "could not list projects", "status": status, "body": projects_body}
+        return {"error": "could not fetch /api/home", "status": status, "body": home_body}
 
     results = []
-    for proj in projects_body.get("projects", []):
-        repo_full = proj.get("repo")  # "owner/repo" — what nav-status requires
-        if not repo_full:
-            continue
-        ns_status, ns_body = _fetch_raw(
-            base_url, token, "GET", "/api/sprint-nav-status", query={"repo": repo_full}
-        )
-        entry = {"repo": repo_full}
-        if ns_status == 200 and isinstance(ns_body, dict):
-            if ns_body.get("has_sprint"):
-                entry["sprint"] = ns_body.get("sprint")
-                entry["state"] = ns_body.get("state")
-                entry["done"] = ns_body.get("done")
-                entry["total"] = ns_body.get("total")
-                entry["uat"] = ns_body.get("uat")
-                entry["backlog_open"] = (ns_body.get("columns") or {}).get("backlog")
-                if ns_body.get("summary_issue"):
-                    entry["summary_issue_url"] = ns_body["summary_issue"].get("url")
-            else:
-                entry["sprint"] = None
-                entry["state"] = "no_sprint"
-        else:
-            entry["error"] = f"nav-status returned {ns_status}"
+    for proj in home_body.get("projects", []):
+        entry = {
+            "repo": proj.get("repo"),
+            "status": proj.get("status"),  # "idle" | "uat-pending" | "running"
+            "uat_count": proj.get("uat_count"),
+            "backlog_open": proj.get("backlog_count"),
+            "last_sprint_num": (proj.get("last_sprint") or {}).get("sprint_num"),
+        }
+        sprint_running = proj.get("sprint_running")
+        if sprint_running:
+            entry["running_sprint_label"] = sprint_running.get("label")
+            entry["running_elapsed_sec"] = sprint_running.get("elapsed_sec")
         results.append(entry)
     return {"projects": results}
 

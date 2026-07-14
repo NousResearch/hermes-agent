@@ -161,8 +161,6 @@ function paletteVars(palette: ThemePalette): Record<string, string> {
     ...layerVars("background", palette.background),
     ...layerVars("midground", palette.midground),
     ...layerVars("foreground", palette.foreground),
-    "--warm-glow": palette.warmGlow,
-    "--noise-opacity-mul": String(palette.noiseOpacity),
   };
 }
 
@@ -470,10 +468,14 @@ function applyTheme(theme: DashboardTheme) {
   applyCustomCSS(theme.customCSS);
   applyLayoutVariant(theme.layoutVariant);
 
-  // Terminal background — read by ChatPage via useTheme(); also available as CSS var.
+  // Terminal colors — read by ChatPage via useTheme(); also available as CSS vars.
   root.style.setProperty(
     "--theme-terminal-background",
     theme.terminalBackground ?? "#000000",
+  );
+  root.style.setProperty(
+    "--theme-terminal-foreground",
+    theme.terminalForeground ?? "#f0e6d2",
   );
 
   // Re-assert the font override last: theme application just rewrote

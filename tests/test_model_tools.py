@@ -375,7 +375,7 @@ class TestPreToolCallBlocking:
 class TestLegacyToolsetMap:
     def test_expected_legacy_names(self):
         expected = [
-            "web_tools", "terminal_tools", "vision_tools", "moa_tools",
+            "web_tools", "terminal_tools", "vision_tools",
             "image_tools", "skills_tools", "browser_tools", "cronjob_tools",
             "file_tools", "tts_tools",
         ]
@@ -457,3 +457,133 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+class TestDisabledToolsetsPlatformBundle:
+    """Regression test for #33924: disabling a platform bundle (hermes-*)
+    must not remove core tools from other enabled toolsets."""
+
+    def test_disabling_platform_bundle_preserves_core_tools(self):
+        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        from model_tools import get_tool_definitions
+
+        tools_telegram = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_telegram_no_yuanbao = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["hermes-yuanbao"],
+            quiet_mode=True,
+        )
+        names_telegram = {t["function"]["name"] for t in tools_telegram}
+        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+
+        # Disabling a *different* platform bundle must not remove any tools
+        assert names_telegram == names_no_yuanbao, (
+            f"Tools lost after disabling hermes-yuanbao: "
+            f"{names_telegram - names_no_yuanbao}"
+        )
+
+    def test_disabling_platform_bundle_removes_own_tools(self):
+        """Disabling hermes-discord should remove discord-specific tools."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
+            disabled_toolsets=["hermes-discord"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "discord" not in names
+
+    def test_disabling_non_platform_toolset_still_works(self):
+        """Disabling a regular (non-hermes-) toolset still subtracts all tools."""
+        from model_tools import get_tool_definitions
+
+        tools_normal = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_no_web = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["web"],
+            quiet_mode=True,
+        )
+        names_normal = {t["function"]["name"] for t in tools_normal}
+        names_no_web = {t["function"]["name"] for t in tools_no_web}
+
+        web_tools = {"web_search", "web_extract"}
+        removed = names_normal - names_no_web
+        # web tools should be removed (if they were present)
+        present_web = web_tools & names_normal
+        assert present_web <= removed, (
+            f"Web tools not removed: {present_web - removed}"
+        )
+
+
+    def test_disabling_bundle_removes_platform_tools_but_keeps_core(self):
+        """Disabling hermes-discord (when enabled) removes discord/discord_admin
+        from the resolved delta but keeps core tools — via bundle_non_core_tools."""
+        from toolsets import bundle_non_core_tools, _HERMES_CORE_TOOLS
+
+        delta = bundle_non_core_tools("hermes-yuanbao")
+        # The delta is the bundle's platform-specific tools, NOT core.
+        assert "yb_send_dm" in delta
+        assert not (delta & set(_HERMES_CORE_TOOLS)), "core tools must not be in the removal delta"
+
+    def test_bundle_non_core_tools_unknown_falls_back(self):
+        """An unknown/garbage bundle name falls back to full resolution (best effort)."""
+        from toolsets import bundle_non_core_tools
+        # A non-existent bundle resolves to an empty set (no tools), not a crash.
+        assert bundle_non_core_tools("hermes-does-not-exist") == set()
+
+
+class TestDisabledToolsetsPostureToolset:
+    """Regression test for #57315: disabling a posture toolset (`coding`,
+    posture: True) must preserve the shared core tools it re-lists but does
+    not own -- same non-core-delta subtraction as hermes-* bundles (#33924) --
+    while atomic toolsets stay fully removable."""
+
+    def test_disabling_coding_preserves_core_but_atomic_disables_still_remove(self):
+        from model_tools import get_tool_definitions
+
+        # web_search is check_fn-gated (needs an API key); probe only the core
+        # tools actually present in baseline so gating cannot mask the fix.
+        core_probe = {"terminal", "read_file", "write_file", "web_search", "execute_code"}
+
+        baseline = {
+            t["function"]["name"]
+            for t in get_tool_definitions(quiet_mode=True)
+        }
+        present_core = core_probe & baseline
+        # Sanity: at least some probed core tools are available in this env.
+        assert present_core, "no probed core tools present in baseline"
+
+        no_coding = {
+            t["function"]["name"]
+            for t in get_tool_definitions(
+                disabled_toolsets=["coding"], quiet_mode=True
+            )
+        }
+        # Previously the full resolve_toolset("coding") subtraction stripped
+        # these shared core tools, collapsing the schema to a handful (#57315).
+        assert present_core <= no_coding, (
+            f"Core tools stripped by disabling 'coding': {present_core - no_coding}"
+        )
+
+        # Atomic (non-posture) toolsets must still be fully removable.
+        no_terminal = {
+            t["function"]["name"]
+            for t in get_tool_definitions(
+                disabled_toolsets=["terminal"], quiet_mode=True
+            )
+        }
+        assert "terminal" not in no_terminal
+
+        no_file = {
+            t["function"]["name"]
+            for t in get_tool_definitions(
+                disabled_toolsets=["file"], quiet_mode=True
+            )
+        }
+        assert "write_file" not in no_file

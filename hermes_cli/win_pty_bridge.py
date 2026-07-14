@@ -72,6 +72,11 @@ class WinPtyBridge:
     def is_available(cls) -> bool:
         return bool(_PTY_AVAILABLE)
 
+    @staticmethod
+    def clamp_dimensions(cols: int, rows: int) -> tuple[int, int]:
+        """Normalize browser dimensions for both initial spawn and resize."""
+        return _clamp(cols, _MAX_COLS), _clamp(rows, _MAX_ROWS)
+
     @classmethod
     def spawn(
         cls,
@@ -88,6 +93,7 @@ class WinPtyBridge:
                     "pywinpty is not installed. Install with: pip install pywinpty"
                 )
             raise PtyUnavailableError("ConPTY is unavailable on this platform.")
+        cols, rows = cls.clamp_dimensions(cols, rows)
         spawn_env = (os.environ.copy() if env is None else dict(env))
         if not spawn_env.get("TERM"):
             spawn_env["TERM"] = "xterm-256color"

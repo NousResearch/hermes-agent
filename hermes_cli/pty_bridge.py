@@ -109,6 +109,14 @@ class PtyBridge:
         """True if a PTY can be spawned on this platform."""
         return bool(_PTY_AVAILABLE)
 
+    @staticmethod
+    def clamp_dimensions(cols: int, rows: int) -> tuple[int, int]:
+        """Normalize browser dimensions for both initial spawn and resize."""
+        return (
+            _clamp_dimension(cols, _MAX_COLS),
+            _clamp_dimension(rows, _MAX_ROWS),
+        )
+
     @classmethod
     def spawn(
         cls,
@@ -138,6 +146,7 @@ class PtyBridge:
                     "(or pip install -e '.[pty]')."
                 )
             raise PtyUnavailableError("Pseudo-terminals are unavailable.")
+        cols, rows = cls.clamp_dimensions(cols, rows)
         # PTY-hosted programs expect TERM to describe the terminal type.
         # CI often runs without TERM in the parent process, which makes
         # simple terminal probes like `tput cols` fail before winsize reads.

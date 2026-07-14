@@ -1259,6 +1259,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
         self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
+        self._turn_counter = 0
         with self._append_state_lock:
             self._append_state = _AppendRetainState()
             self._session_turns = self._append_state.turns
@@ -1904,17 +1905,15 @@ class HindsightMemoryProvider(MemoryProvider):
         if not new_id:
             return
 
-        # 1. Drain any in-flight prefetch from the old session and drop
-        # its cached result so the new session doesn't see stale recall.
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
-        with self._prefetch_lock:
-            self._prefetch_result = ""
-
-        # 2. Queue the old-session flush and rotate buffers atomically with
+        # 1. Queue the old-session flush and rotate buffers atomically with
         # sync_turn(). Append jobs capture old_state, so their writer-time
         # ACK compaction can never touch the new session's buffer.
         with self._append_state_lock:
+            # shutdown() takes this same lock before setting the event. Either
+            # the flush is published before shutdown drains the writer, or the
+            # switch leaves the old state intact for shutdown to own.
+            if self._shutting_down.is_set():
+                return
             old_state = self._append_state
             if old_state.turns:
                 old_session_id = self._session_id
@@ -2001,10 +2000,9 @@ class HindsightMemoryProvider(MemoryProvider):
                             )
 
                 # The shared FIFO keeps this behind older old-session jobs.
-                if not self._shutting_down.is_set():
-                    self._ensure_writer()
-                    self._register_atexit()
-                    self._retain_queue.put(_flush)
+                self._ensure_writer()
+                self._register_atexit()
+                self._retain_queue.put(_flush)
 
             if parent_session_id:
                 self._parent_session_id = str(parent_session_id).strip()
@@ -2015,6 +2013,13 @@ class HindsightMemoryProvider(MemoryProvider):
             self._session_turns = self._append_state.turns
             self._turn_counter = 0
             self._turn_index = 0
+
+        # 2. Drain any in-flight prefetch from the old session and drop
+        # its cached result so the new session doesn't see stale recall.
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        with self._prefetch_lock:
+            self._prefetch_result = ""
         logger.debug(
             "Hindsight on_session_switch: new_session=%s parent=%s reset=%s doc=%s",
             self._session_id, self._parent_session_id, reset, self._document_id,
@@ -2024,7 +2029,8 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Hindsight shutdown: stopping writer + waiting for background threads")
         # Stop accepting new retain jobs first so anyone still calling
         # sync_turn() during teardown is dropped, not enqueued.
-        self._shutting_down.set()
+        with self._append_state_lock:
+            self._shutting_down.set()
         # Drain the writer: it will finish in-flight work, then exit on
         # the sentinel. Bounded join keeps shutdown predictable even if
         # the daemon is wedged.

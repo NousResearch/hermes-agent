@@ -1688,6 +1688,77 @@ class TestAppendRetainAcknowledgements:
         assert p._session_id == "new-sid"
         assert p._session_turns == []
 
+    def test_session_switch_queues_old_flush_before_concurrent_shutdown(
+        self, append_provider
+    ):
+        """Shutdown during the prefetch wait cannot discard the old buffer."""
+        import threading
+
+        join_started = threading.Event()
+        release_prefetch = threading.Event()
+        calls = []
+
+        async def _record_retain(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+        class _BlockedPrefetch:
+            def is_alive(self):
+                return not release_prefetch.is_set()
+
+            def join(self, timeout=None):
+                join_started.set()
+                release_prefetch.wait(timeout=timeout)
+
+        p = append_provider(
+            retain_every_n_turns=2,
+            retain_async=False,
+            release_on_cleanup=release_prefetch,
+        )
+        p._client.aretain_batch = AsyncMock(side_effect=_record_retain)
+        p._prefetch_thread = _BlockedPrefetch()
+        p.sync_turn("turn1-user", "turn1-asst")
+
+        switch = threading.Thread(
+            target=lambda: p.on_session_switch(
+                "new-sid", parent_session_id="test-session", reset=True
+            )
+        )
+        switch.start()
+        assert join_started.wait(timeout=5.0), "switch never waited for prefetch"
+
+        shutdown = threading.Thread(target=p.shutdown)
+        shutdown.start()
+        assert p._shutting_down.wait(timeout=5.0), "shutdown never started"
+        release_prefetch.set()
+        switch.join(timeout=5.0)
+        shutdown.join(timeout=5.0)
+
+        assert not switch.is_alive()
+        assert not shutdown.is_alive()
+        assert p._client is None
+        assert self._payloads(calls) == [[self._turn(1)]]
+
+    def test_reinitialize_resets_append_target_accounting(self, append_provider):
+        """A fresh append state starts its queued targets from zero again."""
+        calls = []
+
+        async def _record_retain(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(ok=True)
+
+        p = append_provider(retain_every_n_turns=1)
+        p._client.aretain_batch = AsyncMock(side_effect=_record_retain)
+        p.sync_turn("turn1-user", "turn1-asst")
+        p._retain_queue.join()
+
+        p.initialize(session_id="reinitialized-session", platform="cli")
+        p.sync_turn("turn2-user", "turn2-asst")
+        p._retain_queue.join()
+
+        assert self._payloads(calls) == [[self._turn(1)], [self._turn(2)]]
+        assert p._session_turns == []
+
     def test_successful_append_retain_prunes_acknowledged_turns_from_buffer(
         self, append_provider
     ):

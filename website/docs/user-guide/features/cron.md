@@ -225,6 +225,17 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+### Session retention
+
+Cron session retention is disabled by default. To delete ended cron sessions older than a configured age, set:
+
+```yaml
+cron:
+  session_retention_days: 30
+```
+
+Set `session_retention_days` to `0` to disable cleanup. Positive values remove matching ended cron sessions from the active profile's database and `sessions` artifact directory. User sessions and active sessions are untouched.
+
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:

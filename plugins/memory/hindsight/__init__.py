@@ -1922,7 +1922,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # 2. Invalidate in-flight prefetch before waiting so a timed-out old
         # worker cannot write stale recall into the new session's cache.
         with self._prefetch_lock:
-            self._prefetch_generation += 1
+            self._prefetch_generation = getattr(self, "_prefetch_generation", 0) + 1
             self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=self._prefetch_join_timeout)
@@ -1964,7 +1964,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._retain_queue.qsize(),
                 )
         with self._prefetch_lock:
-            self._prefetch_generation += 1
+            self._prefetch_generation = getattr(self, "_prefetch_generation", 0) + 1
             self._prefetch_result = ""
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=_PREFETCH_SHUTDOWN_GRACE_TIMEOUT)

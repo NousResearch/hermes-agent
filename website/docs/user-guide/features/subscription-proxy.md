@@ -165,8 +165,12 @@ By default the proxy binds `127.0.0.1` (localhost only). To let other
 machines on your network use it:
 
 ```bash
-hermes proxy start --host 0.0.0.0 --port 8645
+hermes proxy start --host 0.0.0.0 --port 8645 --allow-network
 ```
+
+The `--allow-network` flag is required for non-loopback binds because this
+proxy does not authenticate clients; it attaches your upstream credentials to
+accepted requests.
 
 ⚠ **Be aware:** anyone on your network can now use your Portal
 subscription. The proxy has no auth of its own — it accepts any bearer.

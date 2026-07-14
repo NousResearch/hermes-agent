@@ -163,6 +163,14 @@ VALID_HOOKS: Set[str] = {
     "on_session_reset",
     "subagent_start",
     "subagent_stop",
+    # Post-update hook. Fired after `hermes update` completes successfully.
+    # Use this to re-apply custom patches, run migrations, or restart services.
+    # Example config:
+    #   hooks:
+    #     post_update:
+    #       - command: ~/.local/bin/post-update-fix
+    #         timeout: 60
+    "post_update",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:

@@ -1945,11 +1945,22 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
+            from gateway.session_context import (
+                reset_current_session_id,
+                set_current_session_id,
             )
+
+            session_token = set_current_session_id(
+                child.session_id, update_environ=False
+            )
+            try:
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+            finally:
+                reset_current_session_id(session_token)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:

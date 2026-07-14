@@ -139,7 +139,7 @@ _VAR_MAP = {
 }
 
 
-def set_current_session_id(session_id: str, *, update_environ: bool = True) -> None:
+def set_current_session_id(session_id: str, *, update_environ: bool = True):
     """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ``.
 
     Long-lived single-process entrypoints like the CLI can rotate sessions via
@@ -151,10 +151,16 @@ def set_current_session_id(session_id: str, *, update_environ: bool = True) -> N
     When *update_environ* is False, only the task-local ContextVar is updated.
     Subagents use this to avoid clobbering the parent's process-global env.
     """
-    _SESSION_ID.set(session_id)
+    token = _SESSION_ID.set(session_id)
     if update_environ:
         import os
         os.environ["HERMES_SESSION_ID"] = session_id
+    return token
+
+
+def reset_current_session_id(token) -> None:
+    """Restore the previous task-local session ID."""
+    _SESSION_ID.reset(token)
 
 
 def set_session_vars(

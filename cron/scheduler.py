@@ -47,6 +47,17 @@ from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
 
+_CRON_AGENT_POLL_INTERVAL = 5.0
+_CRON_AGENT_INTERRUPT_GRACE_SECONDS = 30.0
+_TIMED_OUT_RUNS_LOCK = threading.RLock()
+_TIMED_OUT_RUNS: dict[str, concurrent.futures.Future] = {}
+
+
+def _clear_timed_out_run(job_id: str, future: concurrent.futures.Future) -> None:
+    with _TIMED_OUT_RUNS_LOCK:
+        if _TIMED_OUT_RUNS.get(job_id) is future:
+            _TIMED_OUT_RUNS.pop(job_id, None)
+
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """Return a compact one-line failure message for chat delivery.
@@ -2613,6 +2624,33 @@ def run_job(
     # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
     # construction costs.
     # ---------------------------------------------------------------
+    # This runs before agent/session setup, so an overlap skip has no local
+    # resources or process-global context to clean up.
+    with _TIMED_OUT_RUNS_LOCK:
+        _previous_timeout = _TIMED_OUT_RUNS.get(job_id)
+        if _previous_timeout is not None:
+            if _previous_timeout.done():
+                _TIMED_OUT_RUNS.pop(job_id, None)
+            else:
+                error_msg = (
+                    "previous timed-out execution is still active after "
+                    "interruption requested; skipping overlapping run"
+                )
+                logger.warning("Job '%s': %s", job_id, error_msg)
+                output = f"""# Cron Job: {job_name} (SKIPPED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Error
+
+```
+{error_msg}
+```
+"""
+                return False, output, "", error_msg
+
     from run_agent import AIAgent
 
     # Initialize SQLite session store so cron job messages are persisted
@@ -2826,6 +2864,13 @@ def run_job(
     # statement raises.  A leaked writer would deadlock the whole scheduler
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
+    _job_has_process_context = bool(
+        _job_workdir
+        or (job.get("profile") or "").strip()
+        or (job.get("_active_profile") or "").strip()
+    )
+
+    _defer_agent_close = False
     try:
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
@@ -3188,7 +3233,6 @@ def run_job(
                 logger.debug(
                     "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
                 )
-
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -3196,6 +3240,7 @@ def run_job(
         _cron_context = contextvars.copy_context()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _interrupt_requested = False
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — no inactivity watchdog, but a one-shot still
@@ -3216,7 +3261,7 @@ def run_job(
                 result = None
                 while True:
                     done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
+                        {_cron_future}, timeout=_CRON_AGENT_POLL_INTERVAL,
                     )
                     if done:
                         result = _cron_future.result()
@@ -3232,7 +3277,72 @@ def run_job(
                             pass
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
+                        _interrupt = getattr(agent, "interrupt", None)
+                        if callable(_interrupt):
+                            _interrupt("Cron job timed out (inactivity)")
+                            _interrupt_requested = True
                         break
+                if _inactivity_timeout:
+                    if _interrupt_requested:
+                        try:
+                            # The timeout is already authoritative; this only
+                            # confirms whether the worker stopped after interrupt.
+                            _cron_future.result(
+                                timeout=_CRON_AGENT_INTERRUPT_GRACE_SECONDS
+                            )
+                        except concurrent.futures.TimeoutError:
+                            pass
+                        except Exception:
+                            logger.debug(
+                                "Job '%s': timed-out worker stopped with an exception",
+                                job_id,
+                                exc_info=True,
+                            )
+                    if not _cron_future.done():
+                        if _job_has_process_context:
+                            # Workdir/profile jobs run under process-global
+                            # context that cannot be restored while the worker
+                            # may still execute tools. Keep the sequential
+                            # guard and context alive until the worker exits.
+                            try:
+                                _cron_future.result()
+                            except Exception as stop_exc:
+                                logger.debug(
+                                    "Job '%s': timed-out worker stopped with error: %s",
+                                    job_id,
+                                    stop_exc,
+                                )
+                        else:
+                            try:
+                                if agent is not None:
+                                    agent.close()
+                                    _defer_agent_close = True
+                            except (Exception, KeyboardInterrupt) as close_exc:
+                                logger.debug(
+                                    "Job '%s': failed to close timed-out agent: %s",
+                                    job_id,
+                                    close_exc,
+                                )
+
+                            def _cleanup_timed_out_worker(
+                                _future: concurrent.futures.Future,
+                            ) -> None:
+                                _clear_timed_out_run(job_id, _future)
+                                try:
+                                    from agent.auxiliary_client import (
+                                        cleanup_stale_async_clients,
+                                    )
+                                    cleanup_stale_async_clients()
+                                except Exception as cleanup_exc:
+                                    logger.debug(
+                                        "Job '%s': failed to reap stale auxiliary clients after timed-out worker: %s",
+                                        job_id,
+                                        cleanup_exc,
+                                    )
+
+                            with _TIMED_OUT_RUNS_LOCK:
+                                _TIMED_OUT_RUNS[job_id] = _cron_future
+                            _cron_future.add_done_callback(_cleanup_timed_out_worker)
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -3260,8 +3370,6 @@ def run_job(
                 _last_desc, _iter_n, _iter_max,
                 _cur_tool or "none",
             )
-            if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out (inactivity)")
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
@@ -3421,9 +3529,9 @@ def run_job(
         # agent back instead of closing it here — delivery must run against a
         # live async client, and the caller tears down afterwards (#58720).
         if defer_agent_teardown is not None:
-            if agent is not None:
+            if agent is not None and not _defer_agent_close:
                 defer_agent_teardown.append(agent)
-        else:
+        elif not _defer_agent_close:
             _teardown_cron_agent(agent, job_id)
 
 

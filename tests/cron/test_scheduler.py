@@ -5,6 +5,8 @@ import itertools
 import json
 import logging
 import os
+import threading
+import time
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1551,6 +1553,323 @@ class TestRunJobSessionPersistence:
 
         advance.assert_not_called()
         run_one.assert_not_called()
+
+    def test_run_job_waits_for_agent_stop_on_inactivity_timeout(
+        self, tmp_path, monkeypatch
+    ):
+        """run_job must not return timeout failure while agent work is active."""
+        job = {
+            "id": "timeout-stop-job",
+            "name": "timeout-stop",
+            "prompt": "hello",
+        }
+        agents = []
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self.interrupted = False
+                self.stopped = False
+                self._interrupted = threading.Event()
+                self.close = MagicMock()
+                agents.append(self)
+
+            def get_activity_summary(self):
+                return {
+                    "last_activity_desc": "validation idle",
+                    "seconds_since_activity": 10.0,
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                }
+
+            def interrupt(self, msg):
+                self.interrupted = True
+                self._interrupted.set()
+
+            def run_conversation(self, prompt):
+                self._interrupted.wait(timeout=2.0)
+                self.stopped = True
+                return {"final_response": "stopped"}
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.01")
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_POLL_INTERVAL", 0.01)
+
+        with self._run_job_patches(
+            tmp_path, extra=[patch("run_agent.AIAgent", FakeAgent)]
+        ):
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and "idle" in error and "limit" in error
+        assert "(FAILED)" in output
+        assert agents[0].interrupted is True
+        assert agents[0].stopped is True
+        agents[0].close.assert_called_once()
+
+    def test_run_job_does_not_hang_when_timeout_interrupt_is_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        """A non-cooperative agent must not block cron timeout handling forever."""
+        job = {
+            "id": "timeout-ignore-job",
+            "name": "timeout-ignore",
+            "prompt": "hello",
+        }
+        release_agent = threading.Event()
+        agent_stopped = threading.Event()
+        agents = []
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self.interrupted = False
+                self.stopped = False
+                self.close = MagicMock()
+                agents.append(self)
+
+            def get_activity_summary(self):
+                return {
+                    "last_activity_desc": "validation idle",
+                    "seconds_since_activity": 10.0,
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                }
+
+            def interrupt(self, msg):
+                self.interrupted = True
+
+            def run_conversation(self, prompt):
+                release_agent.wait(timeout=2.0)
+                self.stopped = True
+                agent_stopped.set()
+                return {"final_response": "stopped"}
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.01")
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_INTERRUPT_GRACE_SECONDS", 0.01)
+        import cron.scheduler as scheduler
+        scheduler._TIMED_OUT_RUNS.clear()
+
+        with patch("agent.auxiliary_client.cleanup_stale_async_clients") as cleanup_mock:
+            try:
+                start = time.monotonic()
+                with self._run_job_patches(
+                    tmp_path, extra=[patch("run_agent.AIAgent", FakeAgent)]
+                ):
+                    success, output, final_response, error = run_job(job)
+                    second_success, second_output, second_response, second_error = run_job(job)
+                elapsed = time.monotonic() - start
+
+                assert success is False
+                assert final_response == ""
+                assert error is not None and "idle" in error and "limit" in error
+                assert "(FAILED)" in output
+                assert elapsed < 2.0
+                assert agents[0].interrupted is True
+                assert agents[0].stopped is False
+                agents[0].close.assert_called_once()
+                assert second_success is False
+                assert second_response == ""
+                assert "previous timed-out execution" in second_error
+                assert "SKIPPED" in second_output
+                assert len(agents) == 1
+            finally:
+                release_agent.set()
+                agent_stopped.wait(timeout=1.0)
+                deadline = time.monotonic() + 2.0
+                while agents and not agents[0].close.called and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if agents:
+                    agents[0].close.assert_called_once()
+                    cleanup_mock.assert_called_once()
+                scheduler._TIMED_OUT_RUNS.clear()
+
+    def test_run_job_skips_interrupt_grace_when_agent_has_no_interrupt(
+        self, tmp_path, monkeypatch
+    ):
+        """Without an interrupt hook, cron should fail fast instead of waiting."""
+        job = {
+            "id": "timeout-no-interrupt-job",
+            "name": "timeout-no-interrupt",
+            "prompt": "hello",
+        }
+        release_agent = threading.Event()
+        agent_stopped = threading.Event()
+        agents = []
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self.stopped = False
+                self.close = MagicMock()
+                agents.append(self)
+
+            def get_activity_summary(self):
+                return {
+                    "last_activity_desc": "validation idle",
+                    "seconds_since_activity": 10.0,
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                }
+
+            def run_conversation(self, prompt):
+                release_agent.wait(timeout=2.0)
+                self.stopped = True
+                agent_stopped.set()
+                return {"final_response": "stopped"}
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.01")
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_INTERRUPT_GRACE_SECONDS", 5.0)
+        import cron.scheduler as scheduler
+        scheduler._TIMED_OUT_RUNS.clear()
+
+        with patch("agent.auxiliary_client.cleanup_stale_async_clients") as cleanup_mock:
+            try:
+                start = time.monotonic()
+                with self._run_job_patches(
+                    tmp_path, extra=[patch("run_agent.AIAgent", FakeAgent)]
+                ):
+                    success, output, final_response, error = run_job(job)
+                    second_success, second_output, second_response, second_error = run_job(job)
+                elapsed = time.monotonic() - start
+
+                assert success is False
+                assert final_response == ""
+                assert error is not None and "idle" in error and "limit" in error
+                assert "(FAILED)" in output
+                assert elapsed < 2.0
+                assert agents[0].stopped is False
+                agents[0].close.assert_called_once()
+                assert second_success is False
+                assert second_response == ""
+                assert "previous timed-out execution" in second_error
+                assert "SKIPPED" in second_output
+                assert len(agents) == 1
+            finally:
+                release_agent.set()
+                agent_stopped.wait(timeout=1.0)
+                deadline = time.monotonic() + 2.0
+                while not cleanup_mock.called and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                if agents:
+                    agents[0].close.assert_called_once()
+                    cleanup_mock.assert_called_once()
+                scheduler._TIMED_OUT_RUNS.clear()
+
+    def test_run_job_waits_for_workdir_job_when_interrupt_is_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        """Workdir jobs must keep process-global context until the worker exits."""
+        job = {
+            "id": "timeout-workdir-job",
+            "name": "timeout-workdir",
+            "prompt": "hello",
+            "workdir": str(tmp_path),
+        }
+        agents = []
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self.interrupted = False
+                self.stopped = False
+                self.close = MagicMock()
+                agents.append(self)
+
+            def get_activity_summary(self):
+                return {
+                    "last_activity_desc": "validation idle",
+                    "seconds_since_activity": 10.0,
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                }
+
+            def interrupt(self, msg):
+                self.interrupted = True
+
+            def run_conversation(self, prompt):
+                time.sleep(0.05)
+                self.stopped = True
+                return {"final_response": "stopped"}
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.01")
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_INTERRUPT_GRACE_SECONDS", 0.01)
+        import cron.scheduler as scheduler
+        scheduler._TIMED_OUT_RUNS.clear()
+
+        with self._run_job_patches(
+            tmp_path, extra=[patch("run_agent.AIAgent", FakeAgent)]
+        ):
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and "idle" in error and "limit" in error
+        assert "(FAILED)" in output
+        assert agents[0].interrupted is True
+        assert agents[0].stopped is True
+        agents[0].close.assert_called_once()
+        assert scheduler._TIMED_OUT_RUNS == {}
+
+    @pytest.mark.parametrize("profile_field", ["profile", "_active_profile"])
+    def test_run_job_waits_for_profile_job_when_interrupt_is_ignored(
+        self, tmp_path, monkeypatch, profile_field
+    ):
+        """Profile jobs must keep profile-scoped context until the worker exits."""
+        job = {
+            "id": "timeout-profile-job",
+            "name": "timeout-profile",
+            "prompt": "hello",
+            profile_field: "coder",
+        }
+        agents = []
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                self.interrupted = False
+                self.stopped = False
+                self.close = MagicMock()
+                agents.append(self)
+
+            def get_activity_summary(self):
+                return {
+                    "last_activity_desc": "validation idle",
+                    "seconds_since_activity": 10.0,
+                    "current_tool": None,
+                    "api_call_count": 1,
+                    "max_iterations": 1,
+                }
+
+            def interrupt(self, msg):
+                self.interrupted = True
+
+            def run_conversation(self, prompt):
+                time.sleep(0.05)
+                self.stopped = True
+                return {"final_response": "stopped"}
+
+        monkeypatch.setenv("HERMES_CRON_TIMEOUT", "0.01")
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_POLL_INTERVAL", 0.01)
+        monkeypatch.setattr("cron.scheduler._CRON_AGENT_INTERRUPT_GRACE_SECONDS", 0.01)
+        import cron.scheduler as scheduler
+        scheduler._TIMED_OUT_RUNS.clear()
+
+        with self._run_job_patches(
+            tmp_path, extra=[patch("run_agent.AIAgent", FakeAgent)]
+        ):
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert error is not None and "idle" in error and "limit" in error
+        assert "(FAILED)" in output
+        assert agents[0].interrupted is True
+        assert agents[0].stopped is True
+        agents[0].close.assert_called_once()
+        assert scheduler._TIMED_OUT_RUNS == {}
 
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,

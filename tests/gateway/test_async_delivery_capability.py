@@ -159,7 +159,12 @@ class TestTerminalNotifyGate:
         from tools.terminal_tool import terminal_tool
 
         return json.loads(
-            terminal_tool(command=command, background=True, notify_on_complete=True)
+            terminal_tool(
+                command=command,
+                session_id="cli-origin-session",
+                background=True,
+                notify_on_complete=True,
+            )
         )
 
     def test_api_server_skips_watcher_and_notes(self):
@@ -177,6 +182,10 @@ class TestTerminalNotifyGate:
         assert d.get("notify_unsupported"), "must explain the limitation"
         assert "poll" in d["notify_unsupported"].lower()
         assert len(process_registry.pending_watchers) == 0
+        session = process_registry.get(d["session_id"])
+        assert session is not None
+        assert session.notify_on_complete is False
+        assert not session.watch_patterns
 
     def test_gateway_registers_watcher(self):
         from tools.process_registry import process_registry

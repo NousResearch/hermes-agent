@@ -515,6 +515,32 @@ def test_build_process_event_source_returns_none_for_short_session_key(monkeypat
     assert source is None
 
 
+def test_build_process_event_source_resolves_internal_agent_session_id(
+    monkeypatch, tmp_path
+):
+    """Tool-thread fallback IDs must map back to their gateway conversation."""
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    origin = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id="owner",
+    )
+    entry = runner.session_store.get_or_create_session(origin)
+    entry.session_id = "20260714_internal_agent_id"
+
+    resolved = runner._build_process_event_source(
+        {
+            "session_id": "proc_fallback",
+            "session_key": "20260714_internal_agent_id",
+        }
+    )
+
+    assert resolved == origin
+
+
 # ---------------------------------------------------------------------------
 # _parse_session_key helper
 # ---------------------------------------------------------------------------

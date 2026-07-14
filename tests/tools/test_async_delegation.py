@@ -345,6 +345,110 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("batch", [False, True])
+def test_persist_failure_rejects_without_phantom_running_record(
+    tmp_path, monkeypatch, batch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    def _fail_persist(_record):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ad, "_persist_dispatch", _fail_persist)
+    ran = threading.Event()
+    runner = lambda: ran.set() or {}
+    if batch:
+        result = ad.dispatch_async_delegation_batch(
+            goals=["never ran"],
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="owner",
+            runner=runner,
+        )
+    else:
+        result = ad.dispatch_async_delegation(
+            goal="never ran",
+            context=None,
+            toolsets=None,
+            role="leaf",
+            model="m",
+            session_key="owner",
+            runner=runner,
+        )
+
+    assert result["status"] == "rejected"
+    assert "persist" in result["error"].lower()
+    assert not ran.is_set()
+    assert ad.active_count() == 0
+    assert ad.list_async_delegations() == []
+
+
+@pytest.mark.parametrize(
+    ("durable_owner", "event_owner"),
+    [("", ""), ("owner-a", "owner-b")],
+)
+def test_restore_quarantines_ownerless_or_mismatched_completion(
+    tmp_path, monkeypatch, durable_owner, event_owner
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg_quarantine",
+        "session_key": "owner-a",
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+    }
+    ad._persist_dispatch(record)
+    ad._persist_completion(
+        {
+            "type": "async_delegation",
+            "delegation_id": "deleg_quarantine",
+            "session_key": event_owner,
+            "status": "completed",
+            "completed_at": 2.0,
+        },
+        {"status": "completed", "summary": "unsafe"},
+    )
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            "UPDATE async_delegations SET origin_session=? WHERE delegation_id=?",
+            (durable_owner, "deleg_quarantine"),
+        )
+
+    restored = queue.Queue()
+    assert ad.restore_undelivered_completions(restored) == 0
+    assert restored.empty()
+    durable = ad.get_durable_delegation("deleg_quarantine")
+    assert durable["delivery_state"] == "quarantined"
+
+
+def test_recover_quarantines_ownerless_abandoned_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    record = {
+        "delegation_id": "deleg_ownerless_abandoned",
+        "session_key": "owner",
+        "origin_ui_session_id": "",
+        "parent_session_id": None,
+        "dispatched_at": 1.0,
+    }
+    ad._persist_dispatch(record)
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.execute(
+            """UPDATE async_delegations
+               SET origin_session=?, owner_pid=?, owner_started_at=NULL
+               WHERE delegation_id=?""",
+            ("", 99999999, "deleg_ownerless_abandoned"),
+        )
+
+    assert ad.recover_abandoned_delegations() == 1
+    durable = ad.get_durable_delegation("deleg_ownerless_abandoned")
+    assert durable["state"] == "unknown"
+    assert durable["delivery_state"] == "quarantined"
+    assert ad.restore_undelivered_completions(queue.Queue()) == 0
+
+
 def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 2)

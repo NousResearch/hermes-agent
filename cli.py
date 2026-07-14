@@ -15186,8 +15186,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # and watch pattern matches) while agent is idle.
                             try:
                                 from tools.process_registry import process_registry
-                                from tools.approval import get_current_session_key
-                                _drain_sk = get_current_session_key(default="")
+                                _drain_sk = str(
+                                    getattr(getattr(self, "agent", None), "session_id", "")
+                                    or getattr(self, "session_id", "")
+                                    or ""
+                                ).strip()
                                 for _evt, _synth in process_registry.drain_notifications(session_key=_drain_sk):
                                     from tools.async_delegation import (
                                         claim_event_delivery, complete_event_delivery,
@@ -15357,7 +15360,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # that arrived while the agent was running.
                         try:
                             from tools.process_registry import process_registry
-                            for _evt, _synth in process_registry.drain_notifications():
+                            _drain_sk = str(
+                                getattr(getattr(self, "agent", None), "session_id", "")
+                                or getattr(self, "session_id", "")
+                                or ""
+                            ).strip()
+                            for _evt, _synth in process_registry.drain_notifications(
+                                session_key=_drain_sk
+                            ):
                                 from tools.async_delegation import (
                                     claim_event_delivery, complete_event_delivery,
                                 )

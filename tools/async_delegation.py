@@ -157,6 +157,21 @@ def _delete_durable_delegation(delegation_id: str) -> None:
         conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
 
 
+def _cleanup_rejected_dispatch(delegation_id: str) -> None:
+    """Remove in-memory and durable state after a dispatch setup failure."""
+    with _records_lock:
+        _records.pop(delegation_id, None)
+    try:
+        _delete_durable_delegation(delegation_id)
+    except Exception:
+        # Persistence itself may be unavailable. The in-memory slot must still
+        # be released, and a partially committed row will be recovered later.
+        logger.exception(
+            "Failed to remove durable state for rejected async delegation %s",
+            delegation_id,
+        )
+
+
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
     now = time.time()
@@ -241,40 +256,90 @@ def recover_abandoned_delegations() -> int:
             if live:
                 continue
             task = json.loads(task_json or "{}")
+            owner_session = str(session_key or "").strip()
+            error = (
+                "Delegation owner exited before recording a terminal result; "
+                "outcome unknown."
+            )
+            delivery_state = "pending"
+            if not owner_session:
+                error += " Origin session is missing; result quarantined."
+                delivery_state = "quarantined"
+                logger.warning(
+                    "Quarantining abandoned ownerless async delegation %s",
+                    delegation_id,
+                )
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
-                "session_key": session_key, "origin_ui_session_id": origin_ui,
+                "session_key": owner_session, "origin_ui_session_id": origin_ui,
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
                 "status": "unknown", "summary": None,
-                "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
+                "error": error,
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
+                   updated_at=?, event_json=?, result_json=?, delivery_state=?
                    WHERE delegation_id=?""",
-                (now, now, json.dumps(event), json.dumps(result), delegation_id),
+                (
+                    now,
+                    now,
+                    json.dumps(event),
+                    json.dumps(result),
+                    delivery_state,
+                    delegation_id,
+                ),
             )
             recovered += 1
     return recovered
 
 
 def restore_undelivered_completions(target_queue) -> int:
-    """Enqueue durable pending completions as fresh turns after process start."""
+    """Restore only completions with a non-empty, exact durable owner."""
     recover_abandoned_delegations()
+    restored = 0
+    now = time.time()
     with _DB_LOCK, _connect() as conn:
         rows = conn.execute(
-            """SELECT delegation_id, event_json FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
+            """SELECT delegation_id, origin_session, event_json
+               FROM async_delegations
+               WHERE state != 'running' AND delivery_state='pending'
+                 AND event_json IS NOT NULL
                ORDER BY completed_at, delegation_id"""
         ).fetchall()
-        for _delegation_id, payload in rows:
-            target_queue.put(json.loads(payload))
-    return len(rows)
+        for delegation_id, durable_owner, payload in rows:
+            owner = str(durable_owner or "").strip()
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError):
+                event = None
+            event_owner = (
+                str(event.get("session_key") or "").strip()
+                if isinstance(event, dict)
+                else ""
+            )
+            if not owner or event_owner != owner:
+                conn.execute(
+                    """UPDATE async_delegations
+                       SET delivery_state='quarantined', updated_at=?
+                       WHERE delegation_id=? AND delivery_state='pending'""",
+                    (now, delegation_id),
+                )
+                logger.warning(
+                    "Quarantining async delegation completion %s: durable "
+                    "owner=%r event owner=%r",
+                    delegation_id,
+                    owner,
+                    event_owner,
+                )
+                continue
+            target_queue.put(event)
+            restored += 1
+    return restored
 
 
 def mark_completion_delivered(delegation_id: str) -> bool:
@@ -517,8 +582,15 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
-    executor = _get_executor(max_async_children)
+    try:
+        _persist_dispatch(record)
+        executor = _get_executor(max_async_children)
+    except Exception as exc:
+        _cleanup_rejected_dispatch(delegation_id)
+        return {
+            "status": "rejected",
+            "error": f"Failed to persist or prepare async delegation: {exc}",
+        }
 
     def _worker() -> None:
         result: Dict[str, Any] = {}
@@ -544,9 +616,7 @@ def dispatch_async_delegation(
         # get_hermes_home() under the right profile.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
+        _cleanup_rejected_dispatch(delegation_id)
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation: {exc}",
@@ -723,8 +793,18 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
-    executor = _get_executor(max_async_children)
+    try:
+        _persist_dispatch(record)
+        executor = _get_executor(max_async_children)
+    except Exception as exc:
+        _cleanup_rejected_dispatch(delegation_id)
+        return {
+            "status": "rejected",
+            "error": (
+                "Failed to persist or prepare async delegation batch: "
+                f"{exc}"
+            ),
+        }
 
     def _worker() -> None:
         combined: Dict[str, Any] = {}
@@ -755,9 +835,7 @@ def dispatch_async_delegation_batch(
         # Propagate the dispatching profile to the detached batch children.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
+        _cleanup_rejected_dispatch(delegation_id)
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation batch: {exc}",

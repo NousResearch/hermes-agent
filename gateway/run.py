@@ -15450,6 +15450,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 entry = self.session_store._entries.get(session_key)
                 if entry and getattr(entry, "origin", None):
                     return entry.origin
+
+                # Tool worker threads can lose the stable gateway ContextVar
+                # and fall back to the AIAgent's internal session_id. Reverse-
+                # map that durable ID to the owning conversation instead of
+                # guessing from whichever chat is active now.
+                internal_ids = {
+                    value
+                    for value in (
+                        session_key,
+                        str(evt.get("parent_session_id") or "").strip(),
+                    )
+                    if value
+                }
+                for candidate in self.session_store._entries.values():
+                    if (
+                        candidate.session_id in internal_ids
+                        and getattr(candidate, "origin", None)
+                    ):
+                        return candidate.origin
             except Exception as exc:
                 logger.debug(
                     "Synthetic process-event session-store lookup failed for %s: %s",

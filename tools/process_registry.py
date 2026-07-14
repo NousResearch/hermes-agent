@@ -1212,10 +1212,11 @@ class ProcessRegistry:
           a post-compression session still claims its own pre-compression
           dispatches.
         - ``session_key``: plain key equality (CLI and other single-session
-          callers). Non-matching async-delegation events are re-queued.
+          callers). Non-matching events are re-queued.
 
-        With neither set, all events are consumed (legacy single-session
-        behavior, backward compatible).
+        With neither set, fail closed and re-queue every event. An unowned
+        consumer must never adopt a synthetic turn from this process-global
+        queue.
         """
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
@@ -1237,15 +1238,17 @@ class ProcessRegistry:
                 try:
                     owned = bool(owns_event(evt))
                 except Exception:
-                    owned = False  # fail closed — never leak on a broken check
+                    owned = False
                 if not owned:
                     requeue.append(evt)
                     continue
             elif session_key:
-                evt_session_key = evt.get("session_key", "") or ""
-                if evt_session_key != session_key:
+                if evt.get("session_key") != session_key:
                     requeue.append(evt)
                     continue
+            else:
+                requeue.append(evt)
+                continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))

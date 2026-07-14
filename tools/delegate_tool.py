@@ -2376,8 +2376,14 @@ def _resolve_async_origin_session_key(parent_agent) -> str:
     from tools.approval import get_current_session_key
 
     gateway_key = str(get_current_session_key(default="") or "").strip()
+    parent_gateway_raw = getattr(parent_agent, "_gateway_session_key", None)
+    parent_gateway_key = (
+        parent_gateway_raw.strip()
+        if isinstance(parent_gateway_raw, str)
+        else ""
+    )
     parent_key = str(getattr(parent_agent, "session_id", "") or "").strip()
-    return gateway_key or parent_key
+    return gateway_key or parent_gateway_key or parent_key
 
 
 def delegate_task(

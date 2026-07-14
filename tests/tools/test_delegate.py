@@ -83,6 +83,15 @@ class TestDelegateRequirements(unittest.TestCase):
                 "gateway-origin-session",
             )
 
+    def test_async_origin_uses_parent_gateway_key_before_internal_session_id(self):
+        parent = _make_mock_parent()
+        parent._gateway_session_key = "agent:main:telegram:dm:123"
+        with patch("tools.approval.get_current_session_key", return_value=""):
+            self.assertEqual(
+                _resolve_async_origin_session_key(parent),
+                "agent:main:telegram:dm:123",
+            )
+
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
 

@@ -1345,6 +1345,7 @@ def test_drain_notifications_returns_pending_events():
     process_registry.completion_queue.put({
         "type": "completion",
         "session_id": "proc_drain1",
+        "session_key": "owner-session",
         "command": "echo hi",
         "exit_code": 0,
         "output": "hi",
@@ -1352,6 +1353,7 @@ def test_drain_notifications_returns_pending_events():
     process_registry.completion_queue.put({
         "type": "watch_match",
         "session_id": "proc_drain2",
+        "session_key": "owner-session",
         "command": "tail -f x",
         "pattern": "ERR",
         "output": "ERR found",
@@ -1359,7 +1361,7 @@ def test_drain_notifications_returns_pending_events():
     })
 
     try:
-        results = process_registry.drain_notifications()
+        results = process_registry.drain_notifications(session_key="owner-session")
         assert len(results) == 2
         assert results[0][0]["session_id"] == "proc_drain1"
         assert "proc_drain1 completed normally" in results[0][1]
@@ -1538,12 +1540,8 @@ def test_drain_notifications_ownership_callback_filters_process_completion():
             process_registry.completion_queue.get_nowait()
 
 
-def test_drain_notifications_no_filter_passes_all_async_delegation():
-    """Without a session_key filter, all async-delegation events are consumed.
-
-    This ensures backward compatibility — the default (session_key="") permits
-    all events, matching pre-fix behavior.
-    """
+def test_drain_notifications_without_owner_fails_closed():
+    """An unowned drain must never adopt events from the global queue."""
     from tools.process_registry import process_registry
 
     while not process_registry.completion_queue.empty():
@@ -1571,13 +1569,9 @@ def test_drain_notifications_no_filter_passes_all_async_delegation():
             "duration_seconds": 0.3,
         })
 
-        # No filter — both should be consumed
         results = process_registry.drain_notifications()
-        assert len(results) == 2, (
-            f"Expected 2 events without filter, got {len(results)}"
-        )
-        ids = {r[0]["delegation_id"] for r in results}
-        assert ids == {"deleg_1", "deleg_2"}
+        assert results == []
+        assert process_registry.completion_queue.qsize() == 2
     finally:
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()

@@ -483,9 +483,11 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Dialectic prewarm: fires a generic "Who is this person?" LLM call
         # during session init. When prefetchGenericContext is True (default),
-        # this reduces first-turn latency at the cost of generic vs
-        # topic-relevant context. When False, the first turn's dialectic is
-        # always anchored to the user's actual message instead.
+        # this reduces first-turn latency at the cost of generic context.
+        # When False, the prewarm is skipped — the first turn's dialectic
+        # call runs on-demand with the cold/warm prompt, not the user's
+        # message. This is a latency/cost opt-out, not a message-anchoring
+        # mechanism.
         if self._recall_mode in {"context", "hybrid"} and cfg.prefetch_generic_context:
             _prewarm_query = (
                 "Summarize what you know about this user. "

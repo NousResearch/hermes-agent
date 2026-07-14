@@ -93,8 +93,74 @@ class TestPrefetchGenericContextConfig:
         assert cfg.prefetch_generic_context is True
 
 
-class TestPrefetchGenericContextPrewarmGate:
-    """Behavioural tests for the prewarm gate condition."""
+class TestPrefetchGenericContextInitPath:
+    """Init-path tests exercising _do_session_init() with real mocking.
+
+    These tests prove that _do_session_init() suppresses the dialectic
+    prewarm thread when prefetchGenericContext is False, while still
+    firing the base-context prefetch — the behaviour the simulated gate
+    tests above only approximate.
+    """
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        from plugins.memory.honcho import HonchoMemoryProvider
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_manager.get_or_create.return_value = MagicMock(messages=[])
+        mock_manager.get_prefetch_context.return_value = None
+        mock_manager.pop_context_result.return_value = None
+        mock_manager.dialectic_query.return_value = "prewarm synthesis"
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-init-path")
+        return provider
+
+    def test_false_suppresses_dialectic_prewarm_retains_base_context(self):
+        """When prefetchGenericContext=False, _do_session_init() must:
+
+        1. Call prefetch_context (base context still prewarms).
+        2. NOT start a dialectic prewarm thread (_prefetch_thread is None).
+        """
+        p = self._make_provider(cfg_extra={"prefetch_generic_context": False})
+
+        # Base context prefetch fired
+        assert p._manager.prefetch_context.call_count >= 1, \
+            "base context prefetch must fire regardless of prefetchGenericContext"
+
+        # No dialectic prewarm thread was started
+        assert p._prefetch_thread is None, \
+            "dialectic prewarm thread must not start when prefetchGenericContext=False"
+
+    def test_true_starts_dialectic_prewarm_and_base_context(self):
+        """When prefetchGenericContext=True (default), _do_session_init() must:
+
+        1. Call prefetch_context (base context prewarms).
+        2. Start a dialectic prewarm thread (_prefetch_thread is not None).
+        """
+        p = self._make_provider(cfg_extra={"prefetch_generic_context": True})
+
+        # Base context prefetch fired
+        assert p._manager.prefetch_context.call_count >= 1, \
+            "base context prefetch must fire when prefetchGenericContext=True"
+
+        # Dialectic prewarm thread was started
+        assert p._prefetch_thread is not None, \
+            "dialectic prewarm thread must start when prefetchGenericContext=True"
+
+        # Clean up the thread
+        if p._prefetch_thread and p._prefetch_thread.is_alive():
+            p._prefetch_thread.join(timeout=3.0)
 
     def test_gate_true_when_enabled_hybrid(self):
         """Dialectic prewarm fires when enabled and recall_mode=hybrid."""

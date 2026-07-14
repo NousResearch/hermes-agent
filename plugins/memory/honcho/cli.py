@@ -924,7 +924,7 @@ def cmd_setup(args) -> None:
     print("    the call often finishes before the first message arrives and")
     print("    its generic result may be replaced by a topic-relevant one.")
     print("    true  -- fire prewarm (default, lower latency on first turn)")
-    print("    false -- skip prewarm, first turn always uses topic-relevant dialectic")
+    print("    false -- skip prewarm, first turn runs dialectic on-demand")
     new_prefetch = _prompt("Prefetch generic context", default=current_prefetch)
     if new_prefetch.strip().lower() in {"false", "0", "no", "off"}:
         hermes_host["prefetchGenericContext"] = False

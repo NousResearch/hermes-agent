@@ -29,6 +29,7 @@ def _configured_hybrid_config() -> _FakeHonchoConfig:
         context_tokens=None,
         message_max_chars=25000,
         session_strategy="per-directory",
+        prefetch_generic_context=True,
     )
 
 

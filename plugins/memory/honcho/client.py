@@ -361,10 +361,10 @@ class HonchoClientConfig:
     init_on_session_start: bool = False
     # Dialectic prewarm on session init — when true (default), fires a
     # generic "Who is this person?" dialectic call during session
-    # initialization to reduce first-turn latency. When false, the first
-    # turn's dialectic call is always anchored to the user's actual
-    # message, producing more relevant context at the cost of slightly
-    # higher first-turn latency.
+    # initialization to reduce first-turn latency. When false, the
+    # prewarm is skipped; the first turn's dialectic runs on-demand
+    # instead. This is a latency/cost opt-out, not a message-anchoring
+    # mechanism.
     prefetch_generic_context: bool = True
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.

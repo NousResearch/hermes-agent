@@ -115,6 +115,39 @@ class _FakeSessionDB:
         pass
 
 
+class _MutableSessionDB:
+    """Session DB whose retained rows and activity change between scans."""
+
+    def __init__(self):
+        self.sessions: Dict[str, int] = {}
+        self.revision = 0
+
+    def list_sessions_rich(self, **_kwargs) -> List[Dict[str, Any]]:
+        return [
+            {
+                "id": session_id,
+                "title": session_id,
+                "started_at": 1_700_000_000,
+                "last_active": 1_700_000_000 + self.revision,
+                "source": "cli",
+                "model": f"{session_id}-model",
+            }
+            for session_id in self.sessions
+        ]
+
+    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "terminal"}}],
+            }
+            for _ in range(self.sessions[session_id])
+        ]
+
+    def close(self) -> None:
+        pass
+
+
 def _install_fake_session_db(plugin_api, fake_db):
     """Inject a fake SessionDB so ``scan_sessions`` finds it via its local import.
 
@@ -160,6 +193,17 @@ def test_scan_sessions_explicit_positive_limit_is_honored(plugin_api):
 
     assert fake_db.last_limit == 10
     assert len(result["sessions"]) == 10
+
+
+def test_limited_scan_does_not_mark_omitted_sessions_as_pruned(plugin_api):
+    fake_db = _FakeSessionDB(session_count=500)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    plugin_api.scan_sessions()
+    plugin_api.scan_sessions(limit=10)
+
+    assert len(plugin_api.load_checkpoint()["sessions"]) == 500
+    assert plugin_api.load_state().get("pruned_session_contributions", {}) == {}
 
 
 def test_scan_sessions_zero_or_negative_limit_means_unlimited(plugin_api):
@@ -378,61 +422,26 @@ def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
     )
 
 
-def test_prune_then_new_activity_increases_lifetime_counter(plugin_api, tmp_path):
-    """Regression test for issue #28661 (prune-then-new-activity case).
+def test_prune_then_new_activity_increases_lifetime_counter(plugin_api):
+    """Exercise the real scan/checkpoint/state path across prune and append."""
+    fake_db = _MutableSessionDB()
+    _install_fake_session_db(plugin_api, fake_db)
 
-    Scenario:
-    1. Two sessions exist; scanner runs and records total_tool_calls=5000.
-    2. Session A is pruned from SessionDB (disappears from live rows).
-    3. Session B has new activity (+1 tool call); scanner runs again.
-    4. Lifetime total must be 5001, not 5000 (max() would freeze at 5000).
+    fake_db.sessions = {"old": 5}
+    first = plugin_api.compute_all()
+    assert first["aggregate"]["total_tool_calls"] == 5
 
-    The fix uses a durable pruned_contributions ledger in state.json to
-    accumulate pruned session stats, then adds them to the current scan
-    aggregate so new live activity can advance beyond the pre-prune total.
-    """
-    # Step 1: Seed checkpoint with two sessions contributing 5000 tool calls.
-    session_a_stats = {"tool_call_count": 4000, "total_tool_calls": 4000}
-    session_b_stats = {"tool_call_count": 1000, "total_tool_calls": 1000}
-    plugin_api.save_checkpoint({
-        "schema_version": 1,
-        "generated_at": 1000,
-        "sessions": {
-            "session-A": {"fingerprint": {"last_active": 1}, "stats": session_a_stats},
-            "session-B": {"fingerprint": {"last_active": 2}, "stats": session_b_stats},
-        },
-    })
+    fake_db.sessions = {"new": 1}
+    fake_db.revision += 1
+    after_prune = plugin_api.compute_all()
+    assert after_prune["aggregate"]["total_tool_calls"] == 6
+    assert after_prune["aggregate"]["session_count"] == 2
+    assert after_prune["aggregate"]["distinct_model_count"] == 2
 
-    # Step 2: Simulate a scan where session-A is pruned (not present),
-    # and session-B has +1 new tool call (1001 total).
-    session_b_new_stats = {"tool_call_count": 1001, "total_tool_calls": 1001}
-    new_scan = {
-        "sessions": [{"session_id": "session-B", **session_b_new_stats}],
-        "aggregate": {"total_tool_calls": 1001, "session_count": 1},
-        "scan_meta": {"mode": "full", "sessions_total": 1},
-        "checkpoint_sessions": {"session-B": {"fingerprint": {"last_active": 3}, "stats": session_b_new_stats}},
-    }
+    fake_db.sessions["new"] = 2
+    fake_db.revision += 1
+    after_append = plugin_api.compute_all()
+    assert after_append["aggregate"]["total_tool_calls"] == 7
 
-    # Save the new checkpoint (this triggers the pruned_contributions update).
-    pruned_state = plugin_api.load_state()
-    ledger = pruned_state.setdefault("pruned_contributions", {})
-    # Manually simulate what scan_sessions() does: session-A is pruned.
-    pruned_stats = session_a_stats
-    for key, val in pruned_stats.items():
-        if key.startswith("total_"):
-            try:
-                ledger[key] = int(ledger.get(key, 0)) + int(val or 0)
-            except (TypeError, ValueError):
-                pass
-    plugin_api.save_state(pruned_state)
-
-    # Step 3: compute_from_scan with the post-prune aggregate (only session-B).
-    result = plugin_api._compute_from_scan(new_scan, is_partial=False)
-
-    lifetime_total = result["aggregate"].get("total_tool_calls", 0)
-    assert lifetime_total == 5001, (
-        f"Expected lifetime total_tool_calls=5001 after prune + new activity, "
-        f"got {lifetime_total}. "
-        f"The pruned_contributions ledger must accumulate pruned session stats "
-        f"so post-prune increments are not lost."
-    )
+    ledger = plugin_api.load_state()["pruned_session_contributions"]
+    assert ledger["old"]["tool_call_count"] == 5

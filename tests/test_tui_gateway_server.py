@@ -5308,6 +5308,112 @@ def test_interrupt_clears_multiple_own_pending():
             server._answers.pop(key, None)
 
 
+def test_interrupt_terminates_active_shell_exec_for_session(monkeypatch, tmp_path):
+    """Ctrl+C must stop a ``!command`` process tree, not only repaint the TUI."""
+    started = threading.Event()
+    terminated = threading.Event()
+    response = {}
+
+    class _BlockingProc:
+        pid = 424242
+        returncode = None
+
+        def communicate(self, timeout=None):
+            started.set()
+            assert terminated.wait(timeout=2), "shell.exec was not terminated"
+            self.returncode = -15
+            return ("SHOULD_NOT_PRINT\n", "")
+
+        def poll(self):
+            return self.returncode
+
+    proc = _BlockingProc()
+    popen_call = {}
+    session = _session(
+        agent=types.SimpleNamespace(interrupt=lambda: None),
+        cwd=str(tmp_path),
+    )
+    server._sessions["sid-shell"] = session
+
+    try:
+        def _popen(*args, **kwargs):
+            popen_call.update(kwargs)
+            return proc
+
+        monkeypatch.setattr(server.subprocess, "Popen", _popen)
+        monkeypatch.setattr(
+            server,
+            "_terminate_shell_process_tree",
+            lambda active: terminated.set(),
+        )
+
+        worker = threading.Thread(
+            target=lambda: response.update(
+                server._methods["shell.exec"](
+                    "shell-rid",
+                    {"command": "sleep 30; echo SHOULD_NOT_PRINT", "session_id": "sid-shell"},
+                )
+            )
+        )
+        worker.start()
+        assert started.wait(timeout=2), "shell.exec did not start"
+
+        interrupted = server._methods["session.interrupt"](
+            "interrupt-rid", {"session_id": "sid-shell"}
+        )
+        worker.join(timeout=2)
+
+        assert interrupted["result"]["status"] == "interrupted"
+        assert terminated.is_set()
+        assert not worker.is_alive()
+        assert response["result"] == {
+            "stdout": "",
+            "stderr": "",
+            "code": 130,
+            "interrupted": True,
+        }
+        assert popen_call["cwd"] == str(tmp_path)
+        if os.name != "nt":
+            assert popen_call["start_new_session"] is True
+    finally:
+        server._sessions.pop("sid-shell", None)
+        server._active_shell_execs.pop("sid-shell", None)
+
+
+def test_close_session_terminates_active_shell_exec(monkeypatch):
+    """Closing a TUI session must not leave its foreground command alive."""
+    proc = types.SimpleNamespace(poll=lambda: None)
+    interrupted = threading.Event()
+    terminated = []
+    server._sessions["sid-close-shell"] = _session()
+    try:
+        assert server._register_shell_exec(
+            "sid-close-shell", "exec-token", proc, interrupted
+        )
+        monkeypatch.setattr(
+            server, "_terminate_shell_process_tree", lambda active: terminated.append(active)
+        )
+
+        assert server._close_session_by_id("sid-close-shell") is True
+
+        assert interrupted.is_set()
+        assert terminated == [proc]
+    finally:
+        server._sessions.pop("sid-close-shell", None)
+        server._active_shell_execs.pop("sid-close-shell", None)
+
+
+def test_shell_exec_registration_fails_closed_after_session_close():
+    """A command spawned during teardown cannot register against a dead session."""
+    proc = types.SimpleNamespace(poll=lambda: None)
+    interrupted = threading.Event()
+
+    assert not server._register_shell_exec(
+        "missing-shell-session", "exec-token", proc, interrupted
+    )
+    assert "missing-shell-session" not in server._active_shell_execs
+
+
 def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
     """_run_prompt_submit must expose the actual turn thread to session.interrupt.
 

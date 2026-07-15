@@ -402,6 +402,7 @@ export interface SecretRespondResponse {
 
 export interface ShellExecResponse {
   code: number
+  interrupted?: boolean
   stderr?: string
   stdout?: string
 }

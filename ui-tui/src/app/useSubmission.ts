@@ -16,6 +16,21 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
 
+export const buildShellExecParams = (command: string, sessionId?: string | null) => ({
+  command,
+  ...(sessionId ? { session_id: sessionId } : {})
+})
+
+export const shellExecResultLines = (result: ShellExecResponse): string[] => {
+  if (result.interrupted) {
+    return []
+  }
+
+  const out = [result.stdout, result.stderr].filter(Boolean).join('\n').trim()
+
+  return [...(out ? [out] : []), ...(result.code !== 0 || !out ? [`exit ${result.code}`] : [])]
+}
+
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
 
@@ -100,7 +115,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage({ role: 'user', text: `!${cmd}` })
       patchUiState({ busy: true, status: 'running…' })
 
-      gw.request<ShellExecResponse>('shell.exec', { command: cmd })
+      gw.request<ShellExecResponse>('shell.exec', buildShellExecParams(cmd, getUiState().sid))
         .then(raw => {
           const r = asRpcResult<ShellExecResponse>(raw)
 
@@ -108,14 +123,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
             return sys('error: invalid response: shell.exec')
           }
 
-          const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
-
-          if (out) {
-            sys(out)
-          }
-
-          if (r.code !== 0 || !out) {
-            sys(`exit ${r.code}`)
+          for (const line of shellExecResultLines(r)) {
+            sys(line)
           }
         })
         .catch((e: Error) => sys(`error: ${e.message}`))
@@ -132,15 +141,30 @@ export function useSubmission(opts: UseSubmissionOptions) {
       Promise.all(
         matches.map(m =>
           gw
-            .request<ShellExecResponse>('shell.exec', { command: m[1]! })
+            .request<ShellExecResponse>('shell.exec', buildShellExecParams(m[1]!, getUiState().sid))
             .then(raw => {
               const r = asRpcResult<ShellExecResponse>(raw)
 
-              return [r?.stdout, r?.stderr].filter(Boolean).join('\n').trim()
+              return {
+                interrupted: Boolean(r?.interrupted),
+                text: [r?.stdout, r?.stderr].filter(Boolean).join('\n').trim()
+              }
             })
-            .catch(() => '(error)')
+            .catch(() => ({ interrupted: false, text: '(error)' }))
         )
-      ).then(results => then(spliceMatches(text, matches, results)))
+      ).then(results => {
+        if (results.some(result => result.interrupted)) {
+          return
+        }
+
+        then(
+          spliceMatches(
+            text,
+            matches,
+            results.map(result => result.text)
+          )
+        )
+      })
     },
     [gw]
   )

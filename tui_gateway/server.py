@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -136,6 +137,10 @@ _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
+_shell_exec_lock = threading.Lock()
+_active_shell_execs: dict[
+    str, dict[str, tuple[subprocess.Popen, threading.Event]]
+] = {}
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
 _cfg_path = None
@@ -739,6 +744,12 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
         session = _sessions.pop(sid, None)
     if session is None:
         return False
+    # A foreground ``!command`` is owned by the TUI session just like an
+    # in-flight model turn.  Pop first so a concurrent shell.exec registration
+    # observes the closed session and terminates itself; then stop every command
+    # that registered before the pop.  This ordering closes the spawn/close
+    # race without holding the session lock while waiting on a process tree.
+    _interrupt_shell_execs(sid)
     # The session is already out of _sessions here, so downstream teardown
     # (e.g. _finalize_session's per-session async-delegation interrupt) can't
     # recover its live id by scanning the dict — stamp it on the record.
@@ -834,6 +845,9 @@ def _shutdown_sessions() -> None:
         sids = list(_sessions)
     for sid in sids:
         _close_session_by_id(sid, end_reason="tui_shutdown")
+    # Defense in depth for any registered command whose owning session was
+    # concurrently removed by another teardown path.
+    _interrupt_all_shell_execs()
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is
@@ -8167,6 +8181,7 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
+    _interrupt_shell_execs(params.get("session_id", ""))
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
@@ -14459,6 +14474,106 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5026, str(e))
 
 
+def _terminate_shell_process_tree(proc: subprocess.Popen) -> None:
+    """Stop a ``shell.exec`` wrapper and every descendant it launched."""
+    if proc.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+            return
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return
+
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+
+    # ``shell.exec`` always starts a fresh session below. Refuse a group signal
+    # if that invariant is ever broken so cancellation cannot hit the gateway.
+    if pgid == os.getpgrp():
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        return
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        time.sleep(0.05)
+
+    try:
+        os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _register_shell_exec(
+    session_id: str, token: str, proc: subprocess.Popen, interrupted: threading.Event
+) -> bool:
+    if not session_id:
+        return True
+    # Serialize the ownership check with _close_session_by_id's pop.  If the
+    # session was already closed, the caller must terminate the just-spawned
+    # process instead of creating an orphan that no later interrupt can find.
+    with _sessions_lock:
+        if session_id not in _sessions:
+            return False
+        with _shell_exec_lock:
+            _active_shell_execs.setdefault(session_id, {})[token] = (proc, interrupted)
+    return True
+
+
+def _unregister_shell_exec(session_id: str, token: str) -> None:
+    if not session_id:
+        return
+    with _shell_exec_lock:
+        active = _active_shell_execs.get(session_id)
+        if active is None:
+            return
+        active.pop(token, None)
+        if not active:
+            _active_shell_execs.pop(session_id, None)
+
+
+def _interrupt_shell_execs(session_id: str) -> int:
+    if not session_id:
+        return 0
+    with _shell_exec_lock:
+        active = list(_active_shell_execs.get(session_id, {}).values())
+    for proc, interrupted in active:
+        interrupted.set()
+        _terminate_shell_process_tree(proc)
+    return len(active)
+
+
+def _interrupt_all_shell_execs() -> int:
+    with _shell_exec_lock:
+        session_ids = list(_active_shell_execs)
+    return sum(_interrupt_shell_execs(session_id) for session_id in session_ids)
+
+
 @method("shell.exec")
 def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
@@ -14479,20 +14594,60 @@ def _(rid, params: dict) -> dict:
             )
     except ImportError:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
-    try:
-        r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd(),
-            stdin=subprocess.DEVNULL,
+
+    session_id = str(params.get("session_id") or "").strip()
+    session = _sessions.get(session_id)
+    cwd = _session_cwd(session) if session is not None else os.getcwd()
+    interrupted = threading.Event()
+    token = uuid.uuid4().hex
+    popen_kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            **popen_kwargs,
+        )
+        if not _register_shell_exec(session_id, token, proc, interrupted):
+            interrupted.set()
+            _terminate_shell_process_tree(proc)
+        stdout, stderr = proc.communicate(timeout=30)
+        if interrupted.is_set():
+            return _ok(
+                rid,
+                {"stdout": "", "stderr": "", "code": 130, "interrupted": True},
+            )
         return _ok(
             rid,
             {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
-                "code": r.returncode,
+                "stdout": stdout[-4000:],
+                "stderr": stderr[-2000:],
+                "code": proc.returncode,
             },
         )
     except subprocess.TimeoutExpired:
+        if proc is not None:
+            _terminate_shell_process_tree(proc)
+            try:
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
         return _err(rid, 5002, "command timed out (30s)")
     except Exception as e:
+        if proc is not None and proc.poll() is None:
+            _terminate_shell_process_tree(proc)
         return _err(rid, 5003, str(e))
+    finally:
+        _unregister_shell_exec(session_id, token)

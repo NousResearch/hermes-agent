@@ -10,9 +10,28 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
+  resolveStandaloneSessionCwd,
   scheduleResumeScrollToBottom,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
+
+describe('standalone session cwd', () => {
+  it('uses the launch directory for standalone TUI sessions', () => {
+    expect(resolveStandaloneSessionCwd({ HERMES_CWD: '/tmp/hermes-project' }, '/fallback')).toBe(
+      '/tmp/hermes-project'
+    )
+    expect(resolveStandaloneSessionCwd({}, '/fallback')).toBe('/fallback')
+  })
+
+  it('leaves attached dashboard sessions under gateway profile resolution', () => {
+    expect(
+      resolveStandaloneSessionCwd(
+        { HERMES_CWD: '/tmp/stale-launch', HERMES_TUI_GATEWAY_URL: 'ws://127.0.0.1:8642/ws' },
+        '/fallback'
+      )
+    ).toBeUndefined()
+  })
+})
 
 describe('writeActiveSessionFile', () => {
   let dir = ''

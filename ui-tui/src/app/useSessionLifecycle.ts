@@ -28,6 +28,17 @@ import { getUiState, patchUiState } from './uiStore.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
+export const resolveStandaloneSessionCwd = (
+  env: Record<string, string | undefined> = process.env,
+  processCwd = process.cwd()
+): string | undefined => {
+  if (env.HERMES_TUI_GATEWAY_URL?.trim()) {
+    return undefined
+  }
+
+  return env.HERMES_CWD?.trim() || processCwd
+}
+
 const statusFromLiveSession = (status?: string, running = false) => {
   if (status === 'waiting') {
     return 'waiting for input…'
@@ -206,7 +217,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(getUiState().sid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const cwd = resolveStandaloneSessionCwd()
+
+      const r = await rpc<SessionCreateResponse>('session.create', {
+        cols: colsRef.current,
+        ...(cwd ? { cwd } : {})
+      })
 
       if (!r) {
         patchUiState({ status: 'ready' })

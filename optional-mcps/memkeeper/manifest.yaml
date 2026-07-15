@@ -1,0 +1,73 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: memkeeper
+description: Keep durable agent memory locally in a portable SQLite store.
+source: https://github.com/teflon07/memkeeper
+
+# memkeeper is a local stdio server. Launching through Cargo keeps the command
+# cross-platform (including the Windows .exe suffix) while transport.env makes
+# semantic retrieval fail closed if no embeddings backend is available.
+transport:
+  type: stdio
+  command: cargo
+  args:
+    - run
+    - --quiet
+    - --release
+    - --locked
+    - --offline
+    - --manifest-path
+    - "${INSTALL_DIR}/Cargo.toml"
+    - --
+    - mcp
+  env:
+    MEMKEEPER_REQUIRE_SEMANTIC: "1"
+
+# Clone an immutable source revision and build its reviewed Cargo.lock. This
+# avoids trusting a mutable release URL (or a checksum downloaded beside the
+# artifact) and supplies the supported native Windows path. Cargo and a native
+# C/C++ toolchain are required; the upstream Windows support remains experimental.
+install:
+  type: git
+  url: https://github.com/teflon07/memkeeper.git
+  ref: 8f8b775431d1aa8e69b542973a88feb360998918
+  bootstrap:
+    - "cargo build --release --locked"
+
+auth:
+  type: none
+
+# Default to recall, context assembly, and intentional durable writes. Keep
+# destructive and graph-mutating actions opt-in through `hermes mcp configure`.
+tools:
+  default_enabled:
+    - stats
+    - search
+    - get
+    - memory_list
+    - entity_search
+    - graph_neighbors
+    - graph_context
+    - dream_graph
+    - remember
+    - pack
+    - candidate_submit
+    - candidate_list
+
+post_install: |
+  memkeeper stores data locally in ~/.memkeeper/store.sqlite by default.
+  This source build requires Rust plus the platform's native C/C++ build tools.
+  Windows support is experimental but the stdio server is supported there.
+
+  Before use, run this from the MCP install directory shown above:
+
+    cargo run --release --locked --offline -- pull-models
+
+  This entry requires semantic retrieval. Until the on-device models are
+  installed, requests fail rather than silently serving lexical-only search.
+
+  An OpenAI-compatible embeddings API is also supported. To use it instead of
+  local models, add the documented MEMKEEPER_EMBED_* settings to this server's
+  config env block, then re-embed the store before use.

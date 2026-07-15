@@ -450,7 +450,7 @@ def finalize_turn(
                 turn_id=turn_id,
                 user_message=original_user_message,
                 assistant_response=final_response,
-                conversation_history=list(messages),
+                conversation_history=sanitize_recall_payload(list(messages)),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )

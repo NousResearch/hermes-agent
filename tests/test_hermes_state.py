@@ -1446,6 +1446,30 @@ class TestMessageStorage:
         assert replayed["reasoning_content"] == ""
         assert replayed["reasoning_details"][0]["signature"] == "sig_dead"
 
+    def test_replace_messages_scrubs_assistant_fields_before_sqlite_write(self, db):
+        from agent.memory_manager import build_memory_context_block
+
+        db.create_session(session_id="s1", source="cli")
+        leaked = build_memory_context_block("operator-only peer card")
+        db.replace_messages("s1", [{
+            "role": "assistant",
+            "content": "Visible answer",
+            "reasoning": leaked,
+            "reasoning_content": leaked,
+            "reasoning_details": [{"thinking": leaked}],
+            "tool_calls": [{"function": {"arguments": json.dumps({"input": leaked})}}],
+            "codex_reasoning_items": [{"summary": leaked}],
+            "codex_message_items": [{"content": [{"text": leaked}]}],
+        }])
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT reasoning, reasoning_content, reasoning_details, tool_calls, "
+                "codex_reasoning_items, codex_message_items FROM messages WHERE session_id = ?",
+                ("s1",),
+            ).fetchone()
+        assert "operator-only peer card" not in json.dumps(dict(row), ensure_ascii=False)
+
     def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
         """finish_reason on assistant messages must survive conversation replay.
 

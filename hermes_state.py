@@ -3944,6 +3944,18 @@ class SessionDB:
             codex_message_items = (
                 msg.get("codex_message_items") if role == "assistant" else None
             )
+            tool_calls = sanitize_recall_payload(tool_calls)
+            reasoning = (
+                sanitize_recall_payload(msg.get("reasoning"))
+                if role == "assistant" else None
+            )
+            reasoning_content = (
+                sanitize_recall_payload(msg.get("reasoning_content"))
+                if role == "assistant" else None
+            )
+            reasoning_details = sanitize_recall_payload(reasoning_details)
+            codex_reasoning_items = sanitize_recall_payload(codex_reasoning_items)
+            codex_message_items = sanitize_recall_payload(codex_message_items)
             reasoning_details_json = (
                 json.dumps(reasoning_details) if reasoning_details else None
             )
@@ -3978,8 +3990,8 @@ class SessionDB:
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
-                    msg.get("reasoning") if role == "assistant" else None,
-                    msg.get("reasoning_content") if role == "assistant" else None,
+                    reasoning,
+                    reasoning_content,
                     reasoning_details_json,
                     1 if msg.get("_thinking_signature_invalidated") else 0,
                     codex_items_json,

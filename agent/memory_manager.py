@@ -729,16 +729,17 @@ class MemoryManager:
         if not clean_user_content:
             return
         user_content = clean_user_content
+        clean_messages = self._scrub_messages_for_provider(messages)
 
         def _run() -> None:
             for provider in providers:
                 try:
-                    if messages is not None and self._provider_sync_accepts_messages(provider):
+                    if clean_messages is not None and self._provider_sync_accepts_messages(provider):
                         provider.sync_turn(
                             user_content,
                             assistant_content,
                             session_id=session_id,
-                            messages=messages,
+                            messages=clean_messages,
                         )
                     else:
                         provider.sync_turn(
@@ -918,6 +919,15 @@ class MemoryManager:
             content = msg.get("content")
             if isinstance(content, str) and content:
                 msg["content"] = strip_injected_recall_blocks(content).strip()
+            for field in (
+                "reasoning",
+                "reasoning_content",
+                "reasoning_details",
+                "codex_reasoning_items",
+                "codex_message_items",
+            ):
+                if field in msg:
+                    msg[field] = sanitize_recall_payload(msg[field])
             for tc in msg.get("tool_calls", []) or []:
                 if not isinstance(tc, dict):
                     continue

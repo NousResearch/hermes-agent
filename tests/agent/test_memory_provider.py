@@ -255,14 +255,35 @@ class TestMemoryManager:
         mgr = MemoryManager()
         p = MessagesMemoryProvider("external")
         mgr.add_provider(p)
+        leaked = build_memory_context_block("operator-only peer card")
         messages = [
-            {"role": "assistant", "tool_calls": [{"id": "call-1"}]},
+            {
+                "role": "assistant",
+                "reasoning": leaked,
+                "reasoning_content": {"text": leaked},
+                "reasoning_details": [{"summary": leaked}],
+                "codex_reasoning_items": [{"encrypted_content": leaked}],
+                "codex_message_items": [{"content": leaked}],
+                "tool_calls": [{"id": "call-1"}],
+            },
             {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
         ]
 
         mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
         mgr.flush_pending(timeout=5)
-        assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
+        assert p.synced_turns[0][:3] == ("user msg", "assistant msg", "sess-1")
+        sent = p.synced_turns[0][3][0]
+        assert all(
+            "operator-only peer card" not in json.dumps(sent[field])
+            for field in (
+                "reasoning",
+                "reasoning_content",
+                "reasoning_details",
+                "codex_reasoning_items",
+                "codex_message_items",
+            )
+        )
+        assert "operator-only peer card" in messages[0]["reasoning"]
 
     def test_sync_all_omits_messages_for_legacy_provider(self):
         mgr = MemoryManager()
@@ -1268,6 +1289,11 @@ class TestCommitMemorySessionRouting:
             {
                 "role": "assistant",
                 "content": "Visible answer",
+                "reasoning": leaked,
+                "reasoning_content": {"text": leaked},
+                "reasoning_details": [{"summary": leaked}],
+                "codex_reasoning_items": [{"encrypted_content": leaked}],
+                "codex_message_items": [{"content": leaked}],
                 "tool_calls": [
                     {
                         "id": "call-1",
@@ -1287,6 +1313,16 @@ class TestCommitMemorySessionRouting:
         sent = recorder.end_calls[0]
         assert "operator-only peer card" not in sent[0]["tool_calls"][0]["function"]["arguments"]
         assert "operator-only peer card" not in sent[1]["content"]
+        assert all(
+            "operator-only peer card" not in json.dumps(sent[0][field])
+            for field in (
+                "reasoning",
+                "reasoning_content",
+                "reasoning_details",
+                "codex_reasoning_items",
+                "codex_message_items",
+            )
+        )
         assert "operator-only peer card" in msgs[0]["tool_calls"][0]["function"]["arguments"]
 
     def test_on_pre_compress_scrubs_recalled_tool_surfaces(self):
@@ -1298,6 +1334,11 @@ class TestCommitMemorySessionRouting:
             {
                 "role": "assistant",
                 "content": "Visible answer",
+                "reasoning": leaked,
+                "reasoning_content": {"text": leaked},
+                "reasoning_details": [{"summary": leaked}],
+                "codex_reasoning_items": [{"encrypted_content": leaked}],
+                "codex_message_items": [{"content": leaked}],
                 "tool_calls": [
                     {
                         "id": "call-1",
@@ -1317,6 +1358,16 @@ class TestCommitMemorySessionRouting:
         sent = recorder.compress_calls[0]
         assert "operator-only peer card" not in sent[0]["tool_calls"][0]["function"]["arguments"]
         assert "operator-only peer card" not in sent[1]["content"]
+        assert all(
+            "operator-only peer card" not in json.dumps(sent[0][field])
+            for field in (
+                "reasoning",
+                "reasoning_content",
+                "reasoning_details",
+                "codex_reasoning_items",
+                "codex_message_items",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

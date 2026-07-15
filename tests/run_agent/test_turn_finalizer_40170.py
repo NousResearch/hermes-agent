@@ -1,4 +1,5 @@
 import copy
+import json
 import logging
 import os
 import sys
@@ -155,6 +156,43 @@ def test_finalize_turn_scrubs_ordered_anthropic_blocks_and_invalidates_signature
 
     assert messages[-1]["anthropic_content_blocks"][0]["thinking"] == ""
     assert messages[-1]["_thinking_signature_invalidated"] is True
+
+
+def test_post_llm_call_receives_recursively_sanitized_history():
+    agent = _bare_finalizer_agent()
+    leaked = build_memory_context_block("operator-only peer card")
+    messages = [{
+        "role": "assistant",
+        "content": "Visible answer",
+        "reasoning": leaked,
+        "reasoning_content": leaked,
+        "reasoning_details": [{"thinking": leaked}],
+        "tool_calls": [{"function": {"arguments": json.dumps({"input": leaked})}}],
+        "codex_reasoning_items": [{"summary": leaked}],
+        "codex_message_items": [{"content": [{"text": leaked}]}],
+    }]
+    hook_calls = []
+
+    with patch("hermes_cli.plugins.invoke_hook", side_effect=lambda *_args, **kwargs: hook_calls.append(kwargs) or []):
+        finalize_turn(
+            agent,
+            final_response="Visible answer",
+            api_call_count=1,
+            interrupted=False,
+            failed=False,
+            messages=messages,
+            conversation_history=None,
+            effective_task_id="task-40170",
+            turn_id="turn-40170-hook",
+            user_message="I need a refund",
+            original_user_message="I need a refund",
+            _should_review_memory=False,
+            _turn_exit_reason="text_response(finish_reason=stop)",
+        )
+
+    history = next(call["conversation_history"] for call in hook_calls if call.get("conversation_history"))
+    assert "operator-only peer card" not in json.dumps(history, ensure_ascii=False)
+    assert messages[0]["reasoning"] == leaked
 
 
 def test_session_flush_marks_changed_signed_reasoning_details_invalid():

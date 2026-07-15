@@ -82,6 +82,26 @@ that happen to start with `/` (like file paths) are never swallowed:
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
 same effect under one short command.
 
+### Inline skill mentions with `$`
+
+Where a slash command has to lead the message, a `$skill-name` mention can
+appear anywhere in it — so you can name a skill mid-sentence and chain several
+in natural prose (up to 5, loaded once each in the order they appear):
+
+```bash
+clean up this diff with $code-review then $git-commit-workflow it
+```
+
+Your message is kept exactly as typed — the mentioned skills are loaded for the
+model on top of it, so transcripts and memory still show what you actually
+wrote. A `$name` that isn't an installed skill, or one disabled for the current
+platform, stays ordinary text; so do shell variables like `$HOME` and anything
+inside `` `code spans` `` or fenced code blocks.
+
+Mentions resolve to the same skills as the matching slash command. Turn the
+behavior off with `skills.mentions: false` in `config.yaml` to treat every `$`
+as literal text.
+
 The bundled `plan` skill is a good example. Running `/plan [request]` loads the skill's instructions, telling Hermes to inspect context if needed, write a markdown implementation plan instead of executing the task, and save the result under `.hermes/plans/` relative to the active workspace/backend working directory.
 
 You can also interact with skills through natural conversation:

@@ -8,8 +8,13 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    _MAX_STACKED_SKILLS,
+    build_mention_invocation_message,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    extract_skill_mentions,
+    extract_user_instruction_from_skill_message,
+    message_is_skill_scaffolding,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -1062,3 +1067,189 @@ class TestStackedSkillCommands:
         assert result is not None
         msg, _, _ = result
         assert extract_user_instruction_from_skill_message(msg) is None
+
+
+class TestExtractSkillMentions:
+    """Lexical pass only — these never touch the installed-skill map."""
+
+    def test_finds_mention_mid_prompt(self):
+        # The whole point of $: /skill only works as a prefix.
+        assert extract_skill_mentions("clean this up $code-review please") == [
+            "code-review"
+        ]
+
+    def test_finds_multiple_in_order(self):
+        assert extract_skill_mentions("$alpha then $beta") == ["alpha", "beta"]
+
+    def test_dedupes_preserving_first_appearance(self):
+        assert extract_skill_mentions("$a then $b then $a") == ["a", "b"]
+
+    def test_no_dollar_is_cheap_noop(self):
+        assert extract_skill_mentions("no sigil here") == []
+        assert extract_skill_mentions("") == []
+
+    # ── False-positive guards. These are the reason the feature is safe. ──
+
+    def test_skips_shell_env_vars(self):
+        assert extract_skill_mentions("echo $HOME and $PATH") == []
+
+    def test_skips_shell_env_vars_case_insensitively(self):
+        assert extract_skill_mentions("echo $home") == []
+
+    def test_skips_brace_expansion(self):
+        # ${VAR} must not lex as a mention — "{" is not a name start.
+        assert extract_skill_mentions("echo ${MY_VAR}") == []
+
+    def test_skips_fenced_code_block(self):
+        text = "run it:\n```sh\nexport $deploy=1\n```\n"
+        assert extract_skill_mentions(text) == []
+
+    def test_skips_tilde_fenced_code_block(self):
+        assert extract_skill_mentions("~~~\n$deploy\n~~~") == []
+
+    def test_skips_inline_code_span(self):
+        assert extract_skill_mentions("the `$deploy` var is unset") == []
+
+    def test_finds_mention_outside_code_but_not_inside(self):
+        text = "$review this:\n```sh\necho $review\n```"
+        assert extract_skill_mentions(text) == ["review"]
+
+    def test_skips_double_dollar_and_midword(self):
+        assert extract_skill_mentions("pid is $$foo and cost is US$abc") == []
+
+    def test_skips_numeric_positional_args(self):
+        assert extract_skill_mentions("$1 and $2 and $100") == []
+
+
+class TestBuildMentionInvocationMessage:
+    def test_loads_mentioned_skill_and_keeps_user_text(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "code-review", body="Review the diff.")
+            scan_skill_commands()
+            result = build_mention_invocation_message("clean up $code-review now")
+
+        assert result is not None
+        msg, loaded, dropped = result
+        assert loaded == ["code-review"]
+        assert dropped == []
+        assert "Review the diff." in msg            # skill body injected
+        assert "clean up $code-review now" in msg   # user text preserved verbatim
+
+    def test_chains_multiple_skills_mid_prompt(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", body="Alpha body.")
+            _make_skill(tmp_path, "beta", body="Beta body.")
+            scan_skill_commands()
+            result = build_mention_invocation_message("do $alpha then $beta")
+
+        assert result is not None
+        msg, loaded, _ = result
+        assert loaded == ["alpha", "beta"]
+        assert "Alpha body." in msg and "Beta body." in msg
+
+    def test_unresolvable_mention_is_left_alone(self, tmp_path):
+        # $API_KEY lexes as a mention but matches no skill -> ordinary text.
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
+            scan_skill_commands()
+            assert build_mention_invocation_message("export $API_KEY") is None
+
+    def test_underscore_mention_resolves_to_hyphenated_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "code-review")
+            scan_skill_commands()
+            result = build_mention_invocation_message("$code_review this")
+        assert result is not None
+        assert result[1] == ["code-review"]
+
+    def test_does_not_rescan_slash_skill_scaffolding(self, tmp_path):
+        """A SKILL.md body mentioning $foo must not recursively load skills."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "shell-tips", body="Use $deploy carefully.")
+            _make_skill(tmp_path, "deploy", body="Ship it.")
+            scan_skill_commands()
+            expanded = build_skill_invocation_message("/shell-tips", "help")
+            assert expanded is not None
+            assert message_is_skill_scaffolding(expanded)
+            # The expanded /skill turn contains "$deploy" from the body above.
+            assert "$deploy" in expanded
+            # Re-scanning it must not pull the deploy skill in.
+            assert build_mention_invocation_message(expanded) is None
+
+    def test_caps_at_max_stacked_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            for i in range(_MAX_STACKED_SKILLS + 2):
+                _make_skill(tmp_path, f"skill{i}", body=f"Body {i}.")
+            scan_skill_commands()
+            mentions = " ".join(f"$skill{i}" for i in range(_MAX_STACKED_SKILLS + 2))
+            result = build_mention_invocation_message(mentions)
+
+        assert result is not None
+        msg, loaded, dropped = result
+        assert len(loaded) == _MAX_STACKED_SKILLS
+        # The overflow is reported, not silently truncated.
+        assert len(dropped) == 2
+        for name in dropped:
+            assert name in msg
+
+    def test_non_string_input_is_ignored(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            assert build_mention_invocation_message(None) is None
+            assert build_mention_invocation_message([{"type": "image"}]) is None
+
+    def test_memory_extractor_recovers_the_typed_text(self, tmp_path):
+        """Injected turn must stay legible to the memory-scaffolding extractor."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "code-review")
+            scan_skill_commands()
+            result = build_mention_invocation_message("clean up $code-review now")
+
+        assert result is not None
+        msg = result[0]
+        assert (
+            extract_user_instruction_from_skill_message(msg)
+            == "clean up $code-review now"
+        )
+
+    def test_disabled_skill_is_not_loaded_by_mention(self, tmp_path):
+        """A skill disabled for the active platform must not load via $mention.
+
+        The / path checks this in gateway/run.py; the mention path has no
+        surface to check in, so build_mention_invocation_message() must.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "blocked", body="Should not appear.")
+            _make_skill(tmp_path, "allowed", body="Should appear.")
+            scan_skill_commands()
+            with patch(
+                "agent.skill_utils.get_disabled_skill_names",
+                return_value={"blocked"},
+            ):
+                result = build_mention_invocation_message("$blocked and $allowed")
+
+        assert result is not None
+        msg, loaded, _ = result
+        assert loaded == ["allowed"]
+        assert "Should not appear." not in msg
+
+    def test_disabled_skill_does_not_consume_a_cap_slot(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "blocked")
+            for i in range(_MAX_STACKED_SKILLS):
+                _make_skill(tmp_path, f"ok{i}", body=f"Body {i}.")
+            scan_skill_commands()
+            mentions = "$blocked " + " ".join(
+                f"$ok{i}" for i in range(_MAX_STACKED_SKILLS)
+            )
+            with patch(
+                "agent.skill_utils.get_disabled_skill_names",
+                return_value={"blocked"},
+            ):
+                result = build_mention_invocation_message(mentions)
+
+        assert result is not None
+        _, loaded, dropped = result
+        # All five real skills still fit — the disabled one was filtered first.
+        assert len(loaded) == _MAX_STACKED_SKILLS
+        assert dropped == []

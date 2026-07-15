@@ -674,6 +674,13 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Recognize inline "$skill-name" mentions anywhere in a message, not just a
+  # leading "/skill-name".  Mentioned skills load for that turn and your text is
+  # kept verbatim.  Only names matching an installed skill resolve; shell vars
+  # like $HOME and anything inside code spans/blocks are ignored.  Set false to
+  # treat every "$" as plain text.
+  mentions: true
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

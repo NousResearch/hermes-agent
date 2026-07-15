@@ -2353,6 +2353,13 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Recognize inline ``$skill-name`` mentions anywhere in a message, not
+        # just a leading ``/skill-name`` ("clean this up $code-review then
+        # $commit it").  The mentioned skills load and the user's text is kept
+        # verbatim.  Only names that match an installed skill resolve, and
+        # mentions inside code blocks/spans are ignored, so shell text such as
+        # ``echo $PATH`` is unaffected.  Set false to treat ``$`` as plain text.
+        "mentions": True,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

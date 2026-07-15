@@ -169,7 +169,7 @@ def _load_web_config() -> dict:
 # WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
 # a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "anysearch"}
 )
 
 
@@ -246,6 +246,7 @@ def _get_backend() -> str:
         ("firecrawl", _is_tool_gateway_ready()),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("anysearch", _has_env("ANYSEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
@@ -337,6 +338,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
+    if backend == "anysearch":
+        return _has_env("ANYSEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
     if backend == "xai":
@@ -398,6 +401,7 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "ANYSEARCH_API_KEY",
     ]
 
 
@@ -1112,6 +1116,8 @@ if __name__ == "__main__":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
+        elif backend == "anysearch":
+            print("   Using AnySearch API (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
         elif firecrawl_url_available:
@@ -1125,7 +1131,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL, ANYSEARCH_API_KEY"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

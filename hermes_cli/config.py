@@ -2886,6 +2886,11 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Optional absolute path to an executable that wraps the generated
+        # launchd gateway command. The wrapper receives the normal command as
+        # argv and should finish with `exec "$@"` after its preflight work.
+        "service_wrapper": "",
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

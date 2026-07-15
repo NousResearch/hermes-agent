@@ -61,7 +61,6 @@ function makeDeps(overrides: Partial<Parameters<typeof resolveVenvHermesCommand>
     directoryExists: () => false,
     canImportHermesCli: () => true,
     getVenvPython: (venvRoot: string) => `${venvRoot}/Scripts/python.exe`,
-    getVenvSitePackagesEntries: () => [],
     buildDesktopBackendEnv: () => ({ FAKE_ENV: '1' }),
     hermesHome: '/fake/hermes-home',
     resolvePath: (...segments: string[]) => segments.join('/').replace(/\/+/g, '/'),

@@ -167,10 +167,8 @@ export interface ResolveVenvHermesCommandDeps {
   directoryExists: (filePath: string) => boolean
   canImportHermesCli: (python: string, opts?: { env?: Record<string, string> }) => boolean
   getVenvPython: (venvRoot: string) => string
-  getVenvSitePackagesEntries: (venvRoot: string) => string[]
   buildDesktopBackendEnv: (opts: {
     hermesHome: string
-    pythonPathEntries: string[]
     venvRoot: string
   }) => Record<string, string>
   hermesHome: string
@@ -220,7 +218,6 @@ export function resolveVenvHermesCommand(
     directoryExists,
     canImportHermesCli,
     getVenvPython,
-    getVenvSitePackagesEntries,
     buildDesktopBackendEnv,
     hermesHome,
     resolvePath,
@@ -277,7 +274,6 @@ export function resolveVenvHermesCommand(
     bootstrap: false,
     env: buildDesktopBackendEnv({
       hermesHome,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
     }),
     kind: 'python',

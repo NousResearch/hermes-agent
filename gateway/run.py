@@ -204,10 +204,6 @@ def _ensure_windows_gateway_venv_imports() -> None:
         sys.path.insert(insert_at, site_entry)
 
         os.environ["VIRTUAL_ENV"] = str(resolved_venv)
-        pythonpath = [project_entry, site_entry]
-        if os.environ.get("PYTHONPATH"):
-            pythonpath.append(os.environ["PYTHONPATH"])
-        os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
         return
 
 

@@ -436,6 +436,34 @@ class TestDeleteSkill:
             result = _delete_skill("my-skill")
         assert result["success"] is True
 
+    def test_delete_readonly_skill_returns_structured_error(self, tmp_path):
+        """Deleting a read-only (bundled) skill must return a structured,
+        non-retryable error instead of crashing with ``PermissionError``
+        (#50938).
+
+        The read-only condition is simulated by patching ``shutil.rmtree`` to
+        raise ``PermissionError`` rather than by chmod'ing the directory. A
+        chmod-based test is non-deterministic under CI/containers that run as
+        root, because root bypasses the write bit and ``rmtree`` succeeds — so
+        the test would silently pass without exercising the except branch.
+        Patching the call keeps the assertion deterministic regardless of the
+        UID the suite runs as.
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            with patch(
+                "tools.skill_manager_tool.shutil.rmtree",
+                side_effect=PermissionError(13, "Permission denied"),
+            ):
+                result = _delete_skill("bundled-skill", absorbed_into="")
+            # Structured failure, not a raised exception.
+            assert result["success"] is False
+            err = result["error"].lower()
+            assert "permission denied" in err
+            assert "bundled-skill" in result["error"]
+            # The skill dir is untouched (rmtree was intercepted).
+            assert (tmp_path / "bundled-skill").exists()
+
 
 # ---------------------------------------------------------------------------
 # write_file / remove_file

@@ -61,7 +61,7 @@ def test_fcm_payload_contains_status_only():
     })
 
     data = payload["message"]["data"]
-    assert payload["message"]["token"] == "secret-device-token"
+    assert payload["message"]["fid"] == "secret-device-token"
     assert data == {
         "event": "session.completed",
         "host_profile_id": "mobile-host-1",

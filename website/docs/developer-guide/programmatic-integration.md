@@ -57,7 +57,7 @@ terminal.resize         clipboard.paste         image.attach
 
 ### Events streamed back
 
-`message.delta`, `message.complete`, `tool.start`, `tool.progress`, `tool.complete`, `approval.request`, `clarify.request`, `sudo.request`, `secret.request`, `gateway.ready`, plus session lifecycle and error events.
+`message.delta`, `message.complete`, `tool.start`, `tool.progress`, `tool.complete`, `approval.request`, `clarify.request`, `sudo.request`, `sudo.expire`, `secret.request`, `secret.expire`, `gateway.ready`, plus session lifecycle and error events. Expiry events carry the original `{ request_id }`; external hosts should clear only the matching pending prompt.
 
 ### Pi-style RPC mapping
 
@@ -92,6 +92,7 @@ POST /v1/runs                    Start a run, returns run_id (202)
 GET  /v1/runs/{id}               Run status
 GET  /v1/runs/{id}/events        SSE stream of lifecycle events
 POST /v1/runs/{id}/approval      Resolve a pending approval
+POST /v1/runs/{id}/steer         Inject mid-run guidance at the next tool boundary
 POST /v1/runs/{id}/stop          Interrupt the run
 GET  /v1/capabilities            Machine-readable feature flags
 GET  /v1/models                  Lists hermes-agent
@@ -99,6 +100,10 @@ GET  /health, /health/detailed
 ```
 
 Setup, headers (`X-Hermes-Session-Id`, `X-Hermes-Session-Key`), and frontend wiring: [API Server](../user-guide/features/api-server).
+
+`POST /v1/runs/{id}/steer` is the HTTP equivalent of Hermes `/steer`: it does not create a new user turn or immediately rewrite the assistant output already in flight. Instead, the text is appended to the live run and becomes visible to the agent after the next tool boundary, so it can course-correct without discarding the current tool-calling loop.
+
+`/v1/runs/{id}/steer` is only accepted while the run status is `running`. Queued, approval-paused, stopping, cancelled, failed, and completed runs return `409 run_not_accepting_steer`, even if the server still retains internal agent references during cooperative shutdown.
 
 ---
 

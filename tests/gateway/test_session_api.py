@@ -1,6 +1,8 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -386,6 +388,96 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: done" in body
     assert captured_kwargs["active_run_id"].startswith("run_")
     assert captured_kwargs["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
+    adapter, session_db
+):
+    """Disconnects must interrupt the live run without dropping its control refs early."""
+    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    run_started = threading.Event()
+    interrupt_called = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    with patch.object(
+        adapter,
+        "_get_existing_session_or_404",
+        return_value=({"id": session_id}, None),
+    ), patch.object(
+        adapter,
+        "_read_json_body",
+        return_value=({"message": "stream please"}, None),
+    ), patch.object(
+        adapter,
+        "_create_agent",
+        side_effect=_create_agent,
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        for _ in range(40):
+            if interrupt_called.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert interrupt_called.is_set()
+        assert run_id in adapter._active_run_agents
+        assert run_id in adapter._active_run_tasks
+        assert not handler_task.done()
+
+        allow_finish.set()
+        await handler_task
+
+    assert run_id not in adapter._active_run_agents
+    assert run_id not in adapter._active_run_tasks
 
 
 @pytest.mark.asyncio

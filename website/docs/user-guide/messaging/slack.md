@@ -36,12 +36,13 @@ Mode — all at once.
 
 ### Option A: From a Hermes-generated manifest (recommended)
 
-1. Generate the manifest:
+1. Generate the manifest. New Slack apps must use Agent view:
    ```bash
-   hermes slack manifest --write
+   hermes slack manifest --agent-view --write
    ```
    This writes `~/.hermes/slack-manifest.json` and prints paste-in
-   instructions.
+   instructions. Existing apps that still use Slack's legacy Assistant view
+   can omit `--agent-view` until they are ready to migrate.
 2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) →
    **Create New App** → **From an app manifest**
 3. Pick your workspace, paste the JSON contents, review, click **Next**
@@ -243,6 +244,23 @@ Step 1, Option A) that declares every command in
 as a slash command. In Socket Mode, Slack routes the command event
 through the WebSocket regardless of the manifest's `url` field.
 
+### Agent messaging experience
+
+New Slack apps use Slack's **Agent** messaging experience. Existing Hermes
+Assistant apps can migrate by regenerating the manifest with `--agent-view`:
+
+```bash
+hermes slack manifest --agent-view --write
+```
+
+Update the manifest in **Features → App Manifest**, then reinstall the app if
+Slack asks. Agent view cannot be reverted to Assistant view, and users may need
+to hard-refresh Slack after the switch. The generated Agent manifest subscribes
+to `message.im`, `app_home_opened`, and `app_context_changed`, so Hermes can
+identify a Messages-tab DM and receive the user's active Slack context with a
+turn. Hermes only supplies that context as a label; it does not read the viewed
+channel's history.
+
 ### Refreshing slash commands after updates
 
 When Hermes adds new commands (e.g. after `hermes update`), regenerate
@@ -353,6 +371,19 @@ platforms:
       # gracefully fall back to aligned monospace.
       rich_blocks: false
 
+      # Append Slack-native feedback controls to final Block Kit replies.
+      # Requires rich_blocks: true. Default: false.
+      feedback_buttons: false
+
+      # Suggested prompts pinned at the top of Agent view's Messages tab.
+      # Either a list of {title, message} rows, or a titled object:
+      # {title: "Start here", prompts: [{title: "Plan", message: "..."}]}
+      suggested_prompts: []
+
+      # Title Agent/Assistant DM threads from the first user message.
+      # Default: true. Set false to leave Slack's default thread titles.
+      assistant_thread_titles: true
+
       # Continuable-cron delivery surface (default: "thread").
       # "in_channel" delivers a continuable cron job FLAT into the channel
       # (no dedicated thread); pair with reply_in_thread: false (and
@@ -367,6 +398,9 @@ platforms:
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
+| `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
+| `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
 ### Session Isolation

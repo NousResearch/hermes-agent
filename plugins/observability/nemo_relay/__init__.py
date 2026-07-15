@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 _INIT_FAILED = object()
 _LOCK = threading.RLock()
 _RUNTIME: "_Runtime | object | None" = None
-_RELAY_LLM_SURFACE_BY_API_MODE = {
-    "anthropic_messages": "anthropic.messages",
-    "chat_completions": "openai.chat_completions",
-    "codex_responses": "openai.responses",
+_RELAY_LLM_PROTOCOL_BY_API_MODE = {
+    "anthropic_messages": ("anthropic.messages", "AnthropicMessagesCodec"),
+    "chat_completions": ("openai.chat_completions", "OpenAIChatCodec"),
+    "codex_responses": ("openai.responses", "OpenAIResponsesCodec"),
 }
 
 
@@ -448,6 +448,7 @@ class _Runtime:
         state = self.ensure_session(kwargs)
         request_body = _jsonable(kwargs.get("request") or {})
         request = self.nemo_relay.LLMRequest({}, request_body)
+        codec = _relay_llm_codec(self.nemo_relay, kwargs)
         next_call = kwargs.get("next_call")
         if not callable(next_call):
             return request_body
@@ -458,6 +459,9 @@ class _Runtime:
 
         def _make_managed(impl: Callable[[Any], Any]) -> Any:
             async def _managed_execute() -> Any:
+                codec_kwargs = {}
+                if codec is not None:
+                    codec_kwargs = {"codec": codec, "response_codec": codec}
                 result = self.nemo_relay.llm.execute(
                     _relay_llm_surface(kwargs),
                     request,
@@ -473,6 +477,7 @@ class _Runtime:
                     ),
                     metadata=_metadata(kwargs),
                     model_name=str(kwargs.get("model") or ""),
+                    **codec_kwargs,
                 )
                 if inspect.isawaitable(result):
                     return await result
@@ -481,7 +486,11 @@ class _Runtime:
             return _managed_execute()
 
         return self._run_managed_with_downstream_preservation(
-            next_call, _normalize, _llm_response_payload, _make_managed, preserve_raw_response=True
+            next_call,
+            _normalize,
+            _jsonable if codec is not None else _llm_response_payload,
+            _make_managed,
+            preserve_raw_response=True,
         )
 
     def execute_tool(self, kwargs: dict[str, Any]) -> Any:
@@ -1035,10 +1044,18 @@ def _tool_key(kwargs: dict[str, Any]) -> str:
 
 def _relay_llm_surface(kwargs: dict[str, Any]) -> str:
     api_mode = str(kwargs.get("api_mode") or "").strip().lower()
-    return _RELAY_LLM_SURFACE_BY_API_MODE.get(
-        api_mode,
-        str(kwargs.get("provider") or "llm"),
-    )
+    protocol = _RELAY_LLM_PROTOCOL_BY_API_MODE.get(api_mode)
+    return protocol[0] if protocol is not None else str(kwargs.get("provider") or "llm")
+
+
+def _relay_llm_codec(nemo_relay: Any, kwargs: dict[str, Any]) -> Any | None:
+    """Construct Relay's public codec for Hermes' resolved wire protocol."""
+
+    api_mode = str(kwargs.get("api_mode") or "").strip().lower()
+    protocol = _RELAY_LLM_PROTOCOL_BY_API_MODE.get(api_mode)
+    codecs = getattr(nemo_relay, "codecs", None)
+    codec_type = getattr(codecs, protocol[1], None) if protocol is not None else None
+    return codec_type() if callable(codec_type) else None
 
 
 def _metadata(kwargs: dict[str, Any]) -> dict[str, Any]:

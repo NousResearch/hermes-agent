@@ -495,6 +495,14 @@ Hermes tool call
       -> Hermes tool dispatcher next_call(...)
 ```
 
+For OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages, Hermes
+passes the matching public NeMo Relay codec to the managed LLM boundary. This
+lets request and response interceptors operate on Relay's normalized provider
+representation while preserving the original provider response object when no
+interceptor changes it. Hermes retains the legacy untyped path when the
+installed Relay version does not expose these codecs or the provider protocol
+is unsupported.
+
 The plugin still emits observer marks for sessions, turns, approvals, and
 subagents. When adaptive managed execution is active, it skips manual
 `llm.call` and `tools.call` observer spans to avoid duplicate LLM/tool events

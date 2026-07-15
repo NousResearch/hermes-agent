@@ -14,7 +14,17 @@ Two independent signals:
 import re
 from datetime import datetime, timedelta, timezone
 
-import spacy
+# Lazy import — raised with clear error if spacy extra not installed
+def _get_spacy():
+    try:
+        import spacy
+        return spacy
+    except ImportError as e:
+        raise ImportError(
+            "spacy is required for term extraction. Install with: "
+            "pip install trendscout[spacy]  OR  pip install spacy>=3.7\n"
+            "Then download the model: python -m spacy download en_core_web_sm"
+        ) from e
 
 _NLP = None
 
@@ -30,6 +40,7 @@ STOPWORDS_PHRASES = {
 def _nlp():
     global _NLP
     if _NLP is None:
+        spacy = _get_spacy()
         _NLP = spacy.load('en_core_web_sm', disable=['ner', 'lemmatizer'])
     return _NLP
 
@@ -56,34 +67,55 @@ def extract_terms(text: str) -> list[str]:
 
 # ── Term frequency / velocity ───────────────────────────────────────────────
 
-def _bump_term_frequency(conn, counts: dict[str, int], date: str):
-    for term, count in counts.items():
-        conn.execute("""
-            INSERT INTO term_frequency (date, term, frequency) VALUES (?,?,?)
-            ON CONFLICT(date, term) DO UPDATE SET frequency = frequency + excluded.frequency
-        """, (date, term, count))
-
-
-def update_term_frequency(conn, posts: list[dict], date: str):
-    """Extract terms from a batch of posts and accumulate today's frequency counts."""
-    counts: dict[str, int] = {}
+def record_post_terms(conn, posts: list[dict], date: str):
+    """Record extracted terms for each post. Idempotent via INSERT OR IGNORE.
+    
+    Each (post_id, term, date) combination is stored once. This replaces the
+    old incrementing counter approach with a recomputed aggregate.
+    """
     for post in posts:
+        post_id = post['id']
         text = f"{post.get('title', '')}. {post.get('selftext', '') or ''}"
-        for term in set(extract_terms(text)):  # one count per post per term
-            counts[term] = counts.get(term, 0) + 1
+        terms = set(extract_terms(text))
+        for term in terms:
+            conn.execute(
+                'INSERT OR IGNORE INTO post_terms (post_id, term, date) VALUES (?,?,?)',
+                (post_id, term, date)
+            )
 
-    _bump_term_frequency(conn, counts, date)
 
-
-def update_term_frequency_raw(conn, terms: list[str], date: str):
-    """Accumulate frequency counts for already-normalized terms (e.g. trending
-    hashtags), bypassing noun-phrase extraction."""
-    counts: dict[str, int] = {}
+def record_social_terms(conn, terms: list[str], date: str):
+    """Record social trending terms (hashtags, etc.) for a given date.
+    
+    Idempotent via INSERT OR IGNORE — replaces update_term_frequency_raw.
+    """
     for term in terms:
         if term:
-            counts[term] = counts.get(term, 0) + 1
+            conn.execute(
+                'INSERT OR IGNORE INTO social_terms (date, term) VALUES (?,?)',
+                (date, term)
+            )
 
-    _bump_term_frequency(conn, counts, date)
+
+def recompute_term_frequency(conn, date: str):
+    """Recompute term_frequency as an aggregate from post_terms + social_terms.
+    
+    This is idempotent: deletes today's rows and rebuilds from source tables.
+    Call this after record_post_terms and record_social_terms.
+    """
+    # Delete existing rows for this date
+    conn.execute('DELETE FROM term_frequency WHERE date=?', (date,))
+    
+    # Recompute from both sources
+    conn.execute("""
+        INSERT INTO term_frequency (date, term, frequency)
+        SELECT ?, term, COUNT(*) FROM (
+            SELECT term FROM post_terms WHERE date=?
+            UNION ALL
+            SELECT term FROM social_terms WHERE date=?
+        )
+        GROUP BY term
+    """, (date, date, date))
 
 
 def compute_term_velocity(conn, date: str, config: dict):

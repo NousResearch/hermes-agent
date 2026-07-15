@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Shared Firecrawl scrape helper for trendscout ingestion modules."""
+#!/usr/bin/env python3
+"""Shared Firecrawl scrape helper for trendscout ingestion modules.
 
+Firecrawl URL and API key are read from environment variables, which should be
+set by trendscout.config.load_config() from the firecrawl.api_url config value.
+"""
 import json
 import os
 import urllib.error
@@ -8,7 +12,9 @@ import urllib.request
 
 REQUEST_TIMEOUT = 60
 
-FIRECRAWL_URL = os.getenv('FIRECRAWL_API_URL', 'http://localhost:3002')
+# These are set by config.load_config() from firecrawl.api_url
+# Default fallback only for standalone usage (not recommended)
+FIRECRAWL_URL = os.getenv('FIRECRAWL_API_URL')
 FIRECRAWL_KEY = os.getenv('FIRECRAWL_API_KEY', 'local_secret_key')
 
 

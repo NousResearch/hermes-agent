@@ -5,7 +5,8 @@ from pathlib import Path
 
 import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Import the canonical Hermes home resolver — context-var-aware, profile-aware
+from hermes_constants import get_hermes_home
 
 
 def load_config(path: str | Path = None) -> dict:
@@ -13,11 +14,37 @@ def load_config(path: str | Path = None) -> dict:
     with open(path) as f:
         config = yaml.safe_load(f)
 
+    # Resolve paths relative to Hermes home (profile-aware)
+    hermes_home = get_hermes_home()
     paths = config.setdefault('paths', {})
-    for key, value in paths.items():
-        paths[key] = str(Path(value).expanduser())
+    
+    # Default paths if not specified
+    if 'db' not in paths:
+        paths['db'] = str(hermes_home / 'trendscout' / 'trendscout.db')
+    if 'chroma' not in paths:
+        paths['chroma'] = str(hermes_home / 'trendscout' / 'chroma')
+    
+    # Resolve any explicit paths (expanduser for backward compat)
+    for key, value in list(paths.items()):
+        if key.endswith('_file'):
+            # Source list files relative to project root
+            paths[key] = str(PROJECT_ROOT / value)
+        else:
+            # DB/chroma paths: expanduser only (not profile-aware overrides)
+            paths[key] = str(Path(value).expanduser())
+    
+    # Thread Firecrawl API URL from config into environment for firecrawl_client
+    # This ensures localhost:3002 (or custom) is used consistently
+    firecrawl_cfg = config.get('firecrawl', {})
+    if firecrawl_cfg.get('enabled'):
+        api_url = firecrawl_cfg.get('api_url', 'http://localhost:3002')
+        import os
+        os.environ.setdefault('FIRECRAWL_API_URL', api_url)
 
     return config
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _read_lines(path: str | Path) -> list[str]:

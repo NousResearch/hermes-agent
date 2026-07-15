@@ -46,9 +46,12 @@ def main():
             sources_used.append('firecrawl')
 
     new_count = 0
+    new_posts = []
     for post in posts:
-        if db.upsert_post(conn, post, now=now):
+        is_new = db.upsert_post(conn, post, now=now)
+        if is_new:
             new_count += 1
+            new_posts.append(post)
     conn.commit()
 
     # Social trending topics (X/Twitter via trends24.in, TikTok Creative
@@ -64,11 +67,13 @@ def main():
                 social_trends.normalize_term(term)
                 for terms in trending.values() for term in terms
             ]
-            scoring.update_term_frequency_raw(conn, raw_terms, today)
+            scoring.record_social_terms(conn, raw_terms, today)
             conn.commit()
 
-    # Term frequency / acceleration
-    scoring.update_term_frequency(conn, posts, today)
+    # Term frequency / acceleration — idempotent recompute
+    scoring.record_post_terms(conn, new_posts, today)
+    conn.commit()
+    scoring.recompute_term_frequency(conn, today)
     conn.commit()
     scoring.compute_term_velocity(conn, today, config)
     conn.commit()

@@ -16,7 +16,17 @@ squared-L2 distance: near-duplicate text scores ~0.0-0.7, related-topic text
 
 import uuid
 
-import chromadb
+# Lazy import — raised with clear error if chromadb extra not installed
+def _get_chromadb():
+    try:
+        import chromadb
+        return chromadb
+    except ImportError as e:
+        raise ImportError(
+            "chromadb is required for semantic clustering. Install with: "
+            "pip install trendscout[chromadb]  OR  pip install chromadb>=0.4"
+        ) from e
+
 
 from . import db
 
@@ -24,6 +34,7 @@ SIMILARITY_THRESHOLD = 1.0
 
 
 def get_collection(config: dict):
+    chromadb = _get_chromadb()
     client = chromadb.PersistentClient(path=config['paths']['chroma'])
     return client.get_or_create_collection(name=config['clusters']['collection_name'])
 

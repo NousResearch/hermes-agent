@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS term_frequency (
     PRIMARY KEY (date, term)
 );
 
+CREATE TABLE IF NOT EXISTS post_terms (
+    post_id         TEXT NOT NULL,
+    term            TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    PRIMARY KEY (post_id, term)
+);
+CREATE INDEX IF NOT EXISTS idx_post_terms_date ON post_terms(date);
+
+CREATE TABLE IF NOT EXISTS social_terms (
+    date            TEXT NOT NULL,
+    term            TEXT NOT NULL,
+    PRIMARY KEY (date, term)
+);
+
 CREATE TABLE IF NOT EXISTS term_velocity (
     date            TEXT NOT NULL,
     term            TEXT NOT NULL,

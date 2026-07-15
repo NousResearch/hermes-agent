@@ -3713,6 +3713,15 @@ def _on_tool_progress(
         }
         _emit("tool.output_risk", sid, payload)
         return
+    if event_type == "tool.progress" and name:
+        payload: dict[str, object] = {
+            "tool_id": str(_kwargs.get("tool_call_id") or ""),
+            "name": str(name),
+            "preview": str(preview or ""),
+            "text": str(preview or ""),
+        }
+        _emit("tool.progress", sid, payload)
+        return
     if event_type == "reasoning.available" and preview:
         payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):

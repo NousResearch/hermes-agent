@@ -273,6 +273,15 @@ class CodexAppServerClient:
         except queue.Empty:
             return None
 
+    def pending_server_request_count(self) -> int:
+        """Snapshot how many server requests are currently queued.
+
+        The session uses this only at a terminal turn boundary.  Capturing the
+        count before draining lets it reject every already-pending overflow
+        request without waiting for requests that arrive after the boundary.
+        """
+        return self._server_requests.qsize()
+
     # ---------- diagnostics ----------
 
     def stderr_tail(self, n: int = 20) -> list[str]:

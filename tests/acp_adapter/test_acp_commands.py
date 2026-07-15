@@ -196,3 +196,55 @@ async def test_acp_prompt_drains_queued_turns_after_current_run():
     assert state.queued_prompts == []
     agent_messages = [u for _sid, u in conn.updates if getattr(u, "session_update", None) == "agent_message_chunk"]
     assert len(agent_messages) >= 2
+
+
+@pytest.mark.asyncio
+async def test_acp_prompt_completes_codex_live_tool_card_with_stable_id():
+    class CodexLiveFakeAgent(FakeAgent):
+        def run_conversation(self, *, user_message, conversation_history, task_id, **kwargs):
+            tool_progress_callback = getattr(self, "tool_progress_callback")
+            tool_progress_callback(
+                "tool.started",
+                "terminal",
+                "pwd",
+                {"command": "pwd"},
+                tool_call_id="codex_exec_cmd-1",
+            )
+            tool_progress_callback(
+                "tool.completed",
+                "terminal",
+                None,
+                {"command": "pwd"},
+                result="ok",
+                tool_call_id="codex_exec_cmd-1",
+            )
+            return super().run_conversation(
+                user_message=user_message,
+                conversation_history=conversation_history,
+                task_id=task_id,
+                **kwargs,
+            )
+
+    fake = CodexLiveFakeAgent()
+    manager = SessionManager(agent_factory=lambda **kwargs: fake, db=NoopDb())
+    acp_agent = HermesACPAgent(session_manager=manager)
+    state = manager.create_session(cwd=".")
+    conn = CaptureConn()
+    acp_agent.on_connect(conn)
+
+    response = await acp_agent.prompt(
+        session_id=state.session_id,
+        prompt=[TextContentBlock(type="text", text="run pwd")],
+    )
+
+    assert response.stop_reason == "end_turn"
+    tool_updates = [
+        update
+        for _sid, update in conn.updates
+        if getattr(update, "tool_call_id", None) == "codex_exec_cmd-1"
+    ]
+    assert [update.session_update for update in tool_updates] == [
+        "tool_call",
+        "tool_call_update",
+    ]
+    assert tool_updates[1].status == "completed"

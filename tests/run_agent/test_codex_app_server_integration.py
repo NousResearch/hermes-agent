@@ -49,6 +49,23 @@ def fake_session(monkeypatch):
     )
 
 
+def _capture_correlated_on_event(captured_init, session, kwargs):
+    """Wrap fake-session callbacks with protocol-real item correlation."""
+    wrapped = dict(kwargs)
+    raw_on_event = wrapped.get("on_event")
+    if raw_on_event is not None:
+        def correlated_on_event(note):
+            if isinstance(note, dict) and str(note.get("method", "")).startswith("item/"):
+                params = note.get("params")
+                if isinstance(params, dict):
+                    params.setdefault("threadId", getattr(session, "_thread_id", None))
+                    params.setdefault("turnId", getattr(session, "_active_turn_id", None))
+            raw_on_event(note)
+
+        wrapped["on_event"] = correlated_on_event
+    captured_init.update(wrapped)
+
+
 def _make_codex_agent(**kwargs):
     """Construct an AIAgent in codex_app_server mode without contacting any
     real provider. We pass api_mode explicitly so the constructor takes the
@@ -851,7 +868,7 @@ class TestCodexToolProgressBridge:
     def test_mapper_command_execution(self):
         from agent.codex_runtime import _codex_note_to_tool_progress
         note = {"method": "item/started", "params": {"item": {
-            "type": "commandExecution", "command": "ls -la", "cwd": "/tmp"}}}
+            "type": "commandExecution", "id": "cmd-map", "command": "ls -la", "cwd": "/tmp"}}}
         name, preview, args = _codex_note_to_tool_progress(note)
         assert name == "exec_command"
         assert preview == "ls -la"
@@ -861,6 +878,7 @@ class TestCodexToolProgressBridge:
         from agent.codex_runtime import _codex_note_to_tool_progress
         note = {"method": "item/started", "params": {"item": {
             "type": "fileChange",
+            "id": "patch-map",
             "changes": [{"path": "a.py"}, {"path": "b.py"}]}}}
         name, preview, args = _codex_note_to_tool_progress(note)
         assert name == "apply_patch"
@@ -869,15 +887,57 @@ class TestCodexToolProgressBridge:
     def test_mapper_mcp_and_dynamic_tool_calls(self):
         from agent.codex_runtime import _codex_note_to_tool_progress
         mcp = {"method": "item/started", "params": {"item": {
-            "type": "mcpToolCall", "server": "fs", "tool": "read", "arguments": {"p": 1}}}}
+            "type": "mcpToolCall", "id": "mcp-map", "server": "fs", "tool": "read", "arguments": {"p": 1}}}}
         name, preview, args = _codex_note_to_tool_progress(mcp)
         assert name == "mcp.fs.read"
         assert preview == "read"
         assert args == {"p": 1}
 
         dyn = {"method": "item/started", "params": {"item": {
-            "type": "dynamicToolCall", "tool": "web_search", "arguments": {"q": "x"}}}}
+            "type": "dynamicToolCall", "id": "dyn-map", "tool": "web_search", "arguments": {"q": "x"}}}}
         assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
+
+        assert _codex_note_to_tool_progress({
+            "method": "item/started",
+            "params": {"item": {"type": "mcpToolCall", "id": "mcp-missing-tool", "server": "fs"}},
+        }) is None
+        assert _codex_note_to_tool_progress({
+            "method": "item/started",
+            "params": {"item": {"type": "dynamicToolCall", "id": "dyn-missing-tool"}},
+        }) is None
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"type": "commandExecution", "id": "cmd-1", "command": "pwd"},
+            {"type": "fileChange", "id": "patch-1", "changes": []},
+            {
+                "type": "mcpToolCall",
+                "id": "mcp-1",
+                "server": "fs",
+                "tool": "read",
+                "arguments": {},
+            },
+            {
+                "type": "dynamicToolCall",
+                "id": "dyn-1",
+                "tool": "memory",
+                "arguments": {},
+            },
+        ],
+    )
+    def test_live_tool_id_matches_persisted_projector(self, item):
+        from agent.codex_runtime import _codex_tool_identity
+        from agent.transports.codex_event_projector import CodexEventProjector
+
+        live_identity = _codex_tool_identity(item)
+        persisted = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        )
+
+        assert live_identity is not None
+        assert live_identity[0] == persisted.messages[0]["tool_calls"][0]["id"]
+        assert live_identity[1] == persisted.messages[0]["tool_calls"][0]["function"]["name"]
 
     def test_mapper_ignores_non_tool_items_and_other_methods(self):
         from agent.codex_runtime import _codex_note_to_tool_progress
@@ -895,16 +955,22 @@ class TestCodexToolProgressBridge:
         events = []
 
         def fake_init(self, **kwargs):
-            captured_init.update(kwargs)
+            _capture_correlated_on_event(captured_init, self, kwargs)
             # minimal attrs so the rest of run_turn stubs work
             self._client = None
+            self._thread_id = "th1"
+            self._active_turn_id = "t1"
 
         def fake_run_turn(self, user_input, **kwargs):
             # Exercise the wired on_event hook with a real item/started note.
             on_event = captured_init.get("on_event")
             if on_event:
+                on_event({
+                    "method": "turn/started",
+                    "params": {"threadId": "th1", "turn": {"id": "t1"}},
+                })
                 on_event({"method": "item/started", "params": {"item": {
-                    "type": "commandExecution", "command": "pytest", "cwd": "/repo"}}})
+                    "type": "commandExecution", "id": "cmd-progress", "command": "pytest", "cwd": "/repo"}}})
             return TurnResult(final_text="done", projected_messages=[
                 {"role": "assistant", "content": "done"}], turn_id="t1", thread_id="th1")
 
@@ -913,11 +979,689 @@ class TestCodexToolProgressBridge:
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
 
         agent = _make_codex_agent()
-        agent.tool_progress_callback = lambda kind, name, preview, args: events.append(
-            (kind, name, preview))
+        setattr(
+            agent,
+            "tool_progress_callback",
+            lambda kind, name, preview, args, **kwargs: events.append((kind, name, preview)),
+        )
         with patch.object(agent, "_spawn_background_review", return_value=None):
             agent.run_conversation("run the tests")
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
 
+    def test_session_wired_on_event_streams_text_reasoning_and_tool_lifecycle(
+        self, monkeypatch
+    ):
+        """Codex App Server's live notifications must reach the same callbacks
+        used by every other provider, not wait for the terminal TurnResult."""
+        captured_init = {}
+        streamed = []
+        reasoning = []
+        starts = []
+        completes = []
+        progress_events = []
+
+        def fake_init(self, **kwargs):
+            _capture_correlated_on_event(captured_init, self, kwargs)
+            self._client = None
+            self._thread_id = "th-live"
+            self._active_turn_id = "t-live"
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            on_event({
+                "method": "turn/started",
+                "params": {"threadId": "th-live", "turn": {"id": "t-live"}},
+            })
+            on_event({
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "msg-1", "delta": "I’ll inspect it now."},
+            })
+            on_event({
+                "method": "item/reasoning/summaryTextDelta",
+                "params": {"itemId": "reason-1", "delta": "Checking the source."},
+            })
+            item = {
+                "type": "commandExecution",
+                "id": "cmd-1",
+                "command": "pytest -q",
+                "cwd": "/repo",
+            }
+            on_event({"method": "item/started", "params": {"item": item}})
+            # Replayed notifications must not duplicate live cards.
+            on_event({"method": "item/started", "params": {"item": item}})
+            on_event({
+                "method": "item/commandExecution/outputDelta",
+                "params": {"itemId": "cmd-1", "delta": "collecting tests...\n"},
+            })
+            on_event({
+                "method": "item/commandExecution/outputDelta",
+                "params": {"itemId": "cmd-1", "delta": " done\n"},
+            })
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "id": "cmd-1",
+                        "status": "completed",
+                        "aggregatedOutput": "1 passed\n",
+                        "exitCode": 0,
+                    }
+                },
+            })
+            # Completion payloads may omit start-time args, and replays must be
+            # ignored while retaining the authoritative start correlation.
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "id": "cmd-1",
+                        "status": "completed",
+                        "aggregatedOutput": "1 passed\n",
+                        "exitCode": 0,
+                    }
+                },
+            })
+            dynamic_item = {
+                "type": "dynamicToolCall",
+                "id": "dyn-1",
+                "namespace": "hermes",
+                "tool": "memory",
+                "arguments": {"action": "add", "content": "smoke"},
+            }
+            on_event({"method": "item/started", "params": {"item": dynamic_item}})
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        **dynamic_item,
+                        "success": True,
+                        "contentItems": [
+                            {"type": "inputText", "text": "memory stored"}
+                        ],
+                    }
+                },
+            })
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t-live",
+                thread_id="th-live",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th-live")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        setattr(agent, "reasoning_callback", reasoning.append)
+        agent.tool_progress_callback = (
+            lambda event_type, name, preview, args, **kwargs: progress_events.append(
+                (event_type, name, preview, args, kwargs)
+            )
+        )
+        agent.tool_start_callback = lambda call_id, name, args: starts.append(
+            (call_id, name, args)
+        )
+        agent.tool_complete_callback = lambda call_id, name, args, result: completes.append(
+            (call_id, name, args, result)
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("inspect", stream_callback=streamed.append)
+
+        assert streamed == ["I’ll inspect it now."]
+        assert reasoning == ["Checking the source."]
+        assert progress_events[1] == (
+            "tool.progress",
+            "exec_command",
+            "collecting tests...\n",
+            {"command": "pytest -q", "cwd": "/repo"},
+            {"tool_call_id": "codex_4_exec_cmd-1"},
+        )
+        assert progress_events[2][2] == "collecting tests...\n done\n"
+        assert starts == [
+            (
+                "codex_4_exec_cmd-1",
+                "exec_command",
+                {"command": "pytest -q", "cwd": "/repo"},
+            ),
+            (
+                "codex_10_dyn_memory_dyn-1",
+                "memory",
+                {"action": "add", "content": "smoke"},
+            ),
+        ]
+        assert completes == [
+            (
+                "codex_4_exec_cmd-1",
+                "exec_command",
+                {"command": "pytest -q", "cwd": "/repo"},
+                "1 passed\n",
+            ),
+            (
+                "codex_10_dyn_memory_dyn-1",
+                "memory",
+                {"action": "add", "content": "smoke"},
+                "memory stored",
+            ),
+        ]
+
+    def test_live_lifecycle_ignores_stale_turn_reset_and_orphan_completion(
+        self, monkeypatch
+    ):
+        """Only the active turn may reset lifecycle state, and completions
+        without a displayed start must not create orphan tool cards."""
+        captured_init = {}
+        streamed = []
+        reasoning = []
+        starts = []
+        completes = []
+
+        def fake_init(self, **kwargs):
+            _capture_correlated_on_event(captured_init, self, kwargs)
+            self._client = None
+            self._thread_id = "th-active"
+            self._active_turn_id = "turn-active"
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            item = {
+                "type": "commandExecution",
+                "id": "cmd-correlated",
+                "command": "pytest -q",
+                "cwd": "/repo",
+            }
+            # Item events outside a bound turn must not create live cards or
+            # stream assistant text.
+            on_event({
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "msg-before", "delta": "before"},
+            })
+            on_event({"method": "item/started", "params": {"item": {
+                **item, "id": "cmd-before-turn"}}})
+            on_event(
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "th-active",
+                        "turn": {"id": "turn-active", "status": "inProgress"},
+                    },
+                }
+            )
+            on_event({
+                "method": "item/agentMessage/delta",
+                "params": {
+                    "turnId": "turn-stale",
+                    "itemId": "msg-stale",
+                    "delta": "stale",
+                },
+            })
+            on_event({
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "msg-valid", "delta": "valid"},
+            })
+            on_event({
+                "method": "item/reasoning/summaryTextDelta",
+                "params": {"itemId": "reason-valid", "delta": "valid reason"},
+            })
+            on_event({"method": "item/started", "params": {"item": item}})
+            # A replay of the active turn/start must not clear a tool already
+            # displayed during that same turn.
+            on_event(
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "th-active",
+                        "turn": {"id": "turn-active", "status": "inProgress"},
+                    },
+                }
+            )
+            on_event(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": "th-active",
+                        "turn": {"id": "turn-stale", "status": "completed"},
+                    },
+                }
+            )
+            # A stale turn completion must not clear deduplication or the
+            # authoritative arguments captured at start.
+            on_event({"method": "item/started", "params": {"item": item}})
+            # Explicitly conflicting item metadata must not mutate the active
+            # card, even when the item id itself matches.
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "threadId": "th-active",
+                    "turnId": "turn-stale",
+                    "item": {
+                        "type": "commandExecution",
+                        "id": "cmd-correlated",
+                        "aggregatedOutput": "stale result\n",
+                    },
+                },
+            })
+            # The same provider item id cannot switch tool identity between
+            # start and completion. This must leave the command card open for
+            # its matching completion below.
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": "dynamicToolCall",
+                        "id": "cmd-correlated",
+                        "namespace": "hermes",
+                        "tool": "memory",
+                        "success": True,
+                    }
+                },
+            })
+            on_event(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "commandExecution",
+                            "id": "cmd-correlated",
+                            "aggregatedOutput": "1 passed\n",
+                        }
+                    },
+                }
+            )
+            # Valid ID and tool shape are insufficient without a live start.
+            on_event(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "commandExecution",
+                            "id": "cmd-orphan",
+                            "command": "whoami",
+                            "aggregatedOutput": "gabriel\n",
+                        }
+                    },
+                }
+            )
+            on_event({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "th-active",
+                    "turn": {"id": "turn-active", "status": "completed"},
+                },
+            })
+            on_event({
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": "msg-after", "delta": "after"},
+            })
+            on_event({"method": "item/started", "params": {"item": {
+                **item, "id": "cmd-after-turn"}}})
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-active",
+                thread_id="th-active",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th-active"
+        )
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        setattr(agent, "reasoning_callback", reasoning.append)
+        setattr(agent, "tool_start_callback", lambda *args: starts.append(args))
+        setattr(agent, "tool_complete_callback", lambda *args: completes.append(args))
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("inspect", stream_callback=streamed.append)
+
+        assert streamed == ["valid"]
+        assert reasoning == ["valid reason"]
+        assert starts == [
+            (
+                "codex_4_exec_cmd-correlated",
+                "exec_command",
+                {"command": "pytest -q", "cwd": "/repo"},
+            )
+        ]
+        assert completes == [
+            (
+                "codex_4_exec_cmd-correlated",
+                "exec_command",
+                {"command": "pytest -q", "cwd": "/repo"},
+                "1 passed\n",
+            )
+        ]
+
+    def test_aborted_turn_clears_live_state_before_reused_session(self, monkeypatch):
+        captured_init = {}
+        streamed = []
+        calls = 0
+
+        def fake_init(self, **kwargs):
+            _capture_correlated_on_event(captured_init, self, kwargs)
+            self._client = None
+            self._thread_id = "th-reused"
+            self._active_turn_id = None
+
+        def fake_run_turn(self, user_input, **kwargs):
+            nonlocal calls
+            calls += 1
+            on_event = captured_init["on_event"]
+            turn_id = f"turn-{calls}"
+            self._active_turn_id = turn_id
+            if calls == 2:
+                # This metadata-less item arrives before the next turn starts.
+                # Cached correlation from the aborted first turn must not let it
+                # leak into the second turn's live stream.
+                on_event({
+                    "method": "item/agentMessage/delta",
+                    "params": {"itemId": "stale-buffered", "delta": "LEAK"},
+                })
+            on_event({
+                "method": "turn/started",
+                "params": {"threadId": "th-reused", "turn": {"id": turn_id}},
+            })
+            on_event({
+                "method": "item/agentMessage/delta",
+                "params": {"itemId": f"message-{calls}", "delta": f"valid-{calls}"},
+            })
+            return TurnResult(
+                final_text=f"done-{calls}",
+                projected_messages=[{"role": "assistant", "content": f"done-{calls}"}],
+                interrupted=calls == 1,
+                error="codex reported turn_aborted" if calls == 1 else None,
+                turn_id=turn_id,
+                thread_id="th-reused",
+                should_retire=False,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th-reused"
+        )
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("first", stream_callback=streamed.append)
+            agent.run_conversation("second", stream_callback=streamed.append)
+
+        assert streamed == ["valid-1", "valid-2"]
+
+    def test_live_tool_display_force_redacts_sensitive_args_and_results(
+        self, monkeypatch
+    ):
+        """Live-only Codex callback payloads are a security boundary even when
+        normal secret-redaction settings are disabled."""
+        captured_init = {}
+        starts = []
+        completes = []
+        progress_events = []
+
+        def fake_init(self, **kwargs):
+            _capture_correlated_on_event(captured_init, self, kwargs)
+            self._client = None
+            self._thread_id = "th-redact"
+            self._active_turn_id = "t-redact"
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            on_event({
+                "method": "turn/started",
+                "params": {"threadId": "th-redact", "turn": {"id": "t-redact"}},
+            })
+            item = {
+                "type": "commandExecution",
+                "id": "cmd-secret",
+                "command": (
+                    "OPENAI_API_KEY=live-command-secret "
+                    "HTTPS://user:live-userinfo-arg-secret@example.test/run?"
+                    "api%5Fkey=live-query-arg-secret&mode=test"
+                ),
+                "cwd": "/repo",
+            }
+            on_event({"method": "item/started", "params": {"item": item}})
+            on_event({
+                "method": "item/commandExecution/outputDelta",
+                "params": {
+                    "itemId": "cmd-secret",
+                    "delta": (
+                        "OPENAI_API_KEY=live-output-secret "
+                        "HtTpS://user:live-userinfo-output-secret@example.test/progress?"
+                        "token=live-query-output-secret\n"
+                    ),
+                },
+            })
+            on_event({
+                "method": "item/commandExecution/outputDelta",
+                "params": {
+                    "itemId": "cmd-secret",
+                    "delta": "OPENAI_API_KEY=" + ("long-secret-marker-" * 180) + "\n",
+                },
+            })
+            on_event({
+                "method": "item/commandExecution/outputDelta",
+                "params": {"itemId": "cmd-secret", "delta": "OPENAI_API_"},
+            })
+            on_event({
+                "method": "item/commandExecution/outputDelta",
+                "params": {
+                    "itemId": "cmd-secret",
+                    "delta": "KEY=split-boundary-secret\n",
+                },
+            })
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        **item,
+                        "aggregatedOutput": (
+                            "OPENAI_API_KEY=live-result-secret "
+                            "HTTPS://example.test/result?"
+                            "client%5Fsecret=live-query-result-secret"
+                        ),
+                    }
+                },
+            })
+            mcp_item = {
+                "type": "mcpToolCall",
+                "id": "mcp-secret",
+                "server": "example",
+                "tool": "lookup",
+                "arguments": {"query": "safe"},
+            }
+            on_event({"method": "item/started", "params": {"item": mcp_item}})
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        **mcp_item,
+                        "result": {
+                            "padding": "x" * 3924,
+                            "api_key": (
+                                "UNIQUESECRET0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                            ),
+                        },
+                    }
+                },
+            })
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t-redact",
+                thread_id="th-redact",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th-redact")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = (
+            lambda event_type, name, preview, args, **kwargs: progress_events.append(
+                (event_type, name, preview, args, kwargs)
+            )
+        )
+        agent.tool_start_callback = lambda call_id, name, args: starts.append(
+            (call_id, name, args)
+        )
+        agent.tool_complete_callback = lambda call_id, name, args, result: completes.append(
+            (call_id, name, args, result)
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("inspect")
+
+        displayed = repr((progress_events, starts, completes))
+        assert "live-command-secret" not in displayed
+        assert "live-output-secret" not in displayed
+        assert "live-result-secret" not in displayed
+        assert "live-query-arg-secret" not in displayed
+        assert "live-query-output-secret" not in displayed
+        assert "live-query-result-secret" not in displayed
+        assert "live-userinfo-arg-secret" not in displayed
+        assert "live-userinfo-output-secret" not in displayed
+        assert "long-secret-marker" not in displayed
+        assert "split-boundary-secret" not in displayed
+        assert "UNIQUESECRET" not in displayed
+        assert "api%5Fkey=***" in displayed
+        assert "token=***" in displayed
+        assert "client%5Fsecret=***" in displayed
+        assert starts[0][2]["command"] != "OPENAI_API_KEY=live-command-secret"
+        assert completes[0][3] != "OPENAI_API_KEY=live-result-secret"
+
+    def test_live_tool_display_redaction_is_forced(self, monkeypatch):
+        import agent.redact
+        from agent.codex_runtime import (
+            _redact_codex_live_display_args,
+            _redact_codex_live_display_text,
+        )
+
+        real_redact = agent.redact.redact_sensitive_text
+        force_flags = []
+
+        def record_redaction(value, *args, **kwargs):
+            force_flags.append(kwargs.get("force"))
+            return real_redact(value, *args, **kwargs)
+
+        monkeypatch.setattr(agent.redact, "redact_sensitive_text", record_redaction)
+
+        assert _redact_codex_live_display_text("ordinary output") == "ordinary output"
+        assert _redact_codex_live_display_args({"command": "pwd"}) == {"command": "pwd"}
+        assert force_flags and all(force_flags)
+
+    def test_live_tool_display_redacts_all_uri_userinfo(self):
+        from agent.codex_runtime import _redact_codex_live_display_text
+
+        displayed = _redact_codex_live_display_text(
+            "https://abc123@example.test/path "
+            "ssh://user:abc123@host/x custom://:p@host.test/p"
+        )
+
+        assert "abc123" not in displayed
+        assert displayed == (
+            "https://***@example.test/path "
+            "ssh://user:***@host/x custom://:***@host.test/p"
+        )
+
+    def test_live_tool_display_redacts_sensitive_query_for_arbitrary_uri_scheme(self):
+        from agent.codex_runtime import _redact_codex_live_display_text
+
+        displayed = _redact_codex_live_display_text(
+            "custom://host/path?token=SUPERSECRET&safe=value"
+        )
+
+        assert "SUPERSECRET" not in displayed
+        assert displayed == "custom://host/path?token=***&safe=value"
+
+    def test_live_tool_display_fails_closed_when_redaction_fails(self, monkeypatch):
+        import agent.redact
+        from agent.codex_runtime import (
+            _redact_codex_live_display_args,
+            _redact_codex_live_display_text,
+        )
+
+        def fail_redaction(*_args, **_kwargs):
+            raise RuntimeError("redaction unavailable")
+
+        monkeypatch.setattr(agent.redact, "redact_sensitive_text", fail_redaction)
+
+        assert _redact_codex_live_display_text("api_key=live-secret") == ""
+        assert _redact_codex_live_display_args({"api_key": "live-secret"}) == {}
+
+    def test_live_tool_display_fails_closed_on_falsy_redaction(self, monkeypatch):
+        import agent.redact
+        from agent.codex_runtime import (
+            _redact_codex_live_display_args,
+            _redact_codex_live_display_text,
+        )
+
+        for falsy in (None, False, ""):
+            monkeypatch.setattr(
+                agent.redact,
+                "redact_sensitive_text",
+                lambda *_args, _value=falsy, **_kwargs: _value,
+            )
+            assert _redact_codex_live_display_text("api_key=live-secret") == ""
+            assert _redact_codex_live_display_args({"api_key": "live-secret"}) == {}
+
+    def test_live_lifecycle_ignores_malformed_or_idless_tool_items(self, monkeypatch):
+        captured_init = {}
+        starts = []
+        completes = []
+        progress_events = []
+
+        def fake_init(self, **kwargs):
+            _capture_correlated_on_event(captured_init, self, kwargs)
+            self._client = None
+            self._thread_id = "th-idless"
+            self._active_turn_id = "t-idless"
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            on_event({
+                "method": "turn/started",
+                "params": {"threadId": "th-idless", "turn": {"id": "t-idless"}},
+            })
+            item = {"type": "commandExecution", "command": "pwd", "cwd": "/repo"}
+            on_event({"method": "item/started", "params": {"item": item}})
+            on_event({
+                "method": "item/completed",
+                "params": {"item": {**item, "aggregatedOutput": "/repo"}},
+            })
+            malformed_item = {**item, "id": 0}
+            on_event({"method": "item/started", "params": {"item": malformed_item}})
+            on_event({
+                "method": "item/completed",
+                "params": {"item": {**malformed_item, "aggregatedOutput": "/repo"}},
+            })
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="t-idless",
+                thread_id="th-idless",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started", lambda self: "th-idless")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        agent.tool_progress_callback = (
+            lambda event_type, name, preview, args, **kwargs: progress_events.append(
+                (event_type, name, preview, args, kwargs)
+            )
+        )
+        agent.tool_start_callback = lambda *args: starts.append(args)
+        agent.tool_complete_callback = lambda *args: completes.append(args)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("inspect")
+
+        assert progress_events == []
+        assert starts == []
+        assert completes == []

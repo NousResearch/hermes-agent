@@ -18,6 +18,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/tool_result — return a client-executed tool result (split-runtime)
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
@@ -943,6 +944,14 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
+        # split_runtime: when true, a run may carry a ``tools`` array whose
+        # tools are relayed to the client for execution instead of running on
+        # the API-server host (resolved via POST /v1/runs/{run_id}/tool_result).
+        # Off by default; server-side behaviour is unchanged unless this is set
+        # AND a run actually supplies tools.
+        self._split_runtime: bool = _coerce_request_bool(
+            extra.get("split_runtime", os.getenv("API_SERVER_SPLIT_RUNTIME", "")),
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1397,6 +1406,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        extra_client_tools: Optional[List[Dict[str, Any]]] = None,
+        client_tool_session_key: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1517,7 +1528,60 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
+
+        # Split-runtime: merge client/shell-supplied tools into the agent's
+        # tool list so the model can call them, but tag them so invoke_tool
+        # SUSPENDS + relays to the shell instead of dispatching on the host.
+        # The agent is built fresh per run, but copy the (possibly shared)
+        # tool structures defensively before mutating.
+        if extra_client_tools:
+            agent.tools = list(agent.tools or [])
+            agent.valid_tool_names = set(getattr(agent, "valid_tool_names", set()) or set())
+            client_names: set = set()
+            client_defs: list = []
+            for _cdef in extra_client_tools:
+                _fn = (_cdef or {}).get("function", {}) or {}
+                _name = _fn.get("name")
+                if not _name:
+                    continue
+                client_defs.append(_fn)
+                # A client tool shadowing a same-named host tool wins: drop the
+                # host entry so the relay path handles it.  (Names colliding
+                # with parallel/path-scoped host tools are rejected upstream in
+                # _handle_runs before we get here.)
+                agent.tools = [
+                    t for t in agent.tools
+                    if (t.get("function", {}) or {}).get("name") != _name
+                ]
+                agent.tools.append({"type": "function", "function": _fn})
+                agent.valid_tool_names.add(_name)
+                client_names.add(_name)
+            agent._client_tool_names = client_names
+            # Stored so tools.mcp_tool._reinject_post_build_tools re-appends them
+            # when a turn-boundary rebuild refreshes agent.tools (otherwise the
+            # per-turn MCP rebuild strips runtime-injected client tools).
+            agent._client_tool_defs = client_defs
+            agent._client_tool_session_key = client_tool_session_key or session_id or ""
+            # The system prompt (with its <tools> block) is cached on
+            # agent._cached_system_prompt at build time — invalidate it so the
+            # merged client tools appear in the model's tool documentation.
+            try:
+                agent._invalidate_system_prompt()
+            except Exception:
+                agent._cached_system_prompt = None
+
         return agent
+
+    def _split_runtime_enabled(self) -> bool:
+        """Whether split-runtime (client-tool relay) is enabled.
+
+        Set via ``platforms.api_server.extra.split_runtime`` in the gateway
+        config (or ``API_SERVER_SPLIT_RUNTIME``), alongside the other
+        api_server knobs. Off by default: only when it is true AND a run
+        actually carries a ``tools`` array does the relay path activate, so
+        existing server-side behaviour is untouched.
+        """
+        return self._split_runtime
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -1632,6 +1696,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        _sr = self._split_runtime_enabled()
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1642,12 +1708,15 @@ class APIServerAdapter(BasePlatformAdapter):
             },
             "runtime": {
                 "mode": "server_agent",
-                "tool_execution": "server",
-                "split_runtime": False,
+                "tool_execution": "split" if _sr else "server",
+                "split_runtime": _sr,
                 "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
-                    "tools execute on the API-server host unless a future "
-                    "explicit split-runtime mode is enabled."
+                    "The API server creates a server-side Hermes AIAgent. "
+                    "Host toolsets execute on the API-server host; when "
+                    "split_runtime is enabled, tools supplied in a run's "
+                    "'tools' array are relayed to the client via "
+                    "tool_call.request events and resolved via "
+                    "/v1/runs/{run_id}/tool_result."
                 ),
             },
             "features": {
@@ -1660,6 +1729,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "client_tool_execution": _sr,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "session_resources": True,
@@ -1686,6 +1756,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_tool_result": {"method": "POST", "path": "/v1/runs/{run_id}/tool_result"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
@@ -4295,6 +4366,33 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    def _classify_server_tool_kind(self, run_id: str, tool_name: Optional[str]) -> Optional[str]:
+        """Best-effort provenance tag for a server-executed tool, surfaced on the
+        Runs ``tool.started`` SSE event so split-runtime shells can render a
+        distinct badge (MCP / memory) instead of the generic wrench.
+
+        Returns ``"mcp"``, ``"memory"``, or ``None`` (plain server tool). Never
+        raises — a missing agent/manager just yields ``None`` (wrench baseline).
+        """
+        if not tool_name:
+            return None
+        # MCP tools are registered under the ``mcp_{server}_{tool}`` namespace
+        # (see tools/mcp_tool.is_mcp_tool_parallel_safe), so a prefix check is
+        # authoritative and needs no agent handle.
+        if tool_name.startswith("mcp_"):
+            return "mcp"
+        # Memory-provider tools are only knowable from the live agent's memory
+        # manager, looked up by run_id (populated for the duration of the run).
+        agent = self._active_run_agents.get(run_id)
+        memory_manager = getattr(agent, "_memory_manager", None) if agent is not None else None
+        if memory_manager is not None:
+            try:
+                if memory_manager.has_tool(tool_name):
+                    return "memory"
+            except Exception:
+                pass
+        return None
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -4314,13 +4412,20 @@ class APIServerAdapter(BasePlatformAdapter):
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
-                _push({
+                evt = {
                     "event": "tool.started",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
-                })
+                }
+                # Optional provenance tag ("mcp"/"memory") so split-runtime
+                # shells light up a distinct badge; omitted for plain server
+                # tools (shells fall back to the generic wrench).
+                kind = self._classify_server_tool_kind(run_id, tool_name)
+                if kind:
+                    evt["kind"] = kind
+                _push(evt)
             elif event_type == "tool.completed":
                 _push({
                     "event": "tool.completed",
@@ -4431,6 +4536,53 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created[run_id] = created_at
         self._run_approval_sessions[run_id] = approval_session_key
 
+        # Split-runtime: client/shell-supplied tools. Only active when the
+        # feature flag is on AND the run carries a non-empty 'tools' array —
+        # otherwise this is a no-op and behaviour is exactly as before.
+        client_tools: List[Dict[str, Any]] = []
+        if self._split_runtime_enabled():
+            _raw_tools = body.get("tools")
+            if _raw_tools:
+                if not isinstance(_raw_tools, list):
+                    return web.json_response(
+                        _openai_error("'tools' must be an array of tool definitions"),
+                        status=400,
+                    )
+                from agent.tool_dispatch_helpers import (
+                    _PARALLEL_SAFE_TOOLS,
+                    _PATH_SCOPED_TOOLS,
+                )
+                _reserved = set(_PARALLEL_SAFE_TOOLS) | set(_PATH_SCOPED_TOOLS)
+                _seen: set = set()
+                for _i, _td in enumerate(_raw_tools):
+                    if not isinstance(_td, dict) or _td.get("type") != "function":
+                        return web.json_response(
+                            _openai_error(
+                                f"tools[{_i}] must be an object with type 'function'"),
+                            status=400,
+                        )
+                    _fn = _td.get("function") or {}
+                    _name = _fn.get("name")
+                    if not _name or not isinstance(_name, str):
+                        return web.json_response(
+                            _openai_error(f"tools[{_i}].function.name is required"),
+                            status=400,
+                        )
+                    if _name in _reserved:
+                        return web.json_response(
+                            _openai_error(
+                                f"tools[{_i}].function.name '{_name}' collides with a "
+                                "reserved host tool and cannot be a client tool"),
+                            status=400,
+                        )
+                    if _name in _seen:
+                        return web.json_response(
+                            _openai_error(f"duplicate client tool name '{_name}'"),
+                            status=400,
+                        )
+                    _seen.add(_name)
+                    client_tools.append(_td)
+
         event_cb = self._make_run_event_callback(run_id, loop)
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
@@ -4487,6 +4639,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    extra_client_tools=client_tools or None,
+                    client_tool_session_key=approval_session_key,
                 )
                 self._active_run_agents[run_id] = agent
 
@@ -4519,6 +4673,37 @@ class APIServerAdapter(BasePlatformAdapter):
                     except Exception:
                         pass
 
+                def _client_tool_notify(entry: Any) -> None:
+                    # Split-runtime: a client/shell-supplied tool was called by
+                    # the model.  Push a tool_call.request onto the SSE queue so
+                    # the shell executes it and POSTs the result back to
+                    # /v1/runs/{run_id}/tool_result.  Mirrors _approval_notify.
+                    try:
+                        sig = entry.signature()
+                    except Exception:
+                        sig = {
+                            "call_id": getattr(entry, "call_id", None),
+                            "name": getattr(entry, "name", None),
+                            "arguments": getattr(entry, "arguments", {}) or {},
+                        }
+                    tc_event = {
+                        "event": "tool_call.request",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "call_id": sig.get("call_id"),
+                        "name": sig.get("name"),
+                        "arguments": sig.get("arguments") or {},
+                    }
+                    self._set_run_status(
+                        run_id,
+                        "waiting_for_tool",
+                        last_event="tool_call.request",
+                    )
+                    try:
+                        loop.call_soon_threadsafe(q.put_nowait, tc_event)
+                    except Exception:
+                        pass
+
                 def _run_sync():
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
@@ -4540,6 +4725,9 @@ class APIServerAdapter(BasePlatformAdapter):
                             session_key=approval_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
+                        if client_tools:
+                            from tools import client_tool_gateway as _ctg
+                            _ctg.register_notify(approval_session_key, _client_tool_notify)
                         r = agent.run_conversation(
                             user_message=user_message,
                             conversation_history=conversation_history,
@@ -4549,6 +4737,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:
+                            if client_tools:
+                                try:
+                                    from tools import client_tool_gateway as _ctg
+                                    _ctg.unregister_notify(approval_session_key)
+                                except Exception:
+                                    pass
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)
@@ -4653,6 +4847,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     from tools.approval import unregister_gateway_notify
 
                     unregister_gateway_notify(approval_session_key)
+                except Exception:
+                    pass
+                # Split-runtime: release any agent thread still blocked on a
+                # client-tool relay (unregister_notify → clear_session sets the
+                # pending events with an error result).
+                try:
+                    from tools import client_tool_gateway as _ctg
+
+                    _ctg.unregister_notify(approval_session_key)
                 except Exception:
                     pass
                 # Sentinel: signal SSE stream to close
@@ -4839,6 +5042,99 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
+    async def _handle_run_tool_result(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/tool_result — resolve a pending client tool call.
+
+        Split-runtime: the shell executed a tool relayed via a
+        ``tool_call.request`` event and returns its result here, unblocking the
+        agent thread waiting in ``tools.client_tool_gateway``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        call_id = body.get("call_id") or body.get("tool_call_id")
+        if not call_id or not isinstance(call_id, str):
+            return web.json_response(
+                _openai_error("'call_id' is required", code="missing_call_id"),
+                status=400,
+            )
+
+        # Normalize the shell's tool output into the result string handed to
+        # the model.  Accept output|result|content; dict/list → JSON; an
+        # error flag wraps the payload as {"error": ...}.
+        is_error = (
+            _coerce_request_bool(body.get("error"), default=False)
+            or _coerce_request_bool(body.get("is_error"), default=False)
+        )
+        raw_output = body.get("output")
+        if raw_output is None:
+            raw_output = body.get("result")
+        if raw_output is None:
+            raw_output = body.get("content")
+
+        if isinstance(raw_output, (dict, list)):
+            result_json = json.dumps(raw_output, ensure_ascii=False)
+        elif raw_output is None:
+            result_json = json.dumps(
+                {"error": "client tool returned no output"} if is_error else {"result": None},
+                ensure_ascii=False,
+            )
+        else:
+            result_json = str(raw_output)
+            if is_error:
+                result_json = json.dumps({"error": result_json}, ensure_ascii=False)
+
+        try:
+            from tools import client_tool_gateway as _ctg
+
+            resolved = _ctg.resolve_client_tool(call_id, result_json)
+        except Exception as exc:
+            logger.exception("[api_server] tool_result resolution failed for run %s", run_id)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        if not resolved:
+            return web.json_response(
+                _openai_error(
+                    f"Run has no pending client tool call: {call_id}",
+                    code="tool_call_not_pending",
+                ),
+                status=409,
+            )
+
+        self._set_run_status(run_id, "running", last_event="tool_call.responded")
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait({
+                    "event": "tool_call.responded",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "call_id": call_id,
+                })
+            except Exception:
+                pass
+
+        return web.json_response({
+            "object": "hermes.run.tool_result_response",
+            "run_id": run_id,
+            "call_id": call_id,
+            "resolved": True,
+        })
+
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
         auth_err = self._check_auth(request)
@@ -5013,6 +5309,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
+            self._app.router.add_post("/v1/runs/{run_id}/tool_result", self._handle_run_tool_result)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering

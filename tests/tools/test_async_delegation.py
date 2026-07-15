@@ -25,6 +25,13 @@ def _clean_state():
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
     yield
+    # Give just-released workers a beat to finalize BEFORE draining, so their
+    # completion events land now instead of leaking into the next test's
+    # queue (worker threads push events asynchronously; a drain that races an
+    # in-flight _finalize misses it).
+    deadline = time.monotonic() + 2.0
+    while ad.active_count() and time.monotonic() < deadline:
+        time.sleep(0.02)
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
         process_registry.completion_queue.get_nowait()
@@ -39,11 +46,30 @@ def _drain_one(timeout=5.0):
     return None
 
 
+def _drain_for(delegation_id, timeout=5.0):
+    """Drain until the event for *delegation_id* appears (discarding others).
+
+    Completion events are pushed asynchronously by worker threads, so a
+    straggler from a PREVIOUS test can land after that test's teardown drain
+    and leak into the current test's queue. Matching on delegation_id makes
+    the assertion immune to that cross-test leak.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_registry.completion_queue.empty():
+            evt = process_registry.completion_queue.get_nowait()
+            if evt.get("delegation_id") == delegation_id:
+                return evt
+            continue
+        time.sleep(0.02)
+    return None
+
+
 def test_dispatch_returns_immediately_without_blocking():
     gate = threading.Event()
 
     def runner():
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"status": "completed", "summary": "done", "api_calls": 1,
                 "duration_seconds": 0.1, "model": "m"}
 
@@ -70,7 +96,7 @@ def test_async_executor_workers_are_daemon_threads():
     gate = threading.Event()
 
     def runner():
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"status": "completed", "summary": "done"}
 
     res = ad.dispatch_async_delegation(
@@ -148,7 +174,7 @@ def test_dispatch_rejected_at_capacity():
     ev = threading.Event()
 
     def blocker():
-        ev.wait(timeout=5)
+        ev.wait(timeout=60)
         return {"status": "completed", "summary": "x"}
 
     for i in range(2):
@@ -170,9 +196,15 @@ def test_dispatch_rejected_at_capacity():
 def test_interrupt_all_signals_running_children():
     ev = threading.Event()
     interrupted = {"count": 0}
+    # No short internal timeout: the blocker holds until interrupt_fn fires.
+    # The old ev.wait(timeout=5) made this test a change-detector for CI
+    # worker load — on a CPU-starved runner the 5s expired before
+    # interrupt_all() ran, the record finalized, and interrupt_all() found
+    # nothing running (n == 0). The pytest-level timeout is the real
+    # runaway guard.
 
     def blocker():
-        ev.wait(timeout=5)
+        ev.wait(timeout=60)
         return {"status": "interrupted", "summary": None,
                 "error": "cancelled"}
 
@@ -180,7 +212,7 @@ def test_interrupt_all_signals_running_children():
         interrupted["count"] += 1
         ev.set()
 
-    ad.dispatch_async_delegation(
+    r = ad.dispatch_async_delegation(
         goal="long task", context=None, toolsets=None, role="leaf",
         model="m", session_key="", runner=blocker,
         interrupt_fn=interrupt_fn, max_async_children=3,
@@ -188,8 +220,11 @@ def test_interrupt_all_signals_running_children():
     n = ad.interrupt_all(reason="test")
     assert n == 1
     assert interrupted["count"] == 1
-    # child still emits a completion event after interrupt
-    evt = _drain_one()
+    # child still emits a completion event after interrupt. Match on THIS
+    # delegation's id — straggler 'completed' events from a previous test's
+    # workers can finalize after that test's teardown drain and leak into
+    # this queue (observed on loaded CI workers).
+    evt = _drain_for(r["delegation_id"])
     assert evt is not None
     assert evt["status"] == "interrupted"
 
@@ -408,7 +443,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     gate = threading.Event()
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)  # a sync impl would hang delegate_task here
+        gate.wait(timeout=60)  # a sync impl would hang delegate_task here
         return {
             "task_index": 0, "status": "completed", "summary": f"done: {goal}",
             "api_calls": 1, "duration_seconds": 0.1, "model": "m",
@@ -536,7 +571,7 @@ def test_delegate_task_background_batch_runs_as_one_unit(monkeypatch):
     gate = threading.Event()
 
     def _blocking_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {
             "task_index": task_index, "status": "completed",
             "summary": f"done: {goal}", "api_calls": 1,
@@ -690,7 +725,7 @@ def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
     gate = threading.Event()
 
     def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"task_index": 0, "status": "completed", "summary": "ok"}
 
     def build_and_register(**kw):
@@ -722,7 +757,7 @@ def test_concurrent_dispatch_respects_capacity():
     gate = threading.Event()
 
     def blocker():
-        gate.wait(timeout=5)
+        gate.wait(timeout=60)
         return {"status": "completed", "summary": "x"}
 
     results = []

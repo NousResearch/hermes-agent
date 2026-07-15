@@ -677,12 +677,13 @@ def drain_log_queue(timeout: float = 1.0) -> None:
     wedged.
     """
     global _queue_listener
-    # Grab-and-null under the state lock, mirroring every sibling teardown path
+    # Drain stops the listener but used to leave _queue_listener pointing at it,
+    # so a later flush_log_queue()/setup_logging(force=True) stopped the same
+    # dead listener a second time — on CPython <3.13 QueueListener.stop() is not
+    # idempotent and a second stop joins a None thread -> AttributeError.
+    # Grab-and-null so the global never outlives the listener it names; the lock
+    # keeps the swap atomic and mirrors every sibling teardown path
     # (_stop_queue_listener_locked / flush_log_queue / _register_queued_handler).
-    # This closes the unlocked-read gap on the shared global AND prevents a later
-    # flush_log_queue()/setup_logging(force=True) from stopping the same listener a
-    # second time — on CPython <3.13 QueueListener.stop() is not idempotent and a
-    # second stop joins a None thread -> AttributeError.
     with _queue_state_lock:
         listener, _queue_listener = _queue_listener, None
     if listener is None:

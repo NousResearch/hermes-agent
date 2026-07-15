@@ -169,6 +169,19 @@ describe('settings helpers', () => {
       expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
     })
 
+    it('preserves delegation reasoning inherit semantics while adding max', () => {
+      expect(enumOptionsFor('delegation.reasoning_effort', '', config)).toEqual([
+        '',
+        'minimal',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max'
+      ])
+      expect(enumOptionsFor('delegation.reasoning_effort', '', config)).not.toContain('none')
+    })
+
     it('appends a hand-typed value not in the known list so it stays selected', () => {
       const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
       expect(opts).toContain('my-custom-command-tts')

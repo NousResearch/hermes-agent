@@ -1979,6 +1979,7 @@ export const ja = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '非常に高い',
       max: '最大',
       updateFailed: 'モデルオプションの更新に失敗しました',
       fastFailed: '高速モードの更新に失敗しました'
@@ -2394,7 +2395,7 @@ export const ja = defineLocale({
       failed: 'フッター設定を更新できませんでした'
     },
     reasoning: {
-      status: (level, display) => `推論エフォート: ${level} · 表示: ${display}。/reasoning <none|minimal|low|medium|high|xhigh|show|hide> で変更できます。`,
+      status: (level, display) => `推論エフォート: ${level} · 表示: ${display}。/reasoning <none|minimal|low|medium|high|xhigh|max|show|hide> で変更できます。`,
       effortSet: level => `このセッションの推論エフォートを ${level} に設定しました`,
       displaySet: value => `推論の表示: ${value}`,
       failed: '推論設定を更新できませんでした'

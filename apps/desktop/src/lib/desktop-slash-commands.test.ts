@@ -197,6 +197,7 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/reasoning')).toBe(true)
     expect(isDesktopSlashSuggestion('/effort')).toBe(false) // alias: executes, stays out of the popover
     expect(desktopSlashUnavailableMessage('/reasoning')).toBeNull()
+    expect(desktopSlashDescription('/reasoning', '')).toContain('xhigh|max|show|hide')
   })
 
   it('treats /clear and /models as aliases of /new and /model', () => {

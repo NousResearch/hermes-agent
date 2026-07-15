@@ -2201,6 +2201,7 @@ export const zh: Translations = {
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '超高',
       max: '最高',
       updateFailed: '模型选项更新失败',
       fastFailed: '快速模式更新失败'
@@ -2584,7 +2585,7 @@ export const zh: Translations = {
       failed: '无法更新页脚设置'
     },
     reasoning: {
-      status: (level, display) => `推理强度: ${level} · 显示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|show|hide> 更改。`,
+      status: (level, display) => `推理强度: ${level} · 显示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|max|show|hide> 更改。`,
       effortSet: level => `本会话的推理强度已设为 ${level}`,
       displaySet: value => `推理显示: ${value}`,
       failed: '无法更新推理设置'

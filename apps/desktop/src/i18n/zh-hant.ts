@@ -1917,6 +1917,7 @@ export const zhHant = defineLocale({
       low: '低',
       medium: '中',
       high: '高',
+      xhigh: '超高',
       max: '最高',
       updateFailed: '模型選項更新失敗',
       fastFailed: '快速模式更新失敗'
@@ -2302,7 +2303,7 @@ export const zhHant = defineLocale({
       failed: '無法更新頁尾設定'
     },
     reasoning: {
-      status: (level, display) => `推理強度: ${level} · 顯示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|show|hide> 變更。`,
+      status: (level, display) => `推理強度: ${level} · 顯示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|max|show|hide> 變更。`,
       effortSet: level => `本工作階段的推理強度已設為 ${level}`,
       displaySet: value => `推理顯示: ${value}`,
       failed: '無法更新推理設定'

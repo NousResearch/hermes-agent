@@ -901,6 +901,9 @@ class TestWebServerEndpoints:
         assert {"provider": agg["provider"], "model": agg["model"]} == payload["aggregator"]
         assert cfg["moa"]["reference_timeout"] == 44.5
         assert cfg["moa"]["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()
+        assert returned["reference_timeout"] == 44.5
+        assert returned["degraded_reference_policy"] == "silent"
 
     def test_put_moa_models_persists_reference_failure_controls_per_preset(self):
         from hermes_cli.config import load_config
@@ -1324,6 +1327,34 @@ class TestWebServerEndpoints:
             "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"userPeerAliases": "{not json"}},
         ).status_code == 400
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"reference_timeout": True},
+            {"reference_timeout": False},
+            {"reference_timeout": "nan"},
+            {"reference_timeout": "inf"},
+            {"presets": {"review": {"reference_timeout": True}}},
+            {"presets": {"review": {"reference_timeout": "-inf"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_reference_timeout(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"degraded_reference_policy": "verbose"},
+            {"presets": {"review": {"degraded_reference_policy": "verbose"}}},
+        ],
+    )
+    def test_put_moa_models_rejects_invalid_degraded_reference_policy(self, payload):
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 422
 
     # ── GET /api/media (remote image display) ───────────────────────────
 

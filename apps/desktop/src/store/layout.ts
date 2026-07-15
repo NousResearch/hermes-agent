@@ -4,6 +4,7 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { Codecs, persistentAtom } from '@/lib/persisted'
+import { parseSessionIdentityKey, sessionIdentityKey } from '@/lib/session-identity'
 import { arraysEqual, insertUniqueId } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
@@ -306,16 +307,25 @@ export function setSidebarResizing(resizing: boolean) {
   $isSidebarResizing.set(resizing)
 }
 
-export function pinSession(sessionId: string, index?: number) {
-  const prev = $pinnedSessionIds.get()
+function canonicalSessionIdentity(id: string): string {
+  const parsed = parseSessionIdentityKey(id)
 
-  setOrderIds($pinnedSessionIds, insertUniqueId(prev, sessionId, index ?? prev.filter(id => id !== sessionId).length))
+  return sessionIdentityKey(parsed.storedSessionId, parsed.profile)
+}
+
+export function pinSession(sessionId: string, index?: number) {
+  const target = canonicalSessionIdentity(sessionId)
+  const prev = $pinnedSessionIds.get().map(canonicalSessionIdentity)
+
+  setOrderIds($pinnedSessionIds, insertUniqueId(prev, target, index ?? prev.filter(id => id !== target).length))
 }
 
 export function unpinSession(sessionId: string) {
+  const target = canonicalSessionIdentity(sessionId)
+
   setOrderIds(
     $pinnedSessionIds,
-    $pinnedSessionIds.get().filter(id => id !== sessionId)
+    $pinnedSessionIds.get().filter(id => canonicalSessionIdentity(id) !== target)
   )
 }
 
@@ -323,9 +333,9 @@ export function unpinSession(sessionId: string) {
 // rather than a single move). Keep only ids that are actually pinned so a stale
 // row can't smuggle an unpinned id into the store.
 export function setPinnedSessionOrder(ids: string[]) {
-  const prev = $pinnedSessionIds.get()
+  const prev = $pinnedSessionIds.get().map(canonicalSessionIdentity)
   const pinned = new Set(prev)
-  const next = ids.filter(id => pinned.has(id))
+  const next = ids.map(canonicalSessionIdentity).filter(id => pinned.has(id))
 
   if (next.length === prev.length && !arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)

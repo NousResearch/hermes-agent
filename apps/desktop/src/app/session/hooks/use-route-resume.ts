@@ -1,9 +1,12 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { sessionIdentityKey } from '@/lib/session-identity'
+import { normalizeProfileKey } from '@/store/profile'
 import { setResumeExhaustedSessionId } from '@/store/session'
 
 interface RouteResumeOptions {
+  activeGatewayProfile: string
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   creatingSessionRef: MutableRefObject<boolean>
@@ -11,7 +14,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profile?: null | string) => Promise<unknown>
   // Stored-session id whose most recent resume failed terminally (set by
   // useSessionActions, mirrored from $resumeFailedSessionId). While this equals
   // routedSessionId the window would otherwise latch on the loader forever, so
@@ -24,6 +27,7 @@ interface RouteResumeOptions {
   // signal the effect below uses to reset the attempt counter.
   resumeExhaustedSessionId: string | null
   routedSessionId: string | null
+  routedSessionProfile: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -66,6 +70,7 @@ function rawHashLooksLikeSession(): boolean {
 }
 
 export function useRouteResume({
+  activeGatewayProfile,
   activeSessionId,
   activeSessionIdRef,
   creatingSessionRef,
@@ -77,12 +82,13 @@ export function useRouteResume({
   resumeFailedSessionId,
   resumeExhaustedSessionId,
   routedSessionId,
+  routedSessionProfile,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionId,
   selectedStoredSessionIdRef,
   startFreshSessionDraft
 }: RouteResumeOptions) {
-  const lastPathnameRef = useRef<string | null>(null)
+  const lastRouteIdentityRef = useRef<string | null>(null)
   const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)
   // Per-session retry bookkeeping for the bounded auto-retry effect below. Keyed
@@ -98,13 +104,14 @@ export function useRouteResume({
 
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
-    const pathnameChanged = lastPathnameRef.current !== locationPathname
+    const routeIdentity = `${locationPathname}\u0000${normalizeProfileKey(routedSessionProfile)}`
+    const routeChanged = lastRouteIdentityRef.current !== routeIdentity
     // Fire only on a genuine closed->open transition (a reconnect). seenGatewayStateRef
     // stays false until the first effect run, so a session that mounts with the gateway
     // already open is not mistaken for "became open" and does not double-resume with the
     // pathname-driven initial resume below.
     const gatewayBecameOpen = seenGatewayStateRef.current && !wasGatewayOpenRef.current && gatewayOpen
-    lastPathnameRef.current = locationPathname
+    lastRouteIdentityRef.current = routeIdentity
     seenGatewayStateRef.current = true
     wasGatewayOpenRef.current = gatewayOpen
 
@@ -113,10 +120,14 @@ export function useRouteResume({
     }
 
     if (routedSessionId) {
-      const cachedRuntime = runtimeIdByStoredSessionIdRef.current.get(routedSessionId)
+      const cachedRuntime = runtimeIdByStoredSessionIdRef.current.get(
+        sessionIdentityKey(routedSessionId, routedSessionProfile ?? activeGatewayProfile)
+      )
 
       const alreadyActive =
         routedSessionId === selectedStoredSessionIdRef.current &&
+        (!routedSessionProfile ||
+          normalizeProfileKey(activeGatewayProfile) === normalizeProfileKey(routedSessionProfile)) &&
         Boolean(cachedRuntime) &&
         cachedRuntime === activeSessionIdRef.current
 
@@ -140,14 +151,18 @@ export function useRouteResume({
       // we're stranded on a routed session that never loaded. The first two
       // guard against a transient /:sid re-resume during "new chat" state clears
       // before the pathname updates from /:sid -> /.
-      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
+      const shouldResume = routeChanged || gatewayBecameOpen || stuckOnRoutedSession
 
       // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
       // `alreadyActive`: the cached runtime id can be stale once the gateway
       // rebinds/reaps the session on its side, and trusting it strands Desktop on
       // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
-        void resumeSession(routedSessionId, true)
+        if (routedSessionProfile) {
+          void resumeSession(routedSessionId, true, routedSessionProfile)
+        } else {
+          void resumeSession(routedSessionId, true)
+        }
       }
 
       return
@@ -162,6 +177,7 @@ export function useRouteResume({
       startFreshSessionDraft(true)
     }
   }, [
+    activeGatewayProfile,
     activeSessionId,
     activeSessionIdRef,
     creatingSessionRef,
@@ -171,6 +187,7 @@ export function useRouteResume({
     locationPathname,
     resumeSession,
     routedSessionId,
+    routedSessionProfile,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -267,7 +284,12 @@ export function useRouteResume({
       // having fired. A flapping backend could then hit MAX in a couple of
       // re-renders with far fewer than MAX real attempts. (Point 3)
       retryAttemptRef.current += 1
-      void resumeSession(sessionId, true)
+
+      if (routedSessionProfile) {
+        void resumeSession(sessionId, true, routedSessionProfile)
+      } else {
+        void resumeSession(sessionId, true)
+      }
     }, resumeRetryDelayMs(attempt))
 
     return () => clearTimeout(timer)
@@ -280,6 +302,7 @@ export function useRouteResume({
     resumeFailedSessionId,
     resumeExhaustedSessionId,
     routedSessionId,
+    routedSessionProfile,
     selectedStoredSessionIdRef
   ])
 }

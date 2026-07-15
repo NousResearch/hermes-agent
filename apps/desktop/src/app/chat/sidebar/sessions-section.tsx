@@ -8,6 +8,7 @@ import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
+import { sessionIdentityKey } from '@/lib/session-identity'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
@@ -86,9 +87,9 @@ interface SidebarSessionsSectionProps {
   sessions: SessionInfo[]
   activeSessionId: null | string
   workingSessionIdSet: Set<string>
-  onResumeSession: (sessionId: string) => void
-  onDeleteSession: (sessionId: string) => void
-  onArchiveSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: null | string) => void
+  onDeleteSession: (sessionId: string, profile?: null | string) => void
+  onArchiveSession: (sessionId: string, profile?: null | string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
@@ -192,24 +193,26 @@ export function SidebarSessionsSection({
   const displayEntries = useMemo(() => flattenSessionsWithBranches(sessions), [sessions])
 
   const renderRow = (session: SessionInfo, draggable: boolean, branchStem?: string) => {
+    const identityKey = sessionIdentityKey(session.id, session.profile)
+
     const rowProps = {
       branchStem,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      isSelected: identityKey === activeSessionId,
+      isWorking: workingSessionIdSet.has(identityKey),
+      onArchive: () => onArchiveSession(session.id, session.profile),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session.id, session.profile),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id),
+      onResume: () => onResumeSession(session.id, session.profile),
       reorderable: draggable && !branchStem,
       session
     }
 
     return draggable && !branchStem ? (
-      <SortableSidebarSessionRow key={session.id} {...rowProps} />
+      <SortableSidebarSessionRow key={identityKey} {...rowProps} />
     ) : (
-      <SidebarSessionRow key={session.id} {...rowProps} />
+      <SidebarSessionRow key={identityKey} {...rowProps} />
     )
   }
 

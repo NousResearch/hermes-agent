@@ -30,16 +30,12 @@ import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { sessionIdentityKey, sessionMatchesIdentity } from '@/lib/session-identity'
 import { createComposerAttachmentScope } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
+import { $activeGatewayProfile } from '@/store/profile'
 import { sessionAwaitingInput } from '@/store/prompts'
-import {
-  $gatewayState,
-  $selectedStoredSessionId,
-  $sessions,
-  sessionMatchesStoredId,
-  sessionPinId
-} from '@/store/session'
+import { $gatewayState, $selectedStoredSessionId, $sessions, sessionPinId } from '@/store/session'
 import {
   $sessionStates,
   $sessionTiles,
@@ -252,16 +248,17 @@ export function SessionTilePane({ storedSessionId }: { storedSessionId: string }
 // ---------------------------------------------------------------------------
 
 function tileTitle(storedSessionId: string): string {
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+  const stored = $sessions.get().find(s => sessionMatchesIdentity(s, storedSessionId, $activeGatewayProfile.get()))
 
   return stored ? sessionTitle(stored) : 'Session'
 }
 
 /** The `@session` link payload for a tile tab drag — id + owning profile + title. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
-  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+  const profile = $activeGatewayProfile.get()
+  const stored = $sessions.get().find(s => sessionMatchesIdentity(s, storedSessionId, profile))
 
-  return { id: storedSessionId, profile: stored?.profile ?? '', title: tileTitle(storedSessionId) }
+  return { id: storedSessionId, profile, title: stored ? sessionTitle(stored) : 'Session' }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,8 +347,9 @@ export function SessionTabMenu({
 }) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
-  const stored = sessions.find(s => sessionMatchesStoredId(s, storedSessionId))
-  const pinId = stored ? sessionPinId(stored) : storedSessionId
+  const profile = useStore($activeGatewayProfile)
+  const stored = sessions.find(s => sessionMatchesIdentity(s, storedSessionId, profile))
+  const pinId = stored ? sessionPinId(stored) : sessionIdentityKey(storedSessionId, profile)
   const pinned = pinnedSessionIds.includes(pinId)
 
   return (
@@ -364,7 +362,7 @@ export function SessionTabMenu({
         onHideTabBar={onHideTabBar}
         onPin={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
         pinned={pinned}
-        profile={stored?.profile}
+        profile={profile}
         sessionId={storedSessionId}
         surface="tab"
         tabPaneId={tabPaneId}

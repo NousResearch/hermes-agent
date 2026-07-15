@@ -7,10 +7,11 @@ import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/l
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { persistentAtom } from '@/lib/persisted'
+import { normalizeProfileKey, parseSessionIdentityKey, sessionIdentityKey } from '@/lib/session-identity'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
 import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
@@ -54,7 +55,7 @@ function projectsStaleBackendError(): Error {
 // refresh once the server snapshot has caught up.
 export const $removedSessionIds = atom<Set<string>>(new Set())
 
-export function tombstoneSessions(ids: Array<null | string | undefined>): void {
+export function tombstoneSessions(ids: Array<null | string | undefined>, profile?: null | string): void {
   const next = new Set($removedSessionIds.get())
   const before = next.size
 
@@ -62,7 +63,7 @@ export function tombstoneSessions(ids: Array<null | string | undefined>): void {
     const trimmed = id?.trim()
 
     if (trimmed) {
-      next.add(trimmed)
+      next.add(sessionIdentityKey(trimmed, profile))
     }
   }
 
@@ -71,7 +72,7 @@ export function tombstoneSessions(ids: Array<null | string | undefined>): void {
   }
 }
 
-export function untombstoneSessions(ids: Array<null | string | undefined>): void {
+export function untombstoneSessions(ids: Array<null | string | undefined>, profile?: null | string): void {
   const current = $removedSessionIds.get()
 
   if (!current.size) {
@@ -84,7 +85,7 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
     const trimmed = id?.trim()
 
     if (trimmed) {
-      next.delete(trimmed)
+      next.delete(sessionIdentityKey(trimmed, profile))
     }
   }
 
@@ -271,7 +272,15 @@ export async function refreshProjectTree(): Promise<void> {
     const tombstones = $removedSessionIds.get()
 
     if (tombstones.size) {
-      const pending = new Set([...tombstones].filter(id => scoped.has(id)))
+      const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+      const pending = new Set(
+        [...tombstones].filter(key => {
+          const identity = parseSessionIdentityKey(key)
+
+          return identity.profile !== activeProfile || scoped.has(identity.storedSessionId)
+        })
+      )
 
       if (pending.size !== tombstones.size) {
         $removedSessionIds.set(pending)

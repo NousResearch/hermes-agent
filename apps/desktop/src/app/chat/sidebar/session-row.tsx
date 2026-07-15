@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { sessionIdentityKey } from '@/lib/session-identity'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -76,11 +77,12 @@ export function SidebarSessionRow({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
+  const identityKey = sessionIdentityKey(session.id, session.profile)
   // True when a clarify prompt in this session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const needsInput = useStore($attentionSessionIds).includes(identityKey)
   // True when the session's most recent turn finished in the background (while
   // the user was viewing a different session) and hasn't been opened since.
-  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
+  const isUnread = useStore($unreadFinishedSessionIds).includes(identityKey)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
 
@@ -138,6 +140,7 @@ export function SidebarSessionRow({
             </SessionActionsMenu>
           </div>
         }
+        aria-current={isSelected ? 'page' : undefined}
         className={cn(
           'group row-hover relative',
           isSelected && 'bg-(--ui-row-active-background)',
@@ -176,7 +179,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
+              void openSessionTile(session.id, 'center', undefined, undefined, session.profile)
             }
           }}
           onClick={event => {
@@ -187,7 +190,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
+              void openSessionInNewWindow(session.id, { profile: session.profile })
 
               return
             }
@@ -197,7 +200,7 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              openSessionTile(session.id, 'center')
+              void openSessionTile(session.id, 'center', undefined, undefined, session.profile)
 
               return
             }

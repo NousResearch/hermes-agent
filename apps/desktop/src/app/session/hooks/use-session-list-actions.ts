@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react'
 
 import { getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
+import { parseSessionIdentityKey } from '@/lib/session-identity'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -13,7 +14,7 @@ import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
   $messagingSessions,
-  $selectedStoredSessionId,
+  $selectedSessionIdentityKey,
   $sessions,
   $workingSessionIds,
   CRON_SECTION_LIMIT,
@@ -53,13 +54,13 @@ function sessionsToKeep(scope?: string): Set<string> {
     ...getRecentlySettledSessionIds()
   ])
 
-  const active = $selectedStoredSessionId.get()
+  const activeIdentity = $selectedSessionIdentityKey.get()
 
-  if (active) {
-    const session = scope ? $sessions.get().find(s => s.id === active) : null
+  if (activeIdentity) {
+    const { profile } = parseSessionIdentityKey(activeIdentity)
 
-    if (!scope || !session || normalizeProfileKey(session.profile) === scope) {
-      keep.add(active)
+    if (!scope || normalizeProfileKey(profile) === scope) {
+      keep.add(activeIdentity)
     }
   }
 

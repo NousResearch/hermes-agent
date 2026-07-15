@@ -34,10 +34,12 @@ const EMPTY_THINKING_PLACEHOLDER_RE =
 
 export function createClientSessionState(
   storedSessionId: string | null = null,
-  messages: ChatMessage[] = []
+  messages: ChatMessage[] = [],
+  storedSessionProfile: string | null = null
 ): ClientSessionState {
   return {
     storedSessionId,
+    storedSessionProfile,
     messages,
     branch: '',
     cwd: '',

@@ -179,11 +179,12 @@ export function startSessionDrag(
 
     onCommit() {
       if (split) {
-        openSessionTile(payload.id, split.pos, split.anchor, split.before)
-        // A tile for this session may already exist (openSessionTile is
-        // idempotent — e.g. persisted from an earlier run): a drop must never
-        // feel dead, so front/unhide/un-dismiss it either way.
-        revealTreePane(`session-tile:${payload.id}`)
+        void openSessionTile(payload.id, split.pos, split.anchor, split.before, payload.profile).then(() => {
+          // A tile for this session may already exist (openSessionTile is
+          // idempotent — e.g. persisted from an earlier run): a drop must never
+          // feel dead, so front/unhide/un-dismiss it either way.
+          revealTreePane(`session-tile:${payload.id}`)
+        })
       } else if (link) {
         // The "link to chat" drop: an @session chip in that surface's composer.
         requestComposerInsertRefs([sessionInlineRef(payload)], { target: link })

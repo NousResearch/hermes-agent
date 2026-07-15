@@ -136,6 +136,7 @@ export interface SidebarNavItem {
 
 export interface ClientSessionState {
   storedSessionId: string | null
+  storedSessionProfile: string | null
   messages: ChatMessage[]
   branch: string
   cwd: string

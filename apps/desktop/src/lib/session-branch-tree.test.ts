@@ -23,6 +23,20 @@ const session = (id: string, overrides: Partial<SessionInfo> = {}): SessionInfo 
   }) as SessionInfo
 
 describe('flattenSessionsWithBranches', () => {
+  it('does not attach or deduplicate same-id sessions across profiles', () => {
+    const alphaParent = session('shared', { profile: 'alpha' })
+    const betaParent = session('shared', { profile: 'beta' })
+    const betaBranch = session('branch', { parent_session_id: 'shared', profile: 'beta' })
+
+    const flattened = flattenSessionsWithBranches([alphaParent, betaParent, betaBranch])
+
+    expect(flattened).toEqual([
+      { session: alphaParent },
+      { session: betaParent },
+      { branchStem: '└─ ', session: betaBranch }
+    ])
+  })
+
   it('nests branch rows under their parent with tree stems', () => {
     const parent = session('parent', { last_active: 20 })
     const branchA = session('branch-a', { last_active: 15, parent_session_id: 'parent' })

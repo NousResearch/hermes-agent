@@ -121,6 +121,7 @@ interface SessionEntry {
   git_branch?: null | string
   id: string
   preview?: string
+  profile?: null | string
   title: string
 }
 
@@ -216,6 +217,7 @@ const toSessionEntry = (session: SessionRow): SessionEntry => ({
   git_branch: session.git_branch ?? null,
   id: session.id,
   preview: session.preview ?? undefined,
+  profile: session.profile,
   title: sessionTitle(session)
 })
 
@@ -693,7 +695,7 @@ export function CommandPalette() {
             ...(session.git_branch ? [session.git_branch] : [])
           ],
           label: session.title,
-          run: go(sessionRoute(session.id))
+          run: go(sessionRoute(session.id, session.profile))
         }))
       })
     }

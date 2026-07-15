@@ -2,6 +2,7 @@ import { getSession } from '@/hermes'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { sessionMatchesIdentity } from '@/lib/session-identity'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -146,13 +147,14 @@ export function upsertOptimisticSession(
   title: string | null = null,
   preview: string | null = null,
   parentSessionId: string | null = null,
-  lastActive?: number
+  lastActive?: number,
+  profileHint?: null | string
 ) {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on (= the live gateway's
   // profile) so the scoped sidebar shows the new row immediately instead of
   // filtering it out as "default" until the aggregator re-fetches.
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  const profileKey = normalizeProfileKey(profileHint ?? $activeGatewayProfile.get())
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -177,41 +179,70 @@ export function upsertOptimisticSession(
     tool_call_count: 0
   }
 
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  setSessions(prev => [session, ...prev.filter(s => !sessionMatchesIdentity(s, id, profileKey))])
 }
 
-export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
+export function patchSessionWorkspace(sessionId: string, cwd: string | undefined, profile?: null | string) {
   if (!cwd) {
     return
   }
 
-  setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
+  setSessions(prev =>
+    prev.map(session => (sessionMatchesIdentity(session, sessionId, profile) ? { ...session, cwd } : session))
+  )
 }
 
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
   return (session?.message_count ?? 0) > 0
 }
 
-function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
+export function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+  const profile = normalizeProfileKey(session.profile)
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
-      if (sessionMatchesStoredId(existing, storedSessionId)) {
+      if (sessionMatchesIdentity(existing, storedSessionId, profile)) {
         return false
       }
 
-      return (existing._lineage_root_id ?? existing.id) !== lineage
+      return normalizeProfileKey(existing.profile) !== profile || (existing._lineage_root_id ?? existing.id) !== lineage
     })
   ])
 }
 
-export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+export async function resolveStoredSession(
+  storedSessionId: string,
+  profileHint?: null | string
+): Promise<SessionInfo | undefined> {
+  const hint = profileHint ? normalizeProfileKey(profileHint) : null
+
+  const cached = $sessions.get().find(session => {
+    if (!sessionMatchesStoredId(session, storedSessionId)) {
+      return false
+    }
+
+    return !hint || normalizeProfileKey(session.profile) === hint
+  })
 
   if (cached) {
     return cached
+  }
+
+  if (hint) {
+    try {
+      const session = await getSession(storedSessionId, hint)
+
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // An explicit route/sidebar owner is authoritative. Falling through to
+      // other profiles can silently open a different session when stored ids
+      // collide across profiles.
+      return undefined
+    }
   }
 
   // Direct by-id on the live backend — one row lookup, no list scan. Covers

@@ -214,6 +214,38 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   setActive(key)
 }
 
+/** Resolve a profile's live gateway without changing the profile currently
+ * shown by the window. Native-notification actions use this so an approval for
+ * background profile B cannot be sent over profile A's active socket. */
+export async function gatewayForProfile(profile: null | string | undefined): Promise<HermesGateway | null> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return primaryGateway
+  }
+
+  let entry = secondaries.get(key)
+
+  if (!entry) {
+    entry = createSecondary(key)
+  }
+
+  entry.wantOpen = true
+
+  if (!isOpen(entry.gateway)) {
+    clearTimer(entry)
+    entry.reconnectAttempt = 0
+
+    try {
+      await openSecondary(entry)
+    } catch {
+      scheduleReconnect(entry)
+    }
+  }
+
+  return isOpen(entry.gateway) ? entry.gateway : null
+}
+
 // Reconnect the active gateway after a transient request failure. Primary
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
 export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {

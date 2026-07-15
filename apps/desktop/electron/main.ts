@@ -6999,8 +6999,9 @@ function focusWindow(win) {
 function spawnSecondaryWindow({
   sessionId,
   watch,
-  newSession
-}: { sessionId?: string; watch?: boolean; newSession?: boolean } = {}) {
+  newSession,
+  profile
+}: { sessionId?: string; watch?: boolean; newSession?: boolean; profile?: string } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -7046,7 +7047,8 @@ function spawnSecondaryWindow({
       devServer: DEV_SERVER,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
       watch,
-      newSession
+      newSession,
+      profile
     })
   )
 
@@ -7054,15 +7056,15 @@ function spawnSecondaryWindow({
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, watch }))
+function createSessionWindow(sessionId, { watch = false, profile }: { profile?: string; watch?: boolean } = {}) {
+  return sessionWindows.openOrFocus(sessionId, profile, () => spawnSecondaryWindow({ sessionId, watch, profile }))
 }
 
 // Open a fresh compact window on the new-session draft (#/). Not registry-keyed:
 // like ⌘N in a browser, every press opens a new window — and a draft window that
 // later converts to a real session must not get refocused as if it were blank.
-function createNewSessionWindow() {
-  return spawnSecondaryWindow({ newSession: true })
+function createNewSessionWindow(profile) {
+  return spawnSecondaryWindow({ newSession: true, profile })
 }
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -7405,12 +7407,14 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
+  const profile = typeof opts?.profile === 'string' ? opts.profile.trim() || undefined : undefined
+  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true, profile })
 
   return { ok: true }
 })
-ipcMain.handle('hermes:window:openNewSession', async () => {
-  createNewSessionWindow()
+ipcMain.handle('hermes:window:openNewSession', async (_event, profile) => {
+  const profileKey = typeof profile === 'string' ? profile.trim() || undefined : undefined
+  createNewSessionWindow(profileKey)
 
   return { ok: true }
 })
@@ -7959,7 +7963,10 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     focusWindow(mainWindow)
 
     if (payload?.sessionId) {
-      mainWindow.webContents.send('hermes:focus-session', payload.sessionId)
+      mainWindow.webContents.send('hermes:focus-session', {
+        profile: payload?.profile,
+        sessionId: payload.sessionId
+      })
     }
   })
   notification.on('action', (_actionEvent, index) => {
@@ -7970,7 +7977,11 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     const action = actions[index]
 
     if (action?.id) {
-      mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })
+      mainWindow.webContents.send('hermes:notification-action', {
+        actionId: action.id,
+        profile: payload?.profile,
+        runtimeSessionId: payload?.runtimeSessionId
+      })
     }
   })
   notification.show()

@@ -13,7 +13,7 @@ interface SessionPickerDialogProps {
   /** Stored id of the session currently open, so it can be flagged in the list. */
   activeStoredSessionId?: string | null
   onOpenChange: (open: boolean) => void
-  onResume: (storedSessionId: string) => void
+  onResume: (storedSessionId: string, profile?: null | string) => void
   open: boolean
 }
 
@@ -68,7 +68,7 @@ export function SessionPickerDialog({ activeStoredSessionId, onOpenChange, onRes
                       className="gap-2.5"
                       key={session.id}
                       onSelect={() => {
-                        onResume(session.id)
+                        onResume(session.id, session.profile)
                         onOpenChange(false)
                       }}
                       value={`${title} ${preview ?? ''} ${session.id}`}

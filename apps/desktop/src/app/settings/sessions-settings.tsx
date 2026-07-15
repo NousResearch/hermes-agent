@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { sessionIdentityKey, sessionMatchesIdentity } from '@/lib/session-identity'
 import { notify, notifyError } from '@/store/notifications'
 import { untombstoneSessions } from '@/store/projects'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
@@ -59,15 +60,20 @@ export function SessionsSettings() {
 
   const unarchive = useCallback(
     async (session: SessionInfo) => {
-      setBusyId(session.id)
+      const identityKey = sessionIdentityKey(session.id, session.profile)
+
+      setBusyId(identityKey)
 
       try {
         await setSessionArchived(session.id, false, session.profile)
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setLocalSessions(prev => prev.filter(s => !sessionMatchesIdentity(s, session.id, session.profile)))
         // Surface it again in the sidebar without waiting for a full refresh, and
         // lift any optimistic eviction so the grouped tree shows it again too.
-        untombstoneSessions([session.id, session._lineage_root_id])
-        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        untombstoneSessions([session.id, session._lineage_root_id], session.profile)
+        setSessions(prev => [
+          { ...session, archived: false },
+          ...prev.filter(s => !sessionMatchesIdentity(s, session.id, session.profile))
+        ])
         triggerHaptic('selection')
         notify({ durationMs: 2_000, kind: 'success', message: s.restored })
       } catch (err) {
@@ -85,11 +91,13 @@ export function SessionsSettings() {
         return
       }
 
-      setBusyId(session.id)
+      const identityKey = sessionIdentityKey(session.id, session.profile)
+
+      setBusyId(identityKey)
 
       try {
         await deleteSession(session.id, session.profile)
-        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        setLocalSessions(prev => prev.filter(s => !sessionMatchesIdentity(s, session.id, session.profile)))
         triggerHaptic('warning')
       } catch (err) {
         notifyError(err, s.deleteFailed)
@@ -129,10 +137,11 @@ export function SessionsSettings() {
         <div className="grid gap-1">
           {sessions.map(session => {
             const label = workspaceLabel(session.cwd)
-            const busy = busyId === session.id
+            const identityKey = sessionIdentityKey(session.id, session.profile)
+            const busy = busyId === identityKey
 
             return (
-              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={identityKey}>
                 <ListRow
                   action={
                     <div className="flex items-center gap-1.5">

@@ -1,17 +1,24 @@
 import { useEffect, useRef } from 'react'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
-import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { sessionIdentityForNotification } from '@/lib/session-ids'
 import { respondToApprovalAction } from '@/store/native-notifications'
-import { getRememberedRoute, getRememberedSessionId, setRememberedRoute, setRememberedSessionId } from '@/store/session'
+import { normalizeProfileKey } from '@/store/profile'
+import {
+  getRememberedRoute,
+  getRememberedSessionIdentity,
+  setRememberedRoute,
+  setRememberedSessionIdentity
+} from '@/store/session'
 import { onSessionsChanged } from '@/store/session-sync'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
-import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
 interface DesktopIntegrationsParams {
+  activeGatewayProfile: string
   chatOpen: boolean
   hasPreview: boolean
   locationPathname: string
@@ -19,6 +26,7 @@ interface DesktopIntegrationsParams {
   refreshSessions: () => Promise<unknown> | unknown
   resumeExhaustedSessionId: null | string
   routedSessionId: null | string
+  routedSessionProfile: null | string
   runtimeIdByStoredSessionId: { readonly current: Map<string, string> }
 }
 
@@ -30,11 +38,13 @@ interface DesktopIntegrationsParams {
  * "talks to the desktop shell" surface reads as one unit.
  */
 export function useDesktopIntegrations({
+  activeGatewayProfile,
   locationPathname,
   navigate,
   refreshSessions,
   resumeExhaustedSessionId,
   routedSessionId,
+  routedSessionProfile,
   runtimeIdByStoredSessionId
 }: DesktopIntegrationsParams): void {
   // Update polling — populates $desktopVersion/$updateStatus, which feed the
@@ -63,13 +73,13 @@ export function useDesktopIntegrations({
   // you don't want to boot into a modal.
   useEffect(() => {
     if (routedSessionId) {
-      setRememberedSessionId(routedSessionId)
+      setRememberedSessionIdentity(routedSessionId, routedSessionProfile ?? activeGatewayProfile)
     }
 
     if (!isOverlayView(appViewForPath(locationPathname))) {
       setRememberedRoute(locationPathname)
     }
-  }, [locationPathname, routedSessionId])
+  }, [activeGatewayProfile, locationPathname, routedSessionId, routedSessionProfile])
 
   const restoredRef = useRef(false)
 
@@ -85,32 +95,48 @@ export function useDesktopIntegrations({
 
     restoredRef.current = true
     const route = getRememberedRoute()
+    const remembered = getRememberedSessionIdentity()
 
     if (route && route !== NEW_CHAT_ROUTE && !isOverlayView(appViewForPath(route))) {
-      navigate(route, { replace: true })
+      const rememberedRouteSessionId = routeSessionId(route)
+
+      navigate(
+        rememberedRouteSessionId && remembered?.sessionId === rememberedRouteSessionId
+          ? sessionRoute(remembered.sessionId, remembered.profile)
+          : route,
+        { replace: true }
+      )
 
       return
     }
 
-    const last = getRememberedSessionId()
-
-    if (last) {
-      navigate(sessionRoute(last), { replace: true })
+    if (remembered) {
+      navigate(sessionRoute(remembered.sessionId, remembered.profile), { replace: true })
     }
   }, [locationPathname, navigate])
 
   useEffect(() => {
-    if (resumeExhaustedSessionId && getRememberedSessionId() === resumeExhaustedSessionId) {
-      setRememberedSessionId(null)
+    const remembered = getRememberedSessionIdentity()
+
+    if (
+      resumeExhaustedSessionId &&
+      remembered?.sessionId === resumeExhaustedSessionId &&
+      normalizeProfileKey(remembered.profile) === normalizeProfileKey(activeGatewayProfile)
+    ) {
+      setRememberedSessionIdentity(null)
     }
-  }, [resumeExhaustedSessionId])
+  }, [activeGatewayProfile, resumeExhaustedSessionId])
 
   // Native-notification click -> jump to the session (runtime id translated to
   // the stored id the chat route is keyed by); action buttons resolve in place.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
-      if (sessionId) {
-        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current)))
+    const unsubscribe = window.hermesDesktop?.onFocusSession?.(payload => {
+      if (payload.sessionId) {
+        const target = payload.profile
+          ? { profile: payload.profile, sessionId: payload.sessionId }
+          : sessionIdentityForNotification(payload.sessionId, runtimeIdByStoredSessionId.current)
+
+        navigate(sessionRoute(target.sessionId, target.profile))
       }
     })
 
@@ -118,8 +144,8 @@ export function useDesktopIntegrations({
   }, [navigate, runtimeIdByStoredSessionId])
 
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, sessionId }) => {
-      void respondToApprovalAction(sessionId ?? null, actionId)
+    const unsubscribe = window.hermesDesktop?.onNotificationAction?.(({ actionId, profile, runtimeSessionId }) => {
+      void respondToApprovalAction(runtimeSessionId ?? null, actionId, profile)
     })
 
     return () => unsubscribe?.()

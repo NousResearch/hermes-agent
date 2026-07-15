@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { HermesGitWorktree } from '@/global'
+import { sessionIdentityKey } from '@/lib/session-identity'
 import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 import {
@@ -701,7 +702,7 @@ describe('overlayLiveLanes', () => {
     })
 
     // No live rows (both deleted from $sessions); only 'gone' is tombstoned.
-    const overlaid = overlayLiveLanes(project, [a], new Set(['gone']))
+    const overlaid = overlayLiveLanes(project, [a], new Set([sessionIdentityKey('gone', 'default')]))
 
     expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['/www/app::branch::main'])
     expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['keep'])
@@ -732,8 +733,24 @@ describe('overlayLivePreviews', () => {
       ]
     })
 
-    const previews = overlayLivePreviews([project], [], [], 3, new Set(['gone']))
+    const previews = overlayLivePreviews([project], [], [], 3, new Set([sessionIdentityKey('gone', 'default')]))
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('evicts only the matching profile when session ids collide', () => {
+    const project = projectNode({ id: '/www/app' })
+    const alpha = makeSession('/www/app', { id: 'shared-id', profile: 'alpha' })
+    const beta = makeSession('/www/app', { id: 'shared-id', profile: 'beta' })
+
+    const previews = overlayLivePreviews(
+      [project],
+      [alpha, beta],
+      [],
+      3,
+      new Set([sessionIdentityKey('shared-id', 'alpha')])
+    )
+
+    expect(previews['/www/app']).toEqual([beta])
   })
 })

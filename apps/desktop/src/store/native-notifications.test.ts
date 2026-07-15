@@ -9,6 +9,7 @@ import {
   setNativeNotifyEnabled,
   setNativeNotifyKind
 } from './native-notifications'
+import { $activeGatewayProfile } from './profile'
 import { $approvalRequest, setApprovalRequest } from './prompts'
 import { $activeSessionId, setActiveSessionId } from './session'
 
@@ -42,6 +43,7 @@ beforeEach(() => {
   }
 
   setActiveSessionId(null)
+  $activeGatewayProfile.set('default')
   setWindowState({ focused: false, hidden: true })
 })
 
@@ -130,11 +132,26 @@ describe('dispatchNativeNotification preferences', () => {
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
-  it('forwards kind and sessionId to the bridge', () => {
-    setActiveSessionId('abc')
-    dispatchNativeNotification({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
+  it('forwards stored and runtime identity to the bridge', () => {
+    setActiveSessionId('runtime-abc')
+    $activeGatewayProfile.set('beta')
+    dispatchNativeNotification({
+      body: 'hi',
+      kind: 'turnError',
+      profile: 'beta',
+      sessionId: 'runtime-abc',
+      storedSessionId: 'stored-abc',
+      title: 'boom'
+    })
     expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
+      expect.objectContaining({
+        body: 'hi',
+        kind: 'turnError',
+        profile: 'beta',
+        runtimeSessionId: 'runtime-abc',
+        sessionId: 'stored-abc',
+        title: 'boom'
+      })
     )
   })
 })
@@ -146,6 +163,17 @@ describe('dispatchNativeNotification throttle', () => {
     dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
     dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done again' })
     expect(notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not collapse equal runtime ids from different profiles', () => {
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    $activeGatewayProfile.set('alpha')
+    dispatchNativeNotification({ kind: 'turnDone', profile: 'alpha', sessionId, title: 'alpha' })
+    $activeGatewayProfile.set('beta')
+    dispatchNativeNotification({ kind: 'turnDone', profile: 'beta', sessionId, title: 'beta' })
+
+    expect(notify).toHaveBeenCalledTimes(2)
   })
 })
 

@@ -1,8 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
-import { storedSessionIdForNotification } from './session-ids'
+import { sessionIdentityKey } from './session-identity'
+import { sessionIdentityForNotification, storedSessionIdForNotification } from './session-ids'
 
 describe('storedSessionIdForNotification', () => {
+  it('recovers the owning profile from a compound cache key', () => {
+    const map = new Map([[sessionIdentityKey('shared-id', 'alpha'), 'runtime-123']])
+
+    expect(sessionIdentityForNotification('runtime-123', map)).toEqual({
+      profile: 'alpha',
+      sessionId: 'shared-id'
+    })
+  })
+
   it('translates a runtime id back to its stored id', () => {
     // The route is keyed by the stored id, but notifications carry the runtime
     // id. Resolving runtime -> stored keeps notification-click navigation from

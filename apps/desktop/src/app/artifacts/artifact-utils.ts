@@ -1,5 +1,6 @@
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
+import { normalizeProfileKey, sessionIdentityKey } from '@/lib/session-identity'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -12,6 +13,7 @@ export interface ArtifactRecord {
   value: string
   href: string
   label: string
+  profile: string
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -246,6 +248,7 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = artifactSessionTitle(session)
+  const profile = normalizeProfileKey(session.profile)
 
   for (const message of messages) {
     if (message.role !== 'assistant' && message.role !== 'tool') {
@@ -259,7 +262,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         return
       }
 
-      const key = `${session.id}:${value}`
+      const key = `${sessionIdentityKey(session.id, profile)}:${value}`
 
       if (found.has(key)) {
         return
@@ -271,6 +274,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         value,
         href: artifactHref(value),
         label: artifactLabel(value),
+        profile,
         sessionId: session.id,
         sessionTitle: title,
         timestamp: message.timestamp || session.last_active || session.started_at || Date.now()

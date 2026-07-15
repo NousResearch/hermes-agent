@@ -18,12 +18,13 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
+import { sessionIdentityKey, sessionMatchesIdentity } from '@/lib/session-identity'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $gatewaySwapTarget } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget } from '@/store/profile'
 import {
   $contextSuggestions,
   $freshDraftReady,
@@ -32,7 +33,6 @@ import {
   $introSeed,
   $resumeExhaustedSessionId,
   $sessions,
-  sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
 import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
@@ -104,9 +104,12 @@ function ChatHeader({
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
 
   const activeStoredSession =
-    (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
+    (selectedSessionId &&
+      sessions.find(session => sessionMatchesIdentity(session, selectedSessionId, activeGatewayProfile))) ||
+    null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
 
@@ -116,7 +119,7 @@ function ChatHeader({
   const selectedIsPinned = activeStoredSession
     ? pinnedSessionIds.includes(sessionPinId(activeStoredSession))
     : selectedSessionId
-      ? pinnedSessionIds.includes(selectedSessionId)
+      ? pinnedSessionIds.includes(sessionIdentityKey(selectedSessionId, activeGatewayProfile))
       : false
 
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
@@ -140,6 +143,7 @@ function ChatHeader({
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
+          profile={activeStoredSession?.profile ?? activeGatewayProfile}
           sessionId={selectedSessionId || activeSessionId || ''}
           sideOffset={8}
           title={title}

@@ -97,7 +97,10 @@ async function openWindow(call: () => Promise<WindowOpenResult>, failMessage: st
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
+export async function openSessionInNewWindow(
+  sessionId: string,
+  opts?: { profile?: string; watch?: boolean }
+): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
@@ -106,10 +109,10 @@ export async function openSessionInNewWindow(sessionId: string, opts?: { watch?:
 }
 
 // Open a fresh compact window on the new-session draft.
-export async function openNewSessionInNewWindow(): Promise<void> {
+export async function openNewSessionInNewWindow(profile = 'default'): Promise<void> {
   if (!canOpenSessionWindow() || typeof window.hermesDesktop.openNewSessionWindow !== 'function') {
     return
   }
 
-  await openWindow(() => window.hermesDesktop.openNewSessionWindow(), 'Could not open new session window')
+  await openWindow(() => window.hermesDesktop.openNewSessionWindow(profile), 'Could not open new session window')
 }

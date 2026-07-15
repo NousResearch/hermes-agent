@@ -15,7 +15,7 @@
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
   <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
   <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
-  <a href="README.ja-JP.md"><img src="https://img.shields.io/badge/Lang-日本語-green?style=for-the-badge" alt="日本語"></a>
+  <a href="README.ja-JP.md"><img src="https://img.shields.io/badge/Lang-日本語-1E90FF?style=for-the-badge" alt="日本語"></a>
 </p>
 
 **[Nous Research](https://nousresearch.com)が構築した、自己改善型のAIエージェントです。** 学習ループを組み込んだ唯一のエージェントであり、経験からスキルを生成し、使用中にそれらを改善し、自身に知識の永続化を促し、過去の会話を自ら検索し、セッションをまたいであなたという人物への理解を深めていきます。月5ドルのVPSでも、GPUクラスタでも、アイドル時にはほぼゼロコストのサーバーレス基盤でも動作します。ノートPCに縛られることはなく、Telegramから話しかけている間にクラウドVM上で作業を進めさせることもできます。

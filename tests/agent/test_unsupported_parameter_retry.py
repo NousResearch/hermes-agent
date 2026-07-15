@@ -36,6 +36,10 @@ class TestIsUnsupportedParameterError:
         ("temperature", "HTTP 400: Unsupported parameter: temperature"),
         ("temperature", "Error code: 400 - {'error': {'code': 'unsupported_parameter', 'param': 'temperature'}}"),
         ("temperature", "this model does not support temperature"),
+        (
+            "temperature",
+            "temperature may only be set to 1 when thinking is enabled",
+        ),
         # max_tokens phrasings
         ("max_tokens", "HTTP 400: Unsupported parameter: max_tokens"),
         ("max_tokens", "Unknown parameter: max_tokens — use max_completion_tokens"),
@@ -139,4 +143,57 @@ class TestMaxTokensRetryHardening:
                 )
 
         assert client.chat.completions.create.call_count == 1
+
+
+class TestFixedTemperatureContractRetry:
+    """Thinking gateways may require a server-managed temperature value."""
+
+    @pytest.mark.parametrize("async_mode", [False, True])
+    @pytest.mark.asyncio
+    async def test_retries_without_temperature_when_gateway_requires_one(
+        self, async_mode
+    ):
+        client = MagicMock()
+        client.base_url = "https://compatible.example/v1"
+        rejected = RuntimeError(
+            "temperature may only be set to 1 when thinking is enabled"
+        )
+        accepted = _dummy_response()
+        if async_mode:
+            client.chat.completions.create = AsyncMock(
+                side_effect=[rejected, accepted]
+            )
+        else:
+            client.chat.completions.create.side_effect = [rejected, accepted]
+
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("custom", "stable-alias", None, None, None),
+            ),
+            patch(
+                "agent.auxiliary_client._get_cached_client",
+                return_value=(client, "stable-alias"),
+            ),
+            patch(
+                "agent.auxiliary_client._validate_llm_response",
+                side_effect=lambda response, _task: response,
+            ),
+        ):
+            kwargs = dict(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+                temperature=0.3,
+            )
+            if async_mode:
+                result = await async_call_llm(**kwargs)
+            else:
+                result = call_llm(**kwargs)
+
+        assert result is accepted
+        assert client.chat.completions.create.call_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.3
+        assert "temperature" not in retry_kwargs
 

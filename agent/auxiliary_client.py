@@ -3123,6 +3123,7 @@ def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
         "unrecognized request argument",
         "unrecognized parameter",
         "invalid parameter",
+        "may only be set to",
     ))
 
 

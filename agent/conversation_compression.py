@@ -546,14 +546,6 @@ def compress_context(
     # Set True once the in-place DB write actually completes (the DB block can
     # raise and skip it). Surfaced to the gateway via agent._last_compaction_in_place.
     compacted_in_place = False
-    logger.info(
-        "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
-        agent.session_id or "none", _pre_msg_count,
-        f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
-        focus_topic,
-    )
-    agent._emit_status(COMPACTION_STATUS)
-
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
     # AIAgent instances that share the same session_id (most commonly the
@@ -699,6 +691,17 @@ def compress_context(
                 _lock_ttl,
                 _lock_refresh_interval,
             ).start()
+
+    # Only the lock winner is genuinely compacting. Emitting this status before
+    # acquisition made every contender look active in gateway UIs even though
+    # losing paths immediately returned unchanged messages.
+    logger.info(
+        "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
+        agent.session_id or "none", _pre_msg_count,
+        f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
+        focus_topic,
+    )
+    agent._emit_status(COMPACTION_STATUS)
 
     def _release_lock() -> None:
         """Release the lock keyed on the OLD session_id (before rotation)."""

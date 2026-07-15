@@ -1285,7 +1285,24 @@ class AIAgent:
         """
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
-        if uses_implicit_default and base_url and is_local_endpoint(base_url):
+        # A loopback URL does not prove inference is local. Aggregators and
+        # reverse proxies commonly listen on localhost while forwarding to a
+        # remote model; disabling the stale watchdog for those routes turns an
+        # upstream hang into an unbounded wait. Exempt only runtimes we can
+        # positively identify as local inference backends.
+        provider_lower = (getattr(self, "provider", "") or "").strip().lower()
+        base_url_lower = base_url.lower()
+        genuine_local_inference = (
+            provider_lower in {"ollama", "lmstudio"}
+            or "ollama" in base_url_lower
+            or ":11434" in base_url_lower
+        )
+        if (
+            uses_implicit_default
+            and base_url
+            and is_local_endpoint(base_url)
+            and genuine_local_inference
+        ):
             return float("inf")
 
         from agent.chat_completion_helpers import estimate_request_context_tokens

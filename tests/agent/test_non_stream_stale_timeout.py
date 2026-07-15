@@ -100,6 +100,43 @@ def test_estimator_unknown_dict_fallback():
 # ── default base + tier scaling ────────────────────────────────────────────
 
 
+def test_loopback_aggregator_keeps_stale_watchdog(monkeypatch, tmp_path):
+    """A loopback proxy to remote models is not a local inference backend."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(
+        tmp_path,
+        provider="9router",
+        model="cx/gpt-5.6-sol",
+        base_url="http://localhost:20128/v1",
+    )
+    payload = {
+        "model": agent.model,
+        "messages": [{"role": "user", "content": "x" * 500_000}],
+    }
+
+    assert agent._compute_non_stream_stale_timeout(payload) == 240.0
+
+
+def test_genuine_local_inference_keeps_unlimited_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(
+        tmp_path,
+        provider="ollama",
+        model="llama3.2",
+        base_url="http://localhost:11434/v1",
+    )
+
+    assert agent._compute_non_stream_stale_timeout({"messages": []}) == float("inf")
+
+
 def test_default_base_is_90s(monkeypatch, tmp_path):
     """Default base stale timeout dropped from 300s to 90s (May 2026)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

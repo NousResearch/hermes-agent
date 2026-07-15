@@ -10854,6 +10854,71 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # SIGUSR1 wiring, drain exceeded the budget,
                             # restart-policy mismatch).
                             #
+                            # Before restarting, check that the unit file
+                            # still exists.  A graceful SIGUSR1 drain on
+                            # user-scope units can leave systemd in a state
+                            # where the unit reports ``not-found`` even
+                            # though the unit file is present on disk.
+                            # Attempting restart in that state produces a
+                            # spurious ``"Unit ... not found"`` error.
+                            _load_state_check = subprocess.run(
+                                scope_cmd
+                                + [
+                                    "show",
+                                    svc_name,
+                                    "--property=LoadState",
+                                    "--value",
+                                ],
+                                capture_output=True,
+                                text=True,
+                                timeout=5,
+                            )
+                            _load_state = (_load_state_check.stdout or "").strip()
+                            if _load_state == "not-found":
+                                # Unit file no longer visible to systemd —
+                                # skip the restart to avoid a misleading
+                                # error.  The gateway was already drained;
+                                # if it was a user unit with Restart=always,
+                                # systemd will respawn it on its own.
+                                print(
+                                    f"  → {svc_name}: unit not-found after drain; "
+                                    "letting systemd auto-reload"
+                                )
+                                # Give systemd a moment to reload unit files.
+                                _time.sleep(2.0)
+                                _reload_ok = False
+                                try:
+                                    subprocess.run(
+                                        scope_cmd + ["daemon-reload"],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=10,
+                                    )
+                                    _reload_ok = True
+                                except (FileNotFoundError, subprocess.TimeoutExpired):
+                                    pass
+                                if _reload_ok:
+                                    _after_load = subprocess.run(
+                                        scope_cmd
+                                        + [
+                                            "show",
+                                            svc_name,
+                                            "--property=LoadState",
+                                            "--value",
+                                        ],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=5,
+                                    )
+                                    if (_after_load.stdout or "").strip() != "not-found":
+                                        # Unit reappeared after reload — proceed
+                                        # with the normal restart path below.
+                                        pass
+                                    else:
+                                        continue
+                                else:
+                                    continue
+
                             # Always `reset-failed` first.  If systemd's own
                             # auto-restart attempts already parked the unit
                             # in a failed state (transient CHDIR / OOM /

@@ -34,7 +34,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -91,6 +91,44 @@ def _ws_dial_url(url: str) -> str:
     return raw
 
 
+def _render_relay_context(context: Any) -> Optional[str]:
+    """Render the connector's read-only surrounding-context array into the string
+    ``MessageEvent.channel_context`` field.
+
+    The connector attaches ``context`` as a list of normalized message objects
+    (oldest→newest, same channel) for an addressed turn on a context-capable
+    platform (design relay-channel-context). We flatten each to a
+    ``<author>: <text>`` line so it rides the SAME read-only injection path that
+    history-backfill already uses (run.py prepends ``channel_context`` ahead of
+    the trigger message). This is REFERENCE context only — it never triggers the
+    agent; the trigger decision was already made connector-side on the addressed
+    event alone.
+
+    Returns None when there is no usable context (absent/empty list, or a
+    connector that doesn't send the field), so ``channel_context`` stays unset
+    and behaviour is byte-identical to today. Never raises — a malformed context
+    payload must not break inbound delivery of the (already-admitted) turn.
+    """
+    if not context or not isinstance(context, list):
+        return None
+    lines: List[str] = []
+    for item in context:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if not text:
+            continue
+        src = item.get("source") or {}
+        author = ""
+        if isinstance(src, dict):
+            author = src.get("user_name") or src.get("user_id") or ""
+        lines.append(f"{author}: {text}" if author else str(text))
+    if not lines:
+        return None
+    body = "\n".join(lines)
+    return f"[Recent channel messages]\n{body}"
+
+
 def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
     """Rebuild a MessageEvent from the connector's normalized inbound payload.
 
@@ -117,9 +155,18 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_topic=src.get("chat_topic"),
         user_id_alt=src.get("user_id_alt"),
         chat_id_alt=src.get("chat_id_alt"),
-        guild_id=src.get("guild_id"),
+        scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        # The HERMES profile this event is routed to (multiplex mode). The
+        # connector stamps it on the wire source when NAS resolves the target
+        # profile for a Team-Gateway message; absent for a single-profile
+        # gateway, where it stays None and session keys keep the legacy
+        # ``agent:main`` namespace (SessionStore._resolve_profile_for_key).
+        # Consumed by build_session_key's profile namespacing + the per-turn
+        # config/credential scope — the same field the /p/<profile>/ HTTP
+        # prefix and per-credential polling adapters already set.
+        profile=src.get("profile"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the
@@ -141,6 +188,15 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         media_urls=raw.get("media_urls") or [],
+        # Surrounding channel/group CONTEXT the connector attached for this
+        # addressed turn (design relay-channel-context): a read-only, oldest→
+        # newest list of nearby non-addressed messages (Model A pull / Model B
+        # buffer). Rendered into the existing ``channel_context`` field — the
+        # same read-only injection path history-backfill already uses
+        # (run.py prepends it ahead of the trigger message). Absent / empty on a
+        # connector that doesn't send it, a dm, or a no-context platform, so
+        # this is purely additive and byte-identical to today when unset.
+        channel_context=_render_relay_context(raw.get("context")),
     )
 
 

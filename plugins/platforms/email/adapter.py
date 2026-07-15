@@ -673,7 +673,25 @@ class EmailAdapter(BasePlatformAdapter):
                     if status != "OK":
                         continue
 
-                    raw_email = msg_data[0][1]
+                    # IMAP fetch can return unexpected structures (e.g. a
+                    # single bytes item instead of a list of tuples). Guard
+                    # against IndexError / TypeError so one malformed response
+                    # doesn't abort the batch — the UID is already in
+                    # _seen_uids, so an abort would permanently skip the
+                    # remaining messages in this batch.
+                    try:
+                        raw_email = msg_data[0][1]
+                    except (IndexError, TypeError):
+                        logger.warning(
+                            "[Email] Unexpected IMAP response structure for UID %s, skipping",
+                            uid,
+                        )
+                        continue
+                    if not isinstance(raw_email, (bytes, bytearray)):
+                        logger.warning(
+                            "[Email] Non-bytes IMAP payload for UID %s, skipping", uid
+                        )
+                        continue
                     msg = email_lib.message_from_bytes(raw_email)
 
                     sender_raw = msg.get("From", "")
@@ -776,7 +794,17 @@ class EmailAdapter(BasePlatformAdapter):
         # a race between dispatch and authorization can result in the adapter
         # sending a reply even though the handler returned None.
         allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
-        if allowed_raw:
+        if not allowed_raw:
+            if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
+                os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
+            ):
+                logger.debug(
+                    "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "
+                    "and open access is not opted in: %s",
+                    sender_addr,
+                )
+                return
+        else:
             allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
             if sender_addr.lower() not in allowed:
                 logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
@@ -880,6 +908,16 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
             return SendResult(success=False, error=str(e))
 
+    def _message_id_domain(self) -> str:
+        """Domain part for generated Message-IDs.
+
+        EMAIL_ADDRESS may lack an ``@`` (misconfiguration); fall back to
+        ``localhost`` instead of crashing send with an IndexError.
+        """
+        if "@" in self._address:
+            return self._address.rsplit("@", 1)[-1] or "localhost"
+        return "localhost"
+
     def _send_email(
         self,
         to_addr: str,
@@ -905,7 +943,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         msg["Message-ID"] = msg_id
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -1018,7 +1056,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         msg["Message-ID"] = msg_id
 
         if body:
@@ -1098,7 +1136,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["References"] = original_msg_id
 
         msg["Date"] = formatdate(localtime=True)
-        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
         msg["Message-ID"] = msg_id
 
         if body:

@@ -16,7 +16,7 @@ Core invariant these tests pin:
 """
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -98,6 +98,73 @@ def test_absolute_input_path_ignores_base(_isolated_cwd, monkeypatch):
     resolved = ft._resolve_path_for_task(abs_target, task_id="default")
 
     assert resolved == Path(abs_target).resolve()
+
+
+def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
+    """Docker paths are sandbox-local and must not be host-dereferenced.
+
+    A user may have a host symlink at a container-looking path such as
+    ``/workspace/projects``. For Docker file ops, resolving that symlink on the
+    host rewrites the path before Docker sees it, making file tools and terminal
+    disagree about where the file lives.
+    """
+    host_project = tmp_path / "host-project"
+    host_project.mkdir()
+    container_mount = tmp_path / "workspace-projects"
+    container_mount.symlink_to(host_project, target_is_directory=True)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+
+    container_path = container_mount / "oilsands-sim" / "README.md"
+    resolved = ft._resolve_path_for_task(str(container_path), task_id="default")
+
+    assert resolved == container_path
+    assert resolved != (host_project / "oilsands-sim" / "README.md")
+
+
+def test_container_path_normalization_uses_posix_path_syntax():
+    resolved = ft._normalize_without_host_deref("/workspace/projects/foo/../bar")
+
+    assert resolved == PurePosixPath("/workspace/projects/bar")
+    assert str(resolved) == "/workspace/projects/bar"
+
+
+def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypatch):
+    """Relative Docker paths should stay under the container cwd textually."""
+    host_project = tmp_path / "host-project"
+    host_project.mkdir()
+    container_mount = tmp_path / "workspace-projects"
+    container_mount.symlink_to(host_project, target_is_directory=True)
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: {"env_type": "docker"})
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(container_mount))
+
+    resolved = ft._resolve_path_for_task("oilsands-sim/README.md", task_id="default")
+
+    assert resolved == container_mount / "oilsands-sim" / "README.md"
+    assert resolved != host_project / "oilsands-sim" / "README.md"
+
+
+class _DummyDockerEnvironment:
+    cwd = "/workspace"
+    cwd_owner = "default"
+
+
+def test_container_path_detection_uses_live_docker_environment(monkeypatch):
+    """A live DockerEnvironment-shaped env should beat config fallback."""
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": _DummyDockerEnvironment()},
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: (_ for _ in ()).throw(AssertionError("should not read config")),
+    )
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    assert ft._uses_container_paths("default") is True
 
 
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
@@ -394,3 +461,27 @@ def test_unknown_owner_keeps_prior_single_session_behavior(tmp_path, monkeypatch
     )
     assert ft._get_live_tracking_cwd("default") == str(ws)
     assert ft._get_live_tracking_cwd("any-session") == str(ws)
+
+
+def test_preserved_cwd_does_not_override_non_owning_sessions_worktree(
+    _two_worktree_sessions, monkeypatch
+):
+    """#26211 belt-and-suspenders must not break worktree isolation.
+
+    The owner (session B) doing an owned live read mirrors wt_b into the shared
+    _last_known_cwd['default'] registry. Session A — which does NOT own the env
+    but HAS its own registered worktree (wt_a) — must still resolve into wt_a,
+    not inherit B's preserved cwd through the shared-container key. The
+    session-specific registered override must beat the durable shared anchor.
+    """
+    wt_a, wt_b, _main = _two_worktree_sessions
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+    # Owner B resolves first — this mirrors wt_b into _last_known_cwd['default'].
+    assert ft._resolve_path_for_task("target.py", task_id="sess-b") == (wt_b / "target.py")
+    assert ft._last_known_cwd.get("default") == str(wt_b)
+
+    # A still routes to its own registered worktree despite the shared anchor.
+    resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
+    assert resolved_a == (wt_a / "target.py")
+    assert not str(resolved_a).startswith(str(wt_b))

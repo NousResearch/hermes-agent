@@ -37,10 +37,14 @@
 }:
 let
   nodejs = nodejs_22;
-  hermesVenv = callPackage ./python.nix {
-    inherit uv2nix pyproject-nix pyproject-build-systems;
-    dependency-groups = [ "all" ] ++ extraDependencyGroups;
-  };
+  mkHermesVenv =
+    extraDependencyGroups:
+    callPackage ./python.nix {
+      inherit uv2nix pyproject-nix pyproject-build-systems;
+      dependency-groups = [ "all" ] ++ extraDependencyGroups;
+    };
+
+  hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix nodejs;
@@ -106,12 +110,6 @@ let
 
   pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 
-  pyprojectHash = builtins.hashString "sha256" (builtins.readFile ../pyproject.toml);
-  uvLockHash =
-    if builtins.pathExists ../uv.lock then
-      builtins.hashString "sha256" (builtins.readFile ../uv.lock)
-    else
-      "none";
   checkPackageCollisions = ''
     import pathlib, sys, re
 
@@ -202,43 +200,36 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
-  passthru = {
-    inherit
-      hermesTui
-      hermesWeb
-      hermesNpmLib
-      hermesVenv
-      ;
+  passthru =
+    let
+      devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+    in
+    {
+      inherit
+        hermesTui
+        hermesWeb
+        hermesNpmLib
+        hermesVenv
+        ;
 
-    # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
-    # derivation, after all overrides are applied) so the desktop wrapper
-    # can prepend its `/bin` to PATH.  The desktop's resolver step 4
-    # ("existing hermes on PATH") then picks up the fully wrapped
-    # `hermes` binary — venv with all deps, bundled skills/plugins,
-    # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
-    # of the agent resolution in the desktop wrapper.
-    hermesDesktop = callPackage ./desktop.nix {
-      inherit hermesNpmLib electron;
-      hermesAgent = finalAttrs.finalPackage;
+      # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
+      # derivation, after all overrides are applied) so the desktop wrapper
+      # can prepend its `/bin` to PATH.  The desktop's resolver step 4
+      # ("existing hermes on PATH") then picks up the fully wrapped
+      # `hermes` binary — venv with all deps, bundled skills/plugins,
+      # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
+      # of the agent resolution in the desktop wrapper.
+      hermesDesktop = callPackage ./desktop.nix {
+        inherit hermesNpmLib electron;
+        hermesAgent = finalAttrs.finalPackage;
+      };
+
+      devShellHook = ''
+        export HERMES_PYTHON=${devPython}/bin/python3
+      '';
+
+      devDeps = runtimeDeps ++ [ devPython ];
     };
-
-    devShellHook = ''
-      STAMP=".nix-stamps/hermes-agent"
-      STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
-      if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
-        echo "hermes-agent: installing Python dependencies..."
-        uv venv .venv --python ${python312}/bin/python3 2>/dev/null || true
-        source .venv/bin/activate
-        uv pip install -e ".[all]"
-        [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-        mkdir -p .nix-stamps
-        echo "$STAMP_VALUE" > "$STAMP"
-      else
-        source .venv/bin/activate
-        export HERMES_PYTHON=${hermesVenv}/bin/python3
-      fi
-    '';
-  };
 
   meta = with lib; {
     description = "AI agent with advanced tool-calling capabilities";

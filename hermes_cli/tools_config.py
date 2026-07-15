@@ -1354,6 +1354,28 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
         _print_info("    Pair with an extract provider if you also need web_extract.")
 
+    elif post_setup_key == "markitdown":
+        try:
+            __import__("markitdown")
+            _print_success("    markitdown is already installed")
+        except ImportError:
+            _print_info("    Installing markitdown (Microsoft's HTML-to-markdown library)...")
+            try:
+                result = _pip_install(["-U", "markitdown", "--quiet"], timeout=300)
+                if result.returncode == 0:
+                    _print_success("    markitdown installed")
+                else:
+                    _print_warning("    markitdown install failed:")
+                    _print_info(f"      {(result.stderr or '').strip()[:300]}")
+                    _print_info("    Run manually: uv pip install -U markitdown")
+                    return
+            except subprocess.TimeoutExpired:
+                _print_warning("    markitdown install timed out (>5min)")
+                _print_info("    Run manually: uv pip install -U markitdown")
+                return
+        _print_info("    No API key required. Converts HTML pages to markdown locally.")
+        _print_info("    Pair with a search provider (brave-free, ddgs, searxng) for web_search.")
+
     elif post_setup_key == "spotify":
         # Run the full `hermes auth spotify` flow — if the user has no
         # client_id yet, this drops them into the interactive wizard

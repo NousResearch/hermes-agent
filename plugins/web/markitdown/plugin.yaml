@@ -1,0 +1,5 @@
+name: web-markitdown
+version: 1.0.0
+description: "MarkItDown — self-hosted, local web page to markdown conversion via Microsoft's MarkItDown library. No API key needed. Requires the markitdown Python package."
+author: NousResearch
+kind: backend

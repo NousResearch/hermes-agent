@@ -169,7 +169,7 @@ def _load_web_config() -> dict:
 # WebSearchProvider. Keep the two sets aligned by hand: if xai ever ships as
 # a registered provider, drop it here so the registry path takes over.
 _LEGACY_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "markitdown"}
 )
 
 
@@ -247,6 +247,7 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
+        ("markitdown", _markitdown_package_importable()),
     )
     for backend, available in backend_candidates:
         if available:
@@ -349,6 +350,8 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "markitdown":
+        return _markitdown_package_importable()
     return False
 
 
@@ -366,8 +369,22 @@ def _ddgs_package_importable() -> bool:
     except ImportError:
         return False
 
-# ─── Firecrawl Client ────────────────────────────────────────────────────────
 
+def _markitdown_package_importable() -> bool:
+    """Return True when the ``markitdown`` Python package can be imported.
+
+    Like ddgs, markitdown's availability is driven by package presence
+    rather than an env var. Wrapped in a helper so auto-detect and
+    ``_is_backend_available`` share the same check.
+    """
+    try:
+        import markitdown  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# ─── Firecrawl Client ────────────────────────────────────────────────────────
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 # After PR #25182, the firecrawl client, lazy SDK proxy, dual-auth config
 # resolution, response normalizers, and check_firecrawl_api_key() all live
@@ -887,7 +904,7 @@ async def web_extract_tool(
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, parallel, or markitdown."
                             ),
                         },
                         ensure_ascii=False,
@@ -921,7 +938,7 @@ async def web_extract_tool(
                             "error": (
                                 "No web extract provider configured. "
                                 "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "tavily, exa, parallel, or markitdown."
                             ),
                         },
                         ensure_ascii=False,
@@ -1114,6 +1131,8 @@ if __name__ == "__main__":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
+        elif backend == "markitdown":
+            print("   Using MarkItDown (local HTML-to-markdown, extract only)")
         elif firecrawl_url_available:
             print(f"   Using self-hosted Firecrawl: {(_gev('FIRECRAWL_API_URL') or '').strip().rstrip('/')}")
         elif firecrawl_key_available:
@@ -1123,10 +1142,11 @@ if __name__ == "__main__":
         else:
             print("   Firecrawl backend selected but not configured")
     else:
-        print("❌ No web search backend configured")
+        print("❌ No web search/extract backend configured")
         print(
             "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
-            f"{_firecrawl_backend_help_suffix()}"
+            f"{_firecrawl_backend_help_suffix()}, or install markitdown"
+            " (pip install markitdown) for local extract-only use."
         )
 
     if not web_available:

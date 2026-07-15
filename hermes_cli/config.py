@@ -1260,6 +1260,13 @@ DEFAULT_CONFIG = {
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)
         "container_persistent": True,   # Persist filesystem across sessions
+        # Local backend cgroup guard (MiB). 0 disables. On systemd hosts, local
+        # terminal subprocesses can run in transient user units with MemoryMax so
+        # heavy builds/tests cannot OOM-kill the long-lived gateway service.
+        "local_memory_max_mb": 0,
+        # Swap allowance for guarded local terminal subprocesses (MiB). 0 means
+        # no swap for the child cgroup when the guard is enabled.
+        "local_memory_swap_max_mb": 0,
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
         # Example:
@@ -7220,6 +7227,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "container_memory": "TERMINAL_CONTAINER_MEMORY",
     "container_disk": "TERMINAL_CONTAINER_DISK",
     "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+    "local_memory_max_mb": "TERMINAL_LOCAL_MEMORY_MAX_MB",
+    "local_memory_swap_max_mb": "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB",
     "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
     "docker_env": "TERMINAL_DOCKER_ENV",
     "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",

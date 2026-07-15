@@ -1442,6 +1442,8 @@ def _get_env_config() -> Dict[str, Any]:
             os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_memory_max_mb": _parse_env_var("TERMINAL_LOCAL_MEMORY_MAX_MB", "0"),
+        "local_memory_swap_max_mb": _parse_env_var("TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB", "0"),
         # Container resource config (applies to docker, singularity, modal,
         # daytona -- ignored for local/ssh)
         "container_cpu": container_cpu,

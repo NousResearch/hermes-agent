@@ -5,12 +5,14 @@ import ntpath
 import os
 import platform
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -613,6 +615,318 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     _inject_session_context_env(env)
 
     return env
+
+
+def _parse_local_memory_limit_mb(name: str, default: int = 0) -> int:
+    """Parse a local terminal memory limit in MiB; <=0 disables it."""
+    raw = os.environ.get(name, "")
+    if raw in {"", None}:
+        return default
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; local terminal memory guard disabled", name, raw)
+        return default
+    return max(0, value)
+
+
+def _shell_export_env(run_env: dict) -> str:
+    """Render a sanitized environment as shell exports for systemd-run scripts."""
+    lines = []
+    for key, value in sorted((run_env or {}).items()):
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(key)):
+            continue
+        if value is None:
+            continue
+        lines.append(f"export {key}={shlex.quote(str(value))}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+_SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_POSITIVE = 60.0
+_SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_NEGATIVE = 10.0
+_SYSTEMD_RUN_AVAILABLE_CACHE: tuple[str, str, bool, float] | None = None
+
+
+def _reset_systemd_run_available_cache() -> None:
+    """Reset the systemd-run availability cache.
+
+    Tests patch probe signals and should be able to force a re-evaluation
+    without relying on wall-clock advancement.
+    """
+    global _SYSTEMD_RUN_AVAILABLE_CACHE
+    _SYSTEMD_RUN_AVAILABLE_CACHE = None
+
+
+def _record_systemd_run_launch_failure() -> None:
+    """Temporarily suppress the guard after a transient-unit launch failure."""
+    global _SYSTEMD_RUN_AVAILABLE_CACHE
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        _SYSTEMD_RUN_AVAILABLE_CACHE = None
+        return
+    xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    _SYSTEMD_RUN_AVAILABLE_CACHE = (
+        systemd_run,
+        xdg_runtime_dir,
+        False,
+        time.monotonic() + _SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_NEGATIVE,
+    )
+
+
+def _systemd_run_available() -> bool:
+    global _SYSTEMD_RUN_AVAILABLE_CACHE
+    if _IS_WINDOWS:
+        return False
+
+    xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    systemd_run = shutil.which("systemd-run")
+    if not systemd_run:
+        _SYSTEMD_RUN_AVAILABLE_CACHE = None
+        return False
+
+    now = time.monotonic()
+    cached_run = _SYSTEMD_RUN_AVAILABLE_CACHE
+    if (
+        cached_run
+        and cached_run[0] == systemd_run
+        and cached_run[1] == xdg_runtime_dir
+        and now < cached_run[3]
+    ):
+        return cached_run[2]
+
+    # systemd-run --user needs a user manager. If we cannot confirm a runtime
+    # context exists or the user bus is reachable, fall back to direct Popen.
+    if not (
+        os.path.isdir(xdg_runtime_dir)
+        or os.path.isdir(os.path.join(xdg_runtime_dir, "systemd"))
+    ):
+        _SYSTEMD_RUN_AVAILABLE_CACHE = (
+            systemd_run,
+            xdg_runtime_dir,
+            False,
+            now + _SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_NEGATIVE,
+        )
+        return False
+    probe_unit = f"hermes-terminal-probe-{uuid.uuid4().hex[:12]}.service"
+    probe_args = [
+        systemd_run,
+        "--user",
+        "--wait",
+        "--quiet",
+        "--collect",
+        "--unit",
+        probe_unit,
+        "-p",
+        "Type=exec",
+    ]
+    try:
+        probe = subprocess.run(
+            [*probe_args, "/bin/true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=0.75,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        stderr = (probe.stderr or "").lower()
+        if "failed to connect to bus" in stderr or "no medium found" in stderr:
+            _SYSTEMD_RUN_AVAILABLE_CACHE = (
+                systemd_run,
+                xdg_runtime_dir,
+                False,
+                now + _SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_NEGATIVE,
+            )
+            return False
+        result = probe.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        _SYSTEMD_RUN_AVAILABLE_CACHE = (
+            systemd_run,
+            xdg_runtime_dir,
+            False,
+            now + _SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_NEGATIVE,
+        )
+        return False
+
+    _SYSTEMD_RUN_AVAILABLE_CACHE = (
+        systemd_run,
+        xdg_runtime_dir,
+        result,
+        now + (
+            _SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_POSITIVE
+            if result
+            else _SYSTEMD_RUN_AVAILABLE_TTL_SECONDS_NEGATIVE
+        ),
+    )
+    return result
+
+
+def _maybe_wrap_with_systemd_memory_guard(
+    *,
+    cmd_string: str,
+    login: bool,
+    run_env: dict,
+    cwd: str,
+    shell: str | None = None,
+    pty: bool = False,
+) -> tuple[list[str] | None, dict | None, str | None, str | None, tuple[str, ...] | None]:
+    """Return systemd-run argv/env/cwd for a cgroup memory-guarded command.
+
+    The guard is opt-in via TERMINAL_LOCAL_MEMORY_MAX_MB. It runs the command
+    in a transient user unit with MemoryMax so a large local child process
+    cannot take down the long-lived Hermes gateway cgroup. The sanitized env is
+    written to a 0600 temp file instead of passed via argv / --setenv to avoid
+    exposing secrets in process command lines.
+    """
+    memory_max_mb = _parse_local_memory_limit_mb("TERMINAL_LOCAL_MEMORY_MAX_MB")
+    if memory_max_mb <= 0 or not _systemd_run_available():
+        return None, None, None, None, None
+
+    memory_swap_max_mb = _parse_local_memory_limit_mb(
+        "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB", 0
+    )
+    temp_root = tempfile.gettempdir()
+    script_fd, script_path = tempfile.mkstemp(
+        prefix="hermes-memguard-", suffix=".sh", dir=temp_root, text=True
+    )
+    env_fd, env_path = tempfile.mkstemp(
+        prefix="hermes-memguard-env-", suffix=".sh", dir=temp_root, text=True
+    )
+    start_fd, start_pending_path = tempfile.mkstemp(
+        prefix="hermes-memguard-start-", suffix=".pending", dir=temp_root, text=True
+    )
+    start_ready_path = f"{start_pending_path}.ready"
+    try:
+        os.fchmod(script_fd, 0o600)
+        os.fchmod(env_fd, 0o600)
+        os.fchmod(start_fd, 0o600)
+        os.close(start_fd)
+        with os.fdopen(env_fd, "w", encoding="utf-8") as env_file:
+            env_file.write(_shell_export_env(run_env))
+        quoted_script = shlex.quote(script_path)
+        quoted_env = shlex.quote(env_path)
+        quoted_cwd = shlex.quote(cwd)
+        quoted_shell = shlex.quote(shell or _find_bash())
+        quoted_start_pending = shlex.quote(start_pending_path)
+        quoted_start_ready = shlex.quote(start_ready_path)
+        quoted_shell_args = "-lic" if login else "-c"
+        with os.fdopen(script_fd, "w", encoding="utf-8") as script_file:
+            script_file.write("#!/usr/bin/env bash\n")
+            script_file.write(f"trap 'rm -f {quoted_script} {quoted_env}' EXIT\n")
+            script_file.write(f"source {quoted_env} >/dev/null 2>&1 || true\n")
+            script_file.write(f"builtin cd -- {quoted_cwd} || exit 126\n")
+            # Atomic launch handshake: only a non-zero systemd-run exit before
+            # this rename is safe to retry without risking duplicate execution.
+            script_file.write(
+                f"mv -- {quoted_start_pending} {quoted_start_ready} "
+                ">/dev/null 2>&1 || true\n"
+            )
+            script_file.write(
+                f"{quoted_shell} {quoted_shell_args} {shlex.quote(cmd_string)}\n"
+            )
+        os.chmod(script_path, 0o700)
+    except Exception:
+        for fd in (script_fd, env_fd, start_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        for path in (script_path, env_path, start_pending_path, start_ready_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        raise
+
+    wrapper_shell = _find_bash()
+    bash_args = [wrapper_shell, "-l", script_path] if login else [wrapper_shell, script_path]
+    unit_name = f"hermes-terminal-{uuid.uuid4().hex[:12]}.service"
+    argv = [
+        "systemd-run",
+        "--user",
+        "--collect",
+        "--pty" if pty else "--pipe",
+        "--quiet",
+        "--unit",
+        unit_name,
+        "-p",
+        "Type=exec",
+        "-p",
+        f"MemoryMax={memory_max_mb}M",
+        "-p",
+        "OOMPolicy=stop",
+        "-p",
+        "KillMode=control-group",
+    ]
+    if memory_swap_max_mb >= 0:
+        argv.extend(["-p", f"MemorySwapMax={memory_swap_max_mb}M"])
+    argv.extend(bash_args)
+    # systemd-run itself needs only its manager env. The child receives run_env
+    # by sourcing env_path inside the script. The final two paths are the
+    # pending/ready launch handshake markers.
+    return (
+        argv,
+        os.environ.copy(),
+        "/",
+        unit_name,
+        (script_path, env_path, start_pending_path, start_ready_path),
+    )
+
+
+def _cleanup_systemd_memory_guard_files(
+    guard_paths: tuple[str, ...] | None,
+) -> None:
+    if not guard_paths:
+        return
+    for path in guard_paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+_SYSTEMD_GUARD_START_TIMEOUT_SECONDS = 0.25
+_SYSTEMD_GUARD_START_POLL_SECONDS = 0.01
+
+
+def _systemd_guard_launch_failed(
+    proc: subprocess.Popen,
+    guard_paths: tuple[str, ...] | None,
+) -> bool:
+    """Whether systemd-run failed before the user's command started.
+
+    Retrying merely because systemd-run exits non-zero can duplicate a command
+    that started and failed quickly. The wrapper atomically renames a private
+    marker immediately before invoking the user's shell, so only an observed
+    non-zero exit without that marker is safe to retry. Unknown launch state at
+    the bounded deadline is never retried.
+    """
+    if not guard_paths or len(guard_paths) < 4:
+        return False
+    start_pending_path, start_ready_path = guard_paths[-2:]
+    deadline = time.monotonic() + _SYSTEMD_GUARD_START_TIMEOUT_SECONDS
+    returncode = None
+    started = False
+    while True:
+        started = os.path.exists(start_ready_path)
+        if started:
+            break
+        returncode = proc.poll()
+        if returncode is not None:
+            # Close the tiny race between the wrapper's rename and observing
+            # the launcher exit.
+            started = os.path.exists(start_ready_path)
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_SYSTEMD_GUARD_START_POLL_SECONDS, remaining))
+
+    # Pending-first cleanup is race-safe with the atomic rename: unlink either
+    # wins before mv, or ready is removed immediately afterward.
+    _cleanup_systemd_memory_guard_files((start_pending_path, start_ready_path))
+    return returncode not in (None, 0) and not started
 
 
 def _find_bash() -> str:
@@ -1376,19 +1690,68 @@ class LocalEnvironment(BaseEnvironment):
 
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            args,
-            text=True,
-            env=run_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
-            start_new_session=True,
-            cwd=_popen_cwd,
-            **_popen_kwargs,
+        guard_args, guard_env, guard_cwd, guard_unit, guard_paths = (
+            _maybe_wrap_with_systemd_memory_guard(
+                cmd_string=cmd_string,
+                login=login,
+                run_env=run_env,
+                cwd=_popen_cwd,
+            )
         )
+        guard_enabled = guard_args is not None
+        original_args = args
+        original_env = run_env.copy()
+        original_cwd = _popen_cwd
+
+        if guard_args is not None:
+            args = guard_args
+            run_env = guard_env or os.environ.copy()
+            _popen_cwd = guard_cwd or "/"
+
+        def _spawn() -> subprocess.Popen:
+            return subprocess.Popen(
+                args,
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=(
+                    subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL
+                ),
+                start_new_session=True,
+                cwd=_popen_cwd,
+                **_popen_kwargs,
+            )
+
+        try:
+            proc = _spawn()
+        except Exception:
+            if not guard_enabled:
+                raise
+            _cleanup_systemd_memory_guard_files(guard_paths)
+            args = original_args
+            run_env = original_env
+            _popen_cwd = original_cwd
+            guard_enabled = False
+            proc = _spawn()
+
+        if guard_enabled and _systemd_guard_launch_failed(proc, guard_paths):
+            logger.warning(
+                "systemd-run exited before the terminal command started; "
+                "retrying without the local memory guard"
+            )
+            _record_systemd_run_launch_failure()
+            _cleanup_systemd_memory_guard_files(guard_paths)
+            args = original_args
+            run_env = original_env
+            _popen_cwd = original_cwd
+            guard_enabled = False
+            proc = _spawn()
+
+        if guard_enabled and guard_unit:
+            proc._hermes_systemd_unit = guard_unit
         if not _IS_WINDOWS:
             try:
                 proc._hermes_pgid = os.getpgid(proc.pid)
@@ -1433,6 +1796,18 @@ class LocalEnvironment(BaseEnvironment):
             return not _group_alive(pgid)
 
         try:
+            systemd_unit = getattr(proc, "_hermes_systemd_unit", None)
+            if systemd_unit and not _IS_WINDOWS:
+                try:
+                    subprocess.run(
+                        ["systemctl", "--user", "stop", systemd_unit],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=2,
+                        check=False,
+                    )
+                except Exception:
+                    pass
             if _IS_WINDOWS:
                 try:
                     from gateway.status import terminate_pid

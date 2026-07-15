@@ -41,7 +41,15 @@ import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
-from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from tools.environments.local import (
+    _cleanup_systemd_memory_guard_files,
+    _find_shell,
+    _maybe_wrap_with_systemd_memory_guard,
+    _record_systemd_run_launch_failure,
+    _resolve_safe_cwd,
+    _sanitize_subprocess_env,
+    _systemd_guard_launch_failed,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -108,6 +116,7 @@ class ProcessSession:
     max_output_chars: int = MAX_OUTPUT_CHARS
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
+    systemd_unit: str = ""                       # transient unit for memory-guarded local processes
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
@@ -724,9 +733,31 @@ class ProcessRegistry:
                 user_shell = _find_shell()
                 pty_env = _sanitize_subprocess_env(os.environ, env_vars)
                 pty_env["PYTHONUNBUFFERED"] = "1"
-                pty_proc = _PtyProcessCls.spawn(
-                    [user_shell, "-lic", f"set +m; {command}"],
+                pty_args = [user_shell, "-lic", f"set +m; {command}"]
+                pty_cwd = session.cwd
+                guard_files = None
+                (
+                    guard_args,
+                    guard_env,
+                    guard_cwd,
+                    guard_unit,
+                    guard_files,
+                ) = _maybe_wrap_with_systemd_memory_guard(
+                    cmd_string=f"set +m; {command}",
+                    login=True,
+                    run_env=pty_env,
                     cwd=session.cwd,
+                    shell=user_shell,
+                    pty=True,
+                )
+                if guard_args is not None:
+                    pty_args = guard_args
+                    pty_env = guard_env or os.environ.copy()
+                    pty_cwd = guard_cwd or "/"
+                    session.systemd_unit = guard_unit or ""
+                pty_proc = _PtyProcessCls.spawn(
+                    pty_args,
+                    cwd=pty_cwd,
                     env=pty_env,
                     dimensions=(30, 120),
                 )
@@ -755,6 +786,8 @@ class ProcessRegistry:
             except ImportError:
                 logger.warning("ptyprocess not installed, falling back to pipe mode")
             except Exception as e:
+                _cleanup_systemd_memory_guard_files(locals().get("guard_files"))
+                session.systemd_unit = ""
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
         # Standard Popen path (non-PTY or PTY fallback)
@@ -768,19 +801,67 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
-            text=True,
-            cwd=session.cwd,
-            env=bg_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            **_popen_kwargs,
+        popen_args = [user_shell, "-lic", f"set +m; {command}"]
+        popen_cwd = session.cwd
+        guard_args, guard_env, guard_cwd, guard_unit, guard_files = (
+            _maybe_wrap_with_systemd_memory_guard(
+                cmd_string=f"set +m; {command}",
+                login=True,
+                run_env=bg_env,
+                cwd=session.cwd,
+                shell=user_shell,
+            )
         )
+        guard_enabled = guard_args is not None
+        original_args = popen_args
+        original_env = bg_env.copy()
+        original_cwd = popen_cwd
+
+        if guard_args is not None:
+            popen_args = guard_args
+            bg_env = guard_env or os.environ.copy()
+            popen_cwd = guard_cwd or "/"
+            session.systemd_unit = guard_unit or ""
+
+        def _spawn() -> subprocess.Popen:
+            return subprocess.Popen(
+                popen_args,
+                text=True,
+                cwd=popen_cwd,
+                env=bg_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+                **_popen_kwargs,
+            )
+
+        try:
+            proc = _spawn()
+        except Exception:
+            if not guard_enabled:
+                raise
+            _cleanup_systemd_memory_guard_files(guard_files)
+            popen_args = original_args
+            bg_env = original_env
+            popen_cwd = original_cwd
+            session.systemd_unit = ""
+            proc = _spawn()
+
+        if guard_enabled and _systemd_guard_launch_failed(proc, guard_files):
+            logger.warning(
+                "systemd-run exited before the background command started; "
+                "retrying without the local memory guard"
+            )
+            _record_systemd_run_launch_failure()
+            _cleanup_systemd_memory_guard_files(guard_files)
+            popen_args = original_args
+            bg_env = original_env
+            popen_cwd = original_cwd
+            session.systemd_unit = ""
+            proc = _spawn()
 
         session.process = proc
         session.pid = proc.pid
@@ -1513,7 +1594,12 @@ class ProcessRegistry:
         """
         from tools.ansi_strip import strip_ansi
 
-        session = self.get(session_id)
+        # Do not route through get(): it refreshes detached sessions from the
+        # wrapper PID before we get a chance to stop a recovered systemd unit.
+        # The unit is the authoritative owner of the guarded cgroup and may
+        # still be active even if its recorded client PID has just vanished.
+        with self._lock:
+            session = self._running.get(session_id) or self._finished.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
@@ -1535,6 +1621,24 @@ class ProcessRegistry:
 
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
+            # A recovered process has no Popen/PTY handle, but its transient
+            # systemd unit still owns the complete guarded cgroup. Stop it
+            # before choosing a runtime-handle branch so recovery does not
+            # fall through to killing only the recorded wrapper PID.
+            systemd_unit_stopped = False
+            if session.systemd_unit and not _IS_WINDOWS:
+                try:
+                    stopped = subprocess.run(
+                        ["systemctl", "--user", "stop", session.systemd_unit],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=2,
+                        check=False,
+                    )
+                    systemd_unit_stopped = stopped.returncode == 0
+                except Exception:
+                    pass
+
             if session._pty:
                 # PTY process -- terminate via ptyprocess
                 try:
@@ -1555,19 +1659,27 @@ class ProcessRegistry:
                 # recycled onto an unrelated process, treat our process as
                 # exited and never tree-kill the stranger.
                 if not self._host_pid_is_ours(session.pid, session.host_start_time):
-                    with session._lock:
-                        session.exited = True
-                        session.exit_code = None
-                        output = strip_ansi(session.output_buffer[-2000:])
-                    if consume_output:
-                        self._completion_consumed.add(session_id)
-                    self._move_to_finished(session)
-                    return {
-                        "status": "already_exited",
-                        "exit_code": session.exit_code,
-                        "output": output,
-                    }
-                self._terminate_host_pid(session.pid, session.host_start_time)
+                    # A successful unit stop is itself the kill operation and
+                    # commonly makes the recorded wrapper PID disappear before
+                    # this identity probe. Do not misreport that as a process
+                    # which had already exited.
+                    if systemd_unit_stopped:
+                        pass
+                    else:
+                        with session._lock:
+                            session.exited = True
+                            session.exit_code = None
+                            output = strip_ansi(session.output_buffer[-2000:])
+                        if consume_output:
+                            self._completion_consumed.add(session_id)
+                        self._move_to_finished(session)
+                        return {
+                            "status": "already_exited",
+                            "exit_code": session.exit_code,
+                            "output": output,
+                        }
+                else:
+                    self._terminate_host_pid(session.pid, session.host_start_time)
             else:
                 return {
                     "status": "error",
@@ -1908,6 +2020,7 @@ class ProcessRegistry:
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
+                            "systemd_unit": s.systemd_unit,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -1974,6 +2087,7 @@ class ProcessRegistry:
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
+                systemd_unit=entry.get("systemd_unit", ""),
                 cwd=entry.get("cwd"),
                 started_at=entry.get("started_at", time.time()),
                 detached=True,  # Can't read output, but can report status + kill

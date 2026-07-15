@@ -1737,6 +1737,14 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # Z.ai/Zhipu Coding Plan blocks on the exact phrase "Hermes Agent" in
+        # the system prompt (#47685, #53002). Sanitize the outbound copy at the
+        # request boundary so the summary path is covered too — the cache is
+        # left untouched to preserve the byte-stability invariant.
+        from agent.zai_prompt_sanitizer import sanitize_zai_api_messages
+        api_messages = sanitize_zai_api_messages(agent, api_messages)
+
         if agent.prefill_messages:
             sys_offset = 1 if effective_system else 0
             for idx, pfm in enumerate(agent.prefill_messages):

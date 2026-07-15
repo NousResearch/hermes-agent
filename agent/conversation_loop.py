@@ -854,6 +854,14 @@ def run_conversation(
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
+        # Z.ai/Zhipu Coding Plan blocks on the exact phrase "Hermes Agent" in
+        # the system prompt (#47685, #53002). Sanitize the outbound copy at the
+        # request boundary — never the cached/persisted prompt — so resumed
+        # sessions that restore a branded prompt verbatim are covered too, and
+        # the byte-stability invariant for prefix-cache warmth is preserved.
+        from agent.zai_prompt_sanitizer import sanitize_zai_api_messages
+        api_messages = sanitize_zai_api_messages(agent, api_messages)
+
         if moa_config:
             try:
                 from agent.message_content import flatten_message_text as _flatten_mt

@@ -215,4 +215,49 @@ describe('pastePlainTextIntoEditor', () => {
 
     editor.remove()
   })
+
+  it('routes through execCommand when a descendant element is focused (chip focus)', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+
+    // Place a child element inside the editor and focus it — simulates focus on
+    // a directive chip or inline ref. `document.activeElement === editor` is
+    // false here, but `editor.contains(document.activeElement)` is true.
+    const child = document.createElement('span')
+    child.tabIndex = 0
+    editor.append(child)
+    child.focus()
+
+    const execStub = installExecStub((command, _showUi, value) => {
+      if (command === 'insertText' && typeof value === 'string') {
+        editor.append(value)
+      }
+
+      return true
+    })
+    pastePlainTextIntoEditor(editor, 'chip paste')
+
+    expect(execStub).toHaveBeenCalledWith('insertText', false, 'chip paste')
+    expect(composerPlainText(editor)).toBe('chip paste')
+
+    editor.remove()
+  })
+
+  it('falls back to insertPlainTextAtCaret when execCommand returns false', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    focusEditor(editor)
+
+    // execCommand returns false (e.g. unsupported command, disabled editing)
+    const execStub = installExecStub(() => false)
+
+    pastePlainTextIntoEditor(editor, 'fallback text')
+
+    expect(execStub).toHaveBeenCalledWith('insertText', false, 'fallback text')
+    expect(composerPlainText(editor)).toBe('fallback text')
+
+    editor.remove()
+  })
 })

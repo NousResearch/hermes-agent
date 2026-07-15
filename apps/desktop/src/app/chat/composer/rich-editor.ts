@@ -188,14 +188,24 @@ export const LARGE_PASTE_THRESHOLD_CHARS = 4096
  *  large pastes we fall back to `insertPlainTextAtCaret` to avoid the O(n²)
  *  freeze and accept the lost undo entry. */
 export function pastePlainTextIntoEditor(editor: HTMLElement, text: string) {
-  if (document.activeElement === editor && text.length <= LARGE_PASTE_THRESHOLD_CHARS) {
+  const isEditorFocused =
+    document.activeElement === editor || editor.contains(document.activeElement)
+
+  if (isEditorFocused && text.length <= LARGE_PASTE_THRESHOLD_CHARS) {
     // execCommand('insertText') is the only path that goes through Blink's
     // editing pipeline from a paste handler after we've called
     // preventDefault. It fires the InputEvent `handleEditorInput` is listening
     // for AND pushes an entry onto the contentEditable undo stack.
-    document.execCommand('insertText', false, text)
-
-    return
+    try {
+      if (document.execCommand('insertText', false, text)) {
+        return
+      }
+    } catch {
+      // execCommand is unavailable in some environments (jsdom without a stub,
+      // older browsers, or when contentEditable is disabled). Fall through to
+      // the direct DOM-mutation path — the paste still lands, just without an
+      // undo entry.
+    }
   }
 
   insertPlainTextAtCaret(editor, text)

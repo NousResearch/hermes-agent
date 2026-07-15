@@ -312,21 +312,24 @@ export function useComposerActions({
     requestComposerInsert(refText, { mode: 'inline' })
   }, [])
 
-  const addContextRefAttachment = useCallback((refText: string, label?: string, detail?: string) => {
-    const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
-      ? 'folder'
-      : refText.startsWith('@url:')
-        ? 'url'
-        : 'file'
+  const addContextRefAttachment = useCallback(
+    (refText: string, label?: string, detail?: string) => {
+      const kind: ComposerAttachment['kind'] = refText.startsWith('@folder:')
+        ? 'folder'
+        : refText.startsWith('@url:')
+          ? 'url'
+          : 'file'
 
-    attachToMain({
-      id: attachmentId(kind, refText),
-      kind,
-      label: label || refText.replace(/^@(file|folder|url):/, ''),
-      detail,
-      refText
-    })
-  }, [attachToMain])
+      attachToMain({
+        id: attachmentId(kind, refText),
+        kind,
+        label: label || refText.replace(/^@(file|folder|url):/, ''),
+        detail,
+        refText
+      })
+    },
+    [attachToMain]
+  )
 
   const pickContextPaths = useCallback(
     async (kind: 'file' | 'folder') => {

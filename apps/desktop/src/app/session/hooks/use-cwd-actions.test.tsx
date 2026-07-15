@@ -71,11 +71,7 @@ describe('useCwdActions draft workspace target', () => {
     let handle: CwdActionsHandle | null = null
 
     render(
-      <Harness
-        activeSessionIdRef={activeSessionIdRef}
-        onReady={h => (handle = h)}
-        requestGateway={requestGateway}
-      />
+      <Harness activeSessionIdRef={activeSessionIdRef} onReady={h => (handle = h)} requestGateway={requestGateway} />
     )
     await waitFor(() => expect(handle).not.toBeNull())
 

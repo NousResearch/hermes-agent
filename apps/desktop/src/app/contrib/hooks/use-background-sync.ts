@@ -116,7 +116,10 @@ export function useBackgroundSync({
       return
     }
 
-    const dispose = visiblePoll(ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS, () => void refreshActiveMessagingTranscript())
+    const dispose = visiblePoll(
+      ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS,
+      () => void refreshActiveMessagingTranscript()
+    )
     void refreshActiveMessagingTranscript()
 
     return dispose

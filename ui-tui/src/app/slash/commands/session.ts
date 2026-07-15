@@ -20,6 +20,7 @@ import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
+
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
 

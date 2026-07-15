@@ -31,7 +31,8 @@ describe('sameCronSignature', () => {
 })
 
 describe('sessionMessagesSignature', () => {
-  const msg = (role: string, content: string) => ({ role, content }) as Parameters<typeof sessionMessagesSignature>[0][number]
+  const msg = (role: string, content: string) =>
+    ({ role, content }) as Parameters<typeof sessionMessagesSignature>[0][number]
 
   it('is stable for identical transcripts', () => {
     expect(sessionMessagesSignature([msg('user', 'hi')])).toBe(sessionMessagesSignature([msg('user', 'hi')]))

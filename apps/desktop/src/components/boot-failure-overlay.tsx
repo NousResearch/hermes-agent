@@ -241,7 +241,13 @@ export function BootFailureOverlay() {
 
   if (remoteReauth) {
     actions = [
-      { key: 'signin', label: copy.signOutAndSignIn, onClick: () => void signInRemote(), icon: <LogIn />, busy: 'signin' },
+      {
+        key: 'signin',
+        label: copy.signOutAndSignIn,
+        onClick: () => void signInRemote(),
+        icon: <LogIn />,
+        busy: 'signin'
+      },
       { ...settingsAction, variant: 'secondary' },
       localAction
     ]
@@ -254,7 +260,14 @@ export function BootFailureOverlay() {
     // it's dropped here; keep it for remote failures where it's the fall-back.
     actions = [
       retryAction,
-      { key: 'repair', label: copy.repairInstall, onClick: () => void repair(), icon: <Wrench />, variant: 'secondary', busy: 'repair' },
+      {
+        key: 'repair',
+        label: copy.repairInstall,
+        onClick: () => void repair(),
+        icon: <Wrench />,
+        variant: 'secondary',
+        busy: 'repair'
+      },
       { ...settingsAction, variant: 'ghost' }
     ]
     hint = copy.repairHint

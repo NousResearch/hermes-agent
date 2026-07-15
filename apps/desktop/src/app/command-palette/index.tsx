@@ -686,7 +686,12 @@ export function CommandPalette() {
         items: sessions.map(session => ({
           icon: MessageCircle,
           id: `session-${session.id}`,
-          keywords: ['chat', 'session', ...(session.preview ? [session.preview] : []), ...(session.git_branch ? [session.git_branch] : [])],
+          keywords: [
+            'chat',
+            'session',
+            ...(session.preview ? [session.preview] : []),
+            ...(session.git_branch ? [session.git_branch] : [])
+          ],
           label: session.title,
           run: go(sessionRoute(session.id))
         }))
@@ -724,7 +729,13 @@ export function CommandPalette() {
         items: archivedSessions.map(session => ({
           icon: Archive,
           id: `archived-${session.id}`,
-          keywords: ['archived', 'chat', 'session', ...(session.preview ? [session.preview] : []), ...(session.git_branch ? [session.git_branch] : [])],
+          keywords: [
+            'archived',
+            'chat',
+            'session',
+            ...(session.preview ? [session.preview] : []),
+            ...(session.git_branch ? [session.git_branch] : [])
+          ],
           label: session.title,
           run: go(`${SETTINGS_ROUTE}?tab=sessions&session=${encodeURIComponent(session.id)}`)
         }))

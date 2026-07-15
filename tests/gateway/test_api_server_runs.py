@@ -10,6 +10,7 @@ Covers:
 
 import asyncio
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,14 +20,34 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
 )
+from tools import approval as approval_mod
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("smart_denied", "allow_permanent", "expected"),
+    [
+        (False, True, ["once", "session", "always", "deny"]),
+        (False, False, ["once", "session", "deny"]),
+        (True, True, ["once", "deny"]),
+        (True, False, ["once", "deny"]),
+    ],
+)
+def test_approval_event_choices_follow_backend_capabilities(
+    smart_denied, allow_permanent, expected
+):
+    assert _approval_event_choices(
+        smart_denied=smart_denied,
+        allow_permanent=allow_permanent,
+    ) == expected
 
 
 def _make_adapter(api_key: str = "") -> APIServerAdapter:
@@ -356,6 +377,77 @@ class TestRunEvents:
         )
 
     @pytest.mark.asyncio
+    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
+        """Same client session_id must not let one run approve another run's queue."""
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
+                victim_agent, victim_ready, victim_interrupted = _make_slow_agent()
+                attacker_agent, attacker_ready, attacker_interrupted = _make_slow_agent()
+                mock_create.side_effect = [victim_agent, attacker_agent]
+
+                victim_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "victim", "session_id": "shared-project"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                attacker_resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "attacker", "session_id": "shared-project"},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                assert victim_resp.status == 202
+                assert attacker_resp.status == 202
+                victim_run = (await victim_resp.json())["run_id"]
+                attacker_run = (await attacker_resp.json())["run_id"]
+
+                victim_ready.wait(timeout=3.0)
+                attacker_ready.wait(timeout=3.0)
+                assert auth_adapter._run_approval_sessions[victim_run] == victim_run
+                assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
+                assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
+
+                victim_entry = approval_mod._ApprovalEntry({
+                    "command": "bash -c victim-danger",
+                    "description": "victim approval",
+                    "pattern_keys": ["shell-c"],
+                })
+                attacker_entry = approval_mod._ApprovalEntry({
+                    "command": "bash -c attacker-danger",
+                    "description": "attacker approval",
+                    "pattern_keys": ["shell-c"],
+                })
+                with approval_mod._lock:
+                    approval_mod._gateway_queues[victim_run] = [victim_entry]
+                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{attacker_run}/approval",
+                    json={"choice": "always", "resolve_all": True},
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+                approval_data = await approval_resp.json()
+
+                assert approval_resp.status == 200
+                assert approval_data["resolved"] == 1
+                assert attacker_entry.result == "always"
+                assert attacker_entry.event.is_set()
+                assert victim_entry.result is None
+                assert not victim_entry.event.is_set()
+                with approval_mod._lock:
+                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
+                    assert victim_run in approval_mod._gateway_queues
+                    assert attacker_run not in approval_mod._gateway_queues
+
+                # Clean up the synthetic pending victim approval and unblock the
+                # slow test agents so their background run tasks can finish.
+                with approval_mod._lock:
+                    approval_mod._gateway_queues.pop(victim_run, None)
+                victim_interrupted.set()
+                attacker_interrupted.set()
+
+
+    @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -371,11 +463,228 @@ class TestRunEvents:
 
 
 # ---------------------------------------------------------------------------
+# Run lifecycle TTL sweeping
+# ---------------------------------------------------------------------------
+
+
+class TestRunLifecycleSweep:
+    def test_sweep_keeps_transport_with_active_subscriber(self, adapter):
+        run_id = "run_subscribed"
+        queue = asyncio.Queue()
+        adapter._run_streams[run_id] = queue
+        adapter._run_streams_created[run_id] = 0
+        adapter._run_stream_subscribers.add(run_id)
+
+        adapter._sweep_orphaned_runs_once(time.time())
+
+        assert adapter._run_streams[run_id] is queue
+        assert run_id in adapter._run_streams_created
+
+    @pytest.mark.asyncio
+    async def test_expired_live_run_drops_transport_but_keeps_control_state(self, adapter):
+        """Stream TTL bounds buffering without detaching a live run."""
+        app = _create_runs_app(adapter)
+        adapter._max_concurrent_runs = 1
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                assert start_resp.status == 202
+                run_id = (await start_resp.json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+
+                task = adapter._active_run_tasks[run_id]
+                assert isinstance(task, asyncio.Task)
+                assert not task.done()
+
+                pending = approval_mod._ApprovalEntry({
+                    "command": "bash -c long-running",
+                    "description": "approval after stream TTL",
+                    "pattern_keys": ["shell-c"],
+                })
+                with approval_mod._lock:
+                    approval_mod._gateway_queues[run_id] = [pending]
+
+                adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
+                # Exercise one real sweeper iteration without waiting 60 seconds.
+                with patch(
+                    "gateway.platforms.api_server.asyncio.sleep",
+                    side_effect=[None, asyncio.CancelledError()],
+                ):
+                    with pytest.raises(asyncio.CancelledError):
+                        await adapter._sweep_orphaned_runs()
+
+                assert adapter._active_run_tasks[run_id] is task
+                assert adapter._active_run_agents[run_id] is mock_agent
+                assert run_id not in adapter._run_streams
+                assert run_id not in adapter._run_streams_created
+                assert adapter._run_approval_sessions[run_id] == run_id
+
+                limited = adapter._concurrency_limited_response()
+                assert limited is not None
+                assert limited.status == 429
+
+                approval_resp = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"choice": "once"},
+                )
+                assert approval_resp.status == 200
+                assert pending.event.is_set()
+                assert pending.result == "once"
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                mock_agent.interrupt.assert_called_once_with("Stop requested via API")
+
+    @pytest.mark.asyncio
+    async def test_expired_transport_stops_buffering_new_deltas(self, adapter):
+        """An unconsumed expired queue must not grow for the rest of a live run."""
+        app = _create_runs_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, agent_ready, _ = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                start_resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await start_resp.json())["run_id"]
+                assert agent_ready.wait(timeout=3.0)
+                expired_queue = adapter._run_streams[run_id]
+                stream_delta = mock_create.call_args.kwargs["stream_delta_callback"]
+
+                adapter._run_streams_created[run_id] -= adapter._RUN_STREAM_TTL + 1
+                adapter._sweep_orphaned_runs_once(time.time())
+                before = expired_queue.qsize()
+                stream_delta("must-not-buffer")
+                mock_agent.interrupt("finish test")
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert expired_queue.qsize() == before
+
+    @pytest.mark.asyncio
+    async def test_expired_orphan_run_state_is_reaped(self, adapter):
+        run_id = "run_expired_orphan"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = 0
+        adapter._run_approval_sessions[run_id] = run_id
+
+        pending = approval_mod._ApprovalEntry({
+            "command": "bash -c orphaned",
+            "description": "orphaned approval",
+            "pattern_keys": ["shell-c"],
+        })
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [pending]
+
+        with patch(
+            "gateway.platforms.api_server.asyncio.sleep",
+            side_effect=[None, asyncio.CancelledError()],
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await adapter._sweep_orphaned_runs()
+
+        assert run_id not in adapter._run_streams
+        assert run_id not in adapter._run_streams_created
+        assert run_id not in adapter._run_approval_sessions
+        assert pending.event.is_set()
+        with approval_mod._lock:
+            assert run_id not in approval_mod._gateway_queues
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/runs/{run_id}/stop — interrupt a running agent
 # ---------------------------------------------------------------------------
 
 
 class TestStopRun:
+    @pytest.mark.asyncio
+    async def test_stop_before_agent_creation_prevents_run_start(self, adapter):
+        """A stop accepted while queued must prevent agent construction."""
+        app = _create_runs_app(adapter)
+        original_create_task = asyncio.create_task
+        task_started = asyncio.Event()
+        allow_task = asyncio.Event()
+
+        def _delayed_create_task(coro):
+            async def _delayed():
+                task_started.set()
+                await allow_task.wait()
+                return await coro
+
+            return original_create_task(_delayed())
+
+        with patch("gateway.platforms.api_server.asyncio.create_task", side_effect=_delayed_create_task), \
+             patch.object(adapter, "_create_agent") as mock_create:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                await task_started.wait()
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                allow_task.set()
+
+                for _ in range(20):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_create.assert_not_called()
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_stop_keeps_uncooperative_executor_tracked_until_exit(self, adapter):
+        """Cancelling an asyncio wrapper must not hide its live executor thread."""
+        app = _create_runs_app(adapter)
+        run_can_finish = threading.Event()
+        run_finished = threading.Event()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                started = threading.Event()
+
+                def _run_conversation(*_args, **_kwargs):
+                    started.set()
+                    run_can_finish.wait(timeout=5)
+                    run_finished.set()
+                    return {"final_response": "late result"}
+
+                mock_agent.run_conversation.side_effect = _run_conversation
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                run_id = (await resp.json())["run_id"]
+                assert started.wait(timeout=3)
+
+                stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert stop_resp.status == 200
+                await asyncio.sleep(0.1)
+
+                assert not run_finished.is_set()
+                assert run_id in adapter._active_run_agents
+                assert run_id in adapter._active_run_tasks
+                assert adapter._run_statuses[run_id]["status"] == "stopping"
+
+                run_can_finish.set()
+                for _ in range(40):
+                    if run_id not in adapter._active_run_tasks:
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert run_id not in adapter._active_run_agents
+                assert run_id not in adapter._active_run_tasks
+                assert adapter._run_statuses[run_id]["status"] == "cancelled"
+
     @pytest.mark.asyncio
     async def test_stop_running_agent(self, adapter):
         """Stop should interrupt the agent and cancel the task."""

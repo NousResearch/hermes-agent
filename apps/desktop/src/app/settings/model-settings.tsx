@@ -1,14 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Switch } from '@/components/ui/switch'
 import {
   getAuxiliaryModels,
   getGlobalModelInfo,
   getGlobalModelOptions,
-  getHermesConfigRecord,
   getMoaModels,
   getRecommendedDefaultModel,
   saveHermesConfig,
@@ -28,15 +28,61 @@ import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
-import type { HermesConfigRecord } from '@/types/hermes'
+
+import { invalidateHermesConfig, setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
-import { ListRow, LoadingState, Pill, SectionHeading } from './primitives'
+import { ListRow, Pill, SectionHeading } from './primitives'
+
+// Skeleton mirror of the Model settings DOM so the page keeps its shape while
+// the provider/model catalog loads, instead of collapsing to a centered
+// spinner. Same containers/rhythm as the real render below.
+export function ModelSettingsSkeleton() {
+  return (
+    <div className="grid gap-6" data-slot="model-settings-skeleton">
+      <section>
+        <Skeleton className="mb-3 h-3 w-72 max-w-full" />
+        <div className="flex flex-wrap items-center gap-2">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-8 w-60 max-w-full" />
+          <Skeleton className="h-8 w-16" />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
+          <Skeleton className="h-3 w-16" />
+          <Skeleton className="h-8 w-28" />
+          <Skeleton className="h-6 w-20" />
+        </div>
+      </section>
+
+      <section>
+        <div className="mb-2.5 flex items-center gap-2 pt-2">
+          <Skeleton className="size-4" />
+          <Skeleton className="h-4 w-36" />
+        </div>
+        <div className="grid gap-1">
+          {[0, 1, 2, 3].map(row => (
+            <div
+              className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
+              key={row}
+            >
+              <div className="min-w-0 space-y-1.5">
+                <Skeleton className="h-3.5 w-32" />
+                <Skeleton className="h-3 w-52 max-w-full" />
+              </div>
+              <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
 
 // Hermes' reasoning levels (VALID_REASONING_EFFORTS); `none` = thinking off.
 // Empty config = Hermes default (medium), shown as Medium.
-const EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
+const EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
 
 // agent.service_tier stores "fast"/"priority"/"on" for fast; anything else is
 // normal (mirrors tui_gateway _load_service_tier).
@@ -47,8 +93,8 @@ const isFastTier = (tier: unknown): boolean =>
       .toLowerCase()
   )
 
-// Reuse the composer's effort labels (`xhigh` shows as "Max", else 1:1).
-const effortLabelKey = (v: string) => (v === 'xhigh' ? 'max' : v) as 'high' | 'low' | 'max' | 'medium' | 'minimal'
+// Reuse the composer's effort labels.
+const effortLabelKey = (v: string) => v as 'high' | 'low' | 'max' | 'medium' | 'minimal' | 'ultra' | 'xhigh'
 
 // A provider row is "ready" to pick a model from when it reports models. The
 // backend now surfaces the full `hermes model` universe (every canonical
@@ -136,9 +182,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null)
   const [selectedMoaPreset, setSelectedMoaPreset] = useState('')
   const [newMoaPresetName, setNewMoaPresetName] = useState('')
-  // Full profile config, kept so the reasoning/speed defaults round-trip
-  // (read agent.* → write back the whole record) like the generic config page.
-  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  // agent.* defaults round-trip through the shared config cache (read → write
+  // back the whole record), so a save here shows in the MCP/config surfaces.
+  const { data: config } = useHermesConfigRecord()
+  const setConfig = setHermesConfigCache
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
   const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
@@ -150,18 +197,27 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [activating, setActivating] = useState(false)
 
+  // Every profile-scoped async here captures this and bails before writing back,
+  // so a request in flight when the user switches profiles can't paint profile
+  // A's models/providers into profile B (or fire onMainModelChanged for A).
+  const profileEpoch = useRef(0)
+
   const refresh = useCallback(async () => {
+    const epoch = profileEpoch.current
     setLoading(true)
     setError('')
 
     try {
-      const [modelInfo, modelOptions, auxiliaryModels, moaModels, cfg] = await Promise.all([
+      const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
         getGlobalModelInfo(),
         getGlobalModelOptions(),
         getAuxiliaryModels(),
-        getMoaModels().catch(() => null),
-        getHermesConfigRecord()
+        getMoaModels().catch(() => null)
       ])
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
 
       setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
       setProviders(modelOptions.providers || [])
@@ -174,11 +230,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
       }
 
-      setConfig(cfg)
+      // The config record loads via its own shared query; a model switch can
+      // change it server-side (aux slots), so nudge that cache to refetch.
+      void invalidateHermesConfig()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (profileEpoch.current === epoch) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setLoading(false)
+      if (profileEpoch.current === epoch) {
+        setLoading(false)
+      }
     }
   }, [])
 
@@ -186,14 +248,19 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     void refresh()
   }, [refresh])
 
+  // A profile switch swaps the backend under the mounted panel — reload for the
+  // new profile (bumping the epoch first so any in-flight A request is discarded).
+  useOnProfileSwitch(() => {
+    profileEpoch.current += 1
+    void refresh()
+  })
+
   const providerOptions = providers.length ? providers : NO_PROVIDERS
 
   // MoA reference/aggregator slots must never be the moa virtual provider —
   // that would create a recursive MoA tree (the backend rejects it on save).
   // Hide it from the slot selectors so it isn't offered as a dead choice.
-  const moaSlotProviderOptions = providerOptions.filter(
-    provider => (provider.slug || '').toLowerCase() !== 'moa'
-  )
+  const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
 
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),
@@ -231,23 +298,62 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     return moa.presets[selectedMoaPreset] || moa.presets[moa.default_preset] || Object.values(moa.presets)[0] || null
   }, [moa, selectedMoaPreset])
 
+  // Mirror of `moa` so inline edits compute the next state purely (outside the
+  // setState updater) and hand it straight to the debounced autosave.
+  const moaRef = useRef<MoaConfigResponse | null>(null)
+
+  useEffect(() => {
+    moaRef.current = moa
+  }, [moa])
+
+  const moaSaveTimer = useRef<number | null>(null)
+
+  useEffect(
+    () => () => {
+      if (moaSaveTimer.current) {
+        window.clearTimeout(moaSaveTimer.current)
+      }
+    },
+    []
+  )
+
+  // Quiet debounced persist for inline MoA edits — mirrors the config page's
+  // autosave so slot/aggregator tweaks save themselves, matching the
+  // preset-level ops (set default / add / delete) that already persist on
+  // click. No `applying` spinner, so selecting stays responsive.
+  const scheduleMoaSave = useCallback((next: MoaConfigResponse) => {
+    if (moaSaveTimer.current) {
+      window.clearTimeout(moaSaveTimer.current)
+    }
+
+    moaSaveTimer.current = window.setTimeout(() => {
+      void saveMoaModels(next)
+        .then(setMoa)
+        .catch(err => setError(err instanceof Error ? err.message : String(err)))
+    }, 600)
+  }, [])
+
   const updateMoaPreset = useCallback(
     (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
-      setMoa(prev => {
-        if (!prev || !selectedMoaPreset || !prev.presets[selectedMoaPreset]) {
-          return prev
-        }
+      const prev = moaRef.current
 
-        return {
-          ...prev,
-          presets: {
-            ...prev.presets,
-            [selectedMoaPreset]: updater(prev.presets[selectedMoaPreset])
-          }
+      if (!prev || !selectedMoaPreset || !prev.presets[selectedMoaPreset]) {
+        return
+      }
+
+      const next: MoaConfigResponse = {
+        ...prev,
+        presets: {
+          ...prev.presets,
+          [selectedMoaPreset]: updater(prev.presets[selectedMoaPreset])
         }
-      })
+      }
+
+      moaRef.current = next
+      setMoa(next)
+      scheduleMoaSave(next)
     },
-    [selectedMoaPreset]
+    [scheduleMoaSave, selectedMoaPreset]
   )
 
   const updateMoaSlot = useCallback((slot: MoaModelSlot, patch: Partial<MoaModelSlot>): MoaModelSlot => {
@@ -261,11 +367,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [])
 
   const saveMoa = useCallback(async (next: MoaConfigResponse) => {
+    const epoch = profileEpoch.current
     setApplying(true)
     setError('')
 
     try {
       const saved = await saveMoaModels(next)
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       setMoa(saved)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -307,10 +419,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const reasoningSupported = mainCaps?.reasoning ?? true
   const fastSupported = mainCaps?.fast ?? false
 
-  const effortValue =
-    String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '')
-      .trim()
-      .toLowerCase() || 'medium'
+  // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
+  // ("false" once stringified) — show it as Off, not an empty select.
+  const rawEffort = String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '')
+    .trim()
+    .toLowerCase()
+
+  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || 'medium'
 
   const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
 
@@ -347,6 +462,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       return
     }
 
+    const epoch = profileEpoch.current
     setActivating(true)
     setError('')
 
@@ -367,6 +483,11 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       }
 
       const options = await getGlobalModelOptions()
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       setProviders(options.providers || [])
       const refreshedRow = options.providers?.find(p => p.slug === slug)
       const fallbackModel = refreshedRow?.models?.[0] ?? ''
@@ -404,11 +525,17 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       return
     }
 
+    const epoch = profileEpoch.current
     setApplying(true)
     setError('')
 
     try {
       const result = await setModelAssignment({ model: selectedModel, provider: selectedProvider, scope: 'main' })
+
+      if (profileEpoch.current !== epoch) {
+        return
+      }
+
       const provider = result.provider || selectedProvider
       const model = result.model || selectedModel
       setMainModel({ provider, model })
@@ -504,7 +631,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   }, [mainModel, refresh])
 
   if (loading && !mainModel) {
-    return <LoadingState label={m.loading} />
+    return <ModelSettingsSkeleton />
   }
 
   return (
@@ -753,12 +880,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <div className="mb-2.5 flex items-center justify-between">
-            <SectionHeading icon={Cpu} title="Mixture of Agents" />
-            <Button disabled={applying} onClick={() => void saveMoa(moa)} size="sm" variant="textStrong">
-              {applying ? m.applying : t.common.save}
-            </Button>
-          </div>
+          <SectionHeading icon={Cpu} title="Mixture of Agents" />
           <p className="mb-2 text-xs text-muted-foreground">
             Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
             acting model.
@@ -783,6 +905,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                   ...moa,
                   default_preset: selectedMoaPreset || moa.default_preset
                 }
+
                 void saveMoa(next)
               }}
               size="sm"
@@ -800,12 +923,14 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 const presets = { ...moa.presets }
                 delete presets[selectedMoaPreset]
                 const fallback = Object.keys(presets)[0]
+
                 const next: MoaConfigResponse = {
                   ...moa,
                   presets,
                   default_preset: moa.default_preset === selectedMoaPreset ? fallback : moa.default_preset,
                   active_preset: moa.active_preset === selectedMoaPreset ? '' : moa.active_preset
                 }
+
                 setSelectedMoaPreset(Object.keys(moa.presets).find(name => name !== selectedMoaPreset) || '')
                 void saveMoa(next)
               }}
@@ -824,6 +949,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
               disabled={!newMoaPresetName.trim() || !!moa.presets[newMoaPresetName.trim()] || applying}
               onClick={() => {
                 const name = newMoaPresetName.trim()
+
                 const next: MoaConfigResponse = {
                   ...moa,
                   presets: {
@@ -831,6 +957,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     [name]: { ...currentMoaPreset, reference_models: [...currentMoaPreset.reference_models] }
                   }
                 }
+
                 setSelectedMoaPreset(name)
                 setNewMoaPresetName('')
                 void saveMoa(next)

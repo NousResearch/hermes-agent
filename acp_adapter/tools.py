@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,8 @@ from acp.schema import (
     ToolCallProgress,
     ToolKind,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Map hermes tool names -> ACP ToolKind
@@ -110,7 +113,12 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            first = urls[0]
+            if isinstance(first, dict):
+                first = first.get("url") or first.get("href") or "?"
+            elif not isinstance(first, str):
+                first = "?"
+            return f"extract: {first}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
         return "web extract"
     if tool_name == "process":
         action = str(args.get("action") or "").strip() or "manage"
@@ -617,7 +625,7 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
         return None
     mode = data.get("mode") or "search"
     query = data.get("query")
-    lines = ["Recent sessions" if mode == "recent" else f"Session search results" + (f" for `{query}`" if query else "")]
+    lines = ["Recent sessions" if mode == "recent" else "Session search results" + (f" for `{query}`" if query else "")]
     if not results:
         lines.append(str(data.get("message") or "No matching sessions found."))
         return "\n".join(lines)
@@ -1021,7 +1029,37 @@ def build_tool_start(
     *,
     edit_diff: Any = None,
 ) -> ToolCallStart:
-    """Create a ToolCallStart event for the given hermes tool invocation."""
+    """Create a ToolCallStart event for the given hermes tool invocation.
+
+    A malformed tool argument (e.g. a non-string ``command``/``path`` from a
+    model that ignores the schema) must never abort the ACP tool-call render —
+    ``build_tool_start`` runs on the live tool-progress callback and during
+    session history replay. On any failure in the title/content/location
+    builders, fall back to a minimal, valid start event. Mirrors
+    ``get_cute_tool_message`` in ``agent/display.py``, wrapped for the same
+    reason on the CLI side.
+    """
+    try:
+        return _build_tool_start(
+            tool_call_id, tool_name, arguments, edit_diff=edit_diff
+        )
+    except Exception as exc:  # noqa: BLE001 — a tool-call render must never abort the turn
+        logger.debug("ACP tool-start render failed for %r: %s", tool_name, exc)
+        safe_name = tool_name if isinstance(tool_name, str) and tool_name else "tool"
+        return acp.start_tool_call(
+            tool_call_id, safe_name, kind=get_tool_kind(safe_name),
+            content=None, locations=[], raw_input=None,
+        )
+
+
+def _build_tool_start(
+    tool_call_id: str,
+    tool_name: str,
+    arguments: Dict[str, Any],
+    *,
+    edit_diff: Any = None,
+) -> ToolCallStart:
+    """Build the ToolCallStart event (unguarded; see ``build_tool_start``)."""
     kind = get_tool_kind(tool_name)
     title = build_tool_title(tool_name, arguments)
     locations = extract_locations(arguments)

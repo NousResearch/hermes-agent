@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]仅此一次  |  [s]本次会话  |  [d]拒绝"
   prompt_long:     "      选择 [o/s/a/D]: "
   prompt_short:    "      选择 [o/s/D]: "
+  choose_smart_deny: "      [o]仅此一次  |  [d]拒绝"
+  prompt_smart_deny: "      选择 [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ 超时 — 已拒绝命令"
   allowed_once:    "      ✓ 本次允许"
   allowed_session: "      ✓ 本次会话内允许"
@@ -107,6 +111,8 @@ gateway:
     no_pending:            "没有待拒绝的命令。"
     denied_singular:       "❌ 命令已拒绝。"
     denied_plural:         "❌ 命令已拒绝（{count} 条命令）。"
+    denied_reason_singular: "❌ 命令已拒绝。 已将原因转达给代理: \"{reason}\""
+    denied_reason_plural:  "❌ 命令已拒绝（{count} 条命令）。 已将原因转达给代理: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast 仅适用于支持优先处理（Priority Processing）的 OpenAI 模型。"
@@ -358,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "估计上下文：~{count} 个令牌"
     detailed_after_first:     "_（首次代理响应后可查看详细使用情况）_"
     no_data:                  "此会话暂无使用数据。"
+    unknown_subcommand:       "未知的 /usage 子命令：`{args}`。请尝试 `/usage` 或 `/usage reset [--force]`。"
+    reset_wrong_provider:     "存储的用量重置仅在 openai-codex 提供商上可用。请先使用 `/model` 切换。"
 
   credits:
     not_logged_in:            "未登录 Nous Portal。登录后即可查看额度余额并充值。"

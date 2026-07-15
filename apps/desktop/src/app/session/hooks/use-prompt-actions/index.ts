@@ -6,9 +6,11 @@ import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { normalize } from '@/lib/text'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
   $composerAttachments,
@@ -20,7 +22,15 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
-import { $busy, $connection, $messages, setAwaitingResponse, setBusy, setMessages } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $messages,
+  setAwaitingResponse,
+  setBusy,
+  setMessages,
+  setTurnStartedAt
+} from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
@@ -157,6 +167,7 @@ interface PromptActionsOptions {
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  getRouteToken: () => string
   handleSkinCommand: (arg: string) => string
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
@@ -185,6 +196,7 @@ export function usePromptActions({
   busyRef,
   branchCurrentSession,
   createBackendSessionForSend,
+  getRouteToken,
   handleSkinCommand,
   openMemoryGraph,
   refreshSessions,
@@ -353,6 +365,7 @@ export function usePromptActions({
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRouteToken,
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
@@ -374,7 +387,7 @@ export function usePromptActions({
         return { error: copy.sessionUnavailable, ok: false }
       }
 
-      const target = platform.trim().toLowerCase()
+      const target = normalize(platform)
 
       if (!target) {
         return { error: copy.handoff.failed(''), ok: false }
@@ -459,7 +472,7 @@ export function usePromptActions({
 
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
+      const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
@@ -497,6 +510,7 @@ export function usePromptActions({
     }
 
     setAwaitingResponse(false)
+    setTurnStartedAt(null)
 
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
@@ -522,7 +536,8 @@ export function usePromptActions({
         streamId: null,
         pendingBranchGroup: null,
         needsInput: false,
-        interrupted: true
+        interrupted: true,
+        turnStartedAt: null
       }
     })
 
@@ -545,7 +560,8 @@ export function usePromptActions({
       if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
         try {
           const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current
+            session_id: selectedStoredSessionIdRef.current,
+            source: 'desktop'
           })
 
           const recoveredId = resumed?.session_id
@@ -581,7 +597,7 @@ export function usePromptActions({
   // window) so the caller can fall back to queueing the words for the next turn.
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
-      const text = rawText.trim()
+      const text = sanitizeComposerInput(rawText).trim()
       const sessionId = activeSessionId || activeSessionIdRef.current
 
       if (!text || !sessionId) {

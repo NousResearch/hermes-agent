@@ -32,9 +32,9 @@ LINUX_LIST_WINDOWS = [
 
 
 def _normalized_windows():
-    from tools.computer_use.cua_backend import _window_from_list_windows_entry
+    from tools.computer_use.cua_backend import _ingest_windows
 
-    return [_window_from_list_windows_entry(w) for w in LINUX_LIST_WINDOWS]
+    return _ingest_windows(LINUX_LIST_WINDOWS)
 
 
 def test_linux_null_is_on_screen_is_treated_as_unknown_not_offscreen():

@@ -12,6 +12,7 @@ exercised with synthetic ``Request`` objects.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -107,6 +108,12 @@ def _make_adapter(**overrides):
     for key, value in overrides.items():
         setattr(adapter, key, value)
     return adapter
+
+
+@pytest.fixture
+def authorized_interactive_env(monkeypatch):
+    """``dm_policy: open`` requires an explicit allow-all opt-in on main."""
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
 
 
 def _mock_httpx_response(status_code: int, json_body: dict):
@@ -405,10 +412,22 @@ def _sign(secret: str, body: bytes) -> str:
     return f"sha256={digest}"
 
 
+class _FakeRequestContent:
+    def __init__(self, body: bytes):
+        self.body = body
+        self.read_sizes: list[int] = []
+
+    async def readexactly(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if len(self.body) < size:
+            raise asyncio.IncompleteReadError(self.body, size)
+        return self.body[:size]
+
+
 def _post_request(body: bytes, headers: dict | None = None):
     """Build a minimal aiohttp.web.Request stub for POST tests."""
     request = MagicMock()
-    request.read = AsyncMock(return_value=body)
+    request.content = _FakeRequestContent(body)
     request.headers = headers or {}
     return request
 
@@ -539,20 +558,23 @@ class TestWebhookSignature:
     @pytest.mark.asyncio
     async def test_oversize_body_rejected_before_signature(self):
         """3MB cap per Meta — refuse without computing HMAC over giant junk."""
+        from gateway.platforms.whatsapp_cloud import WEBHOOK_MAX_BODY_BYTES
+
         adapter = _make_adapter(app_secret="key")
         adapter._dispatch_payload = AsyncMock()
-        body = b"x" * (4 * 1024 * 1024)
+        body = b"x" * (WEBHOOK_MAX_BODY_BYTES + 2)
         request = _post_request(body, {"X-Hub-Signature-256": "sha256=ignored"})
 
         response = await adapter._handle_webhook(request)
         assert response.status == 413
+        assert request.content.read_sizes == [WEBHOOK_MAX_BODY_BYTES + 1]
         adapter._dispatch_payload.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_unreadable_body_rejected(self):
         adapter = _make_adapter(app_secret="key")
         request = MagicMock()
-        request.read = AsyncMock(side_effect=RuntimeError("read failed"))
+        request.content.readexactly = AsyncMock(side_effect=RuntimeError("read failed"))
         request.headers = {}
 
         response = await adapter._handle_webhook(request)
@@ -1774,6 +1796,7 @@ class TestSendSlashConfirmButtons:
         assert adapter._slash_confirm_state["cf-9"] == "sess-sc-1"
 
 
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplyClarify:
     """Inbound side: button-tap → clarify resolver."""
 
@@ -1914,6 +1937,7 @@ class TestDispatchInteractiveReplyClarify:
         assert handled is False
 
 
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplyApproval:
     """Inbound side: approval-tap → resolve_gateway_approval."""
 
@@ -1979,6 +2003,7 @@ class TestDispatchInteractiveReplyApproval:
         assert "Denied" in confirm_payload["text"]["body"]
 
 
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplySlashConfirm:
     """Inbound side: slash-confirm-tap → tools.slash_confirm.resolve."""
 
@@ -2022,6 +2047,68 @@ class TestDispatchInteractiveReplySlashConfirm:
         assert "MCP reloaded" in reply_payload["text"]["body"]
 
 
+class TestDispatchInteractiveReplyAuthorization:
+    """Interactive taps must honor the same DM allowlist as text intake."""
+
+    @pytest.mark.asyncio
+    async def test_approval_tap_denied_when_sender_not_allowlisted(self, monkeypatch):
+        adapter = _make_adapter(
+            _dm_policy="allowlist",
+            _allow_from={"19998887777"},
+        )
+        adapter._exec_approval_state["app1"] = "sess-app-1"
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+        )
+
+        raw = {
+            "from": "15551234567",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+            },
+        }
+        handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == []
+        assert adapter._exec_approval_state["app1"] == "sess-app-1"
+
+    @pytest.mark.asyncio
+    async def test_approval_tap_allowed_when_sender_allowlisted(self, monkeypatch):
+        adapter = _make_adapter(
+            _dm_policy="allowlist",
+            _allow_from={"15551234567"},
+        )
+        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
+        )
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+        )
+
+        raw = {
+            "from": "15551234567",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": "appr:app1:approve", "title": "Approve"},
+            },
+        }
+        handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == [("sess-app-1", "approve")]
+
+
+@pytest.mark.usefixtures("authorized_interactive_env")
 class TestInteractiveReplyEndToEnd:
     """Integration: `_build_message_event_from_cloud` must SHORT-CIRCUIT
     on a recognized interactive reply and NOT also produce a fresh
@@ -2436,4 +2523,3 @@ class TestReplyContextResolution:
             rich_sent_store.lookup("15551234567", "wamid.OUT")
             == "here is your answer"
         )
-

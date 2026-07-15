@@ -683,6 +683,9 @@ class HindsightMemoryProvider(MemoryProvider):
         self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
+        self._client_lock = threading.RLock()
+        self._tracked_clients: dict[int, Any] = {}
+        self._closed_client_ids: set[int] = set()
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
         self._prefetch_result = ""
@@ -1057,58 +1060,80 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "port_health_grace_timeout", "description": "Seconds to wait for a slow daemon /health before treating it as stale (raise on busy/low-resource hosts; blank uses the 30s default)", "default": "", "when": {"mode": "local_embedded"}},
         ]
 
+    def _create_client(self):
+        """Construct one Hindsight client; caller serializes publication."""
+        if self._mode == "local_embedded":
+            available, reason = _check_local_runtime()
+            if not available:
+                raise RuntimeError(
+                    "Hindsight local runtime is unavailable"
+                    + (f": {reason}" if reason else "")
+                )
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure
+
+                _lazy_ensure("memory.hindsight", prompt=False)
+            except ImportError:
+                pass
+            except Exception as exc:
+                raise ImportError(str(exc))
+            from hindsight import HindsightEmbedded
+
+            HindsightEmbedded.__del__ = lambda self: None
+            llm_provider = self._config.get("llm_provider", "")
+            if llm_provider in {"openai_compatible", "openrouter"}:
+                llm_provider = "openai"
+            logger.debug(
+                "Creating HindsightEmbedded client (profile=%s, provider=%s)",
+                self._config.get("profile", "hermes"),
+                llm_provider,
+            )
+            kwargs = dict(
+                profile=self._config.get("profile", "hermes"),
+                llm_provider=llm_provider,
+                llm_api_key=self._config.get("llmApiKey")
+                or self._config.get("llm_api_key")
+                or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                llm_model=self._config.get("llm_model", ""),
+            )
+            if self._llm_base_url:
+                kwargs["llm_base_url"] = self._llm_base_url
+            idle_timeout = _parse_int_setting(
+                self._config.get("idle_timeout")
+                if self._config.get("idle_timeout") is not None
+                else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
+                _DEFAULT_IDLE_TIMEOUT,
+            )
+            self._idle_timeout = idle_timeout
+            kwargs["idle_timeout"] = idle_timeout
+            return HindsightEmbedded(**kwargs)
+
+        _ensure_cloud_client_dependency()
+        from hindsight_client import Hindsight
+
+        timeout = self._timeout or _DEFAULT_TIMEOUT
+        kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        logger.debug(
+            "Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
+            self._api_url,
+            bool(self._api_key),
+            kwargs["timeout"],
+        )
+        return Hindsight(**kwargs)
+
     def _get_client(self):
-        """Return the cached Hindsight client (created once, reused)."""
-        if self._client is None:
-            if self._mode == "local_embedded":
-                available, reason = _check_local_runtime()
-                if not available:
-                    raise RuntimeError(
-                        "Hindsight local runtime is unavailable"
-                        + (f": {reason}" if reason else "")
-                    )
-                try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
-                except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
-                HindsightEmbedded.__del__ = lambda self: None
-                llm_provider = self._config.get("llm_provider", "")
-                if llm_provider in {"openai_compatible", "openrouter"}:
-                    llm_provider = "openai"
-                logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",
-                             self._config.get("profile", "hermes"), llm_provider)
-                kwargs = dict(
-                    profile=self._config.get("profile", "hermes"),
-                    llm_provider=llm_provider,
-                    llm_api_key=self._config.get("llmApiKey") or self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
-                    llm_model=self._config.get("llm_model", ""),
-                )
-                if self._llm_base_url:
-                    kwargs["llm_base_url"] = self._llm_base_url
-                idle_timeout = _parse_int_setting(
-                    self._config.get("idle_timeout")
-                    if self._config.get("idle_timeout") is not None
-                    else os.environ.get("HINDSIGHT_IDLE_TIMEOUT", self._idle_timeout),
-                    _DEFAULT_IDLE_TIMEOUT,
-                )
-                self._idle_timeout = idle_timeout
-                kwargs["idle_timeout"] = idle_timeout
-                self._client = HindsightEmbedded(**kwargs)
-            else:
-                _ensure_cloud_client_dependency()
-                from hindsight_client import Hindsight
-                timeout = self._timeout or _DEFAULT_TIMEOUT
-                kwargs = {"base_url": self._api_url, "timeout": float(timeout)}
-                if self._api_key:
-                    kwargs["api_key"] = self._api_key
-                logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s, timeout=%s)",
-                             self._api_url, bool(self._api_key), kwargs["timeout"])
-                self._client = Hindsight(**kwargs)
-        return self._client
+        """Return one serialized, lifecycle-tracked Hindsight client."""
+        self._ensure_prefetch_state()
+        with self._client_lock:
+            client = self._client
+            if client is None:
+                client = self._create_client()
+                self._client = client
+            with self._prefetch_condition:
+                self._track_client_locked(client)
+            return client
 
     def _run_sync(self, coro):
         """Schedule *coro* on the shared loop using the configured timeout."""
@@ -1197,20 +1222,22 @@ class HindsightMemoryProvider(MemoryProvider):
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
     def _run_hindsight_operation(self, operation):
-        """Run an async Hindsight client operation, retrying once after idle shutdown."""
+        """Run an async operation, recreating a stale embedded client once."""
         client = self._get_client()
+        self._track_hindsight_client(client)
         try:
             return self._run_sync(operation(client))
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
             logger.info(
-                "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
+                "Hindsight embedded daemon appears unreachable; "
+                "recreating client and retrying once: %s",
                 exc,
             )
-            self._client = None
-            client = self._get_client()
-            self._client = client
+            self._retire_hindsight_client(client)
+            client = self._publish_replacement_client(self._get_client())
+            self._track_hindsight_client(client)
             return self._run_sync(operation(client))
 
     def _probe_url(self) -> str:
@@ -1547,11 +1574,18 @@ class HindsightMemoryProvider(MemoryProvider):
             "_prefetch_deferred_clients": {},
             "_prefetch_close_threads": set(),
             "_prefetch_closing_client_ids": set(),
+            "_client_lock": threading.RLock(),
+            "_tracked_clients": {},
+            "_closed_client_ids": set(),
             "_bank_id_template": "",
         }
         for name, value in defaults.items():
             if not hasattr(self, name):
                 setattr(self, name, value)
+        client = getattr(self, "_client", None)
+        if client is not None:
+            with self._prefetch_condition:
+                self._track_client_locked(client)
 
     def _normalize_prefetch_query(self, query: str) -> str:
         normalized = str(query or "").strip()
@@ -1651,7 +1685,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._prefetch_pending_request = None
             return
         request = self._prefetch_pending_request
-        if request is None or len(self._prefetch_operations) >= _MAX_PREFETCH_WORKERS:
+        if request is None or len(self._prefetch_inflight) >= _MAX_PREFETCH_WORKERS:
             return
         self._prefetch_pending_request = None
         if not self._request_is_current_locked(request):
@@ -1662,10 +1696,21 @@ class HindsightMemoryProvider(MemoryProvider):
         self,
         query: str,
         session_id: str,
-    ) -> _PrefetchRequest:
-        effective_session_id = str(
-            session_id or self._prefetch_session_id or self._session_id or ""
-        ).strip()
+    ) -> _PrefetchRequest | None:
+        if self._shutting_down.is_set():
+            return None
+        explicit_session_id = str(session_id or "").strip()
+        if (
+            explicit_session_id
+            and explicit_session_id != self._prefetch_session_id
+        ):
+            logger.debug(
+                "Prefetch: rejected stale session admission %s (current=%s)",
+                explicit_session_id,
+                self._prefetch_session_id,
+            )
+            return None
+        effective_session_id = explicit_session_id or self._prefetch_session_id
         bank_id = self._resolve_prefetch_bank_id(effective_session_id)
         cache_key = (
             self._prefetch_epoch,
@@ -1699,7 +1744,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_result_request = None
         self._prefetch_completed_request = None
-        if len(self._prefetch_operations) < _MAX_PREFETCH_WORKERS:
+        if len(self._prefetch_inflight) < _MAX_PREFETCH_WORKERS:
             self._start_prefetch_worker_locked(request)
         else:
             self._prefetch_pending_request = request
@@ -1711,6 +1756,14 @@ class HindsightMemoryProvider(MemoryProvider):
         query: str,
         session_id: str,
     ) -> None:
+        if self._shutting_down.is_set():
+            return
+        explicit_session_id = str(session_id or "").strip()
+        if (
+            explicit_session_id
+            and explicit_session_id != self._prefetch_session_id
+        ):
+            return
         if not self._prefetch_result or self._prefetch_result_request is not None:
             return
         effective_session_id = str(
@@ -1724,6 +1777,34 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_latest_request = request
         self._prefetch_completed_request = request
         self._prefetch_result_request = request
+
+    def _track_client_locked(self, client: Any) -> None:
+        if client is None:
+            return
+        client_key = id(client)
+        tracked = self._tracked_clients.get(client_key)
+        if tracked is None:
+            self._tracked_clients[client_key] = client
+        elif tracked is not client:
+            raise RuntimeError("Hindsight client identity collision")
+
+    def _track_hindsight_client(self, client: Any) -> None:
+        self._ensure_prefetch_state()
+        with self._prefetch_condition:
+            self._track_client_locked(client)
+
+    def _publish_replacement_client(self, client: Any) -> Any:
+        self._ensure_prefetch_state()
+        with self._client_lock:
+            current = self._client
+            if current is None:
+                self._client = client
+            elif current is not client:
+                client = current
+            with self._prefetch_condition:
+                self._track_client_locked(client)
+            return client
+
 
     def _register_prefetch_future_locked(
         self,
@@ -1742,44 +1823,78 @@ class HindsightMemoryProvider(MemoryProvider):
             (client, 0),
         )
         self._prefetch_client_owners[client_key] = (client, owner_count + 1)
+        self._track_client_locked(client)
         return token
 
-    def _take_ready_deferred_clients_locked(self) -> list[Any]:
-        if self._prefetch_operations:
-            return []
-        ready = []
-        for client_key, client in list(self._prefetch_deferred_clients.items()):
-            if client_key not in self._prefetch_client_owners:
-                ready.append(client)
+    def _claim_client_close_locked(self, client: Any) -> bool:
+        self._track_client_locked(client)
+        client_key = id(client)
+        if (
+            client_key in self._closed_client_ids
+            or client_key in self._prefetch_closing_client_ids
+        ):
+            return False
+        if client_key in self._prefetch_client_owners:
+            self._prefetch_deferred_clients[client_key] = client
+            return False
+        self._prefetch_closing_client_ids.add(client_key)
+        self._prefetch_deferred_clients.pop(client_key, None)
+        return True
+
+    def _finish_client_close(self, client: Any) -> None:
+        client_key = id(client)
+        with self._client_lock:
+            if self._client is client:
+                self._client = None
+            with self._prefetch_condition:
+                self._prefetch_closing_client_ids.discard(client_key)
                 self._prefetch_deferred_clients.pop(client_key, None)
-        return ready
+                self._closed_client_ids.add(client_key)
+                self._prefetch_close_threads.discard(
+                    threading.current_thread()
+                )
+                self._prefetch_condition.notify_all()
+
+    def _close_claimed_client(self, client: Any) -> None:
+        try:
+            self._close_hindsight_client(client)
+        finally:
+            self._finish_client_close(client)
+
+    def _retire_hindsight_client(
+        self,
+        client: Any,
+        *,
+        clear_current: bool = True,
+    ) -> None:
+        self._ensure_prefetch_state()
+        with self._client_lock:
+            if clear_current and self._client is client:
+                self._client = None
+            with self._prefetch_condition:
+                should_close = self._claim_client_close_locked(client)
+        if should_close:
+            self._close_claimed_client(client)
+
+    def _take_ready_deferred_clients_locked(self) -> list[Any]:
+        return [
+            client
+            for client_key, client in self._prefetch_deferred_clients.items()
+            if client_key not in self._prefetch_client_owners
+            and client_key not in self._prefetch_closing_client_ids
+            and client_key not in self._closed_client_ids
+        ]
 
     def _schedule_prefetch_client_close(self, client: Any) -> None:
-        client_key = id(client)
         with self._prefetch_condition:
-            if client_key in self._prefetch_closing_client_ids:
+            if not self._claim_client_close_locked(client):
                 return
-            self._prefetch_closing_client_ids.add(client_key)
-
-        def _close() -> None:
-            try:
-                self._close_hindsight_client(client)
-            finally:
-                with self._prefetch_condition:
-                    if self._client is client:
-                        self._client = None
-                    self._prefetch_closing_client_ids.discard(client_key)
-                    self._prefetch_close_threads.discard(
-                        threading.current_thread()
-                    )
-                    self._prefetch_condition.notify_all()
-
-        thread = threading.Thread(
-            target=_close,
-            daemon=True,
-            name="hindsight-prefetch-client-close",
-        )
-        with self._prefetch_condition:
+            thread = threading.Thread(
+                target=self._close_claimed_client,
+                args=(client,),
+                daemon=True,
+                name="hindsight-prefetch-client-close",
+            )
             self._prefetch_close_threads.add(thread)
         thread.start()
 
@@ -1818,8 +1933,6 @@ class HindsightMemoryProvider(MemoryProvider):
 
             if succeeded:
                 self._publish_prefetch_result_locked(request, text)
-            elif self._request_is_current_locked(request):
-                self._publish_prefetch_result_locked(request, "")
 
             if (
                 operation is not None
@@ -1834,10 +1947,9 @@ class HindsightMemoryProvider(MemoryProvider):
         for deferred_client in clients_to_close:
             self._schedule_prefetch_client_close(deferred_client)
 
-    def _execute_prefetch_request(self, request, operation) -> str:
+    def _execute_prefetch_attempt(self, request, operation, client) -> str:
         from agent.async_utils import safe_schedule_threadsafe
 
-        client = self._get_client()
         coroutine = operation(client)
         future = safe_schedule_threadsafe(coroutine, _get_loop())
         if future is None:
@@ -1857,6 +1969,24 @@ class HindsightMemoryProvider(MemoryProvider):
             )
         )
         return future.result(timeout=self._timeout)
+
+    def _execute_prefetch_request(self, request, operation) -> str:
+        client = self._get_client()
+        self._track_hindsight_client(client)
+        try:
+            return self._execute_prefetch_attempt(request, operation, client)
+        except Exception as exc:
+            if not self._is_retriable_embedded_connection_error(exc):
+                raise
+            logger.info(
+                "Hindsight embedded daemon appears unreachable during prefetch; "
+                "recreating client and retrying once: %s",
+                exc,
+            )
+            self._retire_hindsight_client(client)
+            client = self._publish_replacement_client(self._get_client())
+            self._track_hindsight_client(client)
+            return self._execute_prefetch_attempt(request, operation, client)
 
     def _prefetch_worker(self, request: _PrefetchRequest) -> None:
         current_thread = threading.current_thread()
@@ -1963,6 +2093,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 normalized_query,
                 session_id,
             )
+            if request is None:
+                return ""
             while True:
                 if (
                     self._prefetch_result
@@ -2452,25 +2584,15 @@ class HindsightMemoryProvider(MemoryProvider):
             if thread.is_alive():
                 thread.join(timeout=remaining)
 
-        client = self._client
-        close_now = False
+        with self._client_lock:
+            client = self._client
         if client is not None:
-            with self._prefetch_condition:
-                client_key = id(client)
-                if client_key in self._prefetch_closing_client_ids:
-                    pass
-                elif (
-                    client_key in self._prefetch_client_owners
-                    or self._prefetch_operations
-                ):
-                    self._prefetch_deferred_clients[client_key] = client
-                else:
-                    close_now = True
-            if close_now:
-                self._close_hindsight_client(client)
-                with self._prefetch_condition:
-                    if self._client is client:
-                        self._client = None
+            self._retire_hindsight_client(client, clear_current=False)
+
+        with self._prefetch_condition:
+            clients_to_close = self._take_ready_deferred_clients_locked()
+        for deferred_client in clients_to_close:
+            self._schedule_prefetch_client_close(deferred_client)
         # The module-global background event loop (_loop / _loop_thread)
         # is intentionally NOT stopped here. It is shared across every
         # HindsightMemoryProvider instance in the process — the plugin

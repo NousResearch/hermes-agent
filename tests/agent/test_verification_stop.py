@@ -183,6 +183,32 @@ def test_no_nudge_after_fresh_pass(tmp_path, monkeypatch):
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
 
 
+def test_nudge_after_successful_terminal_mutation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="green",
+    )
+    record_terminal_result(
+        command="cp src/app.ts src/app.backup.ts",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+    )
+
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[str(tmp_path)],
+    )
+
+    assert nudge is not None
+    assert "fresh passing verification evidence" in nudge
+
+
 def test_nudge_checks_all_edited_workspaces(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     project_a = tmp_path / "a"

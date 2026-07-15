@@ -6,13 +6,24 @@ import hashlib
 import json
 from collections.abc import Mapping
 
+import gateway.canonical_writer_preflight_publisher as preflight_publisher
 from scripts.canary import full_canary_owner_launcher as launcher
+from scripts.canary import writer_release
 
 
 RELEASE_SHA = "a" * 40
 OWNER_SHA = hashlib.sha256(b"owner@example.com").hexdigest()
 NOW = 1_000
 TOKEN = b"isolated-discord-token"
+
+
+def test_stopped_release_activation_inventory_matches_writer_release_contract():
+    writer_paths = tuple(str(path) for path in writer_release._ACTIVATION_PATHS)
+
+    assert launcher._STOPPED_RELEASE_ACTIVATION_PATHS == writer_paths
+    assert tuple(str(path) for path in preflight_publisher._ACTIVATION_PATHS) == (
+        writer_paths
+    )
 
 
 def _canonical(value: Mapping[str, object]) -> bytes:
@@ -22,6 +33,235 @@ def _canonical(value: Mapping[str, object]) -> bytes:
 def _self_digest(value: dict[str, object], name: str) -> dict[str, object]:
     value[name] = hashlib.sha256(_canonical(value)).hexdigest()
     return value
+
+
+def _writer_preflight_service_state() -> dict[str, dict[str, str]]:
+    absent = {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "UnitFileState": "",
+        "FragmentPath": "",
+        "DropInPaths": "",
+        "NeedDaemonReload": "no",
+    }
+    return {
+        unit: dict(absent) for unit in launcher._WRITER_PREFLIGHT_SERVICE_PATHS
+    }
+
+
+def _writer_preflight_plan() -> dict[str, object]:
+    release_root = f"/opt/muncho-canary-releases/{RELEASE_SHA}"
+    value: dict[str, object] = {
+        "schema": launcher.WRITER_PREFLIGHT_PLAN_SCHEMA,
+        "revision": RELEASE_SHA,
+        "stopped_release_receipt_path": (
+            f"{launcher.STOPPED_RELEASE_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            "stopped-release-publication.json"
+        ),
+        "stopped_release_receipt_file_sha256": "1" * 64,
+        "stopped_release_receipt_sha256": "2" * 64,
+        "release_root": release_root,
+        "release_artifact_sha256": "3" * 64,
+        "release_manifest_path": f"{release_root}/release-manifest.json",
+        "release_manifest_file_sha256": "4" * 64,
+        "host_identity_receipt_path": launcher.STOPPED_RELEASE_HOST_RECEIPT_PATH,
+        "host_identity_receipt_file_sha256": "5" * 64,
+        "host_identity_receipt_sha256": "6" * 64,
+        "host_identity_sha256": "7" * 64,
+        "boot_id_sha256": "8" * 64,
+        "database": {
+            "host": launcher.DATABASE_HOST,
+            "port": launcher.DATABASE_PORT,
+            "database": launcher.DATABASE_NAME,
+            "user": "muncho_canary_writer_login",
+            "tls_server_name": launcher.WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME,
+            "ca_path": "/etc/muncho/trust/cloudsql-server-ca.pem",
+            "ca_sha256": "9" * 64,
+        },
+        "credential_provenance": {
+            "path": "/etc/muncho/credentials/canonical-writer-db-password",
+            "device": 1,
+            "inode": 2,
+            "owner_uid": 999,
+            "group_gid": 994,
+            "mode": "0400",
+            "link_count": 1,
+            "modification_time_ns": 3,
+            "change_time_ns": 4,
+            "content_or_digest_recorded": False,
+        },
+        "owner_discord_user_ids": [
+            launcher.WRITER_PREFLIGHT_OWNER_DISCORD_USER_ID
+        ],
+        "external_iam_policy_sha256": "b" * 64,
+        "service_state": _writer_preflight_service_state(),
+        "fixed_output_paths": {
+            "writer_config": str(
+                preflight_publisher.DEFAULT_WRITER_CONFIG_SOURCE_PATH
+            ),
+            "gateway_config": str(
+                preflight_publisher.DEFAULT_GATEWAY_CONFIG_SOURCE_PATH
+            ),
+            "writer_unit": str(
+                preflight_publisher.DEFAULT_STAGED_WRITER_UNIT_PATH
+            ),
+            "phase_b_readiness_unit": str(
+                preflight_publisher.DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH
+            ),
+            "gateway_unit": str(
+                preflight_publisher.DEFAULT_STAGED_GATEWAY_UNIT_PATH
+            ),
+            "native_observation_plan": str(
+                preflight_publisher.DEFAULT_STAGED_NATIVE_PLAN_PATH
+            ),
+            "publication_evidence_root": str(
+                preflight_publisher.PUBLICATION_EVIDENCE_ROOT
+            ),
+        },
+        "invariants": {
+            "services_started": False,
+            "units_installed": False,
+            "daemon_reloaded": False,
+            "approval_created": False,
+            "discord_started": False,
+            "credential_content_or_digest_recorded": False,
+        },
+    }
+    return _self_digest(value, "plan_sha256")
+
+
+def _writer_preflight_receipt(plan: Mapping[str, object]) -> dict[str, object]:
+    artifacts = {
+        "writer_config": {
+            "path": plan["fixed_output_paths"]["writer_config"],
+            "sha256": "c" * 64,
+        },
+        "gateway_config": {
+            "path": plan["fixed_output_paths"]["gateway_config"],
+            "sha256": "d" * 64,
+        },
+        "writer_unit": {
+            "path": plan["fixed_output_paths"]["writer_unit"],
+            "sha256": "e" * 64,
+        },
+        "phase_b_readiness_unit": {
+            "path": plan["fixed_output_paths"]["phase_b_readiness_unit"],
+            "sha256": "f" * 64,
+        },
+        "gateway_unit": {
+            "path": plan["fixed_output_paths"]["gateway_unit"],
+            "sha256": "0" * 64,
+        },
+        "native_observation_plan": {
+            "path": plan["fixed_output_paths"]["native_observation_plan"],
+            "sha256": "a" * 64,
+        },
+    }
+    collector_sha256 = "1" * 64
+    report_sha256 = "2" * 64
+    report_file_sha256 = "3" * 64
+    hba_observed_at = 1_000
+    collector_collected_at = 1_050
+    observed_at = 1_100
+    hba_expires_at = 1_300
+    time_envelope = {
+        "config_collector_receipt_sha256": collector_sha256,
+        "native_observation_plan_sha256": artifacts[
+            "native_observation_plan"
+        ]["sha256"],
+        "preflight_report_sha256": report_sha256,
+        "collector_hba_observed_at_unix": hba_observed_at,
+        "collector_collected_at_unix": collector_collected_at,
+        "observed_at_unix": observed_at,
+        "collector_hba_expires_at_unix": hba_expires_at,
+    }
+    time_envelope_sha256 = hashlib.sha256(_canonical(time_envelope)).hexdigest()
+    provenance = {
+        "approved_plan_sha256": plan["plan_sha256"],
+        "release_artifact_sha256": plan["release_artifact_sha256"],
+        "release_manifest_file_sha256": plan["release_manifest_file_sha256"],
+        "database_ca_sha256": plan["database"]["ca_sha256"],
+        "config_collector_receipt_sha256": collector_sha256,
+        "config_collector_receipt_file_sha256": "4" * 64,
+        "collector_writer_config_sha256": artifacts["writer_config"]["sha256"],
+        "collector_gateway_config_sha256": artifacts["gateway_config"]["sha256"],
+        "native_observation_plan_sha256": artifacts[
+            "native_observation_plan"
+        ]["sha256"],
+        "native_writer_config_sha256": artifacts["writer_config"]["sha256"],
+        "native_gateway_config_sha256": artifacts["gateway_config"]["sha256"],
+        "native_writer_unit_sha256": artifacts["writer_unit"]["sha256"],
+        "staged_phase_b_readiness_unit_sha256": artifacts[
+            "phase_b_readiness_unit"
+        ]["sha256"],
+        "native_gateway_unit_sha256": artifacts["gateway_unit"]["sha256"],
+        "preflight_report_sha256": report_sha256,
+        "preflight_report_file_sha256": report_file_sha256,
+        "preflight_time_envelope_sha256": time_envelope_sha256,
+    }
+    value: dict[str, object] = {
+        "schema": launcher.WRITER_PREFLIGHT_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "staged_preflight_passed_services_stopped",
+        "revision": RELEASE_SHA,
+        "approved_plan_sha256": plan["plan_sha256"],
+        "stopped_release_receipt_sha256": plan[
+            "stopped_release_receipt_sha256"
+        ],
+        "release_artifact_sha256": plan["release_artifact_sha256"],
+        "release_manifest_file_sha256": plan["release_manifest_file_sha256"],
+        "host_identity_receipt_sha256": plan["host_identity_receipt_sha256"],
+        "config_collector_receipt_path": (
+            "/var/lib/muncho-writer-canary-evidence/config-collector/"
+            f"{RELEASE_SHA}/{collector_sha256}.json"
+        ),
+        "config_collector_receipt_sha256": collector_sha256,
+        "config_collector_receipt_file_sha256": "4" * 64,
+        "native_observation_plan_sha256": artifacts[
+            "native_observation_plan"
+        ]["sha256"],
+        "external_iam_policy_sha256": plan["external_iam_policy_sha256"],
+        "preflight_report_path": (
+            f"{launcher.WRITER_PREFLIGHT_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            f"{plan['plan_sha256']}/reports/{report_sha256}.json"
+        ),
+        "preflight_report_file_sha256": report_file_sha256,
+        "preflight_report_sha256": report_sha256,
+        "preflight_observed_at_unix": observed_at,
+        "preflight_collector_hba_observed_at_unix": hba_observed_at,
+        "preflight_collector_collected_at_unix": collector_collected_at,
+        "preflight_collector_hba_expires_at_unix": hba_expires_at,
+        "preflight_time_envelope_sha256": time_envelope_sha256,
+        "preflight_fresh_at_seal": True,
+        "service_state_before": plan["service_state"],
+        "service_state_after": plan["service_state"],
+        "artifacts": artifacts,
+        "provenance": provenance,
+        "invariants": plan["invariants"],
+        "sealed_at_unix": 1_200,
+        "receipt_path": (
+            f"{launcher.WRITER_PREFLIGHT_EVIDENCE_BASE}/{RELEASE_SHA}/"
+            f"{plan['plan_sha256']}/publication.json"
+        ),
+    }
+    return _self_digest(value, "receipt_sha256")
+
+
+def test_writer_preflight_publisher_contract_is_accepted_by_owner_validator():
+    plan = _writer_preflight_plan()
+    receipt = _writer_preflight_receipt(plan)
+
+    assert set(receipt["provenance"]) == (
+        preflight_publisher._PUBLICATION_PROVENANCE_FIELDS
+    )
+    assert launcher.validate_writer_preflight_plan(
+        plan,
+        expected_release_sha=RELEASE_SHA,
+        expected_external_iam_policy_sha256="b" * 64,
+    ) == plan
+    assert launcher.validate_writer_preflight_receipt(receipt, plan=plan) == receipt
 
 
 def _anchor() -> dict[str, object]:

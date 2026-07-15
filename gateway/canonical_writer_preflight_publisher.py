@@ -31,11 +31,13 @@ from gateway.canonical_writer_activation import (
     DEFAULT_GATEWAY_CONFIG_SOURCE_PATH,
     DEFAULT_GATEWAY_UNIT_PATH,
     DEFAULT_NATIVE_PLAN_PATH,
+    DEFAULT_PHASE_B_READINESS_UNIT_PATH,
     DEFAULT_PLAN_PATH,
     DEFAULT_STAGED_EXTERNAL_IAM_PATH,
     DEFAULT_STAGED_GATEWAY_UNIT_PATH,
     DEFAULT_STAGED_NATIVE_PLAN_PATH,
     DEFAULT_STAGED_OWNER_APPROVAL_PATH,
+    DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
     DEFAULT_STAGED_PLAN_PATH,
     DEFAULT_STAGED_WRITER_UNIT_PATH,
     DEFAULT_WRITER_CONFIG_PATH,
@@ -250,6 +252,7 @@ _PUBLICATION_PROVENANCE_FIELDS = frozenset({
     "native_writer_config_sha256",
     "native_gateway_config_sha256",
     "native_writer_unit_sha256",
+    "staged_phase_b_readiness_unit_sha256",
     "native_gateway_unit_sha256",
     "preflight_report_sha256",
     "preflight_report_file_sha256",
@@ -264,11 +267,13 @@ _ACTIVATION_PATHS = (
     DEFAULT_STAGED_OWNER_APPROVAL_PATH,
     DEFAULT_STAGED_EXTERNAL_IAM_PATH,
     DEFAULT_STAGED_WRITER_UNIT_PATH,
+    DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
     DEFAULT_STAGED_GATEWAY_UNIT_PATH,
     DEFAULT_NATIVE_PLAN_PATH,
     DEFAULT_PLAN_PATH,
     Path("/etc/muncho/writer-activation/deployment-manifest.json"),
     DEFAULT_WRITER_UNIT_PATH,
+    DEFAULT_PHASE_B_READINESS_UNIT_PATH,
     DEFAULT_GATEWAY_UNIT_PATH,
     Path("/etc/systemd/system/muncho-canonical-writer-export.service"),
     Path("/etc/tmpfiles.d/muncho-canonical-writer.conf"),
@@ -280,6 +285,7 @@ _STAGED_OUTPUTS = frozenset({
     DEFAULT_GATEWAY_CONFIG_SOURCE_PATH,
     DEFAULT_STAGED_NATIVE_PLAN_PATH,
     DEFAULT_STAGED_WRITER_UNIT_PATH,
+    DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
     DEFAULT_STAGED_GATEWAY_UNIT_PATH,
 })
 _FORBIDDEN_OUTPUTS = tuple(
@@ -549,6 +555,9 @@ def plan_writer_preflight_publication(
             "writer_config": str(DEFAULT_WRITER_CONFIG_SOURCE_PATH),
             "gateway_config": str(DEFAULT_GATEWAY_CONFIG_SOURCE_PATH),
             "writer_unit": str(DEFAULT_STAGED_WRITER_UNIT_PATH),
+            "phase_b_readiness_unit": str(
+                DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH
+            ),
             "gateway_unit": str(DEFAULT_STAGED_GATEWAY_UNIT_PATH),
             "native_observation_plan": str(DEFAULT_STAGED_NATIVE_PLAN_PATH),
             "publication_evidence_root": str(PUBLICATION_EVIDENCE_ROOT),
@@ -708,6 +717,9 @@ def _expected_unit_bytes(revision: str) -> Mapping[Path, bytes]:
     )
     return {
         DEFAULT_STAGED_WRITER_UNIT_PATH: bundle.writer_service.encode("utf-8"),
+        DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH: (
+            bundle.phase_b_readiness_service.encode("utf-8")
+        ),
         DEFAULT_STAGED_GATEWAY_UNIT_PATH: bundle.gateway_service.encode("utf-8"),
     }
 
@@ -808,6 +820,9 @@ def _validate_native_binding(
     expected_units = _expected_unit_bytes(str(plan["revision"]))
     expected_digests = {
         DEFAULT_STAGED_WRITER_UNIT_PATH: native.value["writer_unit"]["sha256"],
+        DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH: _sha256_bytes(
+            expected_units[DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH]
+        ),
         DEFAULT_STAGED_GATEWAY_UNIT_PATH: native.value["gateway_unit"]["sha256"],
     }
     for path, payload in expected_units.items():
@@ -862,6 +877,7 @@ def _rollback_exact_stale_planner_residue(plan: Mapping[str, Any]) -> None:
     for path in (
         DEFAULT_STAGED_NATIVE_PLAN_PATH,
         DEFAULT_STAGED_GATEWAY_UNIT_PATH,
+        DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
         DEFAULT_STAGED_WRITER_UNIT_PATH,
     ):
         if os.path.lexists(path):
@@ -1200,6 +1216,7 @@ def _receipt_artifacts(native: NativeObservationPlan) -> Mapping[str, Any]:
         "writer_config": DEFAULT_WRITER_CONFIG_SOURCE_PATH,
         "gateway_config": DEFAULT_GATEWAY_CONFIG_SOURCE_PATH,
         "writer_unit": DEFAULT_STAGED_WRITER_UNIT_PATH,
+        "phase_b_readiness_unit": DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
         "gateway_unit": DEFAULT_STAGED_GATEWAY_UNIT_PATH,
         "native_observation_plan": DEFAULT_STAGED_NATIVE_PLAN_PATH,
     }
@@ -1209,7 +1226,11 @@ def _receipt_artifacts(native: NativeObservationPlan) -> Mapping[str, Any]:
             path,
             maximum=(
                 _MAX_UNIT_BYTES
-                if name in {"writer_unit", "gateway_unit"}
+                if name in {
+                    "writer_unit",
+                    "phase_b_readiness_unit",
+                    "gateway_unit",
+                }
                 else _MAX_PUBLIC_JSON_BYTES
             ),
         )
@@ -1219,6 +1240,12 @@ def _receipt_artifacts(native: NativeObservationPlan) -> Mapping[str, Any]:
         or result["gateway_config"]["sha256"]
         != native.value["gateway_config"]["sha256"]
         or result["writer_unit"]["sha256"] != native.value["writer_unit"]["sha256"]
+        or result["phase_b_readiness_unit"]["sha256"]
+        != _sha256_bytes(
+            _expected_unit_bytes(str(native.value["revision"]))[
+                DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH
+            ]
+        )
         or result["gateway_unit"]["sha256"] != native.value["gateway_unit"]["sha256"]
         or result["native_observation_plan"]["sha256"] != native.sha256
     ):
@@ -1255,6 +1282,7 @@ def _publication_provenance(
     native: NativeObservationPlan,
     report: Mapping[str, Any],
     report_file_sha256: str,
+    artifacts: Mapping[str, Any],
 ) -> Mapping[str, str]:
     projection = {
         "approved_plan_sha256": plan["plan_sha256"],
@@ -1273,6 +1301,10 @@ def _publication_provenance(
         "native_writer_config_sha256": native.value["writer_config"]["sha256"],
         "native_gateway_config_sha256": native.value["gateway_config"]["sha256"],
         "native_writer_unit_sha256": native.value["writer_unit"]["sha256"],
+        "staged_phase_b_readiness_unit_sha256": _digest(
+            artifacts["phase_b_readiness_unit"]["sha256"],
+            "staged phase-b readiness unit",
+        ),
         "native_gateway_unit_sha256": native.value["gateway_unit"]["sha256"],
         "preflight_report_sha256": report["report_sha256"],
         "preflight_report_file_sha256": report_file_sha256,
@@ -1493,6 +1525,7 @@ def _validate_terminal_receipt(
         native=native,
         report=report,
         report_file_sha256=report_file_sha256,
+        artifacts=expected_artifacts,
     )
     if value.get("provenance") != expected_provenance:
         raise RuntimeError("publication receipt provenance binding drifted")
@@ -1639,6 +1672,7 @@ def _apply_writer_preflight_publication_locked(
         native=native,
         report=report,
         report_file_sha256=report_file_sha256,
+        artifacts=artifacts,
     )
     unsigned: dict[str, Any] = {
         "schema": PUBLICATION_RECEIPT_SCHEMA,

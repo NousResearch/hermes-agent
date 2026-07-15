@@ -318,11 +318,16 @@ _STOPPED_RELEASE_ACTIVATION_PATHS = (
     "/etc/muncho/writer-activation/staged/owner-approval.json",
     "/etc/muncho/writer-activation/staged/external-iam-receipt.json",
     "/etc/muncho/writer-activation/staged/muncho-canonical-writer.service",
+    (
+        "/etc/muncho/writer-activation/staged/"
+        "muncho-canonical-writer-phase-b-readiness.service"
+    ),
     "/etc/muncho/writer-activation/staged/hermes-cloud-gateway.service",
     "/etc/muncho/writer-activation/native-observation-plan.json",
     "/etc/muncho/writer-activation/activation-plan.json",
     "/etc/muncho/writer-activation/deployment-manifest.json",
     "/etc/systemd/system/muncho-canonical-writer.service",
+    "/etc/systemd/system/muncho-canonical-writer-phase-b-readiness.service",
     "/etc/systemd/system/hermes-cloud-gateway.service",
     "/etc/systemd/system/muncho-canonical-writer-export.service",
     "/etc/tmpfiles.d/muncho-canonical-writer.conf",
@@ -11133,6 +11138,7 @@ _WRITER_PREFLIGHT_PROVENANCE_FIELDS = frozenset({
     "native_writer_config_sha256",
     "native_gateway_config_sha256",
     "native_writer_unit_sha256",
+    "staged_phase_b_readiness_unit_sha256",
     "native_gateway_unit_sha256",
     "preflight_report_sha256",
     "preflight_report_file_sha256",
@@ -11312,6 +11318,10 @@ def validate_writer_preflight_plan(
             "/etc/muncho/writer-activation/staged/"
             "muncho-canonical-writer.service"
         ),
+        "phase_b_readiness_unit": (
+            "/etc/muncho/writer-activation/staged/"
+            "muncho-canonical-writer-phase-b-readiness.service"
+        ),
         "gateway_unit": (
             "/etc/muncho/writer-activation/staged/"
             "hermes-cloud-gateway.service"
@@ -11464,6 +11474,7 @@ def validate_writer_preflight_receipt(
         "writer_config",
         "gateway_config",
         "writer_unit",
+        "phase_b_readiness_unit",
         "gateway_unit",
         "native_observation_plan",
     }
@@ -11532,6 +11543,9 @@ def validate_writer_preflight_receipt(
             "native_gateway_config_sha256",
         ),
         "writer_unit": ("native_writer_unit_sha256",),
+        "phase_b_readiness_unit": (
+            "staged_phase_b_readiness_unit_sha256",
+        ),
         "gateway_unit": ("native_gateway_unit_sha256",),
         "native_observation_plan": ("native_observation_plan_sha256",),
     }

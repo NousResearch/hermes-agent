@@ -4169,9 +4169,10 @@ class SessionDB:
         effect_disposition: Optional[str] = None,
         timestamp: Any = None,
         api_content: Optional[str] = None,
-    ) -> int:
+    ) -> Optional[int]:
         """
-        Append a message to a session. Returns the message row ID.
+        Append a message to a session. Returns the message row ID, or None
+        if the session was deleted concurrently (FK violation).
 
         Also increments the session's message_count (and tool_call_count
         if role is 'tool' or tool_calls is present).
@@ -4224,34 +4225,50 @@ class SessionDB:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
-            cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed, active, api_content)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    stored_content,
-                    tool_call_id,
-                    tool_calls_json,
-                    _scrub_surrogates(tool_name),
-                    effect_disposition,
-                    message_timestamp,
-                    token_count,
-                    finish_reason,
-                    _scrub_surrogates(reasoning),
-                    _scrub_surrogates(reasoning_content),
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_message_id,
-                    1 if observed else 0,
-                    1,
-                    _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
-                ),
-            )
+            try:
+                cursor = conn.execute(
+                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                       tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                       codex_message_items, platform_message_id, observed, active, api_content)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        stored_content,
+                        tool_call_id,
+                        tool_calls_json,
+                        _scrub_surrogates(tool_name),
+                        effect_disposition,
+                        message_timestamp,
+                        token_count,
+                        finish_reason,
+                        _scrub_surrogates(reasoning),
+                        _scrub_surrogates(reasoning_content),
+                        reasoning_details_json,
+                        codex_items_json,
+                        codex_message_items_json,
+                        platform_message_id,
+                        1 if observed else 0,
+                        1,
+                        _scrub_surrogates(api_content) if isinstance(api_content, str) else None,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                # Gate on FK violation only — re-raise other integrity failures
+                # so they surface as real errors rather than silent data loss.
+                if exc.sqlite_errorcode == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
+                    # The session was deleted between the caller's read and this
+                    # write (dashboard bulk-delete, prune, or manual remove
+                    # racing with an in-flight inbound event). Silently drop the
+                    # message — there is no valid session to attach it to.
+                    logger.debug(
+                        "append_message: session %s gone, dropping %s message",
+                        session_id,
+                        role,
+                    )
+                    return None
+                raise
             msg_id = cursor.lastrowid
 
             # Update counters

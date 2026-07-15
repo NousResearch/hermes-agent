@@ -423,8 +423,10 @@ class TestCronModeGatewayHostedUnattended:
     ):
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
         monkeypatch.setenv(marker, value)
+        # Gateway startup exports ask mode process-wide. Unattended children
+        # inherit it, but it must never route them into a pending human wait.
+        monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
         if marker != "HERMES_CRON_SESSION":
             monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)

@@ -340,6 +340,56 @@ def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkey
         ws._oauth_sessions.pop(sid, None)
 
 
+def test_codex_dashboard_start_rewords_device_authorization_error(monkeypatch):
+    from hermes_cli import web_server as ws
+
+    before_sessions = set(ws._oauth_sessions)
+
+    class _Resp:
+        status_code = 400
+        text = "Enable device code authorization"
+
+        def json(self):
+            return {
+                "error": {
+                    "message": "Enable device code authorization",
+                    "code": "device_authorization_not_enabled",
+                }
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            assert url.endswith("/deviceauth/usercode")
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    try:
+        resp = client.post(
+            "/api/providers/oauth/openai-codex/start",
+            headers=HEADERS,
+        )
+
+        assert resp.status_code == 500
+        detail = resp.json()["detail"]
+        assert "OpenAI rejected the device-code login request" in detail
+        assert "Enable device-code authorization in OpenAI" in detail
+        assert "click Login again" in detail
+        assert "hermes auth" not in detail
+    finally:
+        for sid in set(ws._oauth_sessions) - before_sessions:
+            ws._oauth_sessions.pop(sid, None)
+
+
 def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws

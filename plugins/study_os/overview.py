@@ -17,14 +17,8 @@ from plugins.study_os.learning import (
     _evaluator_kind,
     _independently_verified,
 )
+from plugins.study_os.reviews import StudyReviewReadModel
 from plugins.study_os.schemas import validate_plan_proposal
-from plugins.study_os.tools import (
-    _is_due,
-    _iter_markdown_notes,
-    _note_subject,
-    _read_review_state,
-    parse_note,
-)
 from plugins.study_os.workspace import StudyWorkspace
 
 
@@ -78,46 +72,18 @@ def _today_events(
 
 
 def _due_reviews(vault: Path, clock: datetime, limit: int) -> dict[str, Any]:
-    due: list[dict[str, Any]] = []
-    subjects: set[str] = set()
-    for path in _iter_markdown_notes(vault):
-        note, _warnings = parse_note(path, vault, include_body=False)
-        if note.get("layer") != "example" or not _is_due(note, clock.date()):
-            continue
-        subject = _note_subject(note)
-        if subject:
-            subjects.add(subject)
-        frontmatter = note.get("frontmatter", {})
-        state = _read_review_state(note)
-        due.append(
-            {
-                "path": note["path"],
-                "title": note["title"],
-                "review_level": int(frontmatter.get("review_level", 0)),
-                "review_count": state["review_count"],
-                "last_reviewed_at": state["last_reviewed_at"] or None,
-                "next_review_at": state["next_review_at"] or None,
-                "concepts": note.get("concepts", []),
-                "tags": note.get("tags", []),
-                "difficulty": frontmatter.get("difficulty"),
-                "subject": subject,
-            }
-        )
-    due.sort(
-        key=lambda item: (
-            item["review_level"],
-            item["last_reviewed_at"] or "0000-00-00",
-            item["path"],
-        )
+    projection = StudyReviewReadModel(vault).due(
+        as_of=clock.date(),
+        limit=limit,
     )
     return {
         # Review notes predate Learning Projects and currently have no reliable
         # project ownership field, so this projection states its Vault scope
         # instead of pretending the active project filtered them.
         "scope": "vault",
-        "count": len(due),
-        "subjects": sorted(subjects),
-        "items": due[:limit],
+        "count": projection["count"],
+        "subjects": projection["subjects"],
+        "items": projection["due"],
     }
 
 

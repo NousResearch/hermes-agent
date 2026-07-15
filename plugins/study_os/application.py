@@ -10,7 +10,6 @@ persistence ordering, and stable failure semantics.
 from __future__ import annotations
 
 import json
-from datetime import date
 from enum import Enum
 from typing import Any
 
@@ -20,21 +19,7 @@ from plugins.study_os.learning import (
     handle_study_review_submission,
 )
 from plugins.study_os.overview import build_study_overview
-from plugins.study_os.tools import (
-    _build_review_stats,
-    _concept_ancestors,
-    _concept_learning_state,
-    _get_concept_graph,
-    _is_due,
-    _iter_markdown_notes,
-    _load_review_stats,
-    _note_subject,
-    _read_review_state,
-    _save_review_stats,
-    _strip_wikilink,
-    _study_dir,
-    parse_note,
-)
+from plugins.study_os.reviews import StudyReviewReadModel
 from plugins.study_os.workspace import StudyWorkspace
 
 
@@ -316,63 +301,13 @@ class StudyOSApplication:
                 "subjects": [],
                 "due": [],
             }
-        vault = workspace.vault
-        today = date.today()
-        limit = max(1, min(int(params.get("limit", 20)), 500))
-        subject_q = str(params.get("subject") or "").strip().casefold()
-        level_q = params.get("level")
-
-        due: list[dict[str, Any]] = []
-        subjects: set[str] = set()
-        for path in _iter_markdown_notes(vault):
-            note, _warnings = parse_note(path, vault, include_body=False)
-            if note.get("layer") != "example" or not _is_due(note, today):
-                continue
-            note_subject = _note_subject(note)
-            if note_subject:
-                subjects.add(note_subject)
-            if subject_q:
-                tags = {str(tag).lstrip("#").casefold() for tag in note.get("tags", [])}
-                concepts = {str(concept).casefold() for concept in note.get("concepts", [])}
-                if (
-                    subject_q != (note_subject or "").casefold()
-                    and subject_q not in tags
-                    and not any(subject_q in concept for concept in concepts)
-                ):
-                    continue
-            frontmatter = note.get("frontmatter", {})
-            review_level = int(frontmatter.get("review_level", 0))
-            if level_q is not None and review_level != int(level_q):
-                continue
-            state = _read_review_state(note)
-            due.append(
-                {
-                    "path": note["path"],
-                    "title": note["title"],
-                    "review_level": review_level,
-                    "review_count": state["review_count"],
-                    "last_reviewed_at": state["last_reviewed_at"] or None,
-                    "next_review_at": state["next_review_at"] or None,
-                    "concepts": note.get("concepts", []),
-                    "tags": note.get("tags", []),
-                    "difficulty": frontmatter.get("difficulty"),
-                    "subject": note_subject,
-                }
-            )
-        due.sort(
-            key=lambda item: (
-                item["review_level"],
-                item["last_reviewed_at"] or "0000-00-00",
-            )
-        )
-        due = due[:limit]
         return {
-            "vault_path": str(vault),
             "configured": True,
-            "date": today.isoformat(),
-            "count": len(due),
-            "subjects": sorted(subjects),
-            "due": due,
+            **StudyReviewReadModel(workspace.vault).due(
+                subject=str(params.get("subject") or ""),
+                level=params.get("level"),
+                limit=int(params.get("limit", 20)),
+            ),
         }
 
     def _review_detail(self, note: str) -> dict[str, Any]:
@@ -407,27 +342,9 @@ class StudyOSApplication:
                 "due_count": 0,
                 "cached": False,
             }
-        vault = workspace.vault
-        stats = None if rebuild else _load_review_stats(vault)
-        cached = stats is not None
-        if stats is None:
-            stats = _build_review_stats(vault)
-            _save_review_stats(vault, stats)
         return {
-            "vault_path": str(vault),
             "configured": True,
-            "total": stats.get("total_examples", 0),
-            "by_level": {
-                int(key): value
-                for key, value in stats.get("by_review_level", {}).items()
-            },
-            "spacing_coverage": stats.get("spacing_coverage_pct", 0.0),
-            "reviewed_count": stats.get("reviewed_examples", 0),
-            "progress": stats.get("progress_pct", 0.0),
-            "concept_stats": stats.get("concepts", {}),
-            "review_streak": stats.get("review_streak_days", 0),
-            "due_count": stats.get("due_today", 0),
-            "cached": cached,
+            **StudyReviewReadModel(workspace.vault).stats(rebuild=rebuild),
         }
 
     def _review_queue(self, **params: Any) -> dict[str, Any]:
@@ -441,112 +358,22 @@ class StudyOSApplication:
                 "new_examples": [],
                 "new_examples_total": 0,
             }
-        vault = workspace.vault
-        graph = _get_concept_graph(vault)
-        state_q = str(params.get("state") or "").strip()
-        limit = max(1, min(int(params.get("limit", 30)), 500))
-        new_concepts: list[dict[str, Any]] = []
-        new_examples: list[dict[str, Any]] = []
-
-        for path in _iter_markdown_notes(vault):
-            note, _warnings = parse_note(path, vault, include_body=False)
-            layer = note.get("layer", "note")
-            frontmatter = note.get("frontmatter", {})
-            if layer in ("concept", "pattern"):
-                learning_state = _concept_learning_state(note)
-                if (state_q and learning_state != state_q) or learning_state == "已掌握":
-                    continue
-                new_concepts.append(
-                    {
-                        "path": note["path"],
-                        "title": note["title"],
-                        "learning_state": learning_state,
-                        "prerequisites": graph.get("prerequisites", {}).get(
-                            _strip_wikilink(note.get("title", "")), []
-                        ),
-                        "tags": note.get("tags", []),
-                    }
-                )
-            elif layer == "example":
-                review_count = int(frontmatter.get("review_count", 0))
-                if review_count > 0:
-                    continue
-                if state_q:
-                    review_level = int(frontmatter.get("review_level", 0))
-                    if state_q == "学习中" and review_level != 0:
-                        continue
-                    if state_q == "已理解" and review_level == 0:
-                        continue
-                new_examples.append(
-                    {
-                        "path": note["path"],
-                        "title": note["title"],
-                        "review_level": int(frontmatter.get("review_level", 0)),
-                        "difficulty": frontmatter.get("difficulty"),
-                        "concepts": note.get("concepts", []),
-                        "tags": note.get("tags", []),
-                        "source": frontmatter.get("source"),
-                    }
-                )
-
-        new_examples.sort(
-            key=lambda item: (
-                {"easy": 1, "medium": 2, "hard": 3}.get(
-                    str(item.get("difficulty", "")).lower(), 2
-                ),
-                item["title"],
-            )
-        )
-
-        def concept_order(item: dict[str, Any]) -> tuple[int, str]:
-            depth = max(
-                (
-                    len(chain)
-                    for chain in _concept_ancestors(item["title"], graph)
-                ),
-                default=0,
-            )
-            return depth, item["title"]
-
-        new_concepts.sort(key=concept_order)
         return {
-            "vault_path": str(vault),
             "configured": True,
-            "new_concepts": new_concepts[:limit],
-            "new_concepts_total": len(new_concepts),
-            "new_examples": new_examples[:limit],
-            "new_examples_total": len(new_examples),
+            **StudyReviewReadModel(workspace.vault).queue(
+                state=str(params.get("state") or ""),
+                limit=int(params.get("limit", 30)),
+            ),
         }
 
     def _review_concepts(self) -> dict[str, Any]:
         workspace = self._workspace(required=False)
         if workspace is None:
             return {"vault_path": None, "configured": False, "concepts": []}
-        vault = workspace.vault
-        graph = _get_concept_graph(vault)
-        names = sorted(
-            set(graph.get("prerequisites", {}))
-            | set(graph.get("dependents", {}))
-            | set(graph.get("exercised_by", {}))
-        )
-        state_by_name: dict[str, str] = {}
-        for path in _iter_markdown_notes(vault):
-            note, _warnings = parse_note(path, vault, include_body=False)
-            if note.get("layer") in ("concept", "pattern"):
-                state_by_name[str(note.get("title") or "")] = _concept_learning_state(note)
-        concepts = []
-        for name in names:
-            review_info = graph.get("review_levels", {}).get(name, {})
-            concepts.append(
-                {
-                    "title": name,
-                    "learning_state": state_by_name.get(name, "未开始"),
-                    "prerequisites": graph.get("prerequisites", {}).get(name, []),
-                    "example_count": graph.get("note_count", {}).get(name, 0),
-                    "avg_level": review_info.get("avg"),
-                }
-            )
-        return {"vault_path": str(vault), "configured": True, "concepts": concepts}
+        return {
+            "configured": True,
+            **StudyReviewReadModel(workspace.vault).concepts(),
+        }
 
     def _profile(self) -> dict[str, Any]:
         workspace = self._workspace(required=False)
@@ -557,7 +384,7 @@ class StudyOSApplication:
                 **_PROFILE_DEFAULTS,
             }
         vault = workspace.vault
-        config_path = _study_dir(vault) / "config.json"
+        config_path = workspace.study_dir / "config.json"
         data: Any = {}
         if config_path.exists():
             try:
@@ -584,7 +411,7 @@ class StudyOSApplication:
         workspace = self._workspace()
         assert workspace is not None
         vault = workspace.vault
-        config_path = _study_dir(vault) / "config.json"
+        config_path = workspace.study_dir / "config.json"
         existing: Any = {}
         if config_path.exists():
             try:

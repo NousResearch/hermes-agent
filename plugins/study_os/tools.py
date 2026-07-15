@@ -8,7 +8,39 @@ import re
 from collections import Counter
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+from plugins.study_os.notes import (
+    _append_text,
+    _as_list,
+    _extract_headings,
+    _find_note,
+    _iter_markdown_notes,
+    _matches_note,
+    _note_subject,
+    _parse_frontmatter,
+    _read_text,
+    _safe_relative_path,
+    _strip_wikilink,
+    _write_text,
+    parse_note,
+)
+from plugins.study_os.reviews import (
+    StudyReviewReadModel,
+    _LEARNING_STATES,
+    calculate_next_review as _calculate_next_review,
+    concept_ancestors as _concept_ancestors,
+    concept_descendants as _concept_descendants,
+    concept_learning_state as _concept_learning_state,
+    get_concept_graph as _get_concept_graph,
+    graph_cache_path as _graph_cache_path,
+    invalidate_review_stats as _invalidate_review_stats,
+    is_due as _is_due,
+    read_review_state as _read_review_state,
+    topological_order as _topological_order,
+    upsert_frontmatter_field as _upsert_frontmatter_field,
+)
+from plugins.study_os.workspace import study_state_dir as _study_dir
 
 from plugins.study_os.schemas import (
     DEFAULT_PROMPT_POLICY,
@@ -20,15 +52,6 @@ from plugins.study_os.schemas import (
     validate_study_schedule,
 )
 
-try:
-    import yaml
-except Exception:  # pragma: no cover - PyYAML is a project dependency.
-    yaml = None  # type: ignore[assignment]
-
-
-WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
-CODE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 MAX_LIST_LIMIT = 500
 
 
@@ -62,31 +85,6 @@ def resolve_vault_path(raw: str | None = None) -> Path:
     from plugins.study_os.workspace import resolve_vault
 
     path, _source = resolve_vault(raw)
-    return path
-
-
-def _safe_relative_path(vault: Path, rel: str | None) -> Path:
-    if not rel or not str(rel).strip():
-        return vault
-    raw = Path(str(rel).strip())
-    if raw.is_absolute():
-        candidate = raw.expanduser().resolve()
-    else:
-        candidate = (vault / raw).resolve()
-    try:
-        candidate.relative_to(vault)
-    except ValueError as exc:
-        raise ValueError(f"Path escapes vault: {rel}") from exc
-    return candidate
-
-
-def _study_dir(vault: Path) -> Path:
-    path = (vault / ".StudyOS").resolve()
-    try:
-        path.relative_to(vault)
-    except ValueError as exc:  # defensive; should be impossible.
-        raise ValueError(".StudyOS path escapes vault") from exc
-    path.mkdir(parents=True, exist_ok=True)
     return path
 
 
@@ -192,264 +190,6 @@ def _lessons_dir(vault: Path, project_id: str) -> Path:
     path = _project_dir(vault, project_id) / "lessons"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def _write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-
-
-def _append_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.stat().st_size > 0:
-        existing = _read_text(path)
-        sep = "" if existing.endswith("\n") else "\n"
-        _write_text(path, existing + sep + content)
-    else:
-        _write_text(path, content)
-
-
-def _parse_frontmatter(raw: str) -> tuple[dict[str, Any], str, str | None]:
-    lines = raw.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, raw, None
-    end_idx = None
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            end_idx = idx
-            break
-    if end_idx is None:
-        return {}, "\n".join(lines[1:]), "Missing closing --- in frontmatter"
-    fm_text = "\n".join(lines[1:end_idx])
-    body = "\n".join(lines[end_idx + 1 :])
-    if not fm_text.strip():
-        return {}, body, None
-    if yaml is None:
-        return {}, body, "PyYAML unavailable; frontmatter not parsed"
-    try:
-        parsed = yaml.safe_load(fm_text) or {}
-    except Exception as exc:
-        return {}, body, f"Failed to parse frontmatter: {exc}"
-    if not isinstance(parsed, dict):
-        return {}, body, "Frontmatter is not a mapping"
-    return parsed, body, None
-
-
-def _as_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value if str(item).strip()]
-    if isinstance(value, tuple):
-        return [str(item) for item in value if str(item).strip()]
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    return [str(value)]
-
-
-def _strip_wikilink(value: str) -> str:
-    text = value.strip()
-    if text.startswith("[[") and text.endswith("]]"):
-        text = text[2:-2]
-    if "|" in text:
-        text = text.split("|", 1)[0]
-    if "#" in text:
-        text = text.split("#", 1)[0]
-    return text.strip()
-
-
-def _clean_body_for_links(body: str) -> str:
-    return CODE_BLOCK_RE.sub("", body)
-
-
-def _extract_wikilinks(body: str) -> list[str]:
-    links = []
-    seen = set()
-    for match in WIKILINK_RE.finditer(_clean_body_for_links(body)):
-        target = match.group(1).strip()
-        if not target or "://" in target or target in seen:
-            continue
-        seen.add(target)
-        links.append(target)
-    return links
-
-
-def _extract_headings(body: str) -> list[dict[str, Any]]:
-    headings = []
-    clean = CODE_BLOCK_RE.sub("", body)
-    for match in HEADING_RE.finditer(clean):
-        headings.append({"level": len(match.group(1)), "text": match.group(2).strip()})
-    return headings
-
-
-def _excerpt(body: str, limit: int = 260) -> str:
-    clean_lines = []
-    for line in CODE_BLOCK_RE.sub("", body).splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        clean_lines.append(stripped)
-    text = " ".join(clean_lines)
-    return text[:limit] + ("..." if len(text) > limit else "")
-
-
-def _layer_from(path: Path, vault: Path, fm: dict[str, Any]) -> str:
-    typ = str(fm.get("type") or "").strip()
-    if typ:
-        return typ
-    rel = path.relative_to(vault).as_posix()
-    if "/examples/" in f"/{rel}" or rel.startswith("examples/"):
-        return "example"
-    if "Box/题型/" in rel or "Box/题型\\" in rel:
-        return "pattern"
-    if "/Box/" in f"/{rel}" or rel.startswith("Box/"):
-        return "concept"
-    return "note"
-
-
-def parse_note(path: Path, vault: Path, include_body: bool = False) -> tuple[dict[str, Any], list[str]]:
-    warnings: list[str] = []
-    raw = _read_text(path)
-    fm, body, fm_warning = _parse_frontmatter(raw)
-    if fm_warning:
-        warnings.append(f"{path.relative_to(vault).as_posix()}: {fm_warning}")
-    headings = _extract_headings(body)
-    title = str(fm.get("title") or (headings[0]["text"] if headings else path.stem))
-    data: dict[str, Any] = {
-        "path": path.relative_to(vault).as_posix(),
-        "basename": path.name,
-        "title": title,
-        "layer": _layer_from(path, vault, fm),
-        "frontmatter": fm,
-        "tags": _as_list(fm.get("tags")),
-        "concepts": [_strip_wikilink(v) for v in _as_list(fm.get("concepts"))],
-        "patterns": [_strip_wikilink(v) for v in _as_list(fm.get("patterns"))],
-        "aliases": _as_list(fm.get("aliases")),
-        "headings": headings,
-        "wikilinks": _extract_wikilinks(body),
-        "excerpt": _excerpt(body),
-        "size": path.stat().st_size,
-        "modified": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
-    }
-    if include_body:
-        data["body"] = body
-    return data, warnings
-
-
-def _iter_markdown_notes(
-    vault: Path,
-    *,
-    folder: str | None = None,
-    file_glob: str | None = None,
-    include_study_os: bool = False,
-) -> Iterable[Path]:
-    root = _safe_relative_path(vault, folder)
-    if not root.exists():
-        return []
-    pattern = (file_glob or "**/*.md").strip() or "**/*.md"
-    paths = sorted(root.glob(pattern) if root.is_dir() else [root])
-    out = []
-    for path in paths:
-        if not path.is_file() or path.suffix.lower() != ".md":
-            continue
-        rel = path.resolve().relative_to(vault).as_posix()
-        if not include_study_os and (rel == ".StudyOS" or rel.startswith(".StudyOS/")):
-            continue
-        out.append(path.resolve())
-    return out
-
-
-def _note_subject(note: dict[str, Any]) -> str | None:
-    """Return the top-level course folder for a note, when it has one."""
-    parts = Path(str(note.get("path") or "")).parts
-    if len(parts) < 2 or parts[0].startswith("."):
-        return None
-    return parts[0]
-
-
-_CN_NORMALIZE_RE = re.compile(r"[的与和之]")
-
-def _normalize_cn(text: str) -> str:
-    """Strip common Chinese particles for fuzzy concept-name matching."""
-    return _CN_NORMALIZE_RE.sub("", text.casefold())
-
-
-def _matches_note(
-    note: dict[str, Any],
-    *,
-    query: str | None,
-    tag: str | None,
-    layer: str | None,
-    search_body: bool = False,
-    normalize: bool = False,
-) -> bool:
-    if layer and note.get("layer") != layer:
-        return False
-    if tag:
-        wanted = tag.strip().lstrip("#")
-        tags = {t.lstrip("#") for t in note.get("tags", [])}
-        if wanted not in tags:
-            return False
-    if query:
-        q = query.casefold()
-        haystacks = [
-            str(note.get("path", "")),
-            str(note.get("title", "")),
-            str(note.get("excerpt", "")),
-            " ".join(note.get("aliases", [])),
-            " ".join(note.get("concepts", [])),
-            " ".join(note.get("patterns", [])),
-            " ".join(note.get("wikilinks", [])),
-        ]
-        if search_body:
-            haystacks.append(str(note.get("body", "")))
-        haystacks_lower = [h.casefold() for h in haystacks]
-        # Primary: strict substring match
-        if any(q in h for h in haystacks_lower):
-            return True
-        # Secondary: Chinese-normalized fallback (strips 的与和之)
-        if normalize:
-            q_norm = _normalize_cn(q)
-            if q_norm and any(q_norm in _normalize_cn(h) for h in haystacks_lower):
-                return True
-        return False
-    return True
-
-
-def _find_note(vault: Path, note_ref: str, include_study_os: bool = False) -> tuple[Path | None, list[Path]]:
-    ref = (note_ref or "").strip()
-    if not ref:
-        return None, []
-    try:
-        direct = _safe_relative_path(vault, ref)
-        if direct.is_file():
-            return direct, []
-        if direct.with_suffix(".md").is_file():
-            return direct.with_suffix(".md"), []
-    except ValueError:
-        raise
-    ref_clean = _strip_wikilink(ref)
-    matches = []
-    for path in _iter_markdown_notes(vault, include_study_os=include_study_os):
-        data, _warnings = parse_note(path, vault, include_body=False)
-        candidates = {
-            data["path"],
-            Path(data["path"]).with_suffix("").as_posix(),
-            data["basename"],
-            Path(data["basename"]).stem,
-            data["title"],
-            *data.get("aliases", []),
-        }
-        if ref_clean in candidates:
-            matches.append(path)
-    if len(matches) == 1:
-        return matches[0], []
-    return None, matches
 
 
 def _limit_from(args: dict[str, Any], default: int = 100) -> int:
@@ -1038,110 +778,6 @@ STUDY_EXPORT_ANKI_CANDIDATES_SCHEMA = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Spaced Repetition (Ebbinghaus) helpers
-# ---------------------------------------------------------------------------
-
-# Base Ebbinghaus intervals (days) indexed by review_count.
-# review_count 0 = first review, 1 = second, etc.
-_EBBINGHAUS_BASE = [1, 2, 4, 7, 15, 30, 60, 120]
-
-# review_level → interval weight multiplier.
-# Lower review level → review more frequently; higher level → longer intervals.
-_REVIEW_LEVEL_WEIGHT = {0: 0.5, 1: 0.7, 2: 1.0, 3: 1.3, 4: 1.6, 5: 2.5}
-
-
-def _upsert_frontmatter_field(path: Path, field: str, value: Any) -> None:
-    """Add or update a single YAML frontmatter field in-place.
-
-    Uses string-level manipulation to avoid reformatting the entire YAML block.
-    Date values are written as ISO strings; booleans as ``true``/``false``;
-    integers and strings as-is.
-    """
-    raw = _read_text(path)
-    lines = raw.splitlines()
-
-    if isinstance(value, bool):
-        serialized = "true" if value else "false"
-    elif isinstance(value, date):
-        serialized = value.isoformat()
-    elif isinstance(value, datetime):
-        serialized = value.strftime("%Y-%m-%d")
-    else:
-        serialized = str(value)
-
-    if not lines or lines[0].strip() != "---":
-        new_content = f"---\n{field}: {serialized}\n---\n\n{raw}"
-        _write_text(path, new_content)
-        return
-
-    end_idx = None
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end_idx = i
-            break
-    if end_idx is None:
-        return
-
-    field_re = re.compile(rf"^{re.escape(field)}\s*:.*$")
-    for i in range(1, end_idx):
-        if field_re.match(lines[i]):
-            lines[i] = f"{field}: {serialized}"
-            _write_text(path, "\n".join(lines) + "\n")
-            return
-
-    lines.insert(end_idx, f"{field}: {serialized}")
-    _write_text(path, "\n".join(lines) + "\n")
-
-
-def _calculate_next_review(
-    review_count: int,
-    review_level: int,
-    passed: bool,
-) -> tuple[int, date]:
-    """Return (new_review_count, next_review_date) using Ebbinghaus + review_level weight.
-
-    On pass: increment review_count, calculate interval from base curve × level weight.
-    On fail: reset review_count to 0, next review in 1 day.
-    """
-    if not passed:
-        return 0, date.today() + timedelta(days=1)
-
-    new_count = min(review_count + 1, len(_EBBINGHAUS_BASE) - 1)
-    base = _EBBINGHAUS_BASE[review_count] if review_count < len(_EBBINGHAUS_BASE) else _EBBINGHAUS_BASE[-1]
-    weight = _REVIEW_LEVEL_WEIGHT.get(review_level, 1.0)
-    interval = max(1, int(base * weight))
-    return new_count, date.today() + timedelta(days=interval)
-
-
-def _read_review_state(note: dict[str, Any]) -> dict[str, Any]:
-    """Extract spaced-repetition fields from parsed note frontmatter."""
-    fm = note.get("frontmatter", {})
-    return {
-        "review_count": int(fm.get("review_count", 0)),
-        "last_reviewed_at": str(fm.get("last_reviewed_at", "")),
-        "next_review_at": str(fm.get("next_review_at", "")),
-    }
-
-
-def _is_due(note: dict[str, Any], today: date) -> bool:
-    """Check if a note is due for review.
-
-    Due when: next_review_at <= today, OR never reviewed (no next_review_at).
-    Only applies to example-layer notes.
-    """
-    if note.get("layer") != "example":
-        return False
-    state = _read_review_state(note)
-    next_at = state["next_review_at"]
-    if not next_at:
-        return True
-    try:
-        return _parse_date(next_at) <= today
-    except Exception:
-        return True
-
-
 def _review_filter_values(args: dict[str, Any], key: str) -> set[str]:
     """Read a review selector as normalized non-empty strings.
 
@@ -1559,196 +1195,6 @@ STUDY_SYNC_MEMORY_SCHEMA = {
 # Concept dependency graph
 # ---------------------------------------------------------------------------
 
-def _build_concept_graph(vault: Path) -> dict[str, Any]:
-    """Build a directed dependency graph from all notes in the vault.
-
-    Returns a dict with:
-      - ``prerequisites``: {concept: [concepts it depends on]}
-      - ``dependents``: {concept: [concepts that depend on it]}
-      - ``exercised_by``: {concept: [example paths]}
-      - ``review_levels``: {concept: {"min": int, "avg": float, "count": int}}
-      - ``note_count``: {concept: total notes referencing it}
-    """
-    prerequisites: dict[str, set[str]] = {}
-    exercised_by: dict[str, list[str]] = {}
-    review_by_concept: dict[str, list[int]] = {}
-
-    for path in _iter_markdown_notes(vault):
-        note, _warnings = parse_note(path, vault, include_body=False)
-        note_concepts = [_strip_wikilink(c) for c in note.get("concepts", [])]
-        if not note_concepts:
-            continue
-
-        layer = note.get("layer", "note")
-        note_path = note["path"]
-
-        for c in note_concepts:
-            exercised_by.setdefault(c, []).append(note_path)
-
-            fm = note.get("frontmatter", {})
-            rl = fm.get("review_level")
-            if isinstance(rl, (int, float)):
-                review_by_concept.setdefault(c, []).append(int(rl))
-
-        if layer in ("concept", "pattern"):
-            for c in note_concepts:
-                prereqs = [d for d in note_concepts if d != c]
-                if prereqs:
-                    prerequisites.setdefault(c, set()).update(prereqs)
-
-    dependents: dict[str, set[str]] = {}
-    for concept, prereqs in prerequisites.items():
-        for p in prereqs:
-            dependents.setdefault(p, set()).add(concept)
-
-    review_levels: dict[str, dict[str, Any]] = {}
-    for c, levels in review_by_concept.items():
-        review_levels[c] = {
-            "min": min(levels),
-            "avg": round(sum(levels) / len(levels), 1),
-            "max": max(levels),
-            "count": len(levels),
-        }
-
-    note_count = {c: len(paths) for c, paths in exercised_by.items()}
-
-    return {
-        "prerequisites": {k: sorted(v) for k, v in prerequisites.items()},
-        "dependents": {k: sorted(v) for k, v in dependents.items()},
-        "exercised_by": {k: v for k, v in exercised_by.items()},
-        "review_levels": review_levels,
-        "note_count": note_count,
-    }
-
-
-_GRAPH_CACHE_TTL_HOURS = 1
-
-
-def _graph_cache_path(vault: Path) -> Path:
-    return _study_dir(vault) / "concept_graph.json"
-
-
-def _load_graph_cache(vault: Path) -> dict[str, Any] | None:
-    cache_path = _graph_cache_path(vault)
-    if not cache_path.exists():
-        return None
-    try:
-        data = json.loads(_read_text(cache_path))
-        built_at = data.get("built_at", "")
-        if built_at:
-            age = datetime.now() - datetime.fromisoformat(built_at)
-            if age > timedelta(hours=_GRAPH_CACHE_TTL_HOURS):
-                return None
-        return data.get("graph")
-    except Exception:
-        return None
-
-
-def _save_graph_cache(vault: Path, graph: dict[str, Any]) -> None:
-    _write_text(
-        _graph_cache_path(vault),
-        _json({"built_at": datetime.now().isoformat(), "graph": graph}),
-    )
-
-
-def _get_concept_graph(vault: Path, rebuild: bool = False) -> dict[str, Any]:
-    if not rebuild:
-        cached = _load_graph_cache(vault)
-        if cached is not None:
-            return cached
-    graph = _build_concept_graph(vault)
-    _save_graph_cache(vault, graph)
-    return graph
-
-
-def _concept_ancestors(
-    concept: str, graph: dict[str, Any], max_depth: int = 5
-) -> list[list[str]]:
-    """Return chains of prerequisites (ancestors) for a concept."""
-    prereqs = graph["prerequisites"]
-    chains: list[list[str]] = []
-
-    def walk(current: str, path: list[str], depth: int):
-        if depth > max_depth:
-            return
-        deps = prereqs.get(current, [])
-        if not deps:
-            chains.append(path + [current])
-            return
-        for d in deps:
-            if d in path:
-                chains.append(path + [current, f"(cycle→{d})"])
-            else:
-                walk(d, path + [current], depth + 1)
-
-    walk(concept, [], 0)
-    return chains
-
-
-def _concept_descendants(
-    concept: str, graph: dict[str, Any], max_depth: int = 5
-) -> list[list[str]]:
-    """Return chains of dependents (descendants) for a concept."""
-    deps = graph["dependents"]
-    chains: list[list[str]] = []
-
-    def walk(current: str, path: list[str], depth: int):
-        if depth > max_depth:
-            return
-        children = deps.get(current, [])
-        if not children:
-            chains.append(path + [current])
-            return
-        for c in children:
-            if c in path:
-                chains.append(path + [current, f"(cycle→{c})"])
-            else:
-                walk(c, path + [current], depth + 1)
-
-    walk(concept, [], 0)
-    return chains
-
-
-def _topological_order(concepts: list[str], graph: dict[str, Any]) -> list[str]:
-    """Return concepts in dependency order (prerequisites first).
-
-    Only includes concepts that exist in the graph. Cycles are broken
-    arbitrarily (the first encountered edge is skipped).
-    """
-    prereqs = graph["prerequisites"]
-    relevant: set[str] = set()
-
-    def collect(c: str):
-        if c in relevant:
-            return
-        relevant.add(c)
-        for p in prereqs.get(c, []):
-            collect(p)
-
-    for c in concepts:
-        collect(c)
-
-    in_degree: dict[str, int] = {c: 0 for c in relevant}
-    adj: dict[str, list[str]] = {c: [] for c in relevant}
-    for c in relevant:
-        for p in prereqs.get(c, []):
-            if p in relevant and c != p:
-                adj.setdefault(p, []).append(c)
-                in_degree[c] = in_degree.get(c, 0) + 1
-
-    queue = [c for c in relevant if in_degree.get(c, 0) == 0]
-    order: list[str] = []
-    while queue:
-        node = queue.pop(0)
-        order.append(node)
-        for child in adj.get(node, []):
-            in_degree[child] -= 1
-            if in_degree[child] == 0:
-                queue.append(child)
-
-    return order
-
-
 def handle_study_concept_graph(args: dict[str, Any], **_kwargs) -> str:
     """Query the concept dependency graph from cache (rebuilt hourly or on demand)."""
     try:
@@ -1848,126 +1294,13 @@ STUDY_CONCEPT_GRAPH_SCHEMA = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Review statistics (cached JSON)
-# ---------------------------------------------------------------------------
-
-def _stats_cache_path(vault: Path) -> Path:
-    return _study_dir(vault) / "review_stats.json"
-
-
-def _invalidate_review_stats(vault: Path) -> None:
-    cache = _stats_cache_path(vault)
-    if cache.exists():
-        cache.unlink()
-
-
-def _build_review_stats(vault: Path) -> dict[str, Any]:
-    today = date.today()
-    total = 0
-    by_level: Counter[int] = Counter()
-    concept_levels: dict[str, list[int]] = {}
-    concept_due: dict[str, int] = {}
-    last_reviewed_dates: list[date] = []
-    reviewed_count = 0
-    due_count = 0
-
-    for path in _iter_markdown_notes(vault, folder="examples"):
-        note, _warnings = parse_note(path, vault, include_body=False)
-        if note.get("layer") != "example":
-            continue
-        total += 1
-        fm = note.get("frontmatter", {})
-        rl = int(fm.get("review_level", 0))
-        by_level[rl] += 1
-        if int(fm.get("review_count", 0) or 0) > 0:
-            reviewed_count += 1
-
-        lr = fm.get("last_reviewed_at")
-        if lr:
-            try:
-                last_reviewed_dates.append(_parse_date(str(lr)))
-            except Exception:
-                pass
-
-        for c in note.get("concepts", []):
-            c_name = _strip_wikilink(c)
-            concept_levels.setdefault(c_name, []).append(rl)
-
-        if _is_due(note, today):
-            due_count += 1
-            for c in note.get("concepts", []):
-                c_name = _strip_wikilink(c)
-                concept_due[c_name] = concept_due.get(c_name, 0) + 1
-
-    spacing_coverage = round(reviewed_count / total * 100, 1) if total > 0 else 0.0
-
-    concept_stats = {}
-    for c, levels in concept_levels.items():
-        concept_stats[c] = {
-            "avg": round(sum(levels) / len(levels), 1),
-            "min": min(levels),
-            "max": max(levels),
-            "count": len(levels),
-            "due": concept_due.get(c, 0),
-        }
-
-    review_streak = 0
-    if last_reviewed_dates:
-        sorted_dates = sorted(set(last_reviewed_dates), reverse=True)
-        check = today
-        for d in sorted_dates:
-            if d == check or d == check - timedelta(days=1):
-                if d == check - timedelta(days=1):
-                    check = d
-                review_streak += 1
-            elif d < check - timedelta(days=1):
-                break
-
-    return {
-        "semantics": "spacing_coverage.v1",
-        "built_at": datetime.now().isoformat(),
-        "total_examples": total,
-        "by_review_level": {str(k): v for k, v in sorted(by_level.items())},
-        "reviewed_examples": reviewed_count,
-        "spacing_coverage_pct": spacing_coverage,
-        # Compatibility alias for pre-v1 clients. This is spacing coverage,
-        # never a claim that level-5 notes prove competency.
-        "progress_pct": spacing_coverage,
-        "due_today": due_count,
-        "review_streak_days": review_streak,
-        "concepts": concept_stats,
-    }
-
-
-def _load_review_stats(vault: Path) -> dict[str, Any] | None:
-    cache = _stats_cache_path(vault)
-    if not cache.exists():
-        return None
-    try:
-        value = json.loads(_read_text(cache))
-        if not isinstance(value, dict) or value.get("semantics") != "spacing_coverage.v1":
-            return None
-        return value
-    except Exception:
-        return None
-
-
-def _save_review_stats(vault: Path, stats: dict[str, Any]) -> None:
-    _write_text(_stats_cache_path(vault), _json(stats))
-
-
 def handle_study_review_stats(args: dict[str, Any], **_kwargs) -> str:
     try:
         vault = resolve_vault_path(args.get("vault_path"))
-        rebuild = bool(args.get("rebuild", False))
-        if not rebuild:
-            cached = _load_review_stats(vault)
-            if cached is not None:
-                return _ok({"cached": True, **cached})
-        stats = _build_review_stats(vault)
-        _save_review_stats(vault, stats)
-        return _ok({"cached": False, **stats})
+        stats, cached = StudyReviewReadModel(vault).raw_stats(
+            rebuild=bool(args.get("rebuild", False))
+        )
+        return _ok({"cached": cached, **stats})
     except Exception as exc:
         return _err("REVIEW_STATS_FAILED", str(exc))
 
@@ -1988,94 +1321,16 @@ STUDY_REVIEW_STATS_SCHEMA = {
 # Learning queue — new material that hasn't entered review yet
 # ---------------------------------------------------------------------------
 
-_LEARNING_STATES = ("未开始", "学习中", "已理解", "已掌握")
-
-
-def _concept_learning_state(note: dict[str, Any]) -> str:
-    fm = note.get("frontmatter", {})
-    state = str(fm.get("learning_state", "未开始")).strip()
-    return state if state in _LEARNING_STATES else "未开始"
-
-
 def handle_study_learning_queue(args: dict[str, Any], **_kwargs) -> str:
-    """Show new material that needs first-pass attention.
-
-    Two sections:
-      - New concepts: ordered by dependency (prerequisites first), filtered by learning_state.
-      - New examples: never reviewed (review_count=0), ordered by difficulty then subject.
-    """
+    """Show new material that needs first-pass attention."""
     try:
         vault = resolve_vault_path(args.get("vault_path"))
-        graph = _get_concept_graph(vault)
-        state_filter = str(args.get("state") or "").strip()
-        limit = _limit_from(args, default=30)
-
-        new_concepts: list[dict[str, Any]] = []
-        new_examples: list[dict[str, Any]] = []
-
-        for path in _iter_markdown_notes(vault):
-            note, _warnings = parse_note(path, vault, include_body=False)
-            layer = note.get("layer", "note")
-            fm = note.get("frontmatter", {})
-
-            if layer in ("concept", "pattern"):
-                ls = _concept_learning_state(note)
-                if state_filter and ls != state_filter:
-                    continue
-                if ls in ("已掌握",):
-                    continue
-                deps = graph.get("prerequisites", {}).get(
-                    _strip_wikilink(note.get("title", "")), []
-                )
-                new_concepts.append({
-                    "path": note["path"],
-                    "title": note["title"],
-                    "learning_state": ls,
-                    "prerequisites": deps or [],
-                    "tags": note.get("tags", []),
-                })
-
-            elif layer == "example":
-                rc = int(fm.get("review_count", 0))
-                if rc > 0:
-                    continue
-                if state_filter:
-                    rl = int(fm.get("review_level", 0))
-                    if state_filter == "学习中" and rl != 0:
-                        continue
-                    if state_filter == "已理解" and rl == 0:
-                        continue
-                new_examples.append({
-                    "path": note["path"],
-                    "title": note["title"],
-                    "review_level": int(fm.get("review_level", 0)),
-                    "difficulty": fm.get("difficulty"),
-                    "concepts": note.get("concepts", []),
-                    "tags": note.get("tags", []),
-                    "source": fm.get("source"),
-                })
-
-        new_examples.sort(key=lambda e: (
-            {"easy": 1, "medium": 2, "hard": 3}.get(str(e.get("difficulty", "")).lower(), 2),
-            e["title"],
-        ))
-
-        def _concept_order_key(c: dict[str, Any]) -> tuple[int, str]:
-            deps_depth = max(
-                (len(chain) for chain in _concept_ancestors(c["title"], graph)),
-                default=0,
+        return _ok(
+            StudyReviewReadModel(vault).queue(
+                state=str(args.get("state") or ""),
+                limit=_limit_from(args, default=30),
             )
-            return (deps_depth, c["title"])
-
-        new_concepts.sort(key=_concept_order_key)
-
-        return _ok({
-            "vault_path": str(vault),
-            "new_concepts": new_concepts[:limit],
-            "new_concepts_total": len(new_concepts),
-            "new_examples": new_examples[:limit],
-            "new_examples_total": len(new_examples),
-        })
+        )
     except Exception as exc:
         return _err("LEARNING_QUEUE_FAILED", str(exc))
 

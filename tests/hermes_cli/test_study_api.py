@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -305,6 +306,55 @@ def test_study_review_due_discovers_examples_in_subject_folders(monkeypatch, tmp
     }
     assert {item["subject"] for item in response["due"]} == {"OS", "计组"}
     assert response["subjects"] == ["OS", "计组"]
+
+
+def test_study_review_projection_is_shared_by_overview_and_application(
+    monkeypatch,
+    tmp_path: Path,
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_fixture_vault(vault)
+    _write_due_example(vault / "Math" / "examples" / "limit.md", "极限")
+    _write_due_example(vault / "OS" / "examples" / "process.md", "进程")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    application = StudyOSApplication()
+    review = application.query(StudyQuery.REVIEW_DUE)
+    overview = application.query(
+        StudyQuery.OVERVIEW,
+        as_of=f"{date.today().isoformat()}T12:00:00+08:00",
+    )
+
+    assert [item["path"] for item in overview["due_reviews"]["items"]] == [
+        item["path"] for item in review["due"]
+    ]
+    assert overview["due_reviews"]["subjects"] == review["subjects"]
+
+
+def test_study_review_queue_is_shared_by_model_tool_and_application(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from plugins.study_os.tools import handle_study_learning_queue
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_fixture_vault(vault)
+    _write_due_example(vault / "Math" / "examples" / "limit.md", "极限")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    application_queue = StudyOSApplication().query(StudyQuery.REVIEW_QUEUE)
+    tool_envelope = json.loads(
+        handle_study_learning_queue({"vault_path": str(vault)})
+    )
+
+    assert tool_envelope["ok"] is True
+    assert tool_envelope["data"] == {
+        key: value
+        for key, value in application_queue.items()
+        if key != "configured"
+    }
 
 
 def test_study_api_rejects_path_traversal(monkeypatch, tmp_path: Path):

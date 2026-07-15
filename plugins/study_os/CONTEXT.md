@@ -16,6 +16,11 @@ The model-facing surface remains the two established tools,
 `study_activity` and `study_coach`. Their schemas are deliberately not folded
 into the HTTP query/command catalog, preserving the narrow model-tool waist.
 
+`StudyReviewReadModel` owns Vault-scoped due-review, queue, statistics, and
+concept projections. HTTP, overview, and model-tool adapters reuse this module
+instead of rebuilding selection rules. `StudyNoteCatalog` owns safe Vault note
+discovery and parsing underneath it; neither module expands the model schema.
+
 ## Language
 
 **Learner**:

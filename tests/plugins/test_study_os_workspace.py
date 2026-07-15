@@ -288,7 +288,7 @@ def test_overview_derives_today_and_evidence_semantics_from_immutable_records(
 
 
 def test_review_stats_describe_spacing_coverage_not_mastery(tmp_path: Path):
-    from plugins.study_os.tools import _build_review_stats
+    from plugins.study_os.reviews import StudyReviewReadModel
 
     vault = tmp_path / "vault"
     example = vault / "Math" / "examples" / "limit.md"
@@ -298,8 +298,9 @@ def test_review_stats_describe_spacing_coverage_not_mastery(tmp_path: Path):
         encoding="utf-8",
     )
 
-    stats = _build_review_stats(vault)
+    stats = StudyReviewReadModel(vault).stats()
 
-    assert stats["spacing_coverage_pct"] == 0.0
-    assert stats["reviewed_examples"] == 0
+    assert stats["total"] == 1
+    assert stats["spacing_coverage"] == 0.0
+    assert stats["reviewed_count"] == 0
     assert "mastered" not in stats

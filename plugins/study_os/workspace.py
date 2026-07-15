@@ -96,6 +96,18 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     return value
 
 
+def study_state_dir(vault: Path) -> Path:
+    """Return the Vault-owned StudyOS state directory."""
+
+    root = (vault / ".StudyOS").resolve()
+    try:
+        root.relative_to(vault)
+    except ValueError as exc:
+        raise ValueError("StudyOS state path escapes Vault") from exc
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 @dataclass(frozen=True)
 class StudyScheduleArtifact:
     """One canonical, validated schedule discovered in a workspace."""
@@ -155,6 +167,10 @@ class StudyWorkspace:
         except ValueError as exc:
             raise ValueError("StudyOS projects path escapes Vault") from exc
         return root
+
+    @property
+    def study_dir(self) -> Path:
+        return study_state_dir(self.vault)
 
     @property
     def active_project_path(self) -> Path:

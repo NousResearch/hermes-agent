@@ -169,3 +169,11 @@ def test_schema_exposes_bounded_query_search():
     assert properties["query"]["maxLength"] == 500
     assert properties["limit"]["minimum"] == 1
     assert properties["limit"]["maximum"] == 50
+
+
+def test_no_query_preserves_legacy_hint(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(tmp_path, "python", description="Python development")
+        result = json.loads(skills_list())
+
+    assert result["hint"] == "Use skill_view(name) to see full content, tags, and linked files"

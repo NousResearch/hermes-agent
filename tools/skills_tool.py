@@ -1025,6 +1025,14 @@ def skills_list(
             all_skills = _sort_skills(all_skills)
 
         public_skills = [_public_skill_metadata(skill) for skill in all_skills]
+        if query_text:
+            hint = (
+                "Use skill_view(name) to load a result"
+                if public_skills
+                else "No lexical matches. Retry with skill, category, or domain keywords."
+            )
+        else:
+            hint = "Use skill_view(name) to see full content, tags, and linked files"
 
         # Extract unique categories
         categories = sorted(
@@ -1037,11 +1045,7 @@ def skills_list(
                 "skills": public_skills,
                 "categories": categories,
                 "count": len(public_skills),
-                "hint": (
-                    "Use skill_view(name) to load a result"
-                    if public_skills
-                    else "No lexical matches. Retry with skill, category, or domain keywords."
-                ),
+                "hint": hint,
                 **(
                     {"query": query_text, "total_matches": total_matches}
                     if query_text

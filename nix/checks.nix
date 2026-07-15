@@ -140,6 +140,59 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify official optional skills (optional-skills/) are shipped and
+        # resolvable. Regression for #54401 — the derivation never copied
+        # optional-skills/ nor set HERMES_OPTIONAL_SKILLS, so repair-official
+        # errored "No official optional skills directory found" and
+        # `hermes skills install official/...` had no local source.
+        bundled-optional-skills = pkgs.runCommand "hermes-bundled-optional-skills" { } ''
+          set -e
+          echo "=== Checking bundled optional skills ==="
+          test -d ${hermes-agent}/share/hermes-agent/optional-skills || \
+            (echo "FAIL: optional-skills directory missing"; exit 1)
+          echo "PASS: optional-skills directory exists"
+
+          SKILL_COUNT=$(find ${hermes-agent}/share/hermes-agent/optional-skills -name "SKILL.md" | wc -l)
+          test "$SKILL_COUNT" -gt 0 || (echo "FAIL: no SKILL.md files found in optional-skills directory"; exit 1)
+          echo "PASS: $SKILL_COUNT optional skills found"
+
+          grep -q "HERMES_OPTIONAL_SKILLS" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_OPTIONAL_SKILLS not in wrapper"; exit 1)
+          echo "PASS: HERMES_OPTIONAL_SKILLS set in wrapper"
+
+          echo "=== Exercising OptionalSkillSource via the wrapper override ==="
+          export HOME=$(mktemp -d)
+          cd "$HOME"
+          HERMES_OPTIONAL_SKILLS=${hermes-agent}/share/hermes-agent/optional-skills \
+            ${hermesVenv}/bin/python3 -c '
+import sys
+from hermes_constants import get_optional_skills_dir
+from tools.skills_hub import OptionalSkillSource
+
+resolved = get_optional_skills_dir()
+expected = "${hermes-agent}/share/hermes-agent/optional-skills"
+if str(resolved) != expected:
+    sys.exit(f"FAIL: resolver returned {resolved}, expected {expected}")
+print(f"PASS: get_optional_skills_dir() -> {resolved}")
+
+src = OptionalSkillSource()
+metas = src.search("", limit=5)
+if not metas:
+    sys.exit("FAIL: OptionalSkillSource.search() found no skills in the store path")
+print(f"PASS: search() found {len(metas)} skills (e.g. {metas[0].identifier})")
+
+bundle = src.fetch(metas[0].identifier)
+if bundle is None or "SKILL.md" not in bundle.files:
+    sys.exit(f"FAIL: fetch({metas[0].identifier!r}) did not return a bundle with SKILL.md")
+print(f"PASS: fetch({metas[0].identifier!r}) returned {len(bundle.files)} files")
+'
+          echo "PASS: OptionalSkillSource resolves skills from the store path"
+
+          echo "=== All bundled optional skills checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify bundled plugins (platforms, memory, context_engine) are present
         bundled-plugins = pkgs.runCommand "hermes-bundled-plugins" { } ''
           set -e

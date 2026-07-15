@@ -1871,10 +1871,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     feishu_app_id = getenv("FEISHU_APP_ID")
     feishu_app_secret = getenv("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
-        if Platform.FEISHU not in config.platforms:
-            config.platforms[Platform.FEISHU] = PlatformConfig()
-        config.platforms[Platform.FEISHU].enabled = True
-        config.platforms[Platform.FEISHU].extra.update({
+        feishu_config = _enable_from_env(Platform.FEISHU)
+        feishu_config.extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
             "domain": getenv("FEISHU_DOMAIN", "feishu"),

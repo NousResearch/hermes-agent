@@ -90,6 +90,116 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_explicit_feishu_disabled_wins_over_env_credentials(self):
+        """YAML enabled: false must keep Feishu disabled even with credentials set."""
+        from gateway.config import load_gateway_config, Platform
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hermes_home = Path(tmpdir) / ".hermes"
+            hermes_home.mkdir()
+            (hermes_home / "config.yaml").write_text(
+                "platforms:\n"
+                "  feishu:\n"
+                "    enabled: false\n",
+                encoding="utf-8",
+            )
+            os.environ["HERMES_HOME"] = str(hermes_home)
+            os.environ["FEISHU_APP_ID"] = "cli_xxx"
+            os.environ["FEISHU_APP_SECRET"] = "secret_xxx"
+            try:
+                config = load_gateway_config()
+                feishu_cfg = config.platforms[Platform.FEISHU]
+                self.assertFalse(feishu_cfg.enabled)
+                self.assertEqual(feishu_cfg.extra["app_id"], "cli_xxx")
+            finally:
+                os.environ.pop("HERMES_HOME", None)
+                os.environ.pop("FEISHU_APP_ID", None)
+                os.environ.pop("FEISHU_APP_SECRET", None)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_env_credentials_auto_enable_feishu_when_not_explicitly_disabled(self):
+        """Without config.yaml, env credentials should auto-enable Feishu."""
+        from gateway.config import load_gateway_config, Platform
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hermes_home = Path(tmpdir) / ".hermes"
+            hermes_home.mkdir()
+            os.environ["HERMES_HOME"] = str(hermes_home)
+            os.environ["FEISHU_APP_ID"] = "cli_xxx"
+            os.environ["FEISHU_APP_SECRET"] = "secret_xxx"
+            try:
+                config = load_gateway_config()
+                self.assertIn(Platform.FEISHU, config.platforms)
+                self.assertTrue(config.platforms[Platform.FEISHU].enabled)
+            finally:
+                os.environ.pop("HERMES_HOME", None)
+                os.environ.pop("FEISHU_APP_ID", None)
+                os.environ.pop("FEISHU_APP_SECRET", None)
+
+
+# Regression tests following the slack_mention pattern (pytest fixtures).
+# These exercise the real load_gateway_config() path, not just _apply_env_overrides().
+
+
+def test_explicit_feishu_disabled_wins_over_env_credentials_regression(
+    monkeypatch, tmp_path
+):
+    """YAML platforms.feishu.enabled: false must keep Feishu disabled even with credentials."""
+    from gateway.config import load_gateway_config, Platform
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n"
+        "  feishu:\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_xxx")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_xxx")
+
+    config = load_gateway_config()
+
+    feishu_cfg = config.platforms[Platform.FEISHU]
+    assert feishu_cfg.enabled is False
+    assert feishu_cfg.extra["app_id"] == "cli_xxx"
+    assert feishu_cfg.extra["app_secret"] == "secret_xxx"
+
+
+def test_env_credentials_auto_enable_feishu_regression(monkeypatch, tmp_path):
+    """Without config.yaml, env credentials should auto-enable Feishu."""
+    from gateway.config import load_gateway_config, Platform
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("FEISHU_APP_ID", "cli_xxx")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret_xxx")
+
+    config = load_gateway_config()
+
+    assert Platform.FEISHU in config.platforms
+    assert config.platforms[Platform.FEISHU].enabled is True
+    assert config.platforms[Platform.FEISHU].extra["app_id"] == "cli_xxx"
+
+
+def test_feishu_absent_from_platforms_when_no_credentials(monkeypatch, tmp_path):
+    """Feishu should not appear in platforms when no credentials are set."""
+    from gateway.config import load_gateway_config, Platform
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    config = load_gateway_config()
+
+    assert Platform.FEISHU not in config.platforms
+
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):

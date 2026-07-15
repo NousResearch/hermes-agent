@@ -1,6 +1,6 @@
 ---
 name: automated-pattern-detection
-description: "Automated detection of recurring error patterns and automatic generation of solution playbooks/skills when thresholds are met."
+description: "Detect recurring error patterns and auto-generate solution skills."
 platforms: [linux, macos, windows]
 ---
 
@@ -27,7 +27,8 @@ Run this when:
 ### Automatic Detection Script (run periodically)
 
 ```bash
-/home/ubuntu/.hermes/skills/entrepreneurship-patterns/scripts/auto-detect-5plus.sh
+# Run from this skill's scripts directory
+bash "${SKILL_DIR}/scripts/auto-detect-5plus.sh"
 ```
 
 Checks:

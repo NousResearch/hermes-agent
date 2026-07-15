@@ -871,6 +871,18 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             )
         )
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
+        # A custom OpenAI-compatible /v1 provider (e.g. a Codex-protocol
+        # pooler) reaches this codex_responses wire format without matching
+        # any of the three named backends above. It still benefits from the
+        # session_id / x-client-request-id cache-scope headers the Codex
+        # backend gets — those are plain HTTP headers (safe for any HTTP
+        # provider to receive, unlike Codex's body-level extra_headers
+        # rejection) — but is otherwise untouched (issuer classification,
+        # max_output_tokens handling) since this is scoped to the one gap
+        # reported: missing session headers (#65094).
+        is_custom_responses_backend = (
+            not is_codex_backend and not is_github_responses and not is_xai_responses
+        )
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
         # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
@@ -917,6 +929,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,
+            is_custom_responses_backend=is_custom_responses_backend,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)

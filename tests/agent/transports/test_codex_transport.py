@@ -362,6 +362,55 @@ class TestCodexBuildKwargs:
 
         assert kw["extra_headers"] == {"x-test": "1"}
 
+    def test_custom_responses_backend_sets_cache_routing_headers(self, transport):
+        """A custom OpenAI-compatible /v1 provider using this wire format
+        (e.g. a Codex-protocol pooler) gets the same session-scope headers
+        as the real Codex backend — the gap reported in #65094."""
+        messages = [{"role": "user", "content": "Hi"}]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="conv-custom-1",
+            is_codex_backend=False,
+            is_custom_responses_backend=True,
+        )
+
+        headers = kw.get("extra_headers", {})
+        assert headers.get("session_id") == "conv-custom-1"
+        assert headers.get("x-client-request-id") == "conv-custom-1"
+
+    def test_custom_responses_backend_still_gets_max_output_tokens(self, transport):
+        """Unlike the real Codex backend, a custom provider keeps
+        max_output_tokens — only the session headers gap is fixed, not the
+        Codex-specific max_tokens exemption (#65094 scope)."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            max_tokens=4096,
+            is_codex_backend=False,
+            is_custom_responses_backend=True,
+        )
+        assert kw.get("max_output_tokens") == 4096
+
+    def test_plain_non_codex_responses_still_gets_no_extra_headers(self, transport):
+        """A request with neither is_codex_backend nor
+        is_custom_responses_backend set (e.g. xAI/GitHub, handled by their
+        own flags) does not pick up the session-scope headers."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="conv-1",
+            is_codex_backend=False,
+            is_custom_responses_backend=False,
+        )
+        assert "extra_headers" not in kw
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

@@ -2093,6 +2093,9 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    deferred_notification_ids=persisted_msg.get(
+                        "_deferred_notification_ids"
+                    ),
                     timestamp=_row_timestamp,
                     api_content=_row_api_content,
                     display_kind=(
@@ -6631,6 +6634,7 @@ class AIAgent:
         persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        deferred_notification_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.aux_accounting import (

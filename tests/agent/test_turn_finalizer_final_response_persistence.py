@@ -114,6 +114,39 @@ def test_finalizer_restores_clean_api_local_text_before_return(monkeypatch):
     assert result["messages"][0]["content"] == "clean prompt"
 
 
+def test_finalizer_stamps_deferred_adoption_on_closing_assistant(monkeypatch):
+    """The durable adoption identity rides the final assistant transaction."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._deferred_notification_ids = (
+        "async_delegation:deleg-crash-window",
+    )
+    messages = [
+        {"role": "user", "content": "Next request"},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="Next request",
+        original_user_message="Next request",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    expected = ["async_delegation:deleg-crash-window"]
+    assert agent.persisted_messages[-1]["_deferred_notification_ids"] == expected
+    assert "_deferred_notification_ids" not in result["messages"][-1]
+
+
 def test_finalizer_restores_clean_api_local_multimodal_before_return(monkeypatch):
     """A queued note does not remain in the next-turn native image payload."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])

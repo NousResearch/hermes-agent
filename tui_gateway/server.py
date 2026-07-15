@@ -3819,6 +3819,30 @@ def _sync_session_key_after_compress(
     if not new_session_id or new_session_id == old_key:
         return
 
+    try:
+        from tools.async_delegation import migrate_deferred_notifications
+
+        if not migrate_deferred_notifications(
+            old_key,
+            new_session_id,
+            db_path=_deferred_notification_db_path(session),
+        ):
+            logger.warning(
+                "Compression left deferred notification ownership on parent: "
+                "old_session_id=%s new_session_id=%s",
+                old_key,
+                new_session_id,
+            )
+    except Exception:
+        # The transcript lineage remains authoritative. Cold-session hydration
+        # retries this migration before loading pending rows.
+        logger.exception(
+            "Could not migrate deferred notification ownership after compression: "
+            "old_session_id=%s new_session_id=%s",
+            old_key,
+            new_session_id,
+        )
+
     lease_reanchored = _transfer_active_session_slot(
         sid,
         session,
@@ -5531,6 +5555,7 @@ def _init_session(
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
         }
+    _restore_activated_profile_completions(_sessions[sid])
     _hydrate_deferred_notification_state(_sessions[sid])
     db = session_db if session_db is not None else _get_db()
     if db is not None:
@@ -6373,6 +6398,7 @@ def _(rid, params: dict) -> dict:
         }
         _register_session_cwd(_sessions[sid])
 
+    _restore_activated_profile_completions(_sessions[sid])
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -6656,6 +6682,7 @@ def _claim_or_reuse_live(
         with _sessions_lock:
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
+    _restore_activated_profile_completions(record)
     return None
 
 
@@ -10427,14 +10454,31 @@ def _deferred_notification_db_path(session: dict) -> Path:
     return (Path(profile_home) if profile_home else Path(get_hermes_home())) / "state.db"
 
 
-def _hydrate_deferred_notification_state(session: dict) -> None:
-    """Rebuild the deferred batch for a durable session after recreation."""
-    from tools.async_delegation import load_deferred_notifications
+def _restore_activated_profile_completions(session: dict) -> int:
+    """Restore durable async completions once when a profile becomes active."""
+    from tools.process_registry import process_registry
 
-    rows = load_deferred_notifications(
-        str(session.get("session_key") or ""),
-        db_path=_deferred_notification_db_path(session),
+    return process_registry.restore_profile_home(
+        _deferred_notification_db_path(session).parent
     )
+
+
+def _hydrate_deferred_notification_state(session: dict) -> None:
+    """Rebuild the deferred batch and reconcile any committed adoption."""
+    from tools.async_delegation import (
+        load_deferred_notifications,
+        migrate_compression_lineage_deferred_notifications,
+        reconcile_adopted_deferred_notifications,
+    )
+
+    session_key = str(session.get("session_key") or "")
+    db_path = _deferred_notification_db_path(session)
+    reconcile_adopted_deferred_notifications(db_path=db_path)
+    migrate_compression_lineage_deferred_notifications(
+        session_key,
+        db_path=db_path,
+    )
+    rows = load_deferred_notifications(session_key, db_path=db_path)
     texts = list(session.get("deferred_notification_texts") or [])
     ids = set(session.get("deferred_notification_event_ids") or ())
     for row in rows:
@@ -10469,7 +10513,11 @@ def _retry_consumed_deferred_ack(
     event_ids: set[str],
     db_path: Path,
 ) -> None:
-    from tools.async_delegation import complete_deferred_notifications
+    from tools.async_delegation import (
+        complete_deferred_notifications,
+        deferred_notification_adoptions_exist,
+        migrate_compression_lineage_deferred_notifications,
+    )
 
     attempt = 0
     while True:
@@ -10479,6 +10527,14 @@ def _retry_consumed_deferred_ack(
         if delay:
             time.sleep(delay)
         try:
+            migrate_compression_lineage_deferred_notifications(
+                session_key, db_path=db_path
+            )
+            if not deferred_notification_adoptions_exist(
+                event_ids, db_path=db_path
+            ):
+                attempt += 1
+                continue
             if complete_deferred_notifications(
                 session_key, event_ids, db_path=db_path
             ):
@@ -10497,11 +10553,20 @@ def _retry_consumed_deferred_ack(
 def _ack_consumed_deferred_notifications(session: dict, event_ids: set[str]) -> None:
     if not event_ids:
         return
-    from tools.async_delegation import complete_deferred_notifications
+    from tools.async_delegation import (
+        complete_deferred_notifications,
+        deferred_notification_adoptions_exist,
+        migrate_compression_lineage_deferred_notifications,
+    )
 
     session_key = str(session.get("session_key") or "")
     db_path = _deferred_notification_db_path(session)
     try:
+        migrate_compression_lineage_deferred_notifications(
+            session_key, db_path=db_path
+        )
+        if not deferred_notification_adoptions_exist(event_ids, db_path=db_path):
+            raise RuntimeError("deferred adoption is not durably represented in transcript")
         if complete_deferred_notifications(
             session_key, event_ids, db_path=db_path
         ):
@@ -11243,6 +11308,10 @@ def _run_prompt_submit(
                     run_kwargs["task_id"] = session["session_key"]
                 if persist_user_message is not None and "persist_user_message" in run_parameters:
                     run_kwargs["persist_user_message"] = persist_user_message
+                if claimed_notification_ids and "deferred_notification_ids" in run_parameters:
+                    run_kwargs["deferred_notification_ids"] = sorted(
+                        claimed_notification_ids
+                    )
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)

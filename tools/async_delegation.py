@@ -150,6 +150,21 @@ def _connect(db_path=None) -> sqlite3.Connection:
             delivered_at REAL
         )"""
     )
+    # Durable proof that a deferred payload was adopted by a completed
+    # transcript turn. SessionDB writes this row in the same transaction as
+    # the closing assistant message, so recovery can close the later ack gap.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS deferred_notification_adoptions (
+            event_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            message_id INTEGER NOT NULL,
+            adopted_at REAL NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_deferred_notification_adoptions_session
+           ON deferred_notification_adoptions(session_id, adopted_at)"""
+    )
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_deferred_notifications_session
            ON deferred_notifications(session_id, delivery_state, created_at, event_id)"""
@@ -254,7 +269,7 @@ def _note_delivery_attempt(delegation_id: str) -> None:
         )
 
 
-def recover_abandoned_delegations() -> int:
+def recover_abandoned_delegations(*, db_path=None) -> int:
     """Classify records whose owning process disappeared as outcome unknown."""
     try:
         from gateway.status import _pid_exists, get_process_start_time
@@ -262,7 +277,7 @@ def recover_abandoned_delegations() -> int:
         return 0
     now = time.time()
     recovered = 0
-    with _DB_LOCK, _connect() as conn:
+    with _DB_LOCK, _connect(db_path) as conn:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
@@ -305,7 +320,7 @@ def recover_abandoned_delegations() -> int:
     return recovered
 
 
-def restore_undelivered_completions(target_queue) -> int:
+def restore_undelivered_completions(target_queue, *, db_path=None) -> int:
     """Enqueue durable pending completions as fresh turns after process start.
 
     Every restored event is stamped ``restored=True`` (in-memory only — the
@@ -317,8 +332,8 @@ def restore_undelivered_completions(target_queue) -> int:
     otherwise a brand-new session adopts a dead session's delegation
     results seconds after boot (#64484).
     """
-    recover_abandoned_delegations()
-    with _DB_LOCK, _connect() as conn:
+    recover_abandoned_delegations(db_path=db_path)
+    with _DB_LOCK, _connect(db_path) as conn:
         rows = conn.execute(
             """SELECT delegation_id, event_json FROM async_delegations
                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
@@ -499,6 +514,101 @@ def persist_deferred_notification(
         return row is not None and row[0] == "pending"
 
 
+def reconcile_adopted_deferred_notifications(*, db_path=None) -> int:
+    """Finish ledger rows whose transcript adoption committed before a crash."""
+    now = time.time()
+    with _DB_LOCK, _connect(db_path) as conn:
+        cur = conn.execute(
+            """UPDATE deferred_notifications
+                  SET delivery_state='delivered', delivered_at=?, updated_at=?
+                WHERE delivery_state='pending'
+                  AND event_id IN (SELECT event_id FROM deferred_notification_adoptions)""",
+            (now, now),
+        )
+        return cur.rowcount
+
+
+def migrate_deferred_notifications(
+    old_session_id: str,
+    new_session_id: str,
+    *,
+    db_path=None,
+) -> bool:
+    """Idempotently move pending ownership across a compression rotation."""
+    old_owner = str(old_session_id or "")
+    new_owner = str(new_session_id or "")
+    if not old_owner or not new_owner:
+        return False
+    if old_owner == new_owner:
+        return True
+    now = time.time()
+    with _DB_LOCK, _connect(db_path) as conn:
+        conn.execute(
+            """UPDATE deferred_notifications
+                  SET session_id=?, updated_at=?
+                WHERE session_id=? AND delivery_state='pending'""",
+            (new_owner, now, old_owner),
+        )
+        stranded = conn.execute(
+            """SELECT COUNT(*) FROM deferred_notifications
+                WHERE session_id=? AND delivery_state='pending'""",
+            (old_owner,),
+        ).fetchone()[0]
+    return stranded == 0
+
+
+def migrate_compression_lineage_deferred_notifications(
+    session_id: str,
+    *,
+    db_path=None,
+) -> int:
+    """Recover pending rows left on compressed ancestors of ``session_id``."""
+    owner = str(session_id or "")
+    if not owner:
+        return 0
+    now = time.time()
+    with _DB_LOCK, _connect(db_path) as conn:
+        try:
+            cur = conn.execute(
+                """WITH RECURSIVE compression_lineage(id) AS (
+                       SELECT ?
+                       UNION ALL
+                       SELECT child.parent_session_id
+                         FROM sessions AS child
+                         JOIN compression_lineage AS lineage ON child.id = lineage.id
+                         JOIN sessions AS parent ON parent.id = child.parent_session_id
+                        WHERE parent.end_reason = 'compression'
+                          AND child.parent_session_id IS NOT NULL
+                   )
+                   UPDATE deferred_notifications
+                      SET session_id=?, updated_at=?
+                    WHERE delivery_state='pending'
+                      AND session_id IN (SELECT id FROM compression_lineage)
+                      AND session_id != ?""",
+                (owner, owner, now, owner),
+            )
+        except sqlite3.OperationalError as exc:
+            if "no such table: sessions" not in str(exc).lower():
+                raise
+            return 0
+        return cur.rowcount
+
+
+def deferred_notification_adoptions_exist(event_ids, *, db_path=None) -> bool:
+    """Return true only when every event has durable transcript proof."""
+    ids = sorted({str(event_id) for event_id in event_ids if event_id})
+    if not ids:
+        return True
+    placeholders = ",".join("?" for _ in ids)
+    with _DB_LOCK, _connect(db_path) as conn:
+        count = conn.execute(
+            f"""SELECT COUNT(*) FROM deferred_notification_adoptions
+                  WHERE event_id IN ({placeholders})""",
+            tuple(ids),
+        ).fetchone()[0]
+    return count == len(ids)
+
+
 def load_deferred_notifications(session_id: str, *, db_path=None) -> List[Dict[str, Any]]:
     """Return this durable session's not-yet-consumed completion payloads."""
     with _DB_LOCK, _connect(db_path) as conn:
@@ -525,27 +635,42 @@ def complete_deferred_notifications(
     *,
     db_path=None,
 ) -> bool:
-    """Mark a batch delivered after its explicit user turn reaches history."""
+    """Mark an owned batch delivered after its explicit turn reaches history.
+
+    Missing rows and rows owned by another session fail closed. Already-delivered
+    rows remain an idempotent success only for the same owner.
+    """
     ids = sorted({str(event_id) for event_id in event_ids if event_id})
     if not ids:
         return True
+    owner = str(session_id or "")
+    if not owner:
+        return False
     now = time.time()
     placeholders = ",".join("?" for _ in ids)
     with _DB_LOCK, _connect(db_path) as conn:
+        rows = conn.execute(
+            f"""SELECT event_id, session_id, delivery_state
+                  FROM deferred_notifications
+                 WHERE event_id IN ({placeholders})""",
+            tuple(ids),
+        ).fetchall()
+        if len(rows) != len(ids) or any(row[1] != owner for row in rows):
+            return False
         conn.execute(
             f"""UPDATE deferred_notifications
                    SET delivery_state='delivered', delivered_at=?, updated_at=?
-                   WHERE session_id=? AND delivery_state='pending'
-                     AND event_id IN ({placeholders})""",
-            (now, now, session_id, *ids),
+                 WHERE session_id=? AND delivery_state='pending'
+                   AND event_id IN ({placeholders})""",
+            (now, now, owner, *ids),
         )
-        remaining = conn.execute(
+        delivered = conn.execute(
             f"""SELECT COUNT(*) FROM deferred_notifications
-                   WHERE session_id=? AND delivery_state!='delivered'
-                     AND event_id IN ({placeholders})""",
-            (session_id, *ids),
+                  WHERE session_id=? AND delivery_state='delivered'
+                    AND event_id IN ({placeholders})""",
+            (owner, *ids),
         ).fetchone()[0]
-    return remaining == 0
+    return delivered == len(ids)
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:

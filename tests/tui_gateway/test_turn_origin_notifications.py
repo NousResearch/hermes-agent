@@ -673,8 +673,18 @@ def test_deferred_durable_completion_survives_session_recreation_and_consumes_on
             stream_callback=None,
             task_id=None,
             persist_user_message=None,
+            deferred_notification_ids=None,
         ):
             calls.append((prompt, persist_user_message))
+            if deferred_notification_ids:
+                adoption_db = SessionDB(tmp_path / "state.db")
+                adoption_db.append_message(
+                    "session-key",
+                    "assistant",
+                    "answer",
+                    deferred_notification_ids=deferred_notification_ids,
+                )
+                adoption_db.close()
             return _successful_turn(prompt, conversation_history)
 
     recreated = server._deferred_session_record(
@@ -722,6 +732,207 @@ def test_deferred_durable_completion_survives_session_recreation_and_consumes_on
     assert len(calls) == 2
     assert calls[1] == ("Later request", None)
     assert sum("durable result" in prompt for prompt, _persisted in calls) == 1
+
+
+def test_committed_adoption_reconciles_after_crash_before_ledger_ack(
+    tmp_path, monkeypatch
+):
+    """A restart suppresses a row whose assistant/adoption commit already won."""
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-crash-after-adoption"
+    )
+    from hermes_state import SessionDB
+
+    event_id = "async_delegation:deleg-crash-after-adoption"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("session-key", source="tui")
+    assert async_delegation.persist_deferred_notification(
+        "session-key",
+        event_id,
+        "durable result",
+        event,
+        db_path=tmp_path / "state.db",
+    )
+    db.append_message("session-key", "user", "Next request")
+    db.append_message(
+        "session-key",
+        "assistant",
+        "answer",
+        deferred_notification_ids=[event_id],
+    )
+    db.close()
+
+    # Deterministic process-death window: transcript + adoption committed, but
+    # _ack_consumed_deferred_notifications never ran.
+    assert [
+        row["event_id"]
+        for row in async_delegation.load_deferred_notifications(
+            "session-key", db_path=tmp_path / "state.db"
+        )
+    ] == [event_id]
+
+    restarted_db = SessionDB(tmp_path / "state.db")
+    history = restarted_db.get_messages_as_conversation("session-key")
+    restarted_db.close()
+    assert [(message["role"], message["content"]) for message in history] == [
+        ("user", "Next request"),
+        ("assistant", "answer"),
+    ]
+
+    recreated = server._deferred_session_record(
+        "session-key",
+        cols=80,
+        cwd=".",
+        history=history,
+        lease=None,
+        profile_home=tmp_path,
+    )
+
+    assert recreated["deferred_notification_texts"] == []
+    assert recreated["deferred_notification_event_ids"] == set()
+    assert recreated["defer_notifications_until_user"] is False
+    assert async_delegation.load_deferred_notifications(
+        "session-key", db_path=tmp_path / "state.db"
+    ) == []
+    assert async_delegation.complete_deferred_notifications(
+        "session-key", [event_id], db_path=tmp_path / "state.db"
+    )
+
+
+def test_compression_between_claim_and_ack_migrates_owner_and_delivers_once(
+    tmp_path, monkeypatch
+):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-compress-before-ack"
+    )
+    from hermes_state import SessionDB
+
+    parent = "session-key"
+    child = "session-key-compressed"
+    event_id = "async_delegation:deleg-compress-before-ack"
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(parent, source="tui")
+    db.end_session(parent, "compression")
+    db.create_session(child, source="tui", parent_session_id=parent)
+    assert async_delegation.persist_deferred_notification(
+        parent,
+        event_id,
+        "durable result",
+        event,
+        db_path=tmp_path / "state.db",
+    )
+
+    calls = []
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = parent
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            task_id=None,
+            persist_user_message=None,
+            deferred_notification_ids=None,
+        ):
+            calls.append(
+                {
+                    "prompt": prompt,
+                    "persist_user_message": persist_user_message,
+                    "ids": list(deferred_notification_ids or ()),
+                }
+            )
+            db.append_message(parent, "user", persist_user_message)
+            self.session_id = child
+            db.append_message(
+                child,
+                "assistant",
+                "answer",
+                deferred_notification_ids=deferred_notification_ids,
+            )
+            return _successful_turn(prompt, conversation_history)
+
+    session = _session(
+        agent=_Agent(),
+        profile_home=str(tmp_path),
+        deferred_notification_texts=["durable result"],
+        deferred_notification_event_ids={event_id},
+        defer_notifications_until_user=True,
+    )
+    emitted = []
+    real_sync = server._sync_session_key_after_compress
+    _patch_prompt_turn_runtime(monkeypatch, emitted)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", real_sync)
+    monkeypatch.setattr(server, "_transfer_active_session_slot", lambda *_a, **_kw: True)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_a, **_kw: None)
+
+    server._run_prompt_submit("rid", "sid", session, "Next request", origin="user")
+
+    assert len(calls) == 1
+    assert calls[0]["prompt"].count("durable result") == 1
+    assert calls[0]["persist_user_message"] == "Next request"
+    assert calls[0]["ids"] == [event_id]
+    assert session["session_key"] == child
+    assert async_delegation.load_deferred_notifications(
+        parent, db_path=tmp_path / "state.db"
+    ) == []
+    assert async_delegation.load_deferred_notifications(
+        child, db_path=tmp_path / "state.db"
+    ) == []
+    assert not async_delegation.complete_deferred_notifications(
+        parent, [event_id], db_path=tmp_path / "state.db"
+    )
+    assert async_delegation.complete_deferred_notifications(
+        child, [event_id], db_path=tmp_path / "state.db"
+    )
+
+    recreated = server._deferred_session_record(
+        child,
+        cols=80,
+        cwd=".",
+        history=list(session["history"]),
+        lease=None,
+        profile_home=tmp_path,
+    )
+    assert recreated["deferred_notification_texts"] == []
+    assert recreated["defer_notifications_until_user"] is False
+    db.close()
+
+
+def test_deferred_ack_fails_closed_for_missing_or_wrong_owner(tmp_path, monkeypatch):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-owner-fence"
+    )
+    event_id = "async_delegation:deleg-owner-fence"
+    assert async_delegation.persist_deferred_notification(
+        "session-key",
+        event_id,
+        "durable result",
+        event,
+        db_path=tmp_path / "state.db",
+    )
+
+    assert not async_delegation.complete_deferred_notifications(
+        "wrong-owner", [event_id], db_path=tmp_path / "state.db"
+    )
+    assert not async_delegation.complete_deferred_notifications(
+        "session-key", ["missing-event"], db_path=tmp_path / "state.db"
+    )
+    assert [
+        row["event_id"]
+        for row in async_delegation.load_deferred_notifications(
+            "session-key", db_path=tmp_path / "state.db"
+        )
+    ] == [event_id]
 
 
 def test_durable_claim_releases_when_turn_fails_before_acceptance(tmp_path, monkeypatch):

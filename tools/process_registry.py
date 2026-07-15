@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -161,6 +162,8 @@ class ProcessRegistry:
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
+        self._completion_restore_lock = threading.Lock()
+        self._restored_completion_homes: set[str] = set()
 
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
@@ -171,13 +174,9 @@ class ProcessRegistry:
         # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
-        # Rehydrate durable delegation completions only at registry startup.
-        # Consumers still inject them as fresh turns through this existing rail.
-        try:
-            from tools.async_delegation import restore_undelivered_completions
-            restore_undelivered_completions(self.completion_queue)
-        except Exception as exc:
-            logger.warning("Could not restore async delegation completions: %s", exc)
+        # The launch profile is active immediately. Additional profile homes
+        # are restored lazily by the gateway when that profile is activated.
+        self.restore_profile_home(get_hermes_home())
 
         # Track sessions whose completion was already consumed by the agent
         # via wait/log.  Drain loops AND gateway/tui watchers skip notifications
@@ -212,6 +211,35 @@ class ProcessRegistry:
         # terminal tab. Distinct from kill — the process keeps running; only the
         # UI view is dropped (the user can reopen it from the status stack).
         self.on_close = None
+
+    def restore_profile_home(self, profile_home) -> int:
+        """Restore one profile's durable completions once per process.
+
+        The lock covers both the scanned-home check and queue publication, so
+        concurrent create/resume calls cannot enqueue the same durable rows
+        twice. A failed scan is not memoized and can be retried on activation.
+        """
+        home = Path(profile_home or get_hermes_home()).expanduser().resolve()
+        home_key = str(home)
+        with self._completion_restore_lock:
+            if home_key in self._restored_completion_homes:
+                return 0
+            try:
+                from tools.async_delegation import restore_undelivered_completions
+
+                restored = restore_undelivered_completions(
+                    self.completion_queue,
+                    db_path=home / "state.db",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not restore async delegation completions for %s: %s",
+                    home,
+                    exc,
+                )
+                return 0
+            self._restored_completion_homes.add(home_key)
+            return restored
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:

@@ -402,7 +402,9 @@ class TestApprovalStateHelpers:
                 thread.join(timeout=2)
 
             assert thread.is_alive() is False
-            assert result == {"resolved": True, "choice": "deny"}
+            assert result["resolved"] is True
+            assert result["choice"] == "deny"
+            assert result["reason"] is None
             assert has_blocking_approval(session) is False
         finally:
             unregister_gateway_notify(session)

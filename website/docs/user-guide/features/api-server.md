@@ -59,6 +59,15 @@ Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI i
 
 Standard OpenAI Chat Completions format. Stateless — the full conversation is included in each request via the `messages` array.
 
+Although the endpoint is stateless, the server reuses the underlying
+`AIAgent` across turns of the same conversation (same derived session, or
+same `X-Hermes-Session-Id` / `X-Hermes-Session-Key`), so the system prompt
+and tool schemas stay byte-identical between requests — preserving provider
+prompt caches and skipping per-request agent construction. Reuse is
+transparent and invalidated automatically when the model, provider, toolsets
+or system prompt change; disable it with `API_SERVER_AGENT_CACHE=false` (or
+`agent_cache: false` in `platforms.api_server` extra config).
+
 **Request:**
 ```json
 {

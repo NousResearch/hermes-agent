@@ -37,12 +37,14 @@ import hmac
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
+from collections import OrderedDict
 from functools import wraps
 import logging
 import os
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -927,6 +929,18 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        # Reuse AIAgent instances across /v1/chat/completions turns of the
+        # same session (see "Agent cache" section below).  Opt-out via
+        # ``agent_cache: false`` in platforms.api_server extra config or
+        # API_SERVER_AGENT_CACHE=false.
+        _raw_agent_cache = extra.get(
+            "agent_cache", os.getenv("API_SERVER_AGENT_CACHE", "true")
+        )
+        self._agent_cache_enabled: bool = str(_raw_agent_cache).strip().lower() not in {
+            "0", "false", "no", "off",
+        }
+        self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
+        self._agent_cache_lock = threading.Lock()
         # model_routes: maps incoming ``model`` field values to specific
         # provider/model configs so one API server instance can serve
         # multiple clients on different backends.
@@ -1387,38 +1401,20 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
-    def _create_agent(
+    def _resolve_agent_runtime(
         self,
-        ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
-        stream_delta_callback=None,
-        tool_progress_callback=None,
-        tool_start_callback=None,
-        tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
-    ) -> Any:
+    ) -> Dict[str, Any]:
+        """Resolve the config an AIAgent for this request would be built from.
+
+        Extracted from ``_create_agent`` so the agent cache can compute a
+        config signature (and detect config changes) without paying for a
+        full AIAgent construction.  Returns a dict with ``model``,
+        ``runtime_kwargs``, ``enabled_toolsets``, ``max_iterations``,
+        ``fallback_model``, ``reasoning_config`` and ``user_config``.
         """
-        Create an AIAgent instance using the gateway's runtime config.
-
-        Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
-        base_url, etc. from config.yaml / env vars.  Toolsets are resolved
-        from config.yaml platform_toolsets.api_server (same as all other
-        gateway platforms), falling back to the hermes-api-server default.
-
-        ``gateway_session_key`` is a stable per-channel identifier supplied
-        by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
-        which scopes the short-term transcript and rotates on /new, this
-        key is meant to persist across transcripts so long-term memory
-        providers (e.g. Honcho) can scope their per-chat state correctly
-        — matching the semantics of the native gateway's ``session_key``.
-
-        ``route`` is an optional ``model_routes`` entry (per-client model
-        routing).  When set — and no session ``/model`` override exists for
-        this session — its model/provider/api_key/base_url override the
-        global defaults for this agent instance only.
-        """
-        from run_agent import AIAgent
         from gateway.run import (
             _current_max_iterations,
             _resolve_runtime_agent_kwargs,
@@ -1498,14 +1494,69 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
+        return {
+            "model": model,
+            "runtime_kwargs": runtime_kwargs,
+            "enabled_toolsets": enabled_toolsets,
+            "max_iterations": max_iterations,
+            "fallback_model": fallback_model,
+            "reasoning_config": reasoning_config,
+            "user_config": user_config,
+        }
+
+    def _create_agent(
+        self,
+        ephemeral_system_prompt: Optional[str] = None,
+        session_id: Optional[str] = None,
+        stream_delta_callback=None,
+        tool_progress_callback=None,
+        tool_start_callback=None,
+        tool_complete_callback=None,
+        gateway_session_key: Optional[str] = None,
+        route: Optional[Dict[str, Any]] = None,
+        resolved: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """
+        Create an AIAgent instance using the gateway's runtime config.
+
+        Uses _resolve_agent_runtime() to pick up model, api_key, base_url,
+        etc. from config.yaml / env vars.  Toolsets are resolved from
+        config.yaml platform_toolsets.api_server (same as all other
+        gateway platforms), falling back to the hermes-api-server default.
+
+        ``gateway_session_key`` is a stable per-channel identifier supplied
+        by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
+        which scopes the short-term transcript and rotates on /new, this
+        key is meant to persist across transcripts so long-term memory
+        providers (e.g. Honcho) can scope their per-chat state correctly
+        — matching the semantics of the native gateway's ``session_key``.
+
+        ``route`` is an optional ``model_routes`` entry (per-client model
+        routing).  When set — and no session ``/model`` override exists for
+        this session — its model/provider/api_key/base_url override the
+        global defaults for this agent instance only.
+
+        ``resolved`` is an optional precomputed ``_resolve_agent_runtime()``
+        result, letting callers that already resolved the config (the agent
+        cache) avoid resolving it twice.
+        """
+        from run_agent import AIAgent
+
+        if resolved is None:
+            resolved = self._resolve_agent_runtime(
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                route=route,
+            )
+
         agent = AIAgent(
-            model=model,
-            **runtime_kwargs,
-            max_iterations=max_iterations,
+            model=resolved["model"],
+            **resolved["runtime_kwargs"],
+            max_iterations=resolved["max_iterations"],
             quiet_mode=True,
             verbose_logging=False,
             ephemeral_system_prompt=ephemeral_system_prompt or None,
-            enabled_toolsets=enabled_toolsets,
+            enabled_toolsets=resolved["enabled_toolsets"],
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
@@ -1513,11 +1564,195 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
-            fallback_model=fallback_model,
-            reasoning_config=reasoning_config,
+            fallback_model=resolved["fallback_model"],
+            reasoning_config=resolved["reasoning_config"],
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    # ------------------------------------------------------------------
+    # Agent cache (chat completions)
+    # ------------------------------------------------------------------
+    #
+    # The native gateway reuses AIAgent instances per session_key so the
+    # frozen system prompt and tool schemas stay byte-identical across
+    # turns, preserving provider prompt caches (gateway/run.py
+    # ``_agent_cache``, docs/session-lifecycle.md §11).  The API server
+    # historically built a fresh AIAgent for every /v1/chat/completions
+    # request, which costs several hundred ms of pure construction
+    # (system prompt assembly, tool schema build, memory provider init)
+    # per turn and breaks local-backend prefix caches whenever the
+    # rebuilt prompt drifts.
+    #
+    # This cache extends the same pattern to the API server: agents are
+    # checked OUT of the cache for the duration of a run (so two
+    # concurrent requests for one session never share an instance — the
+    # second one just builds a fresh agent, i.e. the old behaviour) and
+    # checked back IN afterwards.  A config signature — the same
+    # ``GatewayRunner._agent_config_signature`` the gateway uses —
+    # invalidates entries when the model, provider, toolsets, ephemeral
+    # system prompt or cache-busting config keys change.
+
+    _AGENT_CACHE_MAX_SIZE = 32
+    _AGENT_CACHE_IDLE_TTL = 3600.0  # seconds; matches gateway agent cache
+
+    def _agent_cache_signature(
+        self,
+        resolved: Dict[str, Any],
+        ephemeral_system_prompt: Optional[str],
+    ) -> str:
+        """Config signature for cached agents (see gateway/run.py)."""
+        from gateway.run import GatewayRunner
+
+        return GatewayRunner._agent_config_signature(
+            resolved["model"],
+            resolved["runtime_kwargs"],
+            resolved["enabled_toolsets"],
+            ephemeral_system_prompt or "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(
+                resolved.get("user_config")
+            ),
+        )
+
+    def _acquire_agent(
+        self,
+        *,
+        ephemeral_system_prompt: Optional[str],
+        session_id: Optional[str],
+        stream_delta_callback=None,
+        tool_progress_callback=None,
+        tool_start_callback=None,
+        tool_complete_callback=None,
+        gateway_session_key: Optional[str] = None,
+        route: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
+        """Return ``(agent, cache_key, signature)`` — cached when possible.
+
+        On a cache hit the per-request callbacks are rebound on the reused
+        instance (mirroring the gateway's cached-agent turn init) and
+        ``max_iterations`` is refreshed from current config.  Entries are
+        removed from the cache while in use; ``_release_agent`` puts them
+        back, so concurrent requests on one session degrade gracefully to
+        fresh construction instead of sharing an instance.
+        """
+        # The cache is an optimization: when config resolution or the
+        # signature computation fails for any reason, fall open to the
+        # historical build-per-request path instead of failing the turn.
+        resolved = None
+        signature = None
+        try:
+            resolved = self._resolve_agent_runtime(
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+                route=route,
+            )
+            signature = self._agent_cache_signature(
+                resolved, ephemeral_system_prompt
+            )
+        except Exception:
+            logger.debug(
+                "api_server: agent cache signature unavailable; bypassing cache",
+                exc_info=True,
+            )
+        cache_key = gateway_session_key or session_id or ""
+        if signature is None:
+            cache_key = ""
+
+        agent = None
+        stale_agent = None
+        if self._agent_cache_enabled and cache_key:
+            now = time.time()
+            with self._agent_cache_lock:
+                entry = self._agent_cache.pop(cache_key, None)
+            if entry is not None:
+                cached_agent, cached_sig, last_used = entry
+                if cached_sig == signature and (
+                    now - last_used
+                ) < self._AGENT_CACHE_IDLE_TTL:
+                    agent = cached_agent
+                else:
+                    stale_agent = cached_agent
+        if stale_agent is not None:
+            # We are on the request's executor thread — blocking cleanup
+            # here is fine and keeps the eviction ordered before the
+            # replacement agent builds.
+            self._cleanup_cached_agent(stale_agent)
+
+        if agent is not None:
+            agent.stream_delta_callback = stream_delta_callback
+            agent.tool_progress_callback = tool_progress_callback
+            agent.tool_start_callback = tool_start_callback
+            agent.tool_complete_callback = tool_complete_callback
+            agent.max_iterations = resolved["max_iterations"]
+            try:
+                from gateway.run import GatewayRunner
+
+                GatewayRunner._init_cached_agent_for_turn(agent, 0)
+            except Exception:
+                logger.debug("cached agent turn init failed", exc_info=True)
+            logger.debug("api_server: reusing cached agent for %s", cache_key)
+        else:
+            agent = self._create_agent(
+                ephemeral_system_prompt=ephemeral_system_prompt,
+                session_id=session_id,
+                stream_delta_callback=stream_delta_callback,
+                tool_progress_callback=tool_progress_callback,
+                tool_start_callback=tool_start_callback,
+                tool_complete_callback=tool_complete_callback,
+                gateway_session_key=gateway_session_key,
+                route=route,
+                resolved=resolved,
+            )
+        return agent, cache_key, signature or ""
+
+    def _release_agent(
+        self,
+        cache_key: str,
+        agent: Any,
+        signature: str,
+        *,
+        discard: bool = False,
+    ) -> None:
+        """Return a checked-out agent to the cache (or clean it up)."""
+        if agent is None:
+            return
+        if discard or not self._agent_cache_enabled or not cache_key:
+            self._cleanup_cached_agent(agent)
+            return
+        evicted = []
+        with self._agent_cache_lock:
+            self._agent_cache[cache_key] = (agent, signature, time.time())
+            self._agent_cache.move_to_end(cache_key)
+            while len(self._agent_cache) > self._AGENT_CACHE_MAX_SIZE:
+                _, old_entry = self._agent_cache.popitem(last=False)
+                evicted.append(old_entry[0])
+        for old_agent in evicted:
+            self._cleanup_cached_agent(old_agent)
+
+    @staticmethod
+    def _cleanup_cached_agent(agent: Any) -> None:
+        """Best-effort resource cleanup for evicted/discarded agents.
+
+        Mirrors ``GatewayRunner._cleanup_agent_resources`` — memory provider
+        shutdown with the real transcript (#15165) and ``close()`` for tool
+        resources — without requiring a runner backref.
+        """
+        if agent is None:
+            return
+        try:
+            if hasattr(agent, "shutdown_memory_provider"):
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
+        except Exception:
+            pass
+        try:
+            if hasattr(agent, "close"):
+                agent.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -4233,7 +4468,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id or "",
             )
             try:
-                agent = self._create_agent(
+                agent, cache_key, signature = self._acquire_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,
                     stream_delta_callback=stream_delta_callback,
@@ -4245,12 +4480,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
-                effective_task_id = session_id or str(uuid.uuid4())
-                result = agent.run_conversation(
-                    user_message=user_message,
-                    conversation_history=conversation_history,
-                    task_id=effective_task_id,
-                )
+                run_ok = False
+                try:
+                    effective_task_id = session_id or str(uuid.uuid4())
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                    )
+                    run_ok = True
+                finally:
+                    # A turn that raised leaves the agent in an unknown
+                    # state — discard it instead of caching (next request
+                    # rebuilds, i.e. the historical behaviour).
+                    self._release_agent(
+                        cache_key, agent, signature, discard=not run_ok
+                    )
                 usage = {
                     "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                     "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -5086,6 +5331,18 @@ class APIServerAdapter(BasePlatformAdapter):
         (OSError: [Errno 24] Too many open files, #37011).
         """
         self._mark_disconnected()
+        # Drain the agent cache so memory providers flush and tool
+        # resources (sandboxes, browser daemons) shut down with the server.
+        with self._agent_cache_lock:
+            _cached_agents = [entry[0] for entry in self._agent_cache.values()]
+            self._agent_cache.clear()
+        for _agent in _cached_agents:
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._cleanup_cached_agent, _agent
+                )
+            except Exception:
+                logger.debug("cached agent cleanup failed on disconnect", exc_info=True)
         if self._response_store is not None:
             try:
                 self._response_store.close()

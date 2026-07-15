@@ -570,6 +570,16 @@ The `_session_expiry_watcher` task runs in the gateway event loop every 300 seco
 The gateway maintains an LRU cache of `AIAgent` instances keyed by `session_key` to
 preserve prompt caching across turns.
 
+The API server platform applies the same pattern to `/v1/chat/completions`
+(`APIServerAdapter._acquire_agent` / `_release_agent` in
+`gateway/platforms/api_server.py`): agents are checked *out* of the cache for
+the duration of a run — concurrent requests on one session build a fresh
+instance instead of sharing one — and checked back *in* afterwards, validated
+by the same `_agent_config_signature`. Max 32 entries, 1h idle TTL, opt-out
+via `platforms.api_server` extra `agent_cache: false` or
+`API_SERVER_AGENT_CACHE=false`. The cache fails open: when config resolution
+errors, the request falls back to build-per-request.
+
 ### Cache Properties
 
 - **Max size:** 128 entries (`_AGENT_CACHE_MAX_SIZE`).

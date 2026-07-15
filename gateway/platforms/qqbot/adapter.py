@@ -1390,7 +1390,10 @@ class QQAdapter(BasePlatformAdapter):
                             history_limit = int(group_cfg["historyLimit"])
                         except (ValueError, TypeError):
                             pass
-                    self._group_context_cache[group_openid] = self._group_context_cache[group_openid][-history_limit:]
+                    if history_limit <= 0:
+                        self._group_context_cache[group_openid] = []
+                    else:
+                        self._group_context_cache[group_openid] = self._group_context_cache[group_openid][-history_limit:]
                     return
 
         # Fetch and attach context for mention events
@@ -3226,7 +3229,7 @@ class QQAdapter(BasePlatformAdapter):
         """Strip the @bot mention prefix from group message content."""
         import re
         # Remove XML-like mention tags: <@!ID> or <@ID>
-        stripped = re.sub(r"<@!?[A-Za-z0-9_-]+>\s*", "", content.strip())
+        stripped = re.sub(r"^<@!?[A-Za-z0-9_-]+>\s*", "", content.strip())
         # Also fall back to the generic @S+ match
         stripped = re.sub(r"^@\S+\s*", "", stripped)
         return stripped

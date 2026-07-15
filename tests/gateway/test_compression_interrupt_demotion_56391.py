@@ -183,6 +183,26 @@ class TestBusyHandlerDemotesInterruptForCompression:
         parent.interrupt.assert_called_once_with("please stop")
 
     @pytest.mark.asyncio
+    async def test_lock_probe_error_does_not_interrupt_parent_session(self) -> None:
+        runner = _make_runner()
+        adapter = _make_adapter()
+        event = _make_event(text="follow up while lock state is unavailable")
+        sk = build_session_key(event.source)
+        parent = _make_parent_no_subagents()
+        runner._running_agents[sk] = parent
+        runner.adapters[event.source.platform] = adapter
+        runner._session_db._db.get_compression_lock_holder.side_effect = RuntimeError(
+            "sqlite temporarily unavailable"
+        )
+
+        with patch("gateway.run.merge_pending_message_event"):
+            handled = await runner._handle_active_session_busy_message(event, sk)
+
+        assert handled is True
+        parent.interrupt.assert_not_called()
+        assert adapter._pending_messages.get(sk) is event
+
+    @pytest.mark.asyncio
     async def test_pending_sentinel_does_not_trigger_false_positive(self) -> None:
         runner = _make_runner()
         adapter = _make_adapter()

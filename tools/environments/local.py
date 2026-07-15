@@ -658,6 +658,82 @@ def _bash_starts(bash: str) -> bool:
     return ok
 
 
+_git_bash_bin_dirs_cache: "list[str] | None" = None
+
+
+def _git_bash_bin_dirs() -> list[str]:
+    """Git Bash's coreutils/binary dirs, in ``/etc/profile`` precedence order.
+
+    A non-login ``bash -c`` (the fallback used when ``bash -l`` is broken —
+    the classic Windows ``Directory \\drivers\\etc does not exist`` failure)
+    never sources ``/etc/profile``, so it never gets ``…\\usr\\bin`` on PATH.
+    That directory holds every coreutil the file/terminal tools shell out to
+    (``cat``, ``mktemp``, ``mv``, ``wc``, ``head``, ``stat``, ``chmod``,
+    ``mkdir``, ``find`` …).  Without it, ``write_file`` fails with an empty
+    error (the failure text went to a missing binary's stderr) and terminal
+    commands exit 127.  We derive these dirs from the resolved ``bash.exe`` so
+    the fallback shell can find coreutils regardless of the login shell.
+
+    Returns ``[]`` off Windows or when bash can't be located.  Dirs are
+    returned in the order Git Bash's own ``/etc/profile`` prepends them
+    (mingw first, then usr/bin, then bin) and only if they exist on disk.
+    """
+    global _git_bash_bin_dirs_cache
+    if _git_bash_bin_dirs_cache is not None:
+        return _git_bash_bin_dirs_cache
+
+    if not _IS_WINDOWS:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    dirs: list[str] = []
+    try:
+        bash = _find_bash()
+    except Exception:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    bin_dir = os.path.dirname(bash)          # <root>\bin  or  <root>\usr\bin
+    parent = os.path.dirname(bin_dir)
+    # MinGit ships bash under usr\bin; PortableGit/system Git under bin.
+    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
+
+    # Order mirrors Git-for-Windows /etc/profile so coreutils win over the
+    # same-named Windows System32 tools (find.exe, sort.exe) inside the shell.
+    for candidate in (
+        os.path.join(root, "mingw64", "bin"),
+        os.path.join(root, "mingw32", "bin"),
+        os.path.join(root, "usr", "local", "bin"),
+        os.path.join(root, "usr", "bin"),
+        os.path.join(root, "bin"),
+    ):
+        if os.path.isdir(candidate) and candidate not in dirs:
+            dirs.append(candidate)
+
+    _git_bash_bin_dirs_cache = dirs
+    return dirs
+
+
+def _prepend_git_bash_dirs(existing_path: str) -> str:
+    """Prepend Git Bash's binary dirs to ``existing_path`` if missing.
+
+    No-op off Windows or when the dirs can't be resolved.  First-occurrence
+    wins, so a PATH that already lists a dir keeps its position.  This is what
+    lets the non-login ``bash -c`` fallback find coreutils; in the healthy
+    case the session snapshot re-exports the full login PATH inside the shell,
+    so this only matters when that snapshot is absent.
+    """
+    git_dirs = _git_bash_bin_dirs()
+    if not git_dirs:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    missing = [d for d in git_dirs if d not in entries]
+    if not missing:
+        return existing_path
+    return sep.join([*missing, *entries])
+
+
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
 # invocation spawn_local uses. $SHELL values outside this set (fish, csh/tcsh,
 # nushell, elvish, xonsh, …) would error on that syntax, so _find_shell falls
@@ -904,6 +980,13 @@ def _make_run_env(env: dict) -> dict:
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
+        # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
+        # broken) never sources /etc/profile, so without this cat/mktemp/mv and
+        # friends are missing and every write_file/terminal call fails (empty
+        # error / exit 127).  No-op off Windows and when a login snapshot is
+        # healthy (the snapshot re-exports the full PATH inside the shell).
+        new_path = _prepend_git_bash_dirs(new_path)
         # Ensure the hermes install dir is reachable so plugins can shell out
         # to bare ``hermes`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).

@@ -2844,6 +2844,20 @@ def delegate_task(
                     _session_key = _agent_session_id
         except Exception:
             _origin_ui_session_id = ""
+        if not _session_key:
+            # CLI (single-process) path: the approval contextvar is only bound
+            # during gateway/TUI turns and HERMES_SESSION_KEY is not in the CLI
+            # environment, so the key resolves empty here. Since #64240 the CLI
+            # drains completions through a positive-ownership filter keyed on
+            # the durable AIAgent.session_id — an empty session_key would fail
+            # closed and the CLI could never claim its own completions, while
+            # a restored foreign event with an empty key could leak into any
+            # unfiltered consumer (#64484). Stamp the parent's durable session
+            # id instead; compression rotations are handled on the drain side
+            # via resolve_resume_session_id lineage resolution.
+            _agent_session_id = str(getattr(parent_agent, "session_id", "") or "")
+            if _agent_session_id:
+                _session_key = _agent_session_id
         _parent_session_id = getattr(parent_agent, "session_id", None)
         _child_agents = [c for (_, _, c) in children]
 

@@ -9,11 +9,13 @@ from starlette.requests import Request
 from hermes_cli.dashboard_auth.cookies import (
     PKCE_COOKIE,
     SESSION_AT_COOKIE,
+    SESSION_PROVIDER_COOKIE,
     SESSION_RT_COOKIE,
     clear_pkce_cookie,
     clear_session_cookies,
     read_pkce_cookie,
     read_session_cookies,
+    read_session_provider,
     set_pkce_cookie,
     set_session_cookies,
 )
@@ -28,7 +30,7 @@ def _build_app(use_https: bool = True, prefix: str = ""):
         set_session_cookies(
             r, access_token="AT", refresh_token="RT",
             access_token_expires_in=3600, use_https=use_https,
-            prefix=prefix,
+            prefix=prefix, provider="nous",
         )
         return r
 
@@ -63,7 +65,8 @@ def test_session_cookies_use_host_prefix_on_https_direct():
     cookies = r.headers.get_list("set-cookie")
     at = next(c for c in cookies if c.startswith(f"__Host-{SESSION_AT_COOKIE}="))
     rt = next(c for c in cookies if c.startswith(f"__Host-{SESSION_RT_COOKIE}="))
-    for c in (at, rt):
+    provider = next(c for c in cookies if c.startswith(f"__Host-{SESSION_PROVIDER_COOKIE}=nous"))
+    for c in (at, rt, provider):
         assert "HttpOnly" in c
         assert "samesite=lax" in c.lower()
         assert "Secure" in c
@@ -128,6 +131,9 @@ def test_clear_session_cookies_emits_expired_at_and_rt():
     assert any(
         SESSION_RT_COOKIE in c and "Max-Age=0" in c for c in cookies
     )
+    assert any(
+        SESSION_PROVIDER_COOKIE in c and "Max-Age=0" in c for c in cookies
+    )
 
 
 def test_pkce_cookie_short_ttl_and_path_root():
@@ -158,6 +164,19 @@ def test_read_session_cookies_from_request_bare_name():
     at, rt = read_session_cookies(req)
     assert at == "at_value"
     assert rt == "rt_value"
+
+
+def test_read_session_provider_from_request():
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [(
+            b"cookie",
+            f"__Host-{SESSION_PROVIDER_COOKIE}=nous".encode(),
+        )],
+    }
+    assert read_session_provider(Request(scope)) == "nous"
 
 
 def test_read_session_cookies_from_request_host_prefix():

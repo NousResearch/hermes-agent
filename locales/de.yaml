@@ -364,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Geschätzter Kontext: ~{count} Tokens"
     detailed_after_first:     "_(Detaillierte Nutzung nach der ersten Agentenantwort verfügbar)_"
     no_data:                  "Keine Nutzungsdaten für diese Sitzung verfügbar."
+    unknown_subcommand:       "Unbekannter /usage-Unterbefehl: `{args}`. Versuche `/usage` oder `/usage reset [--force]`."
+    reset_wrong_provider:     "Gespeicherte Limit-Resets sind nur mit dem openai-codex-Anbieter verfügbar. Wechsle zuerst mit `/model`."
 
   credits:
     not_logged_in:            "Nicht bei Nous Portal angemeldet. Melde dich an, um dein Guthaben zu sehen und aufzuladen."

@@ -73,7 +73,23 @@ def _coerce_fanout(value: Any) -> str:
     return mode if mode in {"per_iteration", "user_turn"} else "per_iteration"
 
 
-def _clean_slot(slot: Any) -> dict[str, str] | None:
+def _clean_reasoning_effort(value: Any) -> str | None:
+    """Return a canonical per-slot reasoning effort, or None when unset/invalid."""
+    if value is None or value is True:
+        return None
+    if value is False:
+        return "none"
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text in {"none", "false", "disabled"}:
+        return "none"
+    if text in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        return text
+    return None
+
+
+def _clean_slot(slot: Any) -> dict[str, Any] | None:
     if not isinstance(slot, dict):
         return None
     provider = str(slot.get("provider") or "").strip()
@@ -87,7 +103,11 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     # an invalid slot is dropped, falling back to the preset's defaults.
     if provider.lower() == "moa":
         return None
-    return {"provider": provider, "model": model}
+    clean: dict[str, Any] = {"provider": provider, "model": model}
+    effort = _clean_reasoning_effort(slot.get("reasoning_effort"))
+    if effort:
+        clean["reasoning_effort"] = effort
+    return clean
 
 
 def _default_preset() -> dict[str, Any]:

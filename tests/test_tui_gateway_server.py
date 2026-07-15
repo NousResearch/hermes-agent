@@ -7596,7 +7596,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
         },
     )
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
-    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda model="": None)
     monkeypatch.setattr(server, "_load_service_tier", lambda: None)
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)

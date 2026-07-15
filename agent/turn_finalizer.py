@@ -228,6 +228,15 @@ def finalize_turn(
             if _tail_role != "assistant":
                 messages.append({"role": "assistant", "content": final_response})
 
+        # The model has completed its request, so replace API-local
+        # voice/model/skill guidance with the clean user input before writing the
+        # final durable snapshot and returning the continuation history. Earlier
+        # turn-start flushes use the DB-only override because their messages are
+        # still needed for the API request; this finalizer runs after that request
+        # is complete (#48677 / #63766).
+        _apply_override = getattr(agent, "_apply_persist_user_message_override", None)
+        if callable(_apply_override):
+            _apply_override(messages)
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")

@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
+from agent.errors import EmptyStreamError
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
@@ -1635,6 +1636,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
+        # Re-resolve reasoning_config for the new fallback model (Closes #21256).
+        # Shared chokepoint: per-model override > global reasoning_effort
+        # (YAML boolean False = disabled). Wrapped in try/except because a
+        # config load failure must not kill the swap.
+        try:
+            from hermes_cli.config import load_config
+            from hermes_constants import resolve_reasoning_config
+
+            agent.reasoning_config = resolve_reasoning_config(
+                load_config() or {}, agent.model
+            )
+            logger.info(
+                "Fallback %s: reasoning_config resolved: %s",
+                agent.model, agent.reasoning_config,
+            )
+        except Exception as _reasoning_err:
+            logger.debug(
+                "Failed to resolve reasoning_config for fallback %s; keeping current: %s",
+                agent.model, _reasoning_err,
+            )
+            # Keep whatever reasoning_config was active — don't break the fallback swap.
+
         # Keep the prompt's self-identity in sync with the model actually
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
@@ -2511,7 +2534,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             and not reasoning_parts
             and not tool_calls_acc
         ):
-            raise RuntimeError(
+            raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason "
                 "(possible upstream error or malformed SSE response)."
             )
@@ -2600,6 +2623,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         works unchanged.
         """
         has_tool_use = False
+        # Zero-event guard parity with the chat_completions path: track
+        # whether the provider delivered ANY stream event. On an eventless
+        # stream the real Anthropic SDK's get_final_message() raises
+        # AssertionError (no message_start ⇒ no final-message snapshot);
+        # OpenAI-compat shims may instead fabricate a contentless Message
+        # with no stop_reason, or return None under ``python -O`` (assert
+        # stripped). Every one of those shapes is normalized below to
+        # EmptyStreamError so the shared _call() retry loop treats it as
+        # transient instead of surfacing a raw AssertionError or a
+        # fabricated "successful" empty turn.
+        saw_stream_event = False
 
         # Reset stale-stream timer for this attempt
         last_chunk_time["t"] = time.time()
@@ -2627,6 +2661,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             for event in stream:
+                saw_stream_event = True
                 # Update stale-stream timer on every event so the
                 # outer poll loop knows data is flowing.  Without
                 # this, the detector kills healthy long-running
@@ -2687,7 +2722,38 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # this return value is discarded anyway.
             if agent._interrupt_requested:
                 return None
-            return stream.get_final_message()
+            # Zero-event guard (parity with the chat_completions zero-chunk
+            # guard above). Real SDK: an eventless stream has no
+            # message_start, so get_final_message() raises AssertionError
+            # (final-message snapshot is None) — normalize that to
+            # EmptyStreamError so it gets the transient retry budget
+            # instead of surfacing raw.
+            try:
+                _final_message = stream.get_final_message()
+            except AssertionError:
+                if not saw_stream_event:
+                    raise EmptyStreamError(
+                        "Provider returned an empty stream with no events "
+                        "(possible upstream error or malformed event stream)."
+                    ) from None
+                raise
+            # Shim variants of the same failure: an OpenAI-compat adapter
+            # may fabricate a contentless Message with no stop_reason, or
+            # return None where the SDK assert would have fired (e.g.
+            # ``python -O``). A real completed response always carries a
+            # stop_reason, so this cannot fire on legitimate turns.
+            if not saw_stream_event and (
+                _final_message is None
+                or (
+                    not getattr(_final_message, "content", None)
+                    and getattr(_final_message, "stop_reason", None) is None
+                )
+            ):
+                raise EmptyStreamError(
+                    "Provider returned an empty stream with no stop_reason "
+                    "(possible upstream error or malformed event stream)."
+                )
+            return _final_message
 
     def _call():
         import httpx as _httpx
@@ -2734,6 +2800,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
                     )
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
+                    _is_empty_stream = isinstance(e, EmptyStreamError)
 
                     # If the stream died AFTER some tokens were delivered:
                     # normally we don't retry (the user already saw text,
@@ -2876,7 +2943,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 for phrase in _SSE_CONN_PHRASES
                             )
 
-                    if _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err:
+                    if (
+                        _is_timeout
+                        or _is_conn_err
+                        or _is_sse_conn_err
+                        or _is_stream_parse_err
+                        or _is_empty_stream
+                    ):
                         # Transient network / timeout error. Retry the
                         # streaming request with a fresh connection first.
                         if _stream_attempt < _max_stream_retries:
@@ -2919,17 +2992,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=False,
                             diag=request_client_holder.get("diag"),
                         )
-                        agent._buffer_status(
-                            "❌ Provider returned malformed streaming data after "
-                            f"{_max_stream_retries + 1} attempts. "
-                            "The provider may be experiencing issues — "
-                            "try again in a moment."
-                            if _is_stream_parse_err else
-                            "❌ Connection to provider failed after "
-                            f"{_max_stream_retries + 1} attempts. "
-                            "The provider may be experiencing issues — "
-                            "try again in a moment."
-                        )
+                        if _is_stream_parse_err:
+                            _exhausted_msg = (
+                                "❌ Provider returned malformed streaming data after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        elif _is_empty_stream:
+                            # The connection SUCCEEDED (stream opened) but the
+                            # provider sent no chunks — saying "connection
+                            # failed" here sends users chasing network issues
+                            # when the problem is the provider/endpoint.
+                            _exhausted_msg = (
+                                "❌ Provider returned an empty response stream "
+                                f"after {_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        else:
+                            _exhausted_msg = (
+                                "❌ Connection to provider failed after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        agent._buffer_status(_exhausted_msg)
                     else:
                         _err_lower = str(e).lower()
                         _is_stream_unsupported = (

@@ -364,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "預估上下文：~{count} 個 token"
     detailed_after_first:     "_（首次代理回應後可檢視詳細使用情況）_"
     no_data:                  "此工作階段沒有可用的使用資料。"
+    unknown_subcommand:       "未知的 /usage 子命令:`{args}`。請嘗試 `/usage` 或 `/usage reset [--force]`。"
+    reset_wrong_provider:     "儲存的用量重設僅在 openai-codex 提供者上可用。請先使用 `/model` 切換。"
 
   credits:
     not_logged_in:            "未登入 Nous Portal。登入後即可查看額度餘額並儲值。"

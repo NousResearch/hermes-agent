@@ -5,7 +5,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
-import type { SessionInfo, UsageStats } from '@/types/hermes'
+import type { SessionInfo, SessionRuntimeProjectInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
 
@@ -271,6 +271,7 @@ export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
+export const $currentProject = atom<SessionRuntimeProjectInfo | null>(null)
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
   input: 0,
@@ -353,6 +354,7 @@ export const workspaceCwdForNewSession = (): string => {
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
+export const setCurrentProject = (next: Updater<SessionRuntimeProjectInfo | null>) => updateAtom($currentProject, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
 export const setTurnStartedAt = (next: Updater<number | null>) => updateAtom($turnStartedAt, next)

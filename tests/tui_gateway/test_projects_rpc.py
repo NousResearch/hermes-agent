@@ -172,6 +172,23 @@ def test_add_folder_and_for_cwd(tmp_path):
     assert "branch" in resolved
 
 
+def test_project_info_for_cwd_returns_project_status_payload(tmp_path):
+    folder = tmp_path / "repo"
+    folder.mkdir()
+    created = _call("projects.create", {"name": "Repo", "folders": [str(folder)]})["project"]
+
+    nested = folder / "src"
+    nested.mkdir()
+    payload = server._project_info_for_cwd(str(nested))
+
+    assert payload == {
+        "id": created["id"],
+        "slug": "repo",
+        "name": "Repo",
+        "primary_path": str(folder),
+    }
+
+
 def test_update_and_archive(tmp_path):
     pid = _call("projects.create", {"name": "Orig", "folders": [str(tmp_path)]})["project"]["id"]
 

@@ -8,7 +8,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
-import { Activity, AlertCircle, Clock, Command, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
+import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal, Zap, ZapFilled } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
@@ -17,6 +17,7 @@ import {
   $activeSessionId,
   $busy,
   $connection,
+  $currentProject,
   $currentUsage,
   $sessionStartedAt,
   $turnStartedAt,
@@ -76,6 +77,7 @@ export function useStatusbarItems({
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentUsage = useStore($currentUsage)
+  const currentProject = useStore($currentProject)
   const gatewayRestarting = useStore($gatewayRestarting)
   const sessionStartedAt = useStore($sessionStartedAt)
   const turnStartedAt = useStore($turnStartedAt)
@@ -353,6 +355,14 @@ export function useStatusbarItems({
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
       {
+        hidden: !currentProject?.name,
+        icon: <FolderOpen className="size-3" />,
+        id: 'project',
+        label: currentProject?.name,
+        title: currentProject?.primary_path || currentProject?.slug || currentProject?.name,
+        variant: 'text'
+      },
+      {
         detail: <LiveDuration since={turnStartedAt} />,
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
@@ -416,6 +426,9 @@ export function useStatusbarItems({
       contextBar,
       contextUsage,
       copy,
+      currentProject?.name,
+      currentProject?.primary_path,
+      currentProject?.slug,
       currentUsage,
       requestGateway,
       sessionStartedAt,

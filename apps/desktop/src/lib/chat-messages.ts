@@ -4,7 +4,7 @@ import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { SessionMessage, SessionRuntimeProjectInfo, UsageStats } from '@/types/hermes'
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
 
@@ -50,6 +50,7 @@ export type GatewayEventPayload = {
   running?: boolean
   cwd?: string
   branch?: string
+  project?: null | SessionRuntimeProjectInfo
   credential_warning?: string
   personality?: string
   usage?: Partial<UsageStats>

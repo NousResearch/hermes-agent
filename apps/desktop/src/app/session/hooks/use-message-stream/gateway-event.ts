@@ -28,6 +28,7 @@ import {
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
+  setCurrentProject,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
@@ -143,6 +144,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           if (typeof payload?.branch === 'string') {
             setCurrentBranch(payload.branch)
+          }
+
+          if ('project' in (payload ?? {})) {
+            setCurrentProject(payload?.project ?? null)
           }
 
           if (typeof payload?.personality === 'string') {

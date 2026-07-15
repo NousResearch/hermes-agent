@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -222,6 +223,71 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_cached_reuses_runtime_lock_probe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status._clear_running_pid_cache()
+
+        pid_path = tmp_path / "gateway.pid"
+        record = {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(record))
+        (tmp_path / "gateway.lock").write_text(json.dumps(record))
+
+        calls = {"lock_active": 0}
+
+        def _lock_active(lock_path=None):
+            calls["lock_active"] += 1
+            return True
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", _lock_active)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == os.getpid()
+        assert status.get_running_pid_cached(ttl_seconds=60) == os.getpid()
+        assert calls["lock_active"] == 1
+
+    def test_get_running_pid_cached_invalidates_when_pid_file_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status._clear_running_pid_cache()
+
+        pid_path = tmp_path / "gateway.pid"
+
+        def _write_record(pid: int, start_time: int) -> None:
+            record = {
+                "pid": pid,
+                "kind": "hermes-gateway",
+                "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+                "start_time": start_time,
+            }
+            pid_path.write_text(json.dumps(record))
+            (tmp_path / "gateway.lock").write_text(json.dumps(record))
+
+        _write_record(111, 123)
+
+        calls = {"lock_active": 0}
+
+        def _lock_active(lock_path=None):
+            calls["lock_active"] += 1
+            return True
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", _lock_active)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123 if pid == 111 else 456)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == 111
+
+        _write_record(2222, 456)
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == 2222
+        assert calls["lock_active"] == 2
+
     def test_get_running_pid_cleans_stale_metadata_from_dead_foreign_pid(self, tmp_path, monkeypatch):
         """Stale PID file from a *different* PID (crashed process) must still be cleaned.
 
@@ -291,6 +357,41 @@ class TestGatewayPidState:
             assert status.get_running_pid() == os.getpid()
         finally:
             status.release_gateway_runtime_lock()
+
+    def test_gateway_identity_files_use_process_home_not_context_override(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression: pid/lock/state files must use process-level HERMES_HOME.
+
+        When a profile context override is active (e.g., during session dispatch
+        for a named profile), gateway identity files should still be written to
+        the process-level HERMES_HOME, not the profile's directory.  See #56986.
+        """
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        process_home = tmp_path / "default"
+        process_home.mkdir()
+        profile_home = tmp_path / "profiles" / "cfo"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+        # Simulate a profile context override being active during write.
+        token = set_hermes_home_override(str(profile_home))
+        try:
+            status.write_pid_file()
+        finally:
+            reset_hermes_home_override(token)
+
+        # PID file must land in the process-level home, not the profile home.
+        assert (process_home / "gateway.pid").exists()
+        assert not (profile_home / "gateway.pid").exists()
+
+        payload = json.loads((process_home / "gateway.pid").read_text())
+        assert payload["pid"] == os.getpid()
+
+        # Cleanup for atexit hooks.
+        monkeypatch.setenv("HERMES_HOME", str(process_home))
+        (process_home / "gateway.pid").unlink(missing_ok=True)
 
 
 class TestGatewayRuntimeStatus:
@@ -621,16 +722,22 @@ class TestTerminatePid:
         calls = []
         monkeypatch.setattr(status, "_IS_WINDOWS", True)
 
-        def fake_run(cmd, capture_output=False, text=False, timeout=None):
-            calls.append((cmd, capture_output, text, timeout))
+        def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0):
+            calls.append((cmd, capture_output, text, timeout, creationflags))
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(status.subprocess, "run", fake_run)
 
         status.terminate_pid(123, force=True)
 
+        # taskkill is spawned with the no-window flag so the windowless
+        # pythonw.exe backend doesn't flash a conhost window on force-kill.
+        # windows_hide_flags() is 0 on the POSIX test host (a valid no-op
+        # creationflags value); on real Windows it is CREATE_NO_WINDOW.
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
         assert calls == [
-            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10)
+            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
     def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):
@@ -1128,6 +1235,64 @@ class TestTakeoverMarker:
         # We are not the target — must NOT consume as planned
         assert result is False
 
+    def test_write_marker_records_replacer_hermes_home(self, tmp_path, monkeypatch):
+        """The marker stamps the replacer's HERMES_HOME for cross-profile guard (#29092)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 42)
+
+        status.write_takeover_marker(target_pid=12345)
+
+        payload = json.loads((tmp_path / ".gateway-takeover.json").read_text())
+        assert payload["replacer_hermes_home"] == str(tmp_path)
+
+    def test_consume_rejects_marker_from_different_profile(self, tmp_path, monkeypatch):
+        """Regression (#29092): a marker written by a gateway under a DIFFERENT
+        HERMES_HOME must be rejected even when PID + start_time coincidentally
+        match — otherwise two profile services sharing a default ~/.hermes flap
+        each other in an infinite SIGTERM/Restart loop. The mismatched marker is
+        left in place so the profile it was actually meant for can consume it.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        marker_path = tmp_path / ".gateway-takeover.json"
+        from datetime import datetime, timezone
+        # Marker names OUR pid + start_time (the coincidental match the bug
+        # relied on) but was written by a gateway in a different profile.
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 100,
+            "replacer_pid": 99999,
+            "replacer_hermes_home": str(tmp_path / "profiles" / "other"),
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }))
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is False
+        # Left in place for the correct profile, not griefed away.
+        assert marker_path.exists()
+
+    def test_consume_accepts_legacy_marker_without_hermes_home(self, tmp_path, monkeypatch):
+        """Back-compat (#29092): markers written by older Hermes versions have no
+        ``replacer_hermes_home`` field; an absent field is treated as same-home so
+        single-profile setups and mixed old/new deployments keep working.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+        marker_path = tmp_path / ".gateway-takeover.json"
+        from datetime import datetime, timezone
+        marker_path.write_text(json.dumps({
+            "target_pid": os.getpid(),
+            "target_start_time": 100,
+            "replacer_pid": 99999,
+            "written_at": datetime.now(timezone.utc).isoformat(),
+        }))
+
+        result = status.consume_takeover_marker_for_self()
+
+        assert result is True
+        assert not marker_path.exists()
+
 
 class TestPlannedStopMarker:
     """Tests for intentional service/manual gateway stop markers."""
@@ -1287,6 +1452,7 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="/usr/libexec/bluetoothuserd\n"),
@@ -1296,6 +1462,7 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_returns_none_on_failure(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=1, stdout=""),
@@ -1317,12 +1484,41 @@ class TestReadProcessCmdlinePsFallback:
 
     def test_ps_fallback_used_when_proc_returns_empty(self, monkeypatch):
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: b"")
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         monkeypatch.setattr(
             status.subprocess, "run",
             lambda args, **kwargs: SimpleNamespace(returncode=0, stdout="python hermes_cli/main.py gateway run\n"),
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+    def test_windows_skips_ps_fallback_and_uses_psutil(self, monkeypatch):
+        monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+        ps_calls = []
+        monkeypatch.setattr(
+            status.subprocess,
+            "run",
+            lambda args, **kwargs: ps_calls.append((args, kwargs)) or SimpleNamespace(returncode=0, stdout="ps should not run\n"),
+        )
+
+        class _Proc:
+            def __init__(self, pid):
+                self.pid = pid
+
+            def cmdline(self):
+                return ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]
+
+        monkeypatch.setitem(
+            sys.modules,
+            "psutil",
+            SimpleNamespace(Process=_Proc),
+        )
+
+        result = status._read_process_cmdline(12345)
+
+        assert result == "pythonw.exe -m hermes_cli.main gateway run"
+        assert ps_calls == []
 
 
 class TestCorruptStatusFiles:

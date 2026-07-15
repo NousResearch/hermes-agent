@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import sys
 import threading
 import contextvars
 from collections import OrderedDict
@@ -17,6 +18,8 @@ from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
+    EXCLUDED_SKILL_DIRS,
+    SKILL_SUPPORT_DIRS,
     extract_skill_conditions,
     extract_skill_description,
     get_all_skills_dirs,
@@ -25,6 +28,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_environment,
     skill_matches_platform,
+    skill_matches_platform_list,
 )
 from utils import atomic_json_write
 
@@ -88,12 +92,15 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
     stop_at = _find_git_root(cwd)
     current = cwd.resolve()
 
-    for directory in [current, *current.parents]:
+    # When there is no git root, only check cwd itself – walking parents
+    # could pick up a .hermes.md planted in /tmp, /home, etc.
+    search_dirs = [current, *current.parents] if stop_at else [current]
+
+    for directory in search_dirs:
         for name in _HERMES_MD_NAMES:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
-        # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
             break
     return None
@@ -652,19 +659,7 @@ PLATFORM_HINTS = {
         "Standard Markdown is automatically converted to Telegram formatting. "
         "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
         "`inline code`, ```code blocks```, [links](url), and ## headers. "
-        "Telegram now supports rich Markdown, so lean into it: whenever it "
-        "makes the answer clearer or easier to scan, actively reach for real "
-        "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "
-        "lists, task lists (`- [ ]` / `- [x]`), headings, nested blockquotes, "
-        "collapsible details, footnotes/references, math/formulas (`$...$`, "
-        "`$$...$$`), underline, subscript/superscript, marked (highlighted) "
-        "text, and anchors. Default to structured formatting over dense "
-        "paragraphs for any comparison, set of steps, key/value summary, or "
-        "tabular data. Prefer real Markdown tables and task lists over "
-        "hand-built bullet substitutes when presenting structured data; these "
-        "degrade gracefully (tables become readable bullet groups) when rich "
-        "rendering is unavailable, but advanced constructs like math and "
-        "collapsible details may render as plain source text in that case. "
+        "Prefer bullet lists and labeled key:value pairs for structured data. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -739,6 +734,17 @@ PLATFORM_HINTS = {
         "target a gateway-connected messaging platform (e.g. deliver='telegram' "
         "or 'all'). Do not promise the user that a deliver='origin' or "
         "default-deliver cron job will message them in this session."
+    ),
+    "desktop": (
+        "You are chatting inside the Hermes desktop app — a graphical chat "
+        "surface, not a terminal. Use markdown freely: it renders with full "
+        "GitHub flavor (tables, code blocks with syntax highlighting, math "
+        "via $...$, task lists, blockquote callouts). "
+        "You can deliver files natively — include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.png, .jpg, .webp) appear inline, audio and "
+        "video play inline, and other files arrive as download links. You can "
+        "also include image URLs in markdown format ![alt](url) and they "
+        "render inline as photos."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
@@ -847,6 +853,27 @@ PLATFORM_HINTS = {
     ),
 }
 
+# Telegram rich-messages extension — only injected when the user has opted in
+# to ``platforms.telegram.extra.rich_messages: true``.  The base
+# PLATFORM_HINTS["telegram"] covers MarkdownV2-compatible constructs; this
+# extension adds the Bot API 10.1 rich-Markdown guidance (tables, task lists,
+# collapsible details, math, etc.).
+TELEGRAM_RICH_MESSAGES_HINT = (
+    "Telegram now supports rich Markdown, so lean into it: whenever it "
+    "makes the answer clearer or easier to scan, actively reach for real "
+    "Markdown tables (pipe `| col | col |` syntax), bullet and numbered "
+    "lists, task lists (`- [ ]` / `- [x]`), headings, nested blockquotes, "
+    "collapsible details, footnotes/references, math/formulas (`$...$`, "
+    "`$$...$$`), underline, subscript/superscript, marked (highlighted) "
+    "text, and anchors. Default to structured formatting over dense "
+    "paragraphs for any comparison, set of steps, key/value summary, or "
+    "tabular data. Prefer real Markdown tables and task lists over "
+    "hand-built bullet substitutes when presenting structured data; these "
+    "degrade gracefully (tables become readable bullet groups) when rich "
+    "rendering is unavailable, but advanced constructs like math and "
+    "collapsible details may render as plain source text in that case. "
+)
+
 # ---------------------------------------------------------------------------
 # Environment hints — execution-environment awareness for the agent.
 # Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
@@ -926,8 +953,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
         # non-local backend is actually configured.
-        from tools.terminal_tool import _get_env_config  # type: ignore
-        from tools.environments import get_environment  # type: ignore
+        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
     except Exception as e:
         logger.debug("Backend probe unavailable (import failed): %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
@@ -935,7 +961,59 @@ def _probe_remote_backend(env_type: str) -> str | None:
 
     try:
         config = _get_env_config()
-        env = get_environment(config)
+        # Build the environment the same way tools/terminal_tool.py does for a
+        # live command: select the backend image, then assemble ssh/container
+        # config from the env-derived dict. (There is no `get_environment`
+        # factory — the real entry point is `_create_environment`.)
+        if env_type == "docker":
+            image = config.get("docker_image", "")
+        elif env_type == "singularity":
+            image = config.get("singularity_image", "")
+        elif env_type == "modal":
+            image = config.get("modal_image", "")
+        elif env_type == "daytona":
+            image = config.get("daytona_image", "")
+        else:
+            image = ""
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        container_config = None
+        if env_type in {"docker", "singularity", "modal", "daytona"}:
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "modal_mode": config.get("modal_mode", "auto"),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_env": config.get("docker_env", {}),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_extra_args": config.get("docker_extra_args", []),
+                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+            }
+
+        env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=config.get("cwd", ""),
+            timeout=config.get("timeout", 180),
+            ssh_config=ssh_config,
+            container_config=container_config,
+            task_id="prompt-backend-probe",
+            host_cwd=config.get("host_cwd"),
+        )
         # Single-line POSIX probe — works on any Unixy backend. Wrapped in
         # `2>/dev/null` so a missing binary doesn't pollute the output.
         probe_cmd = (
@@ -1073,22 +1151,6 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
-    # Hermes desktop GUI — any agent running under the desktop app should know
-    # it. HERMES_DESKTOP marks the backend powering the chat; HERMES_DESKTOP_TERMINAL
-    # marks a hermes launched in the embedded terminal pane. Both set by main.cjs.
-    _truthy = ("1", "true", "yes")
-    _in_desktop = (os.getenv("HERMES_DESKTOP") or "").strip().lower() in _truthy
-    _in_desktop_term = (os.getenv("HERMES_DESKTOP_TERMINAL") or "").strip().lower() in _truthy
-    if _in_desktop or _in_desktop_term:
-        _desktop_hint = "Runtime surface: you're running inside the Hermes desktop GUI app."
-        if _in_desktop_term:
-            _desktop_hint += (
-                " You're in its embedded terminal pane, beside the GUI chat — the user can "
-                "select your output (⌥-drag on macOS, Shift-drag elsewhere) and press "
-                "⌘/Ctrl+L to send it to the chat composer."
-            )
-        hints.append(_desktop_hint)
-
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
@@ -1222,13 +1284,26 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     """Build an mtime/size manifest of all SKILL.md and DESCRIPTION.md files."""
     manifest: dict[str, list[int]] = {}
-    for filename in ("SKILL.md", "DESCRIPTION.md"):
-        for path in iter_skill_index_files(skills_dir, filename):
+    skills_dir_str = str(skills_dir)
+    base = os.path.join(skills_dir_str, "")
+    prefix_len = len(base)
+    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+        has_skill_md = "SKILL.md" in files
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS
+            and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
+        ]
+        for filename in ("SKILL.md", "DESCRIPTION.md"):
+            if filename not in files:
+                continue
+            path = os.path.join(root, filename)
             try:
-                st = path.stat()
+                st = os.stat(path)
             except OSError:
                 continue
-            manifest[str(path.relative_to(skills_dir))] = [st.st_mtime_ns, st.st_size]
+            manifest[path[prefix_len:]] = [st.st_mtime_ns, st.st_size]
     return manifest
 
 
@@ -1360,6 +1435,22 @@ def _skill_should_show(
     return True
 
 
+def _current_session_platform_hint() -> str:
+    """Return the active platform without importing the gateway package on CLI startup."""
+    platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
+    if platform:
+        return platform
+
+    session_context = sys.modules.get("gateway.session_context")
+    get_session_env = getattr(session_context, "get_session_env", None) if session_context else None
+    if get_session_env is None:
+        return ""
+    try:
+        return get_session_env("HERMES_SESSION_PLATFORM") or ""
+    except Exception:
+        return ""
+
+
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
@@ -1394,15 +1485,10 @@ def build_skills_system_prompt(
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
-    from gateway.session_context import get_session_env
-    _platform_hint = (
-        os.environ.get("HERMES_PLATFORM")
-        or get_session_env("HERMES_SESSION_PLATFORM")
-        or ""
-    )
+    _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
-        str(skills_dir.resolve()),
+        str(skills_dir),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
@@ -1431,7 +1517,7 @@ def build_skills_system_prompt(
             category = entry.get("category") or "general"
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
-            if not skill_matches_platform({"platforms": platforms}):
+            if not skill_matches_platform_list(platforms):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue

@@ -1215,6 +1215,47 @@ class TestAudioSpeechEndpoint:
                 )
                 assert ok.status == 200
 
+    @pytest.mark.asyncio
+    async def test_speech_returns_429_when_at_concurrency_cap(self, adapter, tmp_path):
+        # Synthesis participates in the shared max_concurrent_runs bound: a
+        # saturated server rejects with 429 and never fires the synthesis work.
+        adapter._max_concurrent_runs = 2
+        adapter._inflight_agent_runs = 2
+        app = _create_app(adapter)
+        tts, calls = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech", json={"input": "hi"})
+                assert resp.status == 429
+                assert resp.headers.get("Retry-After")
+        assert calls == []  # gated before synthesis
+        assert tts.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_speech_releases_inflight_slot_after_success(self, adapter, tmp_path):
+        # The counter is bracketed around synthesis and released in finally, so
+        # a completed request leaves no leaked slot behind.
+        app = _create_app(adapter)
+        tts, _ = _fake_tts(tmp_path)
+        p1, p2 = _patch_tts(tts)
+        with p1, p2:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/speech", json={"input": "hi"})
+                assert resp.status == 200
+        assert adapter._inflight_agent_runs == 0
+
+    @pytest.mark.asyncio
+    async def test_speech_validation_error_does_not_consume_slot(self, adapter):
+        # A 400 short-circuits above the concurrency gate, so it must not touch
+        # the inflight counter.
+        adapter._inflight_agent_runs = 0
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/audio/speech", json={})
+            assert resp.status == 400
+        assert adapter._inflight_agent_runs == 0
+
 
 # ---------------------------------------------------------------------------
 # /v1/skills and /v1/toolsets endpoints

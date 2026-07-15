@@ -10,6 +10,7 @@ on inside ``tools.tts_tool``:
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -58,6 +59,11 @@ def all_unavailable(monkeypatch):
         "tools.xai_http.resolve_xai_http_credentials",
         MagicMock(return_value={}),
     )
+    # Neutralize the plugin-registry source too: keep the real
+    # _iter_plugin_providers in the path but starve it of inputs, so the
+    # baseline is truly "nothing available" and no real plugin discovery runs.
+    monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", MagicMock())
+    monkeypatch.setattr("agent.tts_registry.list_providers", MagicMock(return_value=[]))
     yield monkeypatch
 
 
@@ -106,6 +112,51 @@ class TestListAvailableProviders:
         all_unavailable.setattr(tts_tool, "_import_edge_tts", MagicMock(return_value=MagicMock()))
         all_unavailable.setattr(tts_tool, "_load_tts_config", MagicMock(return_value={}))
         assert list_available_tts_providers() == ["edge"]
+
+
+# ---------------------------------------------------------------------------
+# Plugin-registered providers feed into availability (must be advertised and
+# not rejected before dispatch — see _dispatch_to_plugin_provider).
+# ---------------------------------------------------------------------------
+
+
+class TestPluginProviderEnumeration:
+    @staticmethod
+    def _fake_provider(name):
+        return SimpleNamespace(name=name)
+
+    def test_registered_plugin_is_available(self, all_unavailable):
+        all_unavailable.setattr(
+            "agent.tts_registry.list_providers",
+            MagicMock(return_value=[self._fake_provider("myplugin")]),
+        )
+        assert list_available_tts_providers({}) == ["myplugin"]
+        assert check_tts_requirements() is True
+
+    def test_plugin_listed_alongside_builtin(self, all_unavailable):
+        all_unavailable.setattr(tts_tool, "_import_edge_tts", MagicMock(return_value=MagicMock()))
+        all_unavailable.setattr(
+            "agent.tts_registry.list_providers",
+            MagicMock(return_value=[self._fake_provider("myplugin")]),
+        )
+        assert list_available_tts_providers({}) == ["edge", "myplugin"]
+
+    def test_plugin_shadowing_builtin_is_skipped(self, all_unavailable):
+        # The registry blocks this at registration; enumeration re-checks
+        # defensively so a shadowed built-in name is never advertised.
+        all_unavailable.setattr(
+            "agent.tts_registry.list_providers",
+            MagicMock(return_value=[self._fake_provider("edge")]),
+        )
+        assert list_available_tts_providers({}) == []
+
+    def test_discovery_failure_is_non_fatal(self, all_unavailable):
+        all_unavailable.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            MagicMock(side_effect=RuntimeError("boom")),
+        )
+        # Swallowed — plugins simply contribute nothing.
+        assert list_available_tts_providers({}) == []
 
 
 # ---------------------------------------------------------------------------

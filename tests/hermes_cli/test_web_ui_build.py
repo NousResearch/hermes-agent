@@ -156,6 +156,26 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["env"]["CI"] == "1"
         assert kwargs["env"]["PYTHON"] == "/nix/store/python"
 
+    def test_npm_install_forces_dev_deps_even_when_parent_node_env_is_production(
+        self, tmp_path, monkeypatch
+    ):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("NODE_ENV", "production")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                env={"PYTHON": "/nix/store/python"},
+            )
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["NODE_ENV"] == "development"
+        assert kwargs["env"]["NPM_CONFIG_PRODUCTION"] == "false"
+        assert kwargs["env"]["PYTHON"] == "/nix/store/python"
+
     def test_npm_install_uses_workspace_web_scope(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         # Real workspace checkout: the single lockfile lives at the root, so

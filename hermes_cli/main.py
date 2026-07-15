@@ -4837,6 +4837,13 @@ def _run_npm_install_deterministic(
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
     # install path and nix/lib.nix npm ci hooks.
     run_env = {**os.environ, **(env or {}), "CI": "1"}
+    # Hermes often runs with NODE_ENV=production at the parent-process level.
+    # npm treats that as an implicit omit=dev during install/ci, which drops
+    # build-time workspace deps like TypeScript and makes later `npm run build`
+    # fail with `tsc: command not found` even though the lockfile declares it.
+    # Force development semantics for dependency installation only.
+    run_env["NODE_ENV"] = "development"
+    run_env["NPM_CONFIG_PRODUCTION"] = "false"
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():

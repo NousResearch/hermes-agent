@@ -1533,6 +1533,25 @@ class TestRunJobSessionPersistence:
         assert "final fallback report" in output
         assert "(FAILED)" not in output
 
+    def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
+        """The drain gate runs before advancing a due job's schedule."""
+        from cron.scheduler import tick
+
+        job = {
+            "id": "paused-due-job",
+            "name": "paused due job",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), patch(
+            "cron.scheduler.advance_next_run"
+        ) as advance, patch("cron.scheduler.run_one_job") as run_one:
+            assert tick(verbose=False, sync=True, can_dispatch=lambda: False) == 0
+
+        advance.assert_not_called()
+        run_one.assert_not_called()
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.

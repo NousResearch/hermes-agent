@@ -65,7 +65,6 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
-
 class TestPreflightDeferral:
     def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
         compressor.threshold_tokens = 85_000

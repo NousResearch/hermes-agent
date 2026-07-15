@@ -1932,6 +1932,21 @@ DEFAULT_CONFIG = {
         # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
         # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
         # negative disables the timeout entirely (wait indefinitely).
+        # Optional per-key text overrides for Hermes-authored gateway messages.
+        # Keys omit the leading ``gateway.`` catalog prefix; values may reuse
+        # the placeholders from the corresponding locale entry. An empty map
+        # preserves locale -> English -> dotted-key fallback behavior.
+        "system_messages": {},
+
+        # Seconds the gateway waits for a single messaging platform to finish
+        # connecting during startup (and on reconnect). Discord in particular
+        # can blow past the old fixed 30s when an account has many slash
+        # commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this
+        # if your gateway hits "discord connect timed out" / "Timeout waiting
+        # for connection to Discord" restart loops. ``0`` or negative disables
+        # the timeout entirely (wait indefinitely). Bridged at startup to the
+        # internal HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT env var, which still
+        # works as a manual override and wins if set explicitly.
         "platform_connect_timeout": 30,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so

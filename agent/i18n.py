@@ -157,6 +157,21 @@ def _profile_cache_key() -> str:
     return str(get_hermes_home())
 
 
+@lru_cache(maxsize=8)
+def agent_display_name(hermes_home: str | None = None) -> str:
+    """Configured branding name for ``{name}`` substitutions."""
+    config = _config_dict()
+    display = config.get("display") or {}
+    skin_name = display.get("skin", "default") if isinstance(display, dict) else "default"
+    try:
+        from hermes_cli.skin_engine import load_skin
+        name = load_skin(str(skin_name or "default")).get_branding("agent_name", "Hermes")
+        return name.strip() if isinstance(name, str) and name.strip() else "Hermes"
+    except Exception as exc:
+        logger.debug("Could not resolve i18n branding: %s", exc)
+        return "Hermes"
+
+
 def _gateway_overrides() -> dict[str, str]:
     """Return the active profile's ``gateway.system_messages`` overrides.
 
@@ -191,6 +206,25 @@ class _SafeFormatter(string.Formatter):
             return args[key]
         except (IndexError, KeyError):
             return _MissingField("{" + str(key) + "}")
+
+    def get_field(self, field_name: str, args: Any, kwargs: Any) -> tuple[Any, Any]:
+        """Preserve an unresolved compound field as its complete raw token.
+
+        ``string.Formatter.get_field`` performs ``.attr`` / ``[item]``
+        traversal after :meth:`get_value`. A missing root is therefore not
+        enough on its own: traversing the ``_MissingField`` sentinel would
+        otherwise raise ``AttributeError`` or ``TypeError``. Known roots whose
+        requested attribute/item is absent degrade the same way.
+        """
+        root = field_name.split(".", 1)[0].split("[", 1)[0]
+        lookup_key: Any = int(root) if root.isdecimal() else root
+        root_value = self.get_value(lookup_key, args, kwargs)
+        if isinstance(root_value, _MissingField):
+            return _MissingField("{" + field_name + "}"), lookup_key
+        try:
+            return super().get_field(field_name, args, kwargs)
+        except (AttributeError, KeyError, IndexError, TypeError):
+            return _MissingField("{" + field_name + "}"), lookup_key
 
     def format_field(self, value: Any, format_spec: str) -> str:
         if isinstance(value, _MissingField):
@@ -269,14 +303,15 @@ def localize_gateway_message(message: str, lang: str | None = None) -> str:
 def _safe_format(template: str, **kwargs: Any) -> str:
     try:
         return _SAFE_FORMATTER.vformat(template, (), kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
-        logger.warning("i18n format failed for template %r: %s", template, exc)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        logger.warning("i18n safe-format failed for template %r: %s", template, exc)
         return template
 
 
 def reset_language_cache() -> None:
     """Invalidate cached language resolution and catalogs (call after ``save_config`` changes ``display.language``)."""
     _config_language_cached.cache_clear()
+    agent_display_name.cache_clear()
     _gateway_message_matchers.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
@@ -311,10 +346,12 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     if value is None:
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
+    if "{name}" in value and "name" not in format_kwargs:
+        format_kwargs = {**format_kwargs, "name": agent_display_name(_profile_cache_key())}
     return _safe_format(value, **format_kwargs) if format_kwargs else value
 
 
 __all__ = [
     "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language",
-    "localize_gateway_message", "reset_language_cache",
+    "localize_gateway_message", "reset_language_cache", "agent_display_name",
 ]

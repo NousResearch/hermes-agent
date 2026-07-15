@@ -206,13 +206,7 @@ async def _shutdown_abandoned_app(app) -> None:
         except Exception:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
-try:
-    _tv_ns: dict = {}
-    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "thinking_verbs.py")) as _tv_f:
-        exec(_tv_f.read(), _tv_ns)
-    _THINKING_VERBS: list = _tv_ns.get("THINKING_VERBS") or ["Thinking"]
-except Exception:
-    _THINKING_VERBS = ["Thinking"]
+_THINKING_VERBS: list = ["Thinking"]
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -9471,20 +9465,32 @@ class TelegramAdapter(BasePlatformAdapter):
                 _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
                 # Strip any leading MEDIA artifact that escaped stream-consumer cleanup.
                 _plain = re.sub(r"(?i)^MEDIA:?\s*\S*\s*", "", _plain).strip()
-                _reply_text = _plain[:4096] or "⚠️ Sorry, something went wrong. Please try again."
+                # UTF-16 code units, not Python string length — Telegram's 4,096
+                # limit is measured in UTF-16 units, so a naive _plain[:4096]
+                # slice can pass this check while still exceeding the real cap
+                # (e.g. 2,049 emoji is 2,049 chars but 4,098 UTF-16 units) and
+                # fail the editMessageText call below, after guest state has
+                # already been torn down above — silently dropping the turn.
+                _reply_text = self._truncate_stream_overflow_preview(_plain) or \
+                    "⚠️ Sorry, something went wrong. Please try again."
                 logger.warning("[%s] guest OPC flush (chat=%s buffered_len=%d imi=%s)",
                                self.name, _gc_id, len(_buffered), _guest_imi)
                 try:
                     if _guest_imi:
-                        # Text result: typewriter then final edit.
+                        # Text result: typewriter then final edit.  Animate over
+                        # the already-truncated _reply_text, not raw _plain —
+                        # otherwise a long _plain both risks an oversized
+                        # mid-animation frame (same UTF-16 issue as above) and
+                        # makes the display visibly "shrink" on the final edit
+                        # when _plain is longer than the truncated _reply_text.
                         _tw_min = 80
                         _tw_frames = 8
                         _tw_delay = 0.4
-                        if len(_plain) >= _tw_min:
-                            _tw_chunk = max(40, len(_plain) // _tw_frames)
+                        if len(_reply_text) >= _tw_min:
+                            _tw_chunk = max(40, len(_reply_text) // _tw_frames)
                             _tw_pos = _tw_chunk
-                            while _tw_pos < len(_plain):
-                                _tw_frame = _plain[:_tw_pos]
+                            while _tw_pos < len(_reply_text):
+                                _tw_frame = _reply_text[:_tw_pos]
                                 _tw_break = max(_tw_frame.rfind('\n'), _tw_frame.rfind(' '))
                                 if _tw_break > 0:
                                     _tw_frame = _tw_frame[:_tw_break]

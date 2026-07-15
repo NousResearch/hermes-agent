@@ -493,6 +493,19 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def board_db_path(board: str) -> Path:
+    """Return a board's DB path without consulting ``HERMES_KANBAN_DB``.
+
+    Dispatcher workers pin that environment variable to their active board.
+    Cross-board diagnostics must therefore use this pure resolver and pass the
+    resulting path explicitly to ``connect``.
+    """
+    slug = _normalize_board_slug(board) or DEFAULT_BOARD
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""

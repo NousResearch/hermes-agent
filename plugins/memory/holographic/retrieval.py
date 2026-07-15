@@ -489,6 +489,12 @@ class FactRetriever:
 
         Uses the store's database connection directly for FTS5 MATCH
         with rank scoring. Normalizes FTS5 rank to [0, 1] range.
+
+        A LIKE ``%query%`` fallback runs alongside FTS5 MATCH to catch
+        CJK sub-string matches that the ``unicode61`` tokenizer cannot
+        segment (e.g. searching ``"香港"`` inside a fact containing
+        ``"香港腾讯云"``). LIKE hits that FTS5 already returned are
+        de-duplicated by ``fact_id``; the survivors get a neutral rank.
         """
         conn = self.store._conn
 
@@ -525,10 +531,7 @@ class FactRetriever:
             rows = conn.execute(sql, params).fetchall()
         except Exception:
             # FTS5 MATCH can fail on malformed queries — fall back to empty
-            return []
-
-        if not rows:
-            return []
+            rows = []
 
         # Normalize FTS5 rank: rank is negative, lower = better
         # Convert to positive score in [0, 1] range
@@ -543,7 +546,84 @@ class FactRetriever:
             fact["fts_rank"] = raw_rank / max_rank  # normalize to [0, 1]
             results.append(fact)
 
+        # ---- LIKE fallback for CJK sub-string matching ----
+        # FTS5's unicode61 tokenizer does not segment CJK text, so a
+        # multi-character CJK string is indexed as a single token.
+        # Searching a sub-string ("香港" inside "香港腾讯云") returns zero
+        # hits from FTS5 MATCH. A LIKE scan bridges that gap. The fact
+        # store is typically small (<1000 entries), so the O(n) scan is
+        # negligible.
+        like_results = self._like_candidates(
+            query, category, min_trust, limit
+        )
+
+        if like_results:
+            seen_ids = {f["fact_id"] for f in results}
+            for fact in like_results:
+                if fact["fact_id"] not in seen_ids:
+                    results.append(fact)
+                    seen_ids.add(fact["fact_id"])
+
         return results
+
+    @staticmethod
+    def _escape_like_pattern(text: str) -> str:
+        """Escape LIKE metacharacters so the pattern is a literal sub-string.
+
+        ``%`` and ``_`` in user input would otherwise be interpreted as
+        SQL wildcards. Escapes them with ``\\`` and adds an ``ESCAPE``
+        clause to the generated SQL.
+        """
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def _like_candidates(
+        self,
+        query: str,
+        category: str | None,
+        min_trust: float,
+        limit: int,
+    ) -> list[dict]:
+        """LIKE ``%query%`` fallback scanning both content and tags.
+
+        Catches CJK sub-string matches that FTS5's ``unicode61`` tokenizer
+        cannot segment. Escapes LIKE metacharacters (``%`` and ``_``) in
+        the user query so the match is literal, not wildcard. Scans both
+        ``content`` and ``tags`` columns to match the FTS5 index surface.
+        """
+        if not query or not query.strip():
+            return []
+
+        conn = self.store._conn
+        pattern = f"%{self._escape_like_pattern(query.strip())}%"
+
+        where_parts = [
+            "(f.content LIKE ? ESCAPE '\\' OR f.tags LIKE ? ESCAPE '\\')",
+            "f.trust_score >= ?",
+        ]
+        params: list = [pattern, pattern, min_trust]
+
+        if category:
+            where_parts.append("f.category = ?")
+            params.append(category)
+
+        params.append(limit)
+
+        sql = f"""
+            SELECT f.fact_id, f.content, f.category, f.tags,
+                   f.trust_score, f.retrieval_count, f.helpful_count,
+                   f.created_at, f.updated_at
+            FROM facts f
+            WHERE {' AND '.join(where_parts)}
+            ORDER BY f.trust_score DESC, f.updated_at DESC
+            LIMIT ?
+        """
+
+        try:
+            rows = conn.execute(sql, params).fetchall()
+        except Exception:
+            return []
+
+        return [dict(row) for row in rows]
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:

@@ -1751,6 +1751,8 @@ _REQUEST_DUMP_SENSITIVE_EXACT_KEYS = frozenset({
     "x_api_key",
     "api_key",
     "apikey",
+    "x_api_token",
+    "api_token",
     "token",
     "bearer_token",
     "session_token",

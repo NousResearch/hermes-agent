@@ -1797,6 +1797,7 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
 
     prefixed_key = "sk-proj-" + ("a" * 40)
     opaque_header_secret = "Bearer opaque-provider-token-without-known-prefix"
+    opaque_api_token_secret = "opaque-api-token-without-known-prefix"
     opaque_key_list_secret = "opaque-extra-body-key-without-known-prefix"
     opaque_token_secret = "opaque-token-without-known-prefix"
     opaque_cookie_secret = "opaque-session-cookie-without-known-prefix"
@@ -1821,6 +1822,7 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
             ],
             "extra_headers": {
                 "Authorization": opaque_header_secret,
+                "X-Api-Token": opaque_api_token_secret,
                 "X-Authorization": opaque_x_authorization_secret,
                 "X-Trace": "trace-ok",
             },
@@ -1841,6 +1843,7 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
     raw_dump = dump_file.read_text()
     assert prefixed_key not in raw_dump
     assert opaque_header_secret not in raw_dump
+    assert opaque_api_token_secret not in raw_dump
     assert opaque_key_list_secret not in raw_dump
     assert opaque_cookie_secret not in raw_dump
     assert opaque_token_secret not in raw_dump
@@ -1851,6 +1854,7 @@ def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
     payload = json.loads(raw_dump)
     assert payload["request"]["headers"]["Authorization"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_headers"]["Authorization"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_headers"]["X-Api-Token"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_headers"]["X-Authorization"] == "[REDACTED]"
     assert payload["request"]["body"]["extra_headers"]["X-Trace"] == "trace-ok"
     assert payload["request"]["body"]["extra_body"]["api_key"] == "[REDACTED]"

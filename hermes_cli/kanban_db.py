@@ -3324,6 +3324,7 @@ def recompute_ready(
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     promoted = 0
+    promoted_tasks: list[tuple[str, str | None]] = []
     with write_txn(conn):
         todo_rows = conn.execute(
             "SELECT id, status, consecutive_failures, max_retries "
@@ -3374,6 +3375,24 @@ def recompute_ready(
                     )
                 _append_event(conn, task_id, "promoted", None)
                 promoted += 1
+                # Capture task_id + assignee for post-commit hook.
+                # Read inside the txn so the value is durable.
+                _assignee_row = conn.execute(
+                    "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
+                ).fetchone()
+                promoted_tasks.append(
+                    (task_id, _assignee_row["assignee"] if _assignee_row else None)
+                )
+    # Fire promotion hooks AFTER the write txn commits, matching the
+    # post-commit contract at _fire_kanban_lifecycle_hook (L141-148).
+    for _tid, _assignee in promoted_tasks:
+        _fire_kanban_lifecycle_hook(
+            "kanban_task_promoted",
+            _tid,
+            board=get_current_board(),
+            assignee=_assignee,
+            run_id=None,
+        )
     return promoted
 
 

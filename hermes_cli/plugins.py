@@ -238,6 +238,10 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_blocked",
     "kanban_task_created",
     "kanban_task_unblocked",
+    # Fires after a task is promoted todo→ready by dependency resolution
+    # (recompute_ready). Distinct from kanban_task_unblocked which covers
+    # explicit unblock operations only.
+    "kanban_task_promoted",
     "kanban_pre_complete",
 }
 

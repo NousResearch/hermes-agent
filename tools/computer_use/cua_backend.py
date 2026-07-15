@@ -1146,6 +1146,12 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     (``int(w["pid"])``) let one such window abort enumeration of the real,
     targetable windows. We skip the unusable entries instead so capture()
     and focus_app() still find the windows that matter.
+
+    ``z_index`` follows CUA Driver semantics: higher = closer to front.
+    Wayland may return ``z_index: null`` (undefined stacking order); we
+    treat null as the lowest priority so real windows still sort above
+    desktop/root windows, and the backmost never ends up selected as the
+    capture target.
     """
     windows: List[Dict[str, Any]] = []
     for w in raw_windows:
@@ -1153,13 +1159,15 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         window_id_int = _positive_int(w.get("window_id"))
         if pid_int is None or window_id_int is None:
             continue
+        z_raw = w.get("z_index")
+        z_index = z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0
         windows.append({
             "app_name": w.get("app_name", ""),
             "pid": pid_int,
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
             "title": w.get("title", ""),
-            "z_index": w.get("z_index", 0),
+            "z_index": z_index,
         })
     return windows
 
@@ -1305,14 +1313,22 @@ class CuaDriverBackend(ComputerUseBackend):
         return out
 
     def _load_windows(self) -> List[Dict[str, Any]]:
-        """Load normalized visible windows, with the shared CLI recovery path."""
+        """Load normalized visible windows, with the shared CLI recovery path.
+
+        Windows are sorted by ``z_index`` **descending**: CUA Driver
+        defines higher values as closer to the front, so the frontmost
+        window ends up at index 0 — which is what ``capture()`` and
+        ``focus_app()`` pick as the default target.  ``_ingest_windows``
+        already normalised null ``z_index`` (Wayland) to 0, so those
+        windows sort to the back.
+        """
         out = self._call_capture_tool(
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (out.get("structuredContent") or {}).get("windows") or []
         windows = _ingest_windows(raw_windows)
-        windows.sort(key=lambda w: w["z_index"])
+        windows.sort(key=lambda w: w["z_index"], reverse=True)
         if windows:
             return windows
 
@@ -1335,7 +1351,7 @@ class CuaDriverBackend(ComputerUseBackend):
             return []
         raw_windows = (cli_out.get("structuredContent") or {}).get("windows") or []
         windows = _ingest_windows(raw_windows)
-        windows.sort(key=lambda w: w["z_index"])
+        windows.sort(key=lambda w: w["z_index"], reverse=True)
         return windows
 
     def _match_windows_for_app(
@@ -1861,22 +1877,33 @@ class CuaDriverBackend(ComputerUseBackend):
             if self._active_window_id is None:
                 return ActionResult(ok=False, action="scroll",
                                     message="No active window_id for coordinate scroll.")
-            args["x"] = x
-            args["y"] = y
+            # CUA Driver 0.7.1 Linux schema rejects x/y on scroll. Only
+            # include them when the driver explicitly advertises support
+            # for coordinate scrolling; otherwise omit and let the driver
+            # scroll the targeted window (window_id is still sent for
+            # routing).  This is the safe default when capabilities
+            # haven't been discovered yet (older drivers).
+            if self._session.supports_capability(
+                "input.scroll.coordinates", tool="scroll"
+            ):
+                args["x"] = x
+                args["y"] = y
             args["window_id"] = self._active_window_id
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
     def type_text(self, text: str) -> ActionResult:
         pid = self._active_pid
-        if pid is None:
+        window_id = self._active_window_id
+        if pid is None or window_id is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        return self._action("type_text", {"pid": pid, "text": text})
+        return self._action("type_text", {"pid": pid, "window_id": window_id, "text": text})
 
     def key(self, keys: str) -> ActionResult:
         pid = self._active_pid
-        if pid is None:
+        window_id = self._active_window_id
+        if pid is None or window_id is None:
             return ActionResult(ok=False, action="key",
                                 message="No active window — call capture() first.")
 
@@ -1887,9 +1914,11 @@ class CuaDriverBackend(ComputerUseBackend):
 
         if modifiers:
             # hotkey requires at least one modifier + one key.
-            return self._action("hotkey", {"pid": pid, "keys": modifiers + [key_name]})
+            return self._action("hotkey", {"pid": pid, "window_id": window_id,
+                                           "keys": modifiers + [key_name]})
         else:
-            return self._action("press_key", {"pid": pid, "key": key_name})
+            return self._action("press_key", {"pid": pid, "window_id": window_id,
+                                              "key": key_name})
 
     # ── Value setter ────────────────────────────────────────────────
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:

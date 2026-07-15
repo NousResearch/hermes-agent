@@ -2481,6 +2481,9 @@ class TestClickButtonPassthrough:
 
     def test_coordinate_drag_and_scroll_keep_the_captured_window(self):
         backend = self._backend_with_active_target()
+        # Mock the capability check so x/y are included (they're gated
+        # behind the input.scroll.coordinates capability).
+        backend._session.supports_capability.return_value = True
 
         backend.drag(from_xy=(10, 20), to_xy=(30, 40))
         drag_name, drag_args = backend._session.call_tool.call_args.args
@@ -2501,6 +2504,31 @@ class TestClickButtonPassthrough:
         assert scroll_args["window_id"] == 222
         assert scroll_args["x"] == 50 and scroll_args["y"] == 60
 
+    def test_scroll_xy_omitted_without_coordinate_capability(self):
+        """CUA Driver 0.7.1 Linux schema rejects x/y on scroll. When the
+        driver does not advertise input.scroll.coordinates, x/y must be
+        omitted so the call is not rejected."""
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = False
+
+        backend.scroll(direction="down", x=50, y=60)
+        _, scroll_args = backend._session.call_tool.call_args.args
+        assert "x" not in scroll_args
+        assert "y" not in scroll_args
+        assert scroll_args["window_id"] == 222
+
+    def test_scroll_xy_present_with_coordinate_capability(self):
+        """When the driver advertises input.scroll.coordinates, x/y are
+        included in the scroll call."""
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = True
+
+        backend.scroll(direction="up", x=10, y=20)
+        _, scroll_args = backend._session.call_tool.call_args.args
+        assert scroll_args["x"] == 10
+        assert scroll_args["y"] == 20
+        assert scroll_args["window_id"] == 222
+
     def test_coordinate_actions_without_window_id_fail_closed(self):
         backend = self._backend_with_active_target()
         backend._active_window_id = None
@@ -2509,6 +2537,146 @@ class TestClickButtonPassthrough:
         assert backend.drag(from_xy=(10, 20), to_xy=(30, 40)).ok is False
         assert backend.scroll(direction="down", x=10, y=20).ok is False
         backend._session.call_tool.assert_not_called()
+
+
+class TestKeyboardWindowIdRouting:
+    """Review comment #1 on PR #63725: type_text, press_key, and hotkey
+    must carry window_id so CUA Driver routes input to the correct window
+    in multi-window apps. Without window_id the driver falls back to the
+    first window for that PID, which can be the wrong one.
+
+    These tests also verify fail-closed: when _active_window_id is None,
+    keyboard actions return an error rather than sending PID-only input.
+    """
+
+    def _backend_with_active_target(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok",
+            "images": [],
+            "structuredContent": None,
+            "isError": False,
+        }
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        return backend
+
+    def test_type_text_carries_window_id(self):
+        backend = self._backend_with_active_target()
+        backend.type_text("hello world")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "type_text"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert args["text"] == "hello world"
+
+    def test_press_key_carries_window_id(self):
+        backend = self._backend_with_active_target()
+        backend.key("a")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "press_key"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert args["key"] == "a"
+
+    def test_hotkey_carries_window_id(self):
+        backend = self._backend_with_active_target()
+        backend.key("cmd+s")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert "cmd" in args["keys"]
+        assert "s" in args["keys"]
+
+    def test_type_text_fails_closed_without_window_id(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+        res = backend.type_text("hello")
+        assert res.ok is False
+        backend._session.call_tool.assert_not_called()
+
+    def test_press_key_fails_closed_without_window_id(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+        res = backend.key("a")
+        assert res.ok is False
+        backend._session.call_tool.assert_not_called()
+
+    def test_hotkey_fails_closed_without_window_id(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+        res = backend.key("cmd+s")
+        assert res.ok is False
+        backend._session.call_tool.assert_not_called()
+
+
+class TestZIndexSorting:
+    """Review comment #3 on PR #63725: CUA Driver defines higher z_index
+    values as closer to the front (top of the stack). The wrapper must sort
+    descending so the frontmost window is selected. Wayland may return
+    z_index: null, which must be handled without crashing.
+    """
+
+    def test_frontmost_window_selected_by_higher_z_index(self):
+        """The frontmost window (highest z_index) should be the one
+        capture() selects as its target."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [
+            {"app_name": "Terminal", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "term", "z_index": 5},
+            {"app_name": "Firefox", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "browser", "z_index": 10},
+            {"app_name": "Desktop", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "desktop", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="ax")
+
+        # Firefox has z_index=10 (frontmost) — must be selected.
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
+    def test_null_z_index_treated_as_lowest(self):
+        """Wayland may return z_index: null. _ingest_windows must coerce
+        it to 0 (backmost) so it doesn't crash the sort or get selected
+        over real foreground windows."""
+        from tools.computer_use.cua_backend import _ingest_windows
+
+        raw = [
+            {"app_name": "Desktop", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "desktop", "z_index": None},
+            {"app_name": "Firefox", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "browser", "z_index": 5},
+        ]
+        out = _ingest_windows(raw)
+        # Both windows survive (null z_index doesn't drop the window).
+        assert len(out) == 2
+        # Null z_index was normalised to 0.
+        desktop = next(w for w in out if w["app_name"] == "Desktop")
+        assert desktop["z_index"] == 0
+
+    def test_null_z_index_does_not_crash_capture(self):
+        """End-to-end: a null z_index window in the list must not crash
+        capture(), and a real window (with z_index) must be selected over
+        the null-z_index desktop."""
+        windows = [
+            {"app_name": "Desktop", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "desktop", "z_index": None},
+            {"app_name": "Firefox", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "browser", "z_index": 5},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="ax")
+
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
 
 
 class TestImageMimeTypePropagation:

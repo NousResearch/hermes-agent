@@ -416,7 +416,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
+    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir, check_symlink_components=True)
     if containment_error:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"

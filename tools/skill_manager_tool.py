@@ -440,7 +440,7 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     from tools.path_security import validate_within_dir
 
     target = skill_dir / file_path
-    error = validate_within_dir(target, skill_dir)
+    error = validate_within_dir(target, skill_dir, check_symlink_components=True)
     if error:
         return None, error
     return target, None

@@ -84,10 +84,7 @@ def register_credential_file(
     # that traversal like ``../. ssh/id_rsa`` cannot escape HERMES_HOME.
     from tools.path_security import validate_within_dir
 
-    containment_error = validate_within_dir(host_path, hermes_home)
-    if containment_error:
-        logger.warning(
-            "credential_files: rejected path traversal %r (%s)",
+    containment_error = validate_within_dir(host_path, hermes_home, check_symlink_components=True)
             relative_path,
             containment_error,
         )
@@ -153,7 +150,7 @@ def _load_config_files() -> List[Dict[str, str]]:
                         )
                         continue
                     host_path = hermes_home / rel
-                    containment_error = validate_within_dir(host_path, hermes_home)
+                    containment_error = validate_within_dir(host_path, hermes_home, check_symlink_components=True)
                     if containment_error:
                         logger.warning(
                             "credential_files: rejected config path traversal %r (%s)",

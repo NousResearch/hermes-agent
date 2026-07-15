@@ -1181,7 +1181,7 @@ def skill_view(
             target_file = skill_dir / file_path
 
             # Security: Verify resolved path is still within skill directory
-            traversal_error = validate_within_dir(target_file, skill_dir)
+            traversal_error = validate_within_dir(target_file, skill_dir, check_symlink_components=True)
             if traversal_error:
                 return json.dumps(
                     {

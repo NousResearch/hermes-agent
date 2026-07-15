@@ -148,7 +148,7 @@ def _lock_with_msvcrt(lock_fd) -> None:
     while True:
         lock_fd.seek(0)
         try:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_LOCK, 1)
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
             return
         except OSError as exc:
             if exc.errno not in _MSVCRT_LOCK_RETRY_ERRNOS:

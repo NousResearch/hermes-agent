@@ -18,6 +18,7 @@ import assistant  # noqa: E402
 import ics  # noqa: E402
 import router as router_mod  # noqa: E402
 import server  # noqa: E402
+import telemetry as telemetry_mod  # noqa: E402
 
 
 RSS_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1089,6 +1090,41 @@ class RouterTests(unittest.TestCase):
         self.assertIsNone(status["routing"])
 
 
+class TelemetryTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "telemetry.jsonl"
+
+    def test_record_recent_summary(self):
+        t = telemetry_mod.Telemetry(self.path)
+        t.record({"kind": "route", "task": "chat", "tier": "core", "model": "m"})
+        t.record({"kind": "tool", "name": "add_task", "tier": "auto", "ok": True, "approved": None})
+        t.record({"kind": "tool", "name": "add_app", "tier": "confirm", "ok": False, "approved": False})
+        self.assertEqual(len(t.recent()), 3)
+        s = t.summary()
+        self.assertEqual(s["tool_calls"], 2)
+        self.assertEqual(s["denied"], 1)
+        self.assertEqual(s["by_tier"], {"core": 1})
+        self.assertEqual(s["by_tool"], {"add_task": 1, "add_app": 1})
+
+    def test_bounded_to_max(self):
+        t = telemetry_mod.Telemetry(self.path)
+        for i in range(telemetry_mod.Telemetry.MAX + 20):
+            t.record({"kind": "tool", "name": f"t{i}", "ok": True})
+        self.assertEqual(len(t.recent(10_000)), telemetry_mod.Telemetry.MAX)
+
+    def test_persists_across_reload(self):
+        telemetry_mod.Telemetry(self.path).record({"kind": "tool", "name": "x", "ok": True})
+        self.assertEqual(len(telemetry_mod.Telemetry(self.path).recent()), 1)
+
+    def test_assistant_logs_route(self):
+        data_dir = Path(tempfile.mkdtemp())
+        api = server.Api(offline=True, data_dir=data_dir)
+        api.assistant._log_route({"task": "chat", "tier": "deep", "model": "opus"})
+        events = api.telemetry.recent()
+        self.assertEqual(events[-1]["kind"], "route")
+        self.assertEqual(events[-1]["tier"], "deep")
+
+
 class PermissionTierTests(unittest.TestCase):
     def test_tiers_cover_every_shipped_tool(self):
         client_tools = {t["name"] for t in assistant.DASHBOARD_TOOLS}
@@ -1159,6 +1195,20 @@ class BackupHttpTests(unittest.TestCase):
 
     def test_restore_bad_name_400(self):
         status, _ = self.request("/api/backup/restore", {"name": "nope.txt"})
+        self.assertEqual(status, 400)
+
+    def test_telemetry_post_then_get(self):
+        status, _ = self.request("/api/assistant/telemetry",
+                                 {"name": "add_app", "tier": "confirm", "ok": False, "approved": False})
+        self.assertEqual(status, 200)
+        status, data = self.request("/api/assistant/telemetry")
+        self.assertEqual(status, 200)
+        self.assertTrue(any(e["name"] == "add_app" and e["approved"] is False
+                            for e in data["events"] if e["kind"] == "tool"))
+        self.assertGreaterEqual(data["summary"]["denied"], 1)
+
+    def test_telemetry_post_requires_name(self):
+        status, _ = self.request("/api/assistant/telemetry", {"tier": "auto", "ok": True})
         self.assertEqual(status, 400)
 
 

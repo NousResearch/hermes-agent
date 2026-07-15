@@ -117,6 +117,8 @@ export const api = {
   stateRev: () => getJSON("/api/state/rev"),
   statePut: (state, baseRev) => postJSON("/api/state", { state, baseRev }),
   assistantStatus: () => getJSON("/api/assistant/status"),
+  telemetry: () => getJSON("/api/assistant/telemetry"),
+  recordTelemetry: (event) => postJSON("/api/assistant/telemetry", event),
   chat: (messages, context) => postJSON("/api/assistant/chat", { messages, context }),
   chatStream: (messages, context, onDelta) =>
     streamJSON("/api/assistant/chat-stream", { messages, context }, onDelta),

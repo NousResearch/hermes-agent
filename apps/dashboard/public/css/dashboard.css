@@ -726,6 +726,20 @@ a { color: inherit; }
 .cal-event-cal { flex: 0 0 auto; letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }
 .cal-upcoming { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hairline); display: grid; gap: 3px; }
 
+/* ---------- system status ---------- */
+
+.sys-grid { display: grid; gap: 4px; }
+.sys-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--hairline); }
+.sys-row:last-child { border-bottom: none; }
+.sys-key { font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
+.sys-val { font-size: 12.5px; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.sys-feed-head { margin-top: 10px; letter-spacing: 0.1em; }
+.sys-feed { display: grid; gap: 2px; margin-top: 4px; }
+.sys-event { display: flex; align-items: baseline; gap: 8px; font-size: 12px; padding: 2px 0; }
+.sys-event-mark { color: var(--delta-up); flex: 0 0 auto; }
+.sys-event-bad .sys-event-mark { color: var(--status-serious); }
+.sys-event-name { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- focus timer ---------- */
 
 .focus-presets { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; margin-bottom: 6px; }

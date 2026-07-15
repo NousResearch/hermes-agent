@@ -124,6 +124,12 @@ launcher app, opening a URL, arming or deleting an automation) pop an
 unclassified is refused. See `JARVIS.md` for the full agent architecture and
 roadmap.
 
+**System widget.** A live status panel shows the active engine and model tiers,
+the deep-tier budget, the permission split, and a feed of recent tool calls
+(name · tier · outcome, including anything you denied). It reads from bounded
+server telemetry (`data/telemetry.jsonl`) — routing decisions plus tool
+outcomes, tool *names* only, never their arguments or results.
+
 Every widget (and every news story, and the article viewer) has a **∑**
 button that summarizes that piece of data with the active engine. In
 Claude mode, replies stream in live (SSE) and type out as they arrive.
@@ -203,10 +209,11 @@ public/            zero-build frontend (ES modules, design-system CSS)
   js/actions.js    executes agent tool calls against local state
 tests/
   router.py        cost-aware model routing (Jarvis Layer I)
-  test_server.py   114 unit tests (feeds+sources, worldstate, reader, assistant,
+  telemetry.py     bounded routing + tool-call telemetry (Jarvis Phase 3)
+  test_server.py   120 unit tests (feeds+sources, worldstate, reader, assistant,
                    sync, auth, automations, memory, watchlist, SSE, ICS,
-                   backups, model router, permission tiers, HTTP)
-  e2e.mjs          98-check Playwright suite (needs playwright-core + Chromium)
+                   backups, model router, permission tiers, telemetry, HTTP)
+  e2e.mjs          102-check Playwright suite (needs playwright-core + Chromium)
                    — also runs in CI (.github/workflows/dashboard.yml)
 ```
 

@@ -111,7 +111,7 @@ check("topbar brand", await page.locator(".brand-name").innerText() === "HERMES/
 check("dark theme default", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
 
 // ---- widgets render --------------------------------------------------------
-for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "calendar", "notes", "focus"]) {
+for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "calendar", "notes", "focus", "system"]) {
   await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
   check(`widget ${type} present`, true);
 }
@@ -288,6 +288,18 @@ await page.waitForFunction(() =>
   null, { timeout: 10000 });
 check("agent answers weather from live data", true);
 
+// ---- system status widget (telemetry) -------------------------------------------
+// the agent ran several gated tools above (an approved open, a denied add_app…)
+await page.locator(".widget-system .widget-controls .icon-btn[title='Refresh']").click();
+await page.waitForFunction(() =>
+  document.querySelectorAll(".widget-system .sys-event").length >= 1, null, { timeout: 10000 });
+check("system widget shows recent tool calls", true);
+check("system widget shows status rows",
+  (await page.locator(".widget-system .sys-row").count()) >= 3);
+// the denied add_app is counted even once it scrolls out of the recent feed
+check("system widget records the denied tool",
+  /[1-9]\d* denied/.test(await page.locator(".widget-system").innerText()));
+
 // ---- streaming chat endpoint (the agent turns above already used it) ----------
 const streamShape = await page.evaluate(async () => {
   const res = await fetch("/api/assistant/chat-stream", {
@@ -316,7 +328,10 @@ await page.keyboard.press("Escape");
 await page.waitForSelector(".viewer", { state: "detached" });
 await page.waitForSelector(".reading-read-chip", { timeout: 10000 });
 check("opened story is marked read", true);
-check("read story dimmed in news widget", (await page.locator(".widget-news .news-read").count()) >= 1);
+// the news widget redraws dimmed items on the store update; wait for it (no race)
+await page.waitForFunction(() =>
+  document.querySelectorAll(".widget-news .news-read").length >= 1, null, { timeout: 10000 });
+check("read story dimmed in news widget", true);
 await page.locator(".widget-reading .link-btn", { hasText: "Clear read" }).click();
 await page.waitForFunction((t) =>
   ![...document.querySelectorAll(".reading-row .news-title")].some((el) => el.textContent === t),

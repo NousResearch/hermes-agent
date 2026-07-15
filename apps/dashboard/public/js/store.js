@@ -22,6 +22,7 @@ function defaultState() {
       { id: uid(), type: "calendar", size: "m" },
       { id: uid(), type: "notes", size: "m" },
       { id: uid(), type: "focus", size: "s" },
+      { id: uid(), type: "system", size: "m" },
     ],
     launcher: {
       links: [

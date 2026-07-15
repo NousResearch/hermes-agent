@@ -41,6 +41,7 @@ from pathlib import Path
 import assistant as assistant_module
 from automations import Automations
 from ics import parse_ics
+from telemetry import Telemetry
 
 APP_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = APP_DIR / "public"
@@ -952,6 +953,7 @@ class Api:
         self.automations = Automations(self.data_dir / "automations.json", self)
         self.feeds = FeedConfig(self.data_dir / "feeds.json")
         self.calendars = CalendarConfig(self.data_dir / "calendars.json")
+        self.telemetry = Telemetry(self.data_dir / "telemetry.jsonl")
         self._ics_epoch = 0
         self._memory_lock = threading.Lock()
 
@@ -1225,6 +1227,25 @@ class Api:
             raise ApiError(400, "after must be an integer") from None
         return self.automations.notifications_after(after)
 
+    # -- agent telemetry (Phase 3) ------------------------------------------
+    def telemetry_get(self, params: dict) -> dict:
+        return {"events": self.telemetry.recent(50), "summary": self.telemetry.summary()}
+
+    def telemetry_post(self, body: dict) -> dict:
+        # The client only reports tool outcomes; route events are server-written.
+        name = str(body.get("name", "")).strip()[:60]
+        if not name:
+            raise ApiError(400, "telemetry needs a tool name")
+        approved = body.get("approved")
+        self.telemetry.record({
+            "kind": "tool",
+            "name": name,
+            "tier": str(body.get("tier", "auto"))[:12],
+            "ok": bool(body.get("ok")),
+            "approved": approved if isinstance(approved, bool) else None,
+        })
+        return {"ok": True}
+
     # -- server-side backups -------------------------------------------------
     @property
     def backups_dir(self) -> Path:
@@ -1396,6 +1417,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/calendars": "calendars_list",
         "/api/events": "ics_events",
         "/api/backups": "backups_list",
+        "/api/assistant/telemetry": "telemetry_get",
     }
 
     POST_ROUTES = {
@@ -1409,6 +1431,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/calendars": "calendars_op",
         "/api/backup": "backup_now",
         "/api/backup/restore": "backup_restore",
+        "/api/assistant/telemetry": "telemetry_post",
     }
 
     # POST endpoints that write their own (streaming) response.

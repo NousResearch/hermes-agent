@@ -16,11 +16,11 @@ server, SSE, the automations daemon thread and SQLite already cover.
 | B. Agent runtime / tool loop | **Done** | Custom loop: server relays Claude turns, client executes `tool_use` (`agent.js` + `actions.js`); SSE streaming |
 | C. Tool registry | **Done** | `DASHBOARD_TOOLS` (client-executed) + `SERVER_TOOLS` (research/memory/automation), versioned in one place |
 | D. Orchestrator / server | **Done (stdlib)** | `server.py` — REST + SSE, session-less (history lives client-side + synced), permission boundary at the API |
-| E. Memory store | **Partial** | `data/memory.md` (facts) + `hub.db` (synced state). Structured `tool_performance` / `routing` tables = **to add** |
-| F. Permission / safety gate | **To build** | Today tools execute client-side unconfirmed. Add auto/confirm/blocked tiers + approval flow |
+| E. Memory store | **Partial** | `data/memory.md` (facts) + `hub.db` (synced state) + `telemetry.jsonl` (routing + tool outcomes, Phase 3 **done**). Vector recall still optional |
+| F. Permission / safety gate | **Done** | auto/confirm/blocked tiers + approval card in the Agent widget (`assistant.TOOL_TIERS`) |
 | G. Self-evolution loop | **Deferred** | Highest risk. Not until F + telemetry are solid; keep human-approval on every structural change |
-| H. Dashboard integration | **Partial** | Chat panel + streaming done. Approval inbox + status widget = **to add** |
-| I. Model router / advisor | **Phase 1 (this bundle)** | Cost-aware tiering + escalation, `router.py` |
+| H. Dashboard integration | **Done** | Chat panel + streaming + approval inbox + System status widget |
+| I. Model router / advisor | **Done (routing)** | Cost-aware tiering in `router.py`; live advisor escalation is Phase 5 |
 
 ## Fixed safety boundaries (never self-editable)
 
@@ -50,9 +50,10 @@ external, future write/shell) surface an approval card in the Agent widget and
 block until the user clicks. `blocked` refuses with a reason. Classification
 is server-owned and mirrored to the client for pre-flight UX only.
 
-**Phase 3 — Telemetry + status widget (Layers E + H).** Persist tool outcomes
-and routing decisions (`data/telemetry.jsonl`, bounded). Status widget shows
-active tier, recent tool calls, pending approvals, and deep-tier spend/rate.
+**Phase 3 — Telemetry + status widget (Layers E + H). ✅ DONE.** Bounded
+routing + tool-call telemetry (`data/telemetry.jsonl`, `telemetry.py`); the
+System widget shows active engine/tier, tier line-up, deep-tier budget, the
+permission split, and a feed of recent tool calls (name · tier · outcome).
 
 **Phase 4 — Kill switch + hardening (Phase 6 in spec).** One dashboard toggle
 freezes automations and any autonomous run; checked before every tick. Audit

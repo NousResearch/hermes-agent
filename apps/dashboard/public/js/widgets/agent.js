@@ -123,17 +123,30 @@ export default {
       log.scrollTop = log.scrollHeight;
     });
 
-    // Run a single tool call through the permission gate.
+    // Run a single tool call through the permission gate, logging the outcome
+    // to server telemetry (best-effort; never blocks the loop).
     const runGatedTool = async (name, input) => {
       const tier = toolTier(name);
+      const report = (ok, approved) => {
+        api.recordTelemetry({ name, tier, ok, approved }).catch(() => {});
+      };
       if (tier === "blocked") {
+        report(false, null);
         return { ok: false, result: "blocked by dashboard policy" };
       }
       if (tier === "confirm") {
         const approved = await requestApproval(name, input);
-        if (!approved) return { ok: false, result: "the user declined this action" };
+        if (!approved) {
+          report(false, false);
+          return { ok: false, result: "the user declined this action" };
+        }
+        const outcome = await executeAction(name, input);
+        report(outcome.ok, true);
+        return outcome;
       }
-      return executeAction(name, input);
+      const outcome = await executeAction(name, input);
+      report(outcome.ok, null);
+      return outcome;
     };
 
     let busy = false;

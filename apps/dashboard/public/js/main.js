@@ -21,9 +21,10 @@ import markets from "./widgets/markets.js";
 import worldstate from "./widgets/worldstate.js";
 import reading from "./widgets/reading.js";
 import focus from "./widgets/focus.js";
+import system from "./widgets/system.js";
 
 const WIDGETS = Object.fromEntries(
-  [clock, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, focus]
+  [clock, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, focus, system]
     .map((w) => [w.type, w]),
 );
 

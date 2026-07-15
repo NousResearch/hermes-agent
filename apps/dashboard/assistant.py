@@ -313,6 +313,12 @@ class Assistant:
         self._client = None
         self.services = None  # set by server.Api — access to feeds/memory/automations
 
+    def _log_route(self, decision: dict) -> None:
+        tel = getattr(self.services, "telemetry", None) if self.services else None
+        if tel is not None:
+            tel.record({"kind": "route", "task": decision["task"],
+                        "tier": decision["tier"], "model": decision["model"]})
+
     @staticmethod
     def _last_user_text(messages: list) -> str:
         for msg in reversed(messages):
@@ -445,6 +451,7 @@ class Assistant:
     def _chat_claude(self, messages: list, context: dict) -> dict:
         system, request_messages = self._prepare_claude_request(messages, context)
         decision = self.router.route("chat", self._last_user_text(messages))
+        self._log_route(decision)
         response = self._get_client().messages.create(
             model=decision["model"],
             max_tokens=4096,
@@ -523,6 +530,7 @@ class Assistant:
 
         system, request_messages = self._prepare_claude_request(messages, context)
         decision = self.router.route("chat", self._last_user_text(messages))
+        self._log_route(decision)
         with self._get_client().messages.stream(
             model=decision["model"],
             max_tokens=4096,
@@ -592,8 +600,10 @@ class Assistant:
             raise ValueError("missing content to summarize")
         content = content[:60_000]
         if self.mode == "claude":
+            decision = self.router.route("summarize")
+            self._log_route(decision)
             response = self._get_client().messages.create(
-                model=self.router.route("summarize")["model"],
+                model=decision["model"],
                 max_tokens=1024,
                 output_config={"effort": "low"},
                 system="You summarize dashboard data for a busy user. Reply with 2-4 tight sentences (or up to 5 bullet lines for lists of items). No preamble.",
@@ -610,8 +620,10 @@ class Assistant:
     def briefing(self, payload: dict) -> dict:
         context = payload.get("context") or {}
         if self.mode == "claude":
+            decision = self.router.route("briefing")
+            self._log_route(decision)
             response = self._get_client().messages.create(
-                model=self.router.route("briefing")["model"],
+                model=decision["model"],
                 max_tokens=2048,
                 thinking={"type": "adaptive"},
                 system=(

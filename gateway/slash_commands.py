@@ -1574,6 +1574,7 @@ class GatewaySlashCommandsMixin:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    claude_oauth_proxy=result.claude_oauth_proxy,
                                 )
                             except Exception as exc:
                                 # The in-place swap rolled the agent back to the
@@ -1821,6 +1822,7 @@ class GatewaySlashCommandsMixin:
                         api_key=result.api_key,
                         base_url=result.base_url,
                         api_mode=result.api_mode,
+                        claude_oauth_proxy=result.claude_oauth_proxy,
                     )
                 except Exception as exc:
                     # In-place swap rolled the agent back to the OLD working

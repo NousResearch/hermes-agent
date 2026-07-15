@@ -279,6 +279,7 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
+    claude_oauth_proxy: bool = False,
     acp_command: str = None,
     acp_args: list[str] | None = None,
     command: str = None,
@@ -825,7 +826,11 @@ def init_agent(
             # that cause 401/403 on their endpoints.  Guards #1739 and
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
+            agent._is_anthropic_oauth = bool(claude_oauth_proxy) or (
+                _is_oat(effective_key)
+                if (_is_native_anthropic and isinstance(effective_key, str))
+                else False
+            )
             agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
             # No OpenAI client needed for Anthropic mode
             agent.client = None

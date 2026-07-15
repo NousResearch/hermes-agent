@@ -1,11 +1,10 @@
 """Tests for ``_is_anthropic_oauth`` guard against third-party Anthropic-compatible providers.
 
-The invariant: ``self._is_anthropic_oauth`` must only ever be True when
-``self.provider == 'anthropic'`` (native Anthropic).  Third-party providers
+The invariant: ``self._is_anthropic_oauth`` may be True for native Anthropic
+OAuth or an explicitly configured Claude subscription proxy. Other providers
 that speak the Anthropic protocol (MiniMax, Zhipu GLM, Alibaba DashScope,
-Kimi, LiteLLM proxies, etc.) must never trip OAuth code paths — doing so
-injects Claude-Code identity headers and system prompts that cause
-401/403 from those endpoints.
+Kimi, generic LiteLLM proxies, etc.) must not trip OAuth code paths because
+the Claude Code identity can cause 401/403 from those endpoints.
 
 This test class covers all FIVE sites that assign ``_is_anthropic_oauth``:
 
@@ -147,6 +146,27 @@ class TestOAuthFlagOnConstruction:
         # stale Anthropic OAuth token, and the OAuth flag must be False.
         assert agent._anthropic_api_key == "minimax-key-1234"
         assert agent._is_anthropic_oauth is False
+
+    def test_explicit_claude_oauth_proxy_enables_wire_compatibility(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="proxy-key",
+                base_url="https://claude-proxy.example.com",
+                provider="custom",
+                api_mode="anthropic_messages",
+                claude_oauth_proxy=True,
+                model="claude-sonnet-5",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent._is_anthropic_oauth is True
 
 
 class TestOAuthFlagOnFallbackActivation:

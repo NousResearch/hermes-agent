@@ -917,7 +917,8 @@ def _normalize_bedrock_model_name(model: str) -> str:
     e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
     bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
     lookup or every cross-region session prices as unknown.  Also normalizes
-    dot-notation version numbers (``4.7`` → ``4-7``).
+    dot-notation version numbers (``4.7`` → ``4-7``) and the documented
+    trailing date, revision, and profile components (``-20250514-v1:0``).
     """
     name = model.lower().strip()
     for prefix in (
@@ -936,6 +937,12 @@ def _normalize_bedrock_model_name(model: str) -> str:
             name = name[len(prefix):]
             break
     name = re.sub(r"(\d+)\.(\d+)", r"\1-\2", name)
+    # Bedrock inference profile IDs append these documented components to the
+    # foundation model ID. Strip only the trailing forms, not arbitrary model
+    # name continuations that could be a distinct SKU.
+    name = re.sub(r":\d+$", "", name)
+    name = re.sub(r"-v\d+$", "", name)
+    name = re.sub(r"-\d{8}$", "", name)
     return name
 
 
@@ -977,20 +984,6 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
-        bedrock_entries = (
-            (known_model, known_entry)
-            for (provider, known_model), known_entry in _OFFICIAL_DOCS_PRICING.items()
-            if provider == route.provider
-        )
-        for known_model, known_entry in sorted(
-            bedrock_entries,
-            key=lambda item: len(item[0]),
-            reverse=True,
-        ):
-            if normalized == known_model or normalized.startswith(
-                (f"{known_model}-", f"{known_model}:")
-            ):
-                return known_entry
     return None
 
 

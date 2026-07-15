@@ -1,9 +1,10 @@
 """Tests for the TTS text-wrapping tag.
 
-Many TTS voices interpret a wrapping style tag, e.g. ``<fast>...</fast>``, to
-control delivery. Hermes lets the user set a default tag in config
-(``tts.tag`` globally, or ``tts.<provider>.tag`` per provider) and lets the
-model override it per call via the ``tag`` parameter on ``text_to_speech``.
+Many TTS voices interpret a wrapping style tag, e.g. ``<fast>...</fast>`` or
+``[fast]...[/fast]``, to control delivery. Hermes lets the user set a default
+tag in config (``tts.tag`` globally, or ``tts.<provider>.tag`` per provider)
+and lets the model override it per call via the ``tag`` parameter on
+``text_to_speech``. The bracket syntax is resolved per provider.
 """
 
 import json
@@ -12,9 +13,13 @@ import pytest
 
 from tools.tts_tool import (
     TTS_SCHEMA,
+    TTS_TAG_SYNTAX_ANGLE,
+    TTS_TAG_SYNTAX_SQUARE,
+    _apply_tts_tag,
     _build_dynamic_tts_schema,
     _normalize_tts_tag,
     _resolve_tts_tag,
+    _resolve_tts_tag_syntax,
 )
 
 
@@ -24,17 +29,28 @@ class TestNormalizeTtsTag:
         [
             ("fast", "fast"),
             ("  fast  ", "fast"),
+            ("FAST", "fast"),
             ("<fast>", "fast"),
             ("[fast]", "fast"),
             ("</fast>", "fast"),
-            # Stray bracket/slash characters anywhere are removed, not just at
-            # the ends, so wrapping can never produce unbalanced tags.
-            ("fast>x", "fastx"),
-            ("fa/st", "fast"),
-            ("<fast><loud>", "fastloud"),
+            ("[/fast]", "fast"),
+            ("< fast >", "fast"),
+            ("sing-song", "sing-song"),
+            ("long_pause", "long_pause"),
+            ("fast2", "fast2"),
             ("", ""),
             ("   ", ""),
             (None, ""),
+            # Anything that is not a bare tag name after the framing is
+            # stripped is rejected outright, so wrapping can never emit
+            # unbalanced tags or attribute-carrying markup.
+            ("fast>x", ""),
+            ("fa/st", ""),
+            ("<fast><loud>", ""),
+            ('<fast mode="x">', ""),
+            ("fast slow", ""),
+            ("'fast'", ""),
+            ("-fast", ""),
         ],
     )
     def test_normalize(self, raw, expected):
@@ -71,6 +87,76 @@ class TestResolveTtsTag:
         cfg = {"tag": "fast", "edge": "nonsense"}
         assert _resolve_tts_tag("edge", cfg, None) == "fast"
 
+    def test_invalid_tag_name_rejected(self):
+        assert _resolve_tts_tag("edge", {"tag": 'fast mode="x"'}, None) == ""
+
+    def test_xai_accepts_documented_wrapping_tag(self):
+        assert _resolve_tts_tag("xai", {"tag": "whisper"}, None) == "whisper"
+
+    def test_xai_rejects_unknown_tag(self):
+        assert _resolve_tts_tag("xai", {"tag": "banana"}, None) == ""
+
+    def test_xai_rejects_unknown_override(self):
+        assert _resolve_tts_tag("xai", {}, "banana") == ""
+
+    def test_xai_rejects_inline_only_tag(self):
+        # [sigh] is an inline xAI speech tag, not a wrapping one.
+        assert _resolve_tts_tag("xai", {"tag": "sigh"}, None) == ""
+
+    def test_other_providers_accept_freeform_names(self):
+        assert _resolve_tts_tag("edge", {"tag": "banana"}, None) == "banana"
+
+
+class TestResolveTtsTagSyntax:
+    @pytest.mark.parametrize(
+        "provider,expected",
+        [
+            ("edge", TTS_TAG_SYNTAX_ANGLE),
+            ("openai", TTS_TAG_SYNTAX_ANGLE),
+            ("xai", TTS_TAG_SYNTAX_SQUARE),
+            ("gemini", TTS_TAG_SYNTAX_SQUARE),
+            ("mycli", TTS_TAG_SYNTAX_ANGLE),
+        ],
+    )
+    def test_defaults(self, provider, expected):
+        assert _resolve_tts_tag_syntax(provider, {}) == expected
+
+    def test_global_config_applies_to_unmapped_provider(self):
+        cfg = {"tag_syntax": "square"}
+        assert _resolve_tts_tag_syntax("edge", cfg) == TTS_TAG_SYNTAX_SQUARE
+
+    def test_builtin_mapping_wins_over_config(self):
+        # xAI rejects angle-bracket tags, so config cannot force them.
+        cfg = {"tag_syntax": "angle", "xai": {"tag_syntax": "angle"}}
+        assert _resolve_tts_tag_syntax("xai", cfg) == TTS_TAG_SYNTAX_SQUARE
+
+    def test_command_provider_config_wins_over_global(self):
+        cfg = {
+            "tag_syntax": "angle",
+            "providers": {"mycli": {"type": "command", "command": "x", "tag_syntax": "square"}},
+        }
+        assert _resolve_tts_tag_syntax("mycli", cfg) == TTS_TAG_SYNTAX_SQUARE
+
+    def test_invalid_value_ignored(self):
+        assert _resolve_tts_tag_syntax("edge", {"tag_syntax": "curly"}) == TTS_TAG_SYNTAX_ANGLE
+
+
+class TestApplyTtsTag:
+    def test_angle(self):
+        assert _apply_tts_tag("hello", "fast", TTS_TAG_SYNTAX_ANGLE) == "<fast>hello</fast>"
+
+    def test_square(self):
+        assert _apply_tts_tag("hello", "fast", TTS_TAG_SYNTAX_SQUARE) == "[fast]hello[/fast]"
+
+    def test_default_syntax_is_angle(self):
+        assert _apply_tts_tag("hello", "fast") == "<fast>hello</fast>"
+
+    def test_empty_tag_returns_text_unchanged(self):
+        assert _apply_tts_tag("hello", "") == "hello"
+
+    def test_invalid_tag_returns_text_unchanged(self):
+        assert _apply_tts_tag("hello", 'fast mode="x"') == "hello"
+
 
 class TestDynamicTagSchema:
     """The ``tag`` parameter description reflects the user's configured default."""
@@ -96,6 +182,18 @@ class TestDynamicTagSchema:
         # The per-provider tag ("slow") wins over the global default ("fast").
         assert 'configured a default of "slow"' in desc
         assert "<slow>...</slow>" in desc
+
+    def test_square_syntax_provider_shows_square_example(self, monkeypatch):
+        desc = self._tag_description(monkeypatch, {"provider": "xai", "tag": "whisper"})
+        assert 'configured a default of "whisper"' in desc
+        assert "[whisper]...[/whisper]" in desc
+
+    def test_unsupported_provider_tag_leaves_static_schema(self, monkeypatch):
+        # xAI does not support "banana", so there is no default to surface.
+        monkeypatch.setattr(
+            "tools.tts_tool._load_tts_config", lambda: {"provider": "xai", "tag": "banana"}
+        )
+        assert _build_dynamic_tts_schema() == {}
 
     def test_other_properties_preserved(self, monkeypatch):
         monkeypatch.setattr(
@@ -159,6 +257,61 @@ class TestTextToSpeechToolWrapsTag:
             tmp_path, monkeypatch, {"provider": "edge", "tag": "fast", "edge": {"tag": "slow"}}
         )
         assert text == "<slow>hello</slow>"
+
+    def test_invalid_tag_param_leaves_text_unchanged(self, tmp_path, monkeypatch):
+        text = self._run(
+            tmp_path, monkeypatch, {"provider": "edge"}, tag='fast mode="x"'
+        )
+        assert text == "hello"
+
+    def _run_xai(self, tmp_path, monkeypatch, tts_config, **kwargs):
+        captured = {}
+
+        def fake_xai(text, out, cfg):
+            captured["text"] = text
+            with open(out, "wb") as f:
+                f.write(b"\x00")
+            return out
+
+        monkeypatch.setattr("tools.tts_tool._generate_xai_tts", fake_xai)
+        monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: tts_config)
+
+        from tools.tts_tool import text_to_speech_tool
+
+        out = str(tmp_path / "out.mp3")
+        result = json.loads(text_to_speech_tool(text="hello", output_path=out, **kwargs))
+        assert result["success"] is True
+        return captured["text"]
+
+    def test_xai_wraps_with_square_bracket_syntax(self, tmp_path, monkeypatch):
+        text = self._run_xai(tmp_path, monkeypatch, {"provider": "xai"}, tag="whisper")
+        assert text == "[whisper]hello[/whisper]"
+
+    def test_xai_unknown_tag_leaves_text_unchanged(self, tmp_path, monkeypatch):
+        text = self._run_xai(tmp_path, monkeypatch, {"provider": "xai"}, tag="banana")
+        assert text == "hello"
+
+    def test_gemini_config_tag_uses_square_bracket_syntax(self, tmp_path, monkeypatch):
+        captured = {}
+
+        def fake_gemini(text, out, cfg):
+            captured["text"] = text
+            with open(out, "wb") as f:
+                f.write(b"\x00")
+            return out
+
+        monkeypatch.setattr("tools.tts_tool._generate_gemini_tts", fake_gemini)
+        monkeypatch.setattr(
+            "tools.tts_tool._load_tts_config",
+            lambda: {"provider": "gemini", "tag": "whispers"},
+        )
+
+        from tools.tts_tool import text_to_speech_tool
+
+        out = str(tmp_path / "out.mp3")
+        result = json.loads(text_to_speech_tool(text="hello", output_path=out))
+        assert result["success"] is True
+        assert captured["text"] == "[whispers]hello[/whispers]"
 
     def test_tag_wraps_after_truncation_keeps_closing_tag(self, tmp_path, monkeypatch):
         """Wrapping happens after truncation, so the spoken text is capped at the

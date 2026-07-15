@@ -883,29 +883,78 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
 
 
 # ===========================================================================
-# Wrapping style tag (e.g. <fast>...</fast>)
+# Wrapping style tag (e.g. <fast>...</fast> or [fast]...[/fast])
 # ===========================================================================
 #
 # Many TTS voices interpret a wrapping style tag around the spoken text to
-# control delivery (``<fast>``, ``<whisper>``, ``<soft>``, ...). The user sets
-# a default in config — ``tts.tag`` globally or ``tts.<provider>.tag`` per
-# provider — and the model can override it per call via the ``tag`` parameter
-# on ``text_to_speech``. The config value feeds the parameter's default.
+# control delivery (fast, whisper, soft, ...). The user sets a default in
+# config — ``tts.tag`` globally or ``tts.<provider>.tag`` per provider — and
+# the model can override it per call via the ``tag`` parameter on
+# ``text_to_speech``. The config value feeds the parameter's default.
+#
+# Providers disagree on the bracket syntax: xAI wraps with BBCode-style
+# ``[tag]...[/tag]`` and rejects angle brackets, Gemini interprets
+# square-bracket direction tags, and other voices that understand wrapping
+# tags use ``<tag>...</tag>``. ``_resolve_tts_tag_syntax`` picks the framing
+# per provider; ``tts.tag_syntax`` / ``tts.<provider>.tag_syntax`` let custom
+# command or plugin providers opt into square brackets.
 
-_TTS_TAG_FRAMING_RE = re.compile(r"[<>\[\]/]")
+TTS_TAG_SYNTAX_ANGLE = "angle"    # <tag>...</tag>
+TTS_TAG_SYNTAX_SQUARE = "square"  # [tag]...[/tag]
+
+_TTS_TAG_SYNTAXES = frozenset({TTS_TAG_SYNTAX_ANGLE, TTS_TAG_SYNTAX_SQUARE})
+
+_TTS_PROVIDER_TAG_SYNTAX = {
+    "xai": TTS_TAG_SYNTAX_SQUARE,
+    "gemini": TTS_TAG_SYNTAX_SQUARE,
+}
+
+_TTS_TAG_FRAMING_RE = re.compile(r"^[<\[]\s*/?\s*|\s*/?\s*[>\]]$")
+_TTS_TAG_NAME_RE = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*$")
 
 
 def _normalize_tts_tag(tag: Any) -> str:
-    """Return a bare tag name, stripping whitespace and any bracket framing.
+    """Return a validated bare tag name, or ``""`` (meaning "no tag").
 
-    Accepts ``fast``, ``<fast>``, ``[fast]`` and ``</fast>`` and returns
-    ``fast``. Bracket and slash characters are removed wherever they appear,
-    not just at the ends, so wrapping can never emit an unbalanced tag from a
-    malformed value. ``None`` / blank values return ``""`` (meaning "no tag").
+    Accepts ``fast``, ``<fast>``, ``[fast]``, ``</fast>`` and ``[/fast]`` and
+    returns ``fast`` (lowercased). Once the framing is stripped, the name must
+    be alphanumeric with interior hyphens or underscores; anything else —
+    whitespace, quotes, attributes, stray brackets — is rejected so wrapping
+    can never emit unbalanced or attribute-carrying markup.
     """
     if tag is None:
         return ""
-    return _TTS_TAG_FRAMING_RE.sub("", str(tag)).strip()
+
+    name = _TTS_TAG_FRAMING_RE.sub("", str(tag).strip()).strip().lower()
+    if not name:
+        return ""
+
+    if not _TTS_TAG_NAME_RE.match(name):
+        logger.warning("Ignoring invalid TTS tag %r: not a bare tag name", tag)
+        return ""
+
+    return name
+
+
+def _validate_tts_tag_for_provider(tag: str, provider: str) -> str:
+    """Drop tags the provider is known not to understand.
+
+    xAI documents a fixed set of wrapping speech tags, so only those pass
+    through. Other providers accept freeform tag names (Gemini explicitly
+    so), so the strict name validation in ``_normalize_tts_tag`` is the only
+    gate there.
+    """
+    if not tag:
+        return ""
+
+    if provider == "xai" and tag not in _XAI_WRAPPING_SPEECH_TAGS:
+        logger.warning(
+            "Ignoring TTS tag %r: xAI only supports wrapping tags: %s",
+            tag, ", ".join(_XAI_WRAPPING_SPEECH_TAGS),
+        )
+        return ""
+
+    return tag
 
 
 def _resolve_tts_tag(
@@ -922,14 +971,15 @@ def _resolve_tts_tag(
          providers declared under ``tts.providers.<name>``).
       3. ``tts.tag`` (global config default).
 
-    The returned value is normalized to a bare tag name, or ``""`` when no tag
-    applies.
+    The returned value is normalized to a bare tag name and checked against
+    the provider's supported wrapping tags, or ``""`` when no tag applies.
     """
+    key = (provider or "").lower().strip()
+
     if tag_override is not None:
-        return _normalize_tts_tag(tag_override)
+        return _validate_tts_tag_for_provider(_normalize_tts_tag(tag_override), key)
 
     cfg = tts_config if isinstance(tts_config, dict) else {}
-    key = (provider or "").lower().strip()
 
     prov_cfg = _get_provider_section(cfg, key)
     if not prov_cfg and key and key not in BUILTIN_TTS_PROVIDERS:
@@ -938,15 +988,73 @@ def _resolve_tts_tag(
     tag = prov_cfg.get("tag") if isinstance(prov_cfg, dict) else None
     if tag is None:
         tag = cfg.get("tag")
-    return _normalize_tts_tag(tag)
+    return _validate_tts_tag_for_provider(_normalize_tts_tag(tag), key)
 
 
-def _apply_tts_tag(text: str, tag: str) -> str:
-    """Wrap *text* in ``<tag>...</tag>`` when *tag* is set, else return text."""
+def _parse_tts_tag_syntax(raw: Any) -> str:
+    """Return a valid tag syntax from config, or ``""`` when unset/invalid."""
+    if raw is None:
+        return ""
+
+    value = str(raw).strip().lower()
+    if not value:
+        return ""
+
+    if value not in _TTS_TAG_SYNTAXES:
+        logger.warning(
+            "Ignoring invalid tts tag_syntax %r (expected one of: %s)",
+            raw, ", ".join(sorted(_TTS_TAG_SYNTAXES)),
+        )
+        return ""
+
+    return value
+
+
+def _resolve_tts_tag_syntax(
+    provider: Optional[str],
+    tts_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve the wrapping-tag bracket syntax for *provider*.
+
+    Built-in providers with a known syntax (xAI and Gemini take square
+    brackets) always use it — config cannot force a syntax the provider
+    rejects. Other providers default to angle brackets, overridable via
+    ``tts.<provider>.tag_syntax`` or ``tts.tag_syntax`` for engines behind
+    custom command/plugin providers that expect square brackets.
+    """
+    cfg = tts_config if isinstance(tts_config, dict) else {}
+    key = (provider or "").lower().strip()
+
+    if key in _TTS_PROVIDER_TAG_SYNTAX:
+        return _TTS_PROVIDER_TAG_SYNTAX[key]
+
+    prov_cfg = _get_provider_section(cfg, key)
+    if not prov_cfg and key and key not in BUILTIN_TTS_PROVIDERS:
+        prov_cfg = _get_named_provider_config(cfg, key)
+
+    syntax = _parse_tts_tag_syntax(prov_cfg.get("tag_syntax"))
+    if syntax:
+        return syntax
+
+    return _parse_tts_tag_syntax(cfg.get("tag_syntax")) or TTS_TAG_SYNTAX_ANGLE
+
+
+def _apply_tts_tag(text: str, tag: str, syntax: str = TTS_TAG_SYNTAX_ANGLE) -> str:
+    """Wrap *text* in the tag using the given bracket syntax, else return text."""
     clean = _normalize_tts_tag(tag)
     if not clean:
         return text
+
+    if syntax == TTS_TAG_SYNTAX_SQUARE:
+        return f"[{clean}]{text}[/{clean}]"
     return f"<{clean}>{text}</{clean}>"
+
+
+def _format_tts_tag_example(tag: str, syntax: str) -> str:
+    """Render ``<tag>...</tag>`` or ``[tag]...[/tag]`` for schema descriptions."""
+    if syntax == TTS_TAG_SYNTAX_SQUARE:
+        return f"[{tag}]...[/{tag}]"
+    return f"<{tag}>...</{tag}>"
 
 
 # ===========================================================================
@@ -1155,7 +1263,9 @@ _XAI_WRAPPING_SPEECH_TAGS = (
     "emphasis",
 )
 _XAI_SPEECH_TAG_RE = re.compile(
-    r"(\[(?:" + "|".join(_XAI_INLINE_SPEECH_TAGS) + r")\]|</?(?:" + "|".join(_XAI_WRAPPING_SPEECH_TAGS) + r")>)",
+    r"(\[(?:" + "|".join(_XAI_INLINE_SPEECH_TAGS) + r")\]"
+    r"|\[/?(?:" + "|".join(_XAI_WRAPPING_SPEECH_TAGS) + r")\]"
+    r"|</?(?:" + "|".join(_XAI_WRAPPING_SPEECH_TAGS) + r")>)",
     flags=re.IGNORECASE,
 )
 _XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.DOTALL)
@@ -2213,8 +2323,10 @@ def text_to_speech_tool(
     Args:
         text: The text to convert to speech.
         output_path: Optional custom save path. Defaults to ~/voice-memos/<timestamp>.mp3
-        tag: Optional wrapping style tag, e.g. "fast" wraps the text as
-            ``<fast>...</fast>`` before synthesis. Defaults to the configured
+        tag: Optional wrapping style tag; pass a bare name such as "fast".
+            The text is wrapped before synthesis using the provider's tag
+            syntax — ``[fast]...[/fast]`` for xAI and Gemini,
+            ``<fast>...</fast>`` otherwise. Defaults to the configured
             ``tts.tag`` (or per-provider ``tts.<provider>.tag``). Pass an empty
             string to suppress a configured default for this call.
 
@@ -2244,10 +2356,14 @@ def text_to_speech_tool(
         text = text[:max_len]
 
     # Wrap the (already truncated) text in a style tag when configured or
-    # requested, e.g. <fast>...</fast>. The tag is small, so applying it after
-    # truncation keeps the closing tag intact without meaningfully exceeding
-    # the provider cap.
-    text = _apply_tts_tag(text, _resolve_tts_tag(provider, tts_config, tag))
+    # requested, using the provider's bracket syntax. The tag is small, so
+    # applying it after truncation keeps the closing tag intact without
+    # meaningfully exceeding the provider cap.
+    text = _apply_tts_tag(
+        text,
+        _resolve_tts_tag(provider, tts_config, tag),
+        _resolve_tts_tag_syntax(provider, tts_config),
+    )
 
     # Detect platform from gateway env var to choose the best output format.
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
@@ -2907,7 +3023,7 @@ TTS_SCHEMA = {
             },
             "tag": {
                 "type": "string",
-                "description": "Optional style tag to wrap the spoken text in; e.g. \"fast\" sends the text as <fast>...</fast>. Many TTS voices interpret these to control delivery (fast, slow, whisper, soft, ...). Defaults to the user-configured tts.tag (or per-provider tts.<provider>.tag) when set; pass an empty string to suppress that default for this call."
+                "description": "Optional style tag to wrap the spoken text in; pass a bare name such as \"fast\". The tag is applied in the provider's syntax: [fast]...[/fast] for xAI and Gemini, <fast>...</fast> for other providers. Many TTS voices interpret these to control delivery (fast, slow, whisper, soft, ...). Defaults to the user-configured tts.tag (or per-provider tts.<provider>.tag) when set; pass an empty string to suppress that default for this call."
             }
         },
         "required": ["text"]
@@ -2926,6 +3042,7 @@ def _build_dynamic_tts_schema() -> Dict[str, Any]:
         tts_config = _load_tts_config()
         provider = _get_provider(tts_config)
         default_tag = _resolve_tts_tag(provider, tts_config, None)
+        syntax = _resolve_tts_tag_syntax(provider, tts_config)
     except Exception:  # noqa: BLE001 — defensive; fall back to the static schema
         return {}
 
@@ -2934,13 +3051,14 @@ def _build_dynamic_tts_schema() -> Dict[str, Any]:
 
     import copy
 
+    example = _format_tts_tag_example(default_tag, syntax)
     params = copy.deepcopy(TTS_SCHEMA["parameters"])
     params["properties"]["tag"]["description"] = (
-        "Optional style tag to wrap the spoken text in; e.g. \"fast\" sends the "
-        "text as <fast>...</fast>. Many TTS voices interpret these to control "
-        f"delivery. The user has configured a default of \"{default_tag}\", so "
-        f"text is wrapped as <{default_tag}>...</{default_tag}> unless you pass a "
-        "different tag here; pass an empty string to suppress it for this call."
+        "Optional style tag to wrap the spoken text in; pass a bare name such "
+        "as \"fast\". Many TTS voices interpret these to control delivery. "
+        f"The user has configured a default of \"{default_tag}\", so text is "
+        f"wrapped as {example} unless you pass a different tag here; pass an "
+        "empty string to suppress it for this call."
     )
     return {"parameters": params}
 

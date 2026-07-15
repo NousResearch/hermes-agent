@@ -791,6 +791,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             choices: ev.payload.choices,
             command: String(ev.payload.command ?? ''),
             description,
+            riskCategory: typeof ev.payload.risk_category === 'string' ? ev.payload.risk_category : undefined,
+            riskLabel: ev.payload.risk_label,
+            riskWarning: ev.payload.risk_warning,
             smartDenied: ev.payload.smart_denied === true
           }
         })

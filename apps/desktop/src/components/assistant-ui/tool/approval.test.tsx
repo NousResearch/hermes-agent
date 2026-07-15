@@ -33,7 +33,13 @@ function part(toolName: string): ToolPart {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; smartDenied?: boolean } = {}
+  extra: {
+    choices?: string[]
+    riskCategory?: string
+    riskLabel?: { en: string; zh: string }
+    riskWarning?: { en: string; zh: string }
+    smartDenied?: boolean
+  } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
@@ -153,6 +159,21 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
+  })
+
+  it('renders the structured bilingual risk banner above approval actions', () => {
+    setRequest('rm -rf .git', true, {
+      riskCategory: 'FILE_DELETION',
+      riskLabel: { en: 'File deletion', zh: '删除文件' },
+      riskWarning: {
+        en: 'This operation can permanently delete files.',
+        zh: '此操作可能永久删除文件。'
+      }
+    })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    expect(screen.getByText(/File deletion.*删除文件/)).toBeTruthy()
+    expect(screen.getByText(/permanently delete files.*永久删除文件/)).toBeTruthy()
   })
 
   it('renders a floating fallback when no pending tool row is mounted', () => {

@@ -528,6 +528,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
           command,
           description,
+          riskCategory: typeof payload?.risk_category === 'string' ? payload.risk_category : undefined,
+          riskLabel: payload?.risk_label,
+          riskWarning: payload?.risk_warning,
           sessionId: sessionId ?? null,
           smartDenied: payload?.smart_denied === true
         })

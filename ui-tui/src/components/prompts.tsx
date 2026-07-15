@@ -2,6 +2,7 @@ import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
 import { useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
+import { approvalRiskText } from '../lib/approval-risk.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
@@ -97,6 +98,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   // tail (mirrors the CLI approval panel fix — the full command must be
   // reviewable before approving). Border + paddingX + inner padding ≈ 8 cols.
   const innerWidth = Math.max(20, cols - 8)
+  const riskText = approvalRiskText(req)
 
   const rawLines = req.command
     .split('\n')
@@ -110,6 +112,8 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
       <Text bold color={t.color.warn}>
         ⚠ approval required · {req.description}
       </Text>
+
+      {riskText ? <Text color={t.color.warn}>⚠ {riskText}</Text> : null}
 
       <Box flexDirection="column" paddingLeft={1}>
         {shown.map((line, i) => (

@@ -115,6 +115,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   const allowAlways = choices ? choices.includes('always') : allowPermanent
   const hasMoreOptions = allowSession || allowAlways
   const hasCommand = request.command.trim().length > 0
+  const riskText = request.riskLabel?.en && request.riskLabel.zh && request.riskWarning?.en && request.riskWarning.zh
+    ? `${request.riskLabel.en} / ${request.riskLabel.zh} — ${request.riskWarning.en} / ${request.riskWarning.zh}`
+    : null
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -175,6 +178,15 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
       data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
     >
+      {riskText && (
+        <div
+          className="mb-1.5 flex items-start gap-1.5 rounded-md border border-primary/25 bg-primary/10 px-2 py-1 text-xs text-primary"
+          data-slot="tool-approval-risk"
+        >
+          <AlertCircle className="mt-0.5 size-3 shrink-0" />
+          <span>{riskText}</span>
+        </div>
+      )}
       <div className="flex items-center gap-2.5">
         <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
           <Button

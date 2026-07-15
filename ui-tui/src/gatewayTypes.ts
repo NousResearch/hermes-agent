@@ -692,7 +692,16 @@ export type GatewayEvent =
       type: 'clarify.request'
     }
   | {
-      payload: { allow_permanent?: boolean; choices?: string[]; command: string; description: string; smart_denied?: boolean }
+      payload: {
+        allow_permanent?: boolean
+        choices?: string[]
+        command: string
+        description: string
+        risk_category?: string
+        risk_label?: { en: string; zh: string }
+        risk_warning?: { en: string; zh: string }
+        smart_denied?: boolean
+      }
       session_id?: string
       type: 'approval.request'
     }

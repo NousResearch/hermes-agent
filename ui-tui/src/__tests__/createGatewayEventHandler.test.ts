@@ -966,6 +966,33 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
   })
 
+  it('retains structured approval risk data on the overlay', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: {
+        command: 'rm -rf .git',
+        description: 'recursive delete',
+        risk_category: 'FILE_DELETION',
+        risk_label: { en: 'File deletion', zh: '删除文件' },
+        risk_warning: {
+          en: 'This operation can permanently delete files.',
+          zh: '此操作可能永久删除文件。'
+        }
+      },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({
+      riskCategory: 'FILE_DELETION',
+      riskLabel: { en: 'File deletion', zh: '删除文件' },
+      riskWarning: {
+        en: 'This operation can permanently delete files.',
+        zh: '此操作可能永久删除文件。'
+      }
+    })
+  })
+
   it('still surfaces terminal turn failures as errors', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

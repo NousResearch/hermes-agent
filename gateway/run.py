@@ -353,6 +353,17 @@ def _redact_approval_command(cmd: "str | None") -> str:
     return redact_sensitive_text(str(cmd or ""), force=True)
 
 
+def _format_approval_risk_banner(risk_label, risk_warning) -> "str | None":
+    """Render optional structured risk copy for adapters with no risk-specific API."""
+    if not isinstance(risk_label, dict) or not isinstance(risk_warning, dict):
+        return None
+    label_en, label_zh = risk_label.get("en"), risk_label.get("zh")
+    warning_en, warning_zh = risk_warning.get("en"), risk_warning.get("zh")
+    if not all(isinstance(value, str) and value for value in (label_en, label_zh, warning_en, warning_zh)):
+        return None
+    return f"Risk: {label_en} / {label_zh} — {warning_en} / {warning_zh}"
+
+
 def _format_exec_approval_fallback(
     command: str,
     description: str,
@@ -18893,6 +18904,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                risk_banner = _format_approval_risk_banner(
+                    approval_data.get("risk_label"), approval_data.get("risk_warning")
+                )
+                if risk_banner:
+                    desc = f"{risk_banner}\n\n{desc}"
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,

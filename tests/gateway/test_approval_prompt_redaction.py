@@ -154,6 +154,20 @@ class TestApprovalCommandWiring:
 
 
 class TestApprovalTextFallbackContract:
+    def test_risk_banner_is_bilingual_and_optional(self):
+        from gateway.run import _format_approval_risk_banner
+
+        banner = _format_approval_risk_banner(
+            {"en": "File deletion", "zh": "删除文件"},
+            {
+                "en": "This operation can permanently delete files.",
+                "zh": "此操作可能永久删除文件。",
+            },
+        )
+
+        assert banner == "Risk: File deletion / 删除文件 — This operation can permanently delete files. / 此操作可能永久删除文件。"
+        assert _format_approval_risk_banner(None, None) is None
+
     def test_smart_deny_only_advertises_one_operation(self):
         from gateway.run import _format_exec_approval_fallback
 

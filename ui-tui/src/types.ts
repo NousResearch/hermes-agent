@@ -95,6 +95,9 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
+  riskCategory?: string
+  riskLabel?: { en: string; zh: string }
+  riskWarning?: { en: string; zh: string }
   smartDenied?: boolean
 }
 

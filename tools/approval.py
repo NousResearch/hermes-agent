@@ -813,6 +813,139 @@ DANGEROUS_PATTERNS_COMPILED = [
 ]
 
 
+# Risk copy is deliberately keyed by the human-readable dangerous-command
+# description: that is the canonical approval key used by new allowlists and
+# gateway payloads. Hardline descriptions are intentionally absent because
+# hardline commands are blocked before an approval request is constructed.
+RISK_CATEGORY_COPY = {
+    "FILE_DELETION": {
+        "label": {"en": "File deletion", "zh": "删除文件"},
+        "warning": {"en": "This operation can permanently delete files.", "zh": "此操作可能永久删除文件。"},
+    },
+    "CODE_EXECUTION": {
+        "label": {"en": "Code execution", "zh": "代码执行"},
+        "warning": {"en": "This operation can execute unreviewed code.", "zh": "此操作可能执行未经审查的代码。"},
+    },
+    "PERMISSION_ESCALATION": {
+        "label": {"en": "Permission escalation", "zh": "权限提升"},
+        "warning": {"en": "This operation can broaden access or privileges.", "zh": "此操作可能扩大访问权限或提升权限。"},
+    },
+    "DISK_DESTRUCTION": {
+        "label": {"en": "Disk destruction", "zh": "磁盘破坏"},
+        "warning": {"en": "This operation can destroy disk or partition data.", "zh": "此操作可能破坏磁盘或分区数据。"},
+    },
+    "DATABASE_DESTRUCTION": {
+        "label": {"en": "Database destruction", "zh": "数据库破坏"},
+        "warning": {"en": "This operation can permanently delete database data.", "zh": "此操作可能永久删除数据库数据。"},
+    },
+    "SYSTEM_CONFIGURATION": {
+        "label": {"en": "System configuration", "zh": "系统配置"},
+        "warning": {"en": "This operation changes system configuration.", "zh": "此操作会修改系统配置。"},
+    },
+    "SERVICE_LIFECYCLE": {
+        "label": {"en": "Service lifecycle", "zh": "服务生命周期"},
+        "warning": {"en": "This operation can interrupt running services.", "zh": "此操作可能中断正在运行的服务。"},
+    },
+    "PROCESS_TERMINATION": {
+        "label": {"en": "Process termination", "zh": "进程终止"},
+        "warning": {"en": "This operation can terminate running processes.", "zh": "此操作可能终止正在运行的进程。"},
+    },
+    "FORK_BOMB": {
+        "label": {"en": "Fork bomb", "zh": "Fork 炸弹"},
+        "warning": {"en": "This operation can exhaust system resources.", "zh": "此操作可能耗尽系统资源。"},
+    },
+    "PROJECT_CONFIGURATION": {
+        "label": {"en": "Project configuration", "zh": "项目配置"},
+        "warning": {"en": "This operation can overwrite project configuration.", "zh": "此操作可能覆盖项目配置。"},
+    },
+    "CREDENTIAL_SECURITY": {
+        "label": {"en": "Credential security", "zh": "凭据安全"},
+        "warning": {"en": "This operation changes credential or startup files.", "zh": "此操作会修改凭据或启动文件。"},
+    },
+    "GIT_DATA_LOSS": {
+        "label": {"en": "Git data loss", "zh": "Git 数据丢失"},
+        "warning": {"en": "This operation can discard work or rewrite history.", "zh": "此操作可能丢弃工作或重写历史。"},
+    },
+}
+
+RISK_CATEGORY_BY_DESCRIPTION = {
+    **dict.fromkeys((
+        "delete in root path", "recursive delete", "recursive delete (long flag)",
+        "Windows cmd destructive delete", "Windows PowerShell destructive delete",
+        "xargs with rm", "find -exec/-execdir rm", "find -delete",
+    ), "FILE_DELETION"),
+    **dict.fromkeys((
+        "PowerShell encoded command execution", "shell command via -c/-lc flag",
+        "script execution via -e/-c flag", "pipe remote content to shell",
+        "execute remote script via process substitution", "execute remote content via command substitution",
+        "pipe decoded content to shell (possible command obfuscation)",
+        "pipe xxd-decoded content to shell (possible command obfuscation)",
+        "pipe tr-transformed output to shell (possible command obfuscation)",
+        "pipe openssl-decoded content to shell (possible command obfuscation)",
+        "script execution via heredoc", "shell execution via heredoc", "chmod +x followed by immediate execution",
+    ), "CODE_EXECUTION"),
+    **dict.fromkeys((
+        "world/other-writable permissions", "recursive world/other-writable (long flag)",
+        "recursive chown to root", "recursive chown to root (long flag)",
+        "sudo with privilege flag (stdin/askpass/shell/list)", "sudo with combined-flag privilege escalation",
+    ), "PERMISSION_ESCALATION"),
+    **dict.fromkeys(("format filesystem", "disk copy", "write to block device"), "DISK_DESTRUCTION"),
+    **dict.fromkeys(("SQL DROP", "SQL DELETE without WHERE", "SQL TRUNCATE"), "DATABASE_DESTRUCTION"),
+    **dict.fromkeys((
+        "overwrite system config", "overwrite system file via tee", "overwrite system file via redirection",
+        "copy/move file into system config path", "in-place edit of system config",
+        "in-place edit of system config (long flag)",
+    ), "SYSTEM_CONFIGURATION"),
+    **dict.fromkeys((
+        "stop/restart system service", "stop/restart hermes gateway (kills running agents)",
+        "hermes update (restarts gateway, kills running agents)",
+        "docker compose restart/stop/kill/down (container lifecycle)",
+        "docker restart/stop/kill (container lifecycle)",
+        "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+        "stop/restart hermes launchd service (kills running agents)",
+    ), "SERVICE_LIFECYCLE"),
+    **dict.fromkeys((
+        "kill all processes", "force kill processes", "force kill processes (killall -KILL)",
+        "force kill processes (killall -s KILL)", "kill processes by regex (killall -r)",
+        "kill hermes/gateway process (self-termination)",
+        "kill process via pgrep/pidof expansion (self-termination)",
+        "kill process via backtick pgrep/pidof expansion (self-termination)",
+    ), "PROCESS_TERMINATION"),
+    "fork bomb": "FORK_BOMB",
+    **dict.fromkeys((
+        "overwrite project env/config via tee", "overwrite project env/config via redirection",
+        "overwrite project env/config file", "in-place edit of Hermes config/env",
+        "in-place edit of Hermes config/env (long flag)", "in-place edit of Hermes config/env (perl/ruby)",
+    ), "PROJECT_CONFIGURATION"),
+    **dict.fromkeys((
+        "copy/move file into sensitive credential/SSH/shell-rc path",
+        "in-place edit of sensitive credential/SSH/shell-rc path",
+        "in-place edit of sensitive credential/SSH/shell-rc path (long flag)",
+        "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)",
+    ), "CREDENTIAL_SECURITY"),
+    **dict.fromkeys((
+        "git reset --hard (destroys uncommitted changes)", "git force push (rewrites remote history)",
+        "git force push short flag (rewrites remote history)", "git clean with force (deletes untracked files)",
+        "git branch force delete", "git branch force delete (long flags)",
+        "git branch force delete (long flags, force-first)",
+    ), "GIT_DATA_LOSS"),
+}
+
+
+def approval_risk_for_pattern_keys(pattern_keys: list[str]) -> dict | None:
+    """Return localized risk copy for the first dangerous approval key, if any."""
+    for pattern_key in pattern_keys:
+        category = RISK_CATEGORY_BY_DESCRIPTION.get(pattern_key)
+        if category is not None:
+            copy = RISK_CATEGORY_COPY[category]
+            return {
+                "risk_category": category,
+                "risk_label": dict(copy["label"]),
+                "risk_warning": dict(copy["warning"]),
+            }
+    return None
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -2226,6 +2359,9 @@ def _run_approval_gate(
                 "description": redact_sensitive_text(description),
                 "allow_permanent": True,
             }
+            risk = approval_risk_for_pattern_keys([pattern_key])
+            if risk is not None:
+                approval_data.update(risk)
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -2911,6 +3047,9 @@ def check_all_command_guards(command: str, env_type: str,
                 # must not offer a permanent scope.
                 "allow_permanent": not has_tirith and not smart_denied_for_owner,
             }
+            risk = approval_risk_for_pattern_keys(all_keys)
+            if risk is not None:
+                approval_data.update(risk)
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
             decision = _await_gateway_decision(

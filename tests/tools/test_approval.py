@@ -26,6 +26,36 @@ from tools.approval import (
 )
 
 
+class TestApprovalRiskCategories:
+    def test_risk_mapping_covers_only_current_dangerous_descriptions(self):
+        dangerous_descriptions = {description for _pattern, description in approval_module.DANGEROUS_PATTERNS}
+        hardline_descriptions = {description for _pattern, description in approval_module.HARDLINE_PATTERNS}
+
+        assert set(approval_module.RISK_CATEGORY_BY_DESCRIPTION) == dangerous_descriptions
+        # A few detectors deliberately share wording (for example ``fork bomb``)
+        # across the dangerous and hardline sets. Their category belongs to the
+        # dangerous approval path, while hardline control flow never calls the
+        # risk helper. No description unique to hardline may appear in the map.
+        assert set(approval_module.RISK_CATEGORY_BY_DESCRIPTION).isdisjoint(
+            hardline_descriptions - dangerous_descriptions
+        )
+
+    def test_current_only_dangerous_description_has_bilingual_risk_copy(self):
+        risk = approval_module.approval_risk_for_pattern_keys(["Windows PowerShell destructive delete"])
+
+        assert risk == {
+            "risk_category": "FILE_DELETION",
+            "risk_label": {"en": "File deletion", "zh": "删除文件"},
+            "risk_warning": {
+                "en": "This operation can permanently delete files.",
+                "zh": "此操作可能永久删除文件。",
+            },
+        }
+
+    def test_hardline_description_has_no_approval_risk_payload(self):
+        assert approval_module.approval_risk_for_pattern_keys(["recursive delete of root filesystem"]) is None
+
+
 class TestApprovalModeParsing:
     def test_unquoted_yaml_off_boolean_false_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": False}}):
@@ -2305,6 +2335,42 @@ class TestApprovalTimeoutIsNotConsent:
         assert result.get("outcome") == "timeout"
         # The notify_cb DID fire — we did try to ask the user.
         assert len(notified) == 1
+
+    def test_gateway_dangerous_approval_payload_includes_risk_banner(self, monkeypatch):
+        """A current dangerous command carries structured risk data to every UI."""
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=60)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result_holder = {}
+        thread = threading.Thread(
+            target=lambda: result_holder.setdefault("result", mod.check_all_command_guards("rm -rf .git", "local"))
+        )
+        thread.start()
+        for _ in range(50):
+            if notified:
+                break
+            time.sleep(0.02)
+        mod.resolve_gateway_approval(self.SESSION_KEY, "once")
+        thread.join(timeout=5)
+
+        assert result_holder["result"]["approved"] is True
+        assert notified[0]["risk_category"] == "FILE_DELETION"
+        assert notified[0]["risk_label"]["zh"] == "删除文件"
+        assert notified[0]["risk_warning"]["en"] == "This operation can permanently delete files."
+
+    def test_hardline_command_never_notifies_an_approval_banner(self, monkeypatch):
+        """Hardline blocks are not disguised as approvable warnings."""
+        from tools import approval as mod
+        self._force_short_timeout(monkeypatch, seconds=60)
+        notified = []
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: notified.append(data))
+
+        result = mod.check_all_command_guards("rm -rf /", "local")
+
+        assert result["approved"] is False
+        assert notified == []
 
     def test_timeout_message_is_emphatic_against_retry_and_rephrase(self, monkeypatch):
         """The BLOCKED message must explicitly tell the agent not to rephrase.

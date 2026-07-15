@@ -247,6 +247,44 @@ hermes kanban create "nightly ops review" \
     --json
 ```
 
+### Recurring routines
+
+Routines are scheduled task templates. The dispatcher checks them on its
+existing tick and materializes ordinary Kanban tasks, so normal assignee,
+workspace, concurrency-cap, retry, and audit behavior still applies.
+
+```bash
+hermes kanban routine create "Draft weekly field note" \
+    --cron "0 9 * * 1" \
+    --assignee scribe \
+    --body "Summarize this week's field notes." \
+    --concurrency skip_if_active \
+    --catch-up skip_missed
+
+hermes kanban routine list
+hermes kanban routine pause 1
+hermes kanban routine resume 1
+hermes kanban routine run-now 1
+hermes kanban routine delete 1
+```
+
+Concurrency policies:
+
+- `skip_if_active` (default) consumes a due window without creating another
+  task while an earlier task from the same routine is still live.
+- `allow` creates each due task even when an earlier instance is still live;
+  dispatcher caps still govern how many workers can run.
+
+Catch-up policies never replay every missed window:
+
+- `skip_missed` (default) creates nothing when more than one schedule boundary
+  elapsed between dispatcher ticks. It resumes at the next on-time boundary.
+- `run_once` creates one task for the latest missed boundary, regardless of how
+  many boundaries elapsed.
+
+`run-now` creates a manually keyed task immediately. Routine schedules use the
+host's local timezone and standard five-field cron expressions.
+
 ### Bulk CLI verbs
 
 All the lifecycle verbs accept multiple ids so you can clean up a batch

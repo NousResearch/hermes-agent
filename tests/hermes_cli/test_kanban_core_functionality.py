@@ -90,6 +90,197 @@ def test_no_idempotency_key_never_collides(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Routines
+# ---------------------------------------------------------------------------
+
+def test_routine_materializes_due_task_once(kanban_home):
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="weekly report",
+            cron_expr="* * * * *",
+            assignee="scribe",
+            body="Draft the field note.",
+        )
+
+        created = kb.materialize_due_routines(conn, now_ts=1_700_000_100)
+        assert len(created) == 1
+        assert created[0][0] == rid
+
+        task = kb.get_task(conn, created[0][1])
+        assert task is not None
+        assert task.title == "weekly report"
+        assert task.body == "Draft the field note."
+        assert task.assignee == "scribe"
+        assert task.created_by == f"routine:{rid}"
+        assert task.idempotency_key.startswith(f"routine-{rid}-")
+
+        again = kb.materialize_due_routines(conn, now_ts=1_700_000_100)
+        assert again == []
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_routine_skip_if_active_does_not_stack_instances(kanban_home):
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="nightly sweep",
+            cron_expr="* * * * *",
+            assignee="ops",
+        )
+        first = kb.materialize_due_routines(conn, now_ts=1_700_000_100)
+        assert first
+
+        second = kb.materialize_due_routines(conn, now_ts=1_700_000_220)
+        assert second == []
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+        routine = kb.get_routine(conn, rid)
+        assert routine is not None
+        assert routine.last_materialized_at == kb._routine_window_start(
+            "* * * * *",
+            now_ts=1_700_000_220,
+        )
+    finally:
+        conn.close()
+
+
+def test_routine_skip_missed_discards_downtime_window(kanban_home):
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="minute sweep",
+            cron_expr="* * * * *",
+            concurrency="allow",
+            catch_up="skip_missed",
+        )
+        first = kb.materialize_routine(conn, rid, now_ts=1_700_000_100)
+        assert first is not None
+
+        # Three cron boundaries elapsed. skip_missed acknowledges the latest
+        # one without creating a delayed task, then resumes on the next window.
+        assert kb.materialize_routine(conn, rid, now_ts=1_700_000_280) is None
+        routine = kb.get_routine(conn, rid)
+        assert routine is not None
+        assert routine.last_materialized_at == kb._routine_window_start(
+            "* * * * *", now_ts=1_700_000_280
+        )
+
+        resumed = kb.materialize_routine(conn, rid, now_ts=1_700_000_340)
+        assert resumed is not None
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_routine_run_once_materializes_one_latest_window_after_downtime(
+    kanban_home,
+):
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="minute report",
+            cron_expr="* * * * *",
+            concurrency="allow",
+            catch_up="run_once",
+        )
+        assert kb.materialize_routine(conn, rid, now_ts=1_700_000_100)
+
+        caught_up = kb.materialize_routine(conn, rid, now_ts=1_700_000_280)
+        assert caught_up is not None
+        assert kb.materialize_routine(conn, rid, now_ts=1_700_000_280) is None
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
+    finally:
+        conn.close()
+
+
+def test_routine_rejects_unsupported_coalesce_policy(kanban_home):
+    conn = kb.connect()
+    try:
+        with pytest.raises(ValueError, match="concurrency"):
+            kb.create_routine(
+                conn,
+                title="unsupported routine",
+                cron_expr="* * * * *",
+                concurrency="coalesce",
+            )
+    finally:
+        conn.close()
+
+
+def test_paused_routine_does_not_materialize(kanban_home):
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="paused routine",
+            cron_expr="* * * * *",
+            assignee="ops",
+        )
+        assert kb.set_routine_status(conn, rid, "paused") is True
+        assert kb.materialize_due_routines(conn, now_ts=1_700_000_100) == []
+    finally:
+        conn.close()
+
+
+def test_routine_run_now_materializes_manual_task(kanban_home):
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="manual routine",
+            cron_expr="0 9 * * 1",
+            assignee="ops",
+            concurrency="allow",
+        )
+        task_id = kb.materialize_routine(
+            conn,
+            rid,
+            manual=True,
+            now_ts=1_700_000_100,
+        )
+        assert task_id is not None
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.idempotency_key == f"routine-{rid}-manual-1700000100"
+    finally:
+        conn.close()
+
+
+def test_dispatch_once_materializes_due_routine_before_spawn(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    spawned = []
+
+    def _spawn(task, workspace):
+        spawned.append(task.id)
+        return 12345
+
+    conn = kb.connect()
+    try:
+        rid = kb.create_routine(
+            conn,
+            title="dispatch routine",
+            cron_expr="* * * * *",
+            assignee="worker",
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=_spawn)
+
+        assert res.materialized_routines
+        assert res.materialized_routines[0][0] == rid
+        assert res.materialized_routines[0][1] in spawned
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 

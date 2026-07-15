@@ -769,6 +769,51 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_asg.add_argument("--json", action="store_true")
 
+    # --- routines ---
+    p_routine = sub.add_parser(
+        "routine",
+        help="Manage recurring task templates that materialize normal Kanban tasks",
+    )
+    rsub = p_routine.add_subparsers(dest="routine_action")
+
+    r_create = rsub.add_parser("create", help="Create a recurring task routine")
+    r_create.add_argument("title", help="Routine task title")
+    r_create.add_argument("--cron", required=True, dest="cron_expr",
+                          help="5-field cron schedule, e.g. '0 9 * * 1'")
+    r_create.add_argument("--body", default=None, help="Task body template")
+    r_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    r_create.add_argument("--priority", type=int, default=0, help="Task priority")
+    r_create.add_argument("--skill", action="append", default=[], dest="skills",
+                          help="Skill to force-load into materialized workers")
+    r_create.add_argument(
+        "--concurrency",
+        choices=sorted(kb.VALID_ROUTINE_CONCURRENCY),
+        default="skip_if_active",
+        help="How to behave when a previous routine task is still live",
+    )
+    r_create.add_argument(
+        "--catch-up",
+        choices=sorted(kb.VALID_ROUTINE_CATCH_UP),
+        default="skip_missed",
+        help="How to handle missed windows after downtime",
+    )
+    r_create.add_argument("--json", action="store_true")
+
+    r_list = rsub.add_parser("list", aliases=["ls"], help="List routines")
+    r_list.add_argument("--active-only", action="store_true",
+                        help="Hide paused routines")
+    r_list.add_argument("--json", action="store_true")
+
+    r_pause = rsub.add_parser("pause", help="Pause a routine")
+    r_pause.add_argument("routine_id", type=int)
+    r_resume = rsub.add_parser("resume", help="Resume a routine")
+    r_resume.add_argument("routine_id", type=int)
+    r_run = rsub.add_parser("run-now", help="Materialize a routine immediately")
+    r_run.add_argument("routine_id", type=int)
+    r_run.add_argument("--json", action="store_true")
+    r_delete = rsub.add_parser("delete", aliases=["rm"], help="Delete a routine")
+    r_delete.add_argument("routine_id", type=int)
+
     # --- context --- (for spawned workers)
     p_ctx = sub.add_parser(
         "context",
@@ -967,6 +1012,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
             "assignees": _cmd_assignees,
+            "routine":  _dispatch_routine,
             "notify-subscribe":   _cmd_notify_subscribe,
             "notify-list":        _cmd_notify_list,
             "notify-unsubscribe": _cmd_notify_unsubscribe,
@@ -1299,6 +1345,139 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
         counts = entry["counts"] or {}
         count_str = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "(idle)"
         print(f"{entry['name']:20s}  {on_disk:8s}  {count_str}")
+    return 0
+
+
+def _routine_to_dict(r: kb.Routine) -> dict:
+    return {
+        "id": r.id,
+        "board_id": r.board_id,
+        "title": r.title,
+        "body": r.body,
+        "assignee": r.assignee,
+        "priority": r.priority,
+        "skills": r.skills or [],
+        "cron_expr": r.cron_expr,
+        "status": r.status,
+        "concurrency": r.concurrency,
+        "catch_up": r.catch_up,
+        "last_materialized_at": r.last_materialized_at,
+        "created_at": r.created_at,
+        "updated_at": r.updated_at,
+    }
+
+
+def _dispatch_routine(args: argparse.Namespace) -> int:
+    action = getattr(args, "routine_action", None)
+    if not action:
+        print("usage: hermes kanban routine <create|list|pause|resume|run-now|delete>")
+        return 0
+    if action == "ls":
+        action = "list"
+    if action == "rm":
+        action = "delete"
+    handlers = {
+        "create": _cmd_routine_create,
+        "list": _cmd_routine_list,
+        "pause": _cmd_routine_pause,
+        "resume": _cmd_routine_resume,
+        "run-now": _cmd_routine_run_now,
+        "delete": _cmd_routine_delete,
+    }
+    handler = handlers.get(action)
+    if handler is None:
+        print(f"kanban routine: unknown action {action!r}", file=sys.stderr)
+        return 2
+    return handler(args)
+
+
+def _cmd_routine_create(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect_closing() as conn:
+            rid = kb.create_routine(
+                conn,
+                title=args.title,
+                cron_expr=args.cron_expr,
+                body=args.body,
+                assignee=args.assignee,
+                priority=args.priority,
+                skills=getattr(args, "skills", None) or None,
+                concurrency=args.concurrency,
+                catch_up=args.catch_up,
+            )
+            routine = kb.get_routine(conn, rid)
+    except ValueError as exc:
+        print(f"kanban routine create: {exc}", file=sys.stderr)
+        return 2
+    if routine is None:
+        print("kanban routine create: failed to load created routine", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(_routine_to_dict(routine), indent=2, ensure_ascii=False))
+    else:
+        assignee = routine.assignee or "-"
+        print(f"Created routine {routine.id}  ({routine.status}, assignee={assignee})")
+    return 0
+
+
+def _cmd_routine_list(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        routines = kb.list_routines(conn, include_paused=not args.active_only)
+    if getattr(args, "json", False):
+        print(json.dumps([_routine_to_dict(r) for r in routines], indent=2, ensure_ascii=False))
+        return 0
+    if not routines:
+        print("(no routines)")
+        return 0
+    print(f"{'ID':>4s}  {'STATUS':8s}  {'ASSIGNEE':16s}  {'CRON':16s}  TITLE")
+    for r in routines:
+        print(
+            f"{r.id:>4d}  {r.status:8s}  {(r.assignee or '-'):16s}  "
+            f"{r.cron_expr:16s}  {r.title}"
+        )
+    return 0
+
+
+def _cmd_routine_pause(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        ok = kb.set_routine_status(conn, args.routine_id, "paused")
+    if not ok:
+        print(f"no such routine: {args.routine_id}", file=sys.stderr)
+        return 1
+    print(f"Paused routine {args.routine_id}")
+    return 0
+
+
+def _cmd_routine_resume(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        ok = kb.set_routine_status(conn, args.routine_id, "active")
+    if not ok:
+        print(f"no such routine: {args.routine_id}", file=sys.stderr)
+        return 1
+    print(f"Resumed routine {args.routine_id}")
+    return 0
+
+
+def _cmd_routine_run_now(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        task_id = kb.materialize_routine(conn, args.routine_id, manual=True)
+    if not task_id:
+        print(f"routine {args.routine_id} did not materialize", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps({"routine_id": args.routine_id, "task_id": task_id}, indent=2))
+    else:
+        print(f"Materialized routine {args.routine_id} as task {task_id}")
+    return 0
+
+
+def _cmd_routine_delete(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        ok = kb.delete_routine(conn, args.routine_id)
+    if not ok:
+        print(f"no such routine: {args.routine_id}", file=sys.stderr)
+        return 1
+    print(f"Deleted routine {args.routine_id}")
     return 0
 
 
@@ -2174,6 +2353,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "workspace": ws}
                 for (tid, who, ws) in res.spawned
             ],
+            "materialized_routines": [
+                {"routine_id": rid, "task_id": tid}
+                for (rid, tid) in res.materialized_routines
+            ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [
@@ -2197,6 +2380,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
     print(f"Promoted:     {res.promoted}")
+    print(f"Routines:     {len(res.materialized_routines)}")
+    for rid, tid in res.materialized_routines:
+        print(f"  - routine {rid} -> {tid}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
         tag = " (dry)" if args.dry_run else ""
@@ -2757,6 +2943,7 @@ Common subcommands:
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
+  `routine list`        Recurring task templates
   `assignees`           Known profiles + counts
   `context <id>`        Full worker-context dump
   `runs <id>`           Attempt history

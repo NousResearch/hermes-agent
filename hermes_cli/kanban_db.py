@@ -86,6 +86,7 @@ import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -133,6 +134,9 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_ROUTINE_STATUSES = {"active", "paused"}
+VALID_ROUTINE_CONCURRENCY = {"skip_if_active", "allow"}
+VALID_ROUTINE_CATCH_UP = {"skip_missed", "run_once"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
@@ -1003,6 +1007,57 @@ class Task:
 
 
 @dataclass
+class Routine:
+    """Recurring task template stored in the board DB."""
+
+    id: int
+    board_id: str
+    title: str
+    body: Optional[str]
+    assignee: Optional[str]
+    priority: int
+    skills: Optional[list[str]]
+    cron_expr: str
+    status: str
+    concurrency: str
+    catch_up: str
+    last_materialized_at: Optional[int]
+    created_at: int
+    updated_at: int
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Routine":
+        skills_value: Optional[list[str]] = None
+        if row["skills"]:
+            try:
+                parsed = json.loads(row["skills"])
+                if isinstance(parsed, list):
+                    skills_value = [str(s) for s in parsed if s]
+            except Exception:
+                skills_value = None
+        return cls(
+            id=int(row["id"]),
+            board_id=row["board_id"] or DEFAULT_BOARD,
+            title=row["title"],
+            body=row["body"],
+            assignee=row["assignee"],
+            priority=int(row["priority"] or 0),
+            skills=skills_value,
+            cron_expr=row["cron_expr"],
+            status=row["status"],
+            concurrency=row["concurrency"],
+            catch_up=row["catch_up"],
+            last_materialized_at=(
+                int(row["last_materialized_at"])
+                if row["last_materialized_at"] is not None
+                else None
+            ),
+            created_at=int(row["created_at"]),
+            updated_at=int(row["updated_at"]),
+        )
+
+
+@dataclass
 class Run:
     """In-memory view of a ``task_runs`` row.
 
@@ -1179,6 +1234,23 @@ CREATE TABLE IF NOT EXISTS tasks (
     block_recurrences    INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS routines (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id             TEXT NOT NULL DEFAULT 'default',
+    title                TEXT NOT NULL,
+    body                 TEXT,
+    assignee             TEXT,
+    priority             INTEGER NOT NULL DEFAULT 0,
+    skills               TEXT,
+    cron_expr            TEXT NOT NULL,
+    status               TEXT NOT NULL DEFAULT 'active',
+    concurrency          TEXT NOT NULL DEFAULT 'skip_if_active',
+    catch_up             TEXT NOT NULL DEFAULT 'skip_missed',
+    last_materialized_at INTEGER,
+    created_at           INTEGER NOT NULL,
+    updated_at           INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
@@ -1266,6 +1338,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_routines_status       ON routines(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
 CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, created_at);
@@ -2688,6 +2761,276 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _normalize_routine_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
+    if skills is None:
+        return None
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    toolset_typos: list[str] = []
+    for item in skills:
+        if not item:
+            continue
+        name = str(item).strip()
+        if not name:
+            continue
+        if "," in name:
+            raise ValueError(
+                f"skill name cannot contain comma: {name!r} "
+                f"(pass a list of separate names instead of a comma-joined string)"
+            )
+        if name.casefold() in KNOWN_TOOLSET_NAMES:
+            toolset_typos.append(name)
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    if toolset_typos:
+        quoted = ", ".join(repr(n) for n in toolset_typos)
+        noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
+        raise ValueError(
+            f"{quoted} {noun}, not skill name(s). "
+            "Put toolsets in the assignee profile's `toolsets:` config "
+            "instead of routine skills."
+        )
+    return cleaned
+
+
+def _validate_routine_cron(cron_expr: str) -> str:
+    expr = str(cron_expr or "").strip()
+    if len(expr.split()) != 5:
+        raise ValueError("routine --cron must be a 5-field cron expression")
+    try:
+        from croniter import croniter
+        croniter(expr, datetime.fromtimestamp(int(time.time())))
+    except ImportError as exc:
+        raise ValueError("routine schedules require the croniter package") from exc
+    except Exception as exc:
+        raise ValueError(f"invalid routine cron expression {expr!r}: {exc}") from exc
+    return expr
+
+
+def create_routine(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    cron_expr: str,
+    body: Optional[str] = None,
+    assignee: Optional[str] = None,
+    priority: int = 0,
+    skills: Optional[Iterable[str]] = None,
+    concurrency: str = "skip_if_active",
+    catch_up: str = "skip_missed",
+    status: str = "active",
+    board: Optional[str] = None,
+) -> int:
+    """Create a recurring Kanban task template."""
+    if not title or not str(title).strip():
+        raise ValueError("title is required")
+    assignee = _canonical_assignee(assignee)
+    expr = _validate_routine_cron(cron_expr)
+    if status not in VALID_ROUTINE_STATUSES:
+        raise ValueError(f"status must be one of {sorted(VALID_ROUTINE_STATUSES)}")
+    if concurrency not in VALID_ROUTINE_CONCURRENCY:
+        raise ValueError(
+            f"concurrency must be one of {sorted(VALID_ROUTINE_CONCURRENCY)}"
+        )
+    if catch_up not in VALID_ROUTINE_CATCH_UP:
+        raise ValueError(f"catch_up must be one of {sorted(VALID_ROUTINE_CATCH_UP)}")
+    skills_list = _normalize_routine_skills(skills)
+    now = int(time.time())
+    board_id = _normalize_board_slug(board) or get_current_board()
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            INSERT INTO routines (
+                board_id, title, body, assignee, priority, skills, cron_expr,
+                status, concurrency, catch_up, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                board_id,
+                str(title).strip(),
+                body,
+                assignee,
+                int(priority),
+                json.dumps(skills_list) if skills_list is not None else None,
+                expr,
+                status,
+                concurrency,
+                catch_up,
+                now,
+                now,
+            ),
+        )
+    return int(cur.lastrowid)
+
+
+def get_routine(conn: sqlite3.Connection, routine_id: int) -> Optional[Routine]:
+    row = conn.execute("SELECT * FROM routines WHERE id = ?", (int(routine_id),)).fetchone()
+    return Routine.from_row(row) if row else None
+
+
+def list_routines(
+    conn: sqlite3.Connection,
+    *,
+    include_paused: bool = True,
+) -> list[Routine]:
+    if include_paused:
+        rows = conn.execute(
+            "SELECT * FROM routines ORDER BY status ASC, id ASC"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM routines WHERE status = 'active' ORDER BY id ASC"
+        ).fetchall()
+    return [Routine.from_row(row) for row in rows]
+
+
+def set_routine_status(conn: sqlite3.Connection, routine_id: int, status: str) -> bool:
+    if status not in VALID_ROUTINE_STATUSES:
+        raise ValueError(f"status must be one of {sorted(VALID_ROUTINE_STATUSES)}")
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE routines SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, int(routine_id)),
+        )
+    return cur.rowcount > 0
+
+
+def delete_routine(conn: sqlite3.Connection, routine_id: int) -> bool:
+    with write_txn(conn):
+        cur = conn.execute("DELETE FROM routines WHERE id = ?", (int(routine_id),))
+    return cur.rowcount > 0
+
+
+def _routine_window_start(cron_expr: str, now_ts: Optional[int] = None) -> int:
+    from croniter import croniter
+
+    now = int(now_ts if now_ts is not None else time.time())
+    base = datetime.fromtimestamp(now) + timedelta(seconds=1)
+    return int(croniter(cron_expr, base).get_prev(datetime).timestamp())
+
+
+def _next_routine_window_start(cron_expr: str, after_ts: int) -> int:
+    from croniter import croniter
+
+    base = datetime.fromtimestamp(int(after_ts))
+    return int(croniter(cron_expr, base).get_next(datetime).timestamp())
+
+
+def _routine_has_live_instance(conn: sqlite3.Connection, routine_id: int) -> Optional[str]:
+    prefix = f"routine-{int(routine_id)}-%"
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key LIKE ? "
+        "AND status NOT IN ('done', 'archived') "
+        "ORDER BY created_at DESC LIMIT 1",
+        (prefix,),
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def _mark_routine_materialized(
+    conn: sqlite3.Connection,
+    routine_id: int,
+    window_start: int,
+) -> None:
+    now = int(time.time())
+    conn.execute(
+        "UPDATE routines SET last_materialized_at = ?, updated_at = ? WHERE id = ?",
+        (int(window_start), now, int(routine_id)),
+    )
+
+
+def materialize_routine(
+    conn: sqlite3.Connection,
+    routine_id: int,
+    *,
+    manual: bool = False,
+    now_ts: Optional[int] = None,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Create a normal task from one routine, returning the task id or None."""
+    routine = get_routine(conn, int(routine_id))
+    if routine is None:
+        return None
+
+    window_start = int(now_ts if now_ts is not None else time.time()) if manual else (
+        _routine_window_start(routine.cron_expr, now_ts=now_ts)
+    )
+    if not manual and routine.last_materialized_at is not None:
+        if int(routine.last_materialized_at) >= window_start:
+            return None
+        if routine.catch_up == "skip_missed":
+            next_window = _next_routine_window_start(
+                routine.cron_expr,
+                int(routine.last_materialized_at),
+            )
+            if next_window < window_start:
+                # More than one schedule boundary elapsed since the last tick.
+                # Acknowledge the latest boundary without creating backlog; the
+                # next on-time boundary can materialize normally.
+                with write_txn(conn):
+                    _mark_routine_materialized(conn, routine.id, window_start)
+                return None
+
+    if routine.concurrency == "skip_if_active":
+        live_task = _routine_has_live_instance(conn, routine.id)
+        if live_task:
+            if not manual:
+                with write_txn(conn):
+                    _mark_routine_materialized(conn, routine.id, window_start)
+            return None
+
+    key_suffix = f"manual-{window_start}" if manual else str(window_start)
+    idempotency_key = f"routine-{routine.id}-{key_suffix}"
+    task_id = create_task(
+        conn,
+        title=routine.title,
+        body=routine.body,
+        assignee=routine.assignee,
+        created_by=f"routine:{routine.id}",
+        priority=routine.priority,
+        idempotency_key=idempotency_key,
+        skills=routine.skills,
+        board=board or routine.board_id,
+    )
+    with write_txn(conn):
+        _mark_routine_materialized(conn, routine.id, window_start)
+        _append_event(
+            conn,
+            task_id,
+            "routine_materialized",
+            {
+                "routine_id": routine.id,
+                "window_start": window_start,
+                "manual": bool(manual) or None,
+            },
+        )
+    return task_id
+
+
+def materialize_due_routines(
+    conn: sqlite3.Connection,
+    *,
+    now_ts: Optional[int] = None,
+    board: Optional[str] = None,
+) -> list[tuple[int, str]]:
+    """Materialize every due active routine for this board tick."""
+    created: list[tuple[int, str]] = []
+    for routine in list_routines(conn, include_paused=False):
+        task_id = materialize_routine(
+            conn,
+            routine.id,
+            now_ts=now_ts,
+            board=board,
+        )
+        if task_id:
+            created.append((routine.id, task_id))
+    return created
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -5962,6 +6305,8 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    materialized_routines: list[tuple[int, str]] = field(default_factory=list)
+    """Routine materializations created this tick, as ``(routine_id, task_id)``."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -7461,6 +7806,8 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    if not dry_run:
+        result.materialized_routines = materialize_due_routines(conn, board=board)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

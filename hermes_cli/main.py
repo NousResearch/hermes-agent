@@ -12296,6 +12296,23 @@ def cmd_dashboard(args):
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
 
+    # Desktop backends are per-profile (Electron sets HERMES_DESKTOP=1). Register
+    # shell hooks *after* interactive auth setup: that path can force-rediscover
+    # plugins and clear hooks on reload. Gate on HERMES_DESKTOP so the multi-profile
+    # machine dashboard does not stamp launch-profile hooks onto every session.
+    # accept_hooks=False: register_from_config resolves hooks_auto_accept / env itself.
+    if os.environ.get("HERMES_DESKTOP") == "1":
+        try:
+            from hermes_cli.config import load_config
+            from agent.shell_hooks import register_from_config
+
+            register_from_config(load_config(), accept_hooks=False)
+        except Exception:
+            logger.debug(
+                "shell-hook registration failed at dashboard startup",
+                exc_info=True,
+            )
+
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.

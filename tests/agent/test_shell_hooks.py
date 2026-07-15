@@ -753,3 +753,74 @@ class TestAllowlistConcurrency:
 
         assert len(tmp_paths_seen) == 2
         assert tmp_paths_seen[0] != tmp_paths_seen[1]
+
+
+# ── Startup / encoding contracts (desktop + TUI registration PR) ──────────
+
+
+class TestSpawnEncoding:
+    def test_spawn_passes_utf8_encoding(self, monkeypatch):
+        """Windows default locale is often cp1252; force UTF-8 for hook I/O."""
+        import subprocess
+
+        captured = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return _Proc()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        spec = shell_hooks.ShellHookSpec(
+            event="pre_llm_call", command="true", timeout=5,
+        )
+        shell_hooks._spawn(spec, "{}")
+        assert captured.get("text") is True
+        assert captured.get("encoding") == "utf-8"
+
+
+class TestRegisterAcceptHooksResolution:
+    def test_string_false_hooks_auto_accept_is_not_truthy(self, tmp_path, monkeypatch):
+        """accept_hooks=False must still honor config, without bool("false")==True."""
+        script = _write_script(
+            tmp_path,
+            "noop.sh",
+            "#!/usr/bin/env bash\necho\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
+
+        cfg = {
+            "hooks": {
+                "pre_llm_call": [{"command": str(script)}],
+            },
+            "hooks_auto_accept": "false",
+        }
+        monkeypatch.setattr(
+            "sys.stdin", type("S", (), {"isatty": lambda self: False})()
+        )
+        registered = shell_hooks.register_from_config(cfg, accept_hooks=False)
+        assert registered == []
+
+    def test_bool_true_hooks_auto_accept_works_with_accept_false_arg(
+        self, tmp_path, monkeypatch,
+    ):
+        script = _write_script(
+            tmp_path,
+            "noop2.sh",
+            "#!/usr/bin/env bash\necho\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.delenv("HERMES_ACCEPT_HOOKS", raising=False)
+        cfg = {
+            "hooks": {
+                "pre_llm_call": [{"command": str(script)}],
+            },
+            "hooks_auto_accept": True,
+        }
+        registered = shell_hooks.register_from_config(cfg, accept_hooks=False)
+        assert len(registered) == 1

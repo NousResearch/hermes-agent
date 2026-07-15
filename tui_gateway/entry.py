@@ -346,6 +346,18 @@ def main():
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
+    # Register shell hooks so standalone TUI sessions fire them like CLI/gateway.
+    # Before gateway.ready so the first agent turn sees them. accept_hooks=False
+    # lets register_from_config resolve hooks_auto_accept / HERMES_ACCEPT_HOOKS
+    # itself — do not bool() the config value (a quoted "false" is truthy).
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config() or {}, accept_hooks=False)
+    except Exception:
+        logger.debug("shell-hook registration failed at TUI startup", exc_info=True)
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",

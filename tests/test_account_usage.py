@@ -152,6 +152,48 @@ def test_fetch_account_usage_anthropic_includes_scoped_weekly_limits(monkeypatch
     assert snapshot.windows[3].reset_at == datetime.fromisoformat(reset)
 
 
+def test_fetch_account_usage_anthropic_scoped_limit_fallback_labels(monkeypatch):
+    reset = "2026-07-11T00:59:59Z"
+    monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "***")
+    monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "limits": [
+                    {
+                        "kind": "weekly_scoped",
+                        "percent": 12,
+                        "resets_at": reset,
+                        "scope": {"model": {"id": "claude-opus-4-1"}},
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "percent": 7,
+                        "resets_at": reset,
+                        "scope": {"surface": "claude_code"},
+                    },
+                    {
+                        "kind": "weekly_scoped",
+                        "percent": 3,
+                        "resets_at": reset,
+                        "scope": {},
+                    },
+                ]
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("anthropic")
+
+    assert snapshot is not None
+    assert [(window.label, window.used_percent) for window in snapshot.windows] == [
+        ("claude-opus-4-1 week", 12.0),
+        ("Claude Code week", 7.0),
+        ("Scoped week", 3.0),
+    ]
+
+
 def test_fetch_account_usage_anthropic_accepts_fractional_legacy_utilization(monkeypatch):
     monkeypatch.setattr("agent.account_usage.resolve_anthropic_token", lambda: "sk-ant-oat-test")
     monkeypatch.setattr("agent.account_usage._is_oauth_token", lambda token: True)

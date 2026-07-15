@@ -14,10 +14,10 @@ const windowControls = {
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const originalHermesDesktop = desktopWindow.hermesDesktop
 
-function renderControls(isMaximized = false, path = '/') {
+function renderControls(isMaximized = false, path = '/', isFullscreen = false) {
   return render(
     <MemoryRouter initialEntries={[path]}>
-      <WslgWindowControls isMaximized={isMaximized} />
+      <WslgWindowControls isFullscreen={isFullscreen} isMaximized={isMaximized} />
     </MemoryRouter>
   )
 }
@@ -62,5 +62,26 @@ describe('WslgWindowControls', () => {
     renderControls(false, '/settings')
 
     expect(screen.queryByLabelText('Window controls')).toBeNull()
+  })
+
+  it('stays hidden while the BrowserWindow is fullscreen', () => {
+    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+
+    renderControls(false, '/', true)
+
+    expect(screen.queryByLabelText('Window controls')).toBeNull()
+  })
+
+  it('prevents pointer activation from stealing renderer focus', () => {
+    desktopWindow.hermesDesktop = { windowControls } as unknown as Window['hermesDesktop']
+    renderControls()
+    const event = new MouseEvent('pointerdown', { bubbles: true, cancelable: true })
+
+    const button = screen.getByRole('button', { name: 'Maximize window' })
+    fireEvent(button, event)
+    fireEvent.click(button)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(windowControls.toggleMaximize).toHaveBeenCalledOnce()
   })
 })

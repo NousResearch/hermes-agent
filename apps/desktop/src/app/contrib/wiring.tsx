@@ -881,7 +881,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           tools={rightTitlebarTools}
         />
         {!isSecondaryWindow() && customWindowControls && (
-          <WslgWindowControls isMaximized={Boolean(connection?.isMaximized)} />
+          <WslgWindowControls
+            isFullscreen={Boolean(connection?.isFullscreen)}
+            isMaximized={Boolean(connection?.isMaximized)}
+          />
         )}
         {children}
       </div>

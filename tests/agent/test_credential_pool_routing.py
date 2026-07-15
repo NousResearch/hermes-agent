@@ -135,7 +135,23 @@ class TestEagerFallbackWithPool:
 
 
 # ---------------------------------------------------------------------------
-# 5. Full 429 rotation cycle via _recover_with_credential_pool
+# 6. Successful responses promote only the matching Codex probe
+# ---------------------------------------------------------------------------
+
+
+def test_valid_response_marks_matching_credential_probe_successful():
+    from agent.agent_runtime_helpers import record_credential_pool_success
+
+    pool = MagicMock()
+    agent = SimpleNamespace(_credential_pool=pool, api_key="request-token")
+
+    record_credential_pool_success(agent)
+
+    pool.mark_success.assert_called_once_with(api_key_hint="request-token")
+
+
+# ---------------------------------------------------------------------------
+# 7. Full 429 rotation cycle via _recover_with_credential_pool
 # ---------------------------------------------------------------------------
 
 class TestPoolRotationCycle:
@@ -162,7 +178,7 @@ class TestPoolRotationCycle:
         # mark_exhausted_and_rotate returns next entry until exhausted
         self._rotation_index = 0
 
-        def rotate(status_code=None, error_context=None):
+        def rotate(status_code=None, error_context=None, api_key_hint=None):
             self._rotation_index += 1
             if self._rotation_index < pool_entries:
                 return entries[self._rotation_index]
@@ -186,6 +202,45 @@ class TestPoolRotationCycle:
         assert has_retried is True
         pool.mark_exhausted_and_rotate.assert_not_called()
 
+    def test_first_429_uses_request_entry_not_stale_exhausted_current(self):
+        agent, pool, entries = self._make_agent_with_pool(3)
+        agent.api_key = "token-account-3"
+        entries[0].last_status = "exhausted"
+        entries[2].last_status = None
+        pool.current.return_value = entries[0]
+        pool.entry_for_api_key.return_value = entries[2]
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+        )
+
+        assert recovered is False
+        assert has_retried is True
+        pool.entry_for_api_key.assert_called_once_with("token-account-3")
+        pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_probe_first_429_rearms_exact_credential_immediately(self):
+        agent, pool, entries = self._make_agent_with_pool(3)
+        agent.api_key = "token-account-3"
+        entries[2].last_status = "probing"
+        pool.entry_for_api_key.return_value = entries[2]
+        pool.mark_exhausted_and_rotate.side_effect = None
+        pool.mark_exhausted_and_rotate.return_value = None
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+        )
+
+        assert recovered is False
+        assert has_retried is True
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=429,
+            error_context=None,
+            api_key_hint="token-account-3",
+        )
+
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""
         agent, pool, entries = self._make_agent_with_pool(3)
@@ -196,6 +251,69 @@ class TestPoolRotationCycle:
         assert has_retried is False  # reset after rotation
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
         agent._swap_credential.assert_called_once_with(entries[1])
+
+    def test_usage_limit_marks_the_credential_that_sent_the_failed_request(self):
+        """A stale pool.current must not copy account 3's 429 onto account 1."""
+        agent, pool, entries = self._make_agent_with_pool(3)
+        agent.api_key = "token-account-3"
+        pool.current.return_value = entries[0]  # stale/current selection points at account 1
+        context = {"reason": "usage_limit_reached", "message": "usage limit has been reached"}
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+            error_context=context,
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=429,
+            error_context=context,
+            api_key_hint="token-account-3",
+        )
+        agent._swap_credential.assert_called_once_with(entries[1])
+
+    def test_usage_limit_persists_only_the_failed_credential_in_real_pool(self, tmp_path, monkeypatch):
+        """Disk state must bind a 429 to the request token, not stale pool.current."""
+        import json
+        from agent.credential_pool import CredentialPool, PooledCredential
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        entries = [
+            PooledCredential(
+                provider="openai-codex",
+                id=f"cred-{index}",
+                label=f"account-{index}",
+                auth_type="oauth",
+                priority=index - 1,
+                source="manual:device_code",
+                access_token=f"token-account-{index}",
+            )
+            for index in (1, 2, 3)
+        ]
+        pool = CredentialPool("openai-codex", entries)
+        pool._current_id = "cred-1"  # stale runtime pointer
+        agent, _, _ = self._make_agent_with_pool(3)
+        agent._credential_pool = pool
+        agent.provider = "openai-codex"
+        agent.api_key = "token-account-3"
+        agent._swap_credential = MagicMock()
+        context = {"reason": "usage_limit_reached", "message": "usage limit has been reached"}
+
+        recovered, _ = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
+            error_context=context,
+        )
+
+        assert recovered is True
+        persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+        by_id = {row["id"]: row for row in persisted["credential_pool"]["openai-codex"]}
+        assert by_id["cred-1"]["last_status"] is None
+        assert by_id["cred-2"]["last_status"] is None
+        assert by_id["cred-3"]["last_status"] == "exhausted"
+        assert by_id["cred-3"]["last_error_code"] == 429
 
     def test_pool_exhaustion_returns_false(self):
         """When all credentials exhausted, recovery should return False."""
@@ -221,6 +339,26 @@ class TestPoolRotationCycle:
         assert recovered is True
         assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None)
+
+    def test_auth_refresh_targets_request_token_not_stale_current(self):
+        agent, pool, entries = self._make_agent_with_pool(3)
+        agent.provider = "openai-codex"
+        agent.api_key = "token-account-3"
+        agent._is_entitlement_failure = MagicMock(return_value=False)
+        pool.current.return_value = entries[0]
+        pool.try_refresh_for_api_key.return_value = entries[2]
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=401,
+            has_retried_429=False,
+            error_context={"reason": "token_expired"},
+        )
+
+        assert recovered is True
+        assert has_retried is False
+        pool.try_refresh_for_api_key.assert_called_once_with("token-account-3")
+        pool.try_refresh_current.assert_not_called()
+        agent._swap_credential.assert_called_once_with(entries[2])
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""

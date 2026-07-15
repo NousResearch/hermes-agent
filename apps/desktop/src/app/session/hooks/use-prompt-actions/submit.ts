@@ -30,11 +30,17 @@ import {
   withSessionBusyRetry
 } from './utils'
 
+interface CreatedSessionBinding {
+  routeToken: string | null
+  runtimeSessionId: string
+  storedSessionId: string | null
+}
+
 interface SubmitPromptDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
-  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  createBackendSessionForSend: (preview?: string | null) => Promise<CreatedSessionBinding | null>
   getRoutedStoredSessionId: () => null | string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
@@ -151,33 +157,44 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       let sessionId: null | string = options?.sessionId ?? activeSessionIdRef.current
 
-      // Pin the foreground session context for the whole async submit pipeline.
-      // Without this, a fast session switch during session.resume / file.attach
-      // can redirect the user's text into a different chat (#54527). Mutable —
-      // not const — because a new-chat submit legitimately re-homes to the
-      // session it creates (see the re-pin after createBackendSessionForSend).
+      // Pin the submission context across every await. Existing routed/queued
+      // sends retain main's target-aware recovery model; a genuine new-chat
+      // create installs its explicit binding below rather than inferring it
+      // from ambient refs after navigation.
       const startingActiveSessionId = activeSessionIdRef.current
       const selectedStoredSessionId = selectedStoredSessionIdRef.current
       const routedStoredSessionId = getRoutedStoredSessionId()
-
       const routedRuntimeId = routedStoredSessionId ? getRuntimeIdForStoredSession(routedStoredSessionId) : null
-
       const routedSessionNeedsResume = Boolean(
         routedStoredSessionId &&
         (selectedStoredSessionId !== routedStoredSessionId ||
           !startingActiveSessionId ||
           startingActiveSessionId !== routedRuntimeId)
       )
-
-      let startingStoredSessionId = routedSessionNeedsResume
+      let expectedRuntimeSessionId = startingActiveSessionId
+      let expectedStoredSessionId = routedSessionNeedsResume
         ? routedStoredSessionId
         : (selectedStoredSessionId ?? routedStoredSessionId)
+      let expectedRouteToken = getRouteToken()
+      let pendingCreatedRouteToken: string | null = null
 
-      let startingRouteToken = getRouteToken()
+      const sessionContextDrifted = (): boolean => {
+        if (
+          pendingCreatedRouteToken &&
+          activeSessionIdRef.current === expectedRuntimeSessionId &&
+          selectedStoredSessionIdRef.current === expectedStoredSessionId &&
+          getRouteToken() === pendingCreatedRouteToken
+        ) {
+          expectedRouteToken = pendingCreatedRouteToken
+          pendingCreatedRouteToken = null
+        }
 
-      const sessionContextDrifted = (): boolean =>
-        targetStartedInCurrentView &&
-        (selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken)
+        return (
+          activeSessionIdRef.current !== expectedRuntimeSessionId ||
+          selectedStoredSessionIdRef.current !== expectedStoredSessionId ||
+          getRouteToken() !== expectedRouteToken
+        )
+      }
 
       const targetIsCurrentView = (): boolean => targetStartedInCurrentView && !sessionContextDrifted()
 
@@ -239,7 +256,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             // (what made drained-after-interrupt sends go silent).
             interrupted: false
           }),
-          targetStoredSessionId
+          expectedStoredSessionId
         )
 
       // After sync rewrites refs, refresh the optimistic message in place so the
@@ -251,7 +268,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             ...state,
             messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message))
           }),
-          targetStoredSessionId
+          expectedStoredSessionId
         )
 
       const dropOptimistic = (sid: null | string) => {
@@ -272,7 +289,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             awaitingResponse: false,
             pendingBranchGroup: null
           }),
-          targetStoredSessionId
+          expectedStoredSessionId
         )
       }
 
@@ -361,6 +378,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             if (targetIsCurrentView()) {
               activeSessionIdRef.current = sessionId
             }
+
+            expectedRuntimeSessionId = sessionId
           }
         } catch {
           // A target stored conversation is not a new-chat draft. If its
@@ -383,8 +402,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       if (!sessionId) {
+        let createdBinding: CreatedSessionBinding | null
+
         try {
-          sessionId = await createBackendSessionForSend(visibleText)
+          createdBinding = await createBackendSessionForSend(visibleText)
         } catch (err) {
           dropOptimistic(null)
           releaseBusy()
@@ -396,11 +417,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        if (!sessionId) {
-          // createBackendSessionForSend returns null when the user switched
-          // sessions mid-create (it closes the orphaned session itself) —
-          // abort silently. Anything else is a real failure worth a toast.
-          if (sessionContextDrifted()) {
+        if (!createdBinding) {
+          // Creation can deliberately return null after the user changed
+          // context during post-create setup. That is cancellation, not a
+          // failed create, and must not surface a misleading toast.
+          if (
+            activeSessionIdRef.current !== startingActiveSessionId ||
+            selectedStoredSessionIdRef.current !== selectedStoredSessionId ||
+            getRouteToken() !== expectedRouteToken
+          ) {
             return abortForSessionSwitch(null)
           }
 
@@ -414,22 +439,31 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        // A successful create re-homes selection + route to the chat it just
-        // minted, so the pre-create baseline can't tell our own re-home from
-        // a user switch (judging it drift aborted EVERY first send of a new
-        // chat: no prompt.submit, no DB row, a stranded route that 404s
-        // "Session not found"). The drift signal for this window is the
-        // active ref instead: every switch path re-nulls or retargets it
-        // synchronously, so it only still equals the id create returned when
-        // nobody re-homed since.
-        if (activeSessionIdRef.current !== sessionId) {
+        sessionId = createdBinding.runtimeSessionId
+
+        // Only the create operation may authorize its own re-home. At return,
+        // the router may still expose the submit-entry route or may already
+        // expose the exact created route; any third route is a real drift.
+        if (
+          activeSessionIdRef.current !== createdBinding.runtimeSessionId ||
+          selectedStoredSessionIdRef.current !== createdBinding.storedSessionId
+        ) {
           return abortForSessionSwitch(sessionId)
         }
 
-        // Re-pin the baseline to the created chat for the rest of the
-        // pipeline; the closures (seedOptimistic et al) see the new value.
-        startingStoredSessionId = selectedStoredSessionIdRef.current
-        startingRouteToken = getRouteToken()
+        expectedRuntimeSessionId = createdBinding.runtimeSessionId
+        expectedStoredSessionId = createdBinding.storedSessionId
+
+        const routeAfterCreate = getRouteToken()
+
+        if (routeAfterCreate === createdBinding.routeToken) {
+          expectedRouteToken = routeAfterCreate
+          pendingCreatedRouteToken = null
+        } else if (routeAfterCreate === expectedRouteToken) {
+          pendingCreatedRouteToken = createdBinding.routeToken
+        } else {
+          return abortForSessionSwitch(sessionId)
+        }
 
         seedOptimistic(sessionId)
       }
@@ -460,7 +494,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
-          const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+          const recoverStoredSessionId = expectedStoredSessionId
 
           if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
@@ -483,6 +517,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               if (targetIsCurrentView()) {
                 activeSessionIdRef.current = recoveredId
               }
+
+              expectedRuntimeSessionId = recoveredId
 
               await withSessionBusyRetry(() =>
                 requestGateway('prompt.submit', { session_id: recoveredId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
@@ -539,7 +575,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             pendingBranchGroup: null,
             sawAssistantPayload: true
           }),
-          targetStoredSessionId
+          expectedStoredSessionId
         )
 
         if (targetIsCurrentView() && isProviderSetupError(err)) {

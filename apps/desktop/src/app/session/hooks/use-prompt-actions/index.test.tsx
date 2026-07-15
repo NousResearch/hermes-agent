@@ -104,7 +104,9 @@ function Harness({
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
   storedSessionId?: null | string
   activeSessionId?: null | string
-  createBackendSessionForSend?: () => Promise<null | string>
+  createBackendSessionForSend?: () => Promise<
+    null | { routeToken: string | null; runtimeSessionId: string; storedSessionId: string | null }
+  >
 }) {
   const localActiveSessionIdRef = useRef<string | null>(
     activeSessionId === undefined ? RUNTIME_SESSION_ID : activeSessionId
@@ -130,7 +132,13 @@ function Harness({
     activeSessionIdRef,
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
-    createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
+    createBackendSessionForSend:
+      createBackendSessionForSend ??
+      (async () => ({
+        routeToken: selectedStoredSessionIdRef.current ? `/${selectedStoredSessionIdRef.current}::` : null,
+        runtimeSessionId: RUNTIME_SESSION_ID,
+        storedSessionId: selectedStoredSessionIdRef.current
+      })),
     getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),
     getRuntimeIdForStoredSession: getRuntimeIdForStoredSession ?? (() => null),
     getRouteToken: getRouteToken ?? (() => 'token'),
@@ -146,7 +154,7 @@ function Harness({
       // Seed with interrupted:true so we can prove a fresh submit clears it.
       const next = updater(stateRef.current) as unknown as Record<string, unknown>
       stateRef.current = next as never
-      onSeedState?.(next)
+      onSeedState?.(next, storedSessionId)
       onUpdateState?.(sessionId, storedSessionId, next)
 
       return next as never

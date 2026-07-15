@@ -1783,3 +1783,56 @@ class TestGatewayRoutingTable:
         )
         assert entry.session_key not in rows
         restarted._db.close()
+
+
+class TestResetThreadSessions:
+    def test_resets_only_matching_discord_thread_sessions(self, tmp_path):
+        config = GatewayConfig(thread_sessions_per_user=True)
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+
+        discord_a = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-1",
+            chat_type="thread",
+            thread_id="thread-42",
+            user_id="alice",
+        )
+        discord_b = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-1",
+            chat_type="thread",
+            thread_id="thread-42",
+            user_id="bob",
+        )
+        discord_other_thread = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-1",
+            chat_type="thread",
+            thread_id="thread-99",
+            user_id="carol",
+        )
+        telegram_thread = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="thread",
+            thread_id="thread-42",
+            user_id="t1",
+        )
+
+        entry_a = store.get_or_create_session(discord_a)
+        entry_b = store.get_or_create_session(discord_b)
+        entry_other = store.get_or_create_session(discord_other_thread)
+        entry_telegram = store.get_or_create_session(telegram_thread)
+
+        original_ids = {
+            entry.session_key: entry.session_id
+            for entry in (entry_a, entry_b, entry_other, entry_telegram)
+        }
+
+        reset_count = store.reset_thread_sessions("thread-42", platform=Platform.DISCORD)
+
+        assert len(reset_count) == 2
+        assert store._entries[entry_a.session_key].session_id != original_ids[entry_a.session_key]
+        assert store._entries[entry_b.session_key].session_id != original_ids[entry_b.session_key]
+        assert store._entries[entry_other.session_key].session_id == original_ids[entry_other.session_key]
+        assert store._entries[entry_telegram.session_key].session_id == original_ids[entry_telegram.session_key]

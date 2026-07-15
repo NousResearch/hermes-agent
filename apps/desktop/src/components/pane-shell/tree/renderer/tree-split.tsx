@@ -66,7 +66,7 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
   return useSyncExternalStore(cb => $paneStates.listen(cb), snapshot, snapshot)
 }
 
-export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
+export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -79,6 +79,21 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
   const collapsedSides = useStore($collapsedTreeSides)
   const horizontal = node.orientation === 'row'
   const axis = node.orientation
+
+  // When the root is a column (Terminal deck, Quad), the root ROW — the one
+  // the side-collapse system operates on — is a row child containing main.
+  // Propagate `rootRow` to that child so its `semanticSides` fires.
+  const childRootRow = (child: LayoutNode): boolean => {
+    if (!root || horizontal) {
+      return false
+    }
+
+    if (child.type !== 'split' || child.orientation !== 'row') {
+      return false
+    }
+
+    return allPaneIds(child).some(id => paneChrome(paneFor(id)).placement === 'main')
+  }
 
   // A pane leaves the grid when its contribution isn't registered (yet) — a
   // runtime plugin's pane collapses until the plugin loads, then appears; no
@@ -353,7 +368,9 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
   // ⌘B owns the sessions column and ⌘J the other side columns — by pane
   // placement, NOT position, so a ⌘\ flip moves the columns without
   // rewiring the toggles (main parity). In edit mode sides stay visible.
-  const semanticSides = root && horizontal && collapsedSides.size > 0 && !editMode
+  // `rootRow` covers both a row root (Default, Focus) and a row nested inside
+  // a column root (Terminal deck, Quad) — wherever the side columns live.
+  const semanticSides = rootRow && horizontal && collapsedSides.size > 0 && !editMode
 
   const sideGone = (i: number) => {
     if (!semanticSides) {
@@ -463,7 +480,12 @@ export function TreeSplit({ node, root }: { node: SplitNode; root?: boolean }) {
               />
             )}
             {!narrowCollapsed && (
-              <TreeNode node={child} parentAxis={axis} railSide={horizontal ? railSideFor(i) : undefined} />
+              <TreeNode
+                node={child}
+                parentAxis={axis}
+                railSide={horizontal ? railSideFor(i) : undefined}
+                rootRow={rootRow || childRootRow(child)}
+              />
             )}
           </div>
         )

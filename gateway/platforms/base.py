@@ -718,6 +718,9 @@ def _transcode_heic_to_jpeg_with_pillow(data: bytes) -> bytes | None:
         from io import BytesIO
 
         from PIL import Image, ImageOps
+        from tools.lazy_deps import ensure
+
+        ensure("media.heic", prompt=False)
         import pillow_heif
 
         pillow_heif.register_heif_opener()

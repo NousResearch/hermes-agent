@@ -213,6 +213,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+    # HEIC/HEIF decoder used only when an opt-in iMessage platform receives
+    # an HEIC attachment. Conversion falls back to a document if unavailable.
+    "media.heic": ("pillow-heif==1.4.0",),
     # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
     # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
     # extras in pyproject.toml. The one-liner installer pulls this in via

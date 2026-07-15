@@ -243,6 +243,48 @@ class TestCacheMediaBytes:
 
         assert base._transcode_heic_to_jpeg(_HEIC_STUB) == _JPEG_STUB
 
+    def test_heic_transcoder_ensures_lazy_decoder(self, monkeypatch):
+        import tools.lazy_deps as lazy_deps
+        import gateway.platforms.base as base
+
+        calls = []
+        monkeypatch.setattr(
+            lazy_deps,
+            "ensure",
+            lambda feature, *, prompt: calls.append((feature, prompt)),
+        )
+
+        base._transcode_heic_to_jpeg_with_pillow(_HEIC_STUB)
+
+        assert calls == [("media.heic", False)]
+
+    def test_heic_lazy_decoder_failure_falls_back_to_document(self, monkeypatch):
+        import tools.lazy_deps as lazy_deps
+        import gateway.platforms.base as base
+
+        def unavailable(feature, *, prompt):
+            raise lazy_deps.FeatureUnavailable(
+                feature,
+                ("pillow-heif==1.4.0",),
+                "disabled for test",
+            )
+
+        monkeypatch.setattr(lazy_deps, "ensure", unavailable)
+        monkeypatch.setattr(base.sys, "platform", "linux")
+        monkeypatch.setattr(base.shutil, "which", lambda name: None)
+
+        result = base.cache_media_bytes(
+            _HEIC_STUB,
+            filename="IMG_4127.HEIC",
+            mime_type="image/heic",
+            transcode_heic=True,
+        )
+
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/octet-stream"
+        assert Path(result.path).read_bytes() == _HEIC_STUB
+
     def test_heic_transcoder_falls_back_to_sips_on_macos(self, monkeypatch):
         import gateway.platforms.base as base
 

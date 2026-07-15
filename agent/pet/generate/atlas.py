@@ -127,6 +127,22 @@ def _near_key_mask(image, key: tuple[int, int, int], tol: int = 48):
     )
 
 
+def _defringe(rgba):
+    """Shave the 1px antialiased edge ring left after keying.
+
+    Chroma keying can't catch the antialiased band where the sprite meets the
+    backdrop — those pixels are a key/sprite blend, too far from the key to be
+    removed, so they ring the cutout in magenta/green. Erode the alpha by one
+    pixel (a 3x3 min filter) to drop that contaminated ring; the sprite's own
+    thick dark outline keeps the silhouette intact. Built on a C-level filter, no
+    per-pixel Python.
+    """
+    from PIL import ImageFilter
+
+    rgba.putalpha(rgba.getchannel("A").filter(ImageFilter.MinFilter(3)))
+    return rgba
+
+
 def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, threshold: float = 90.0):
     """Return *image* (RGBA) with its flat background keyed out to transparent.
 
@@ -163,7 +179,8 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
         near = _near_key_mask(rgba, key)  # L mask, 255 where near key
         opaque = rgba.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0)
         remove_mask = ImageChops.darker(near, opaque)
-        return Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, remove_mask)
+        keyed = Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, remove_mask)
+        return _defringe(keyed)
 
     visited = bytearray(w * h)
     # Mark removals in a flat mask and apply them in one C composite at the end —
@@ -209,7 +226,7 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
     # One C-level composite instead of millions of per-pixel writes: paint the
     # flooded pixels to (0,0,0,0) wherever the mask is set.
     mask = Image.frombytes("L", (w, h), bytes(remove)).point(lambda v: 255 if v else 0)
-    return Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, mask)
+    return _defringe(Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, mask))
 
 
 def _repair_internal_alpha_holes(image):
@@ -369,6 +386,279 @@ def _drop_side_bleed(image):
     return rgba
 
 
+def _erase_long_axis_lines(image):
+    """Remove thin slot-spanning guide/floor/divider lines.
+
+    Gemini will sometimes satisfy "baseline" / "cell" language by drawing
+    literal horizontal floors or vertical panel dividers. They survive chroma
+    keying and connect otherwise clean poses. Drop only *thin* rows/columns that
+    span nearly the whole slot; thick sprite body rows are left alone.
+    """
+    from PIL import Image
+
+    rgba = image.convert("RGBA").copy()
+    w, h = rgba.size
+    alpha = rgba.getchannel("A")
+
+    def _thin_groups(indices: list[int]) -> list[tuple[int, int]]:
+        groups: list[tuple[int, int]] = []
+        start: int | None = None
+        prev: int | None = None
+        for idx in indices:
+            if start is None:
+                start = prev = idx
+                continue
+            if prev is not None and idx == prev + 1:
+                prev = idx
+                continue
+            if start is not None and prev is not None and prev - start + 1 <= 4:
+                groups.append((start, prev + 1))
+            start = prev = idx
+        if start is not None and prev is not None and prev - start + 1 <= 4:
+            groups.append((start, prev + 1))
+        return groups
+
+    wide_rows = [
+        y
+        for y in range(h)
+        if sum(1 for x in range(w) if alpha.getpixel((x, y)) > _ALPHA_FLOOR) >= w * 0.85
+    ]
+    tall_cols = [
+        x
+        for x in range(w)
+        if sum(1 for y in range(h) if alpha.getpixel((x, y)) > _ALPHA_FLOOR) >= h * 0.85
+    ]
+
+    clear = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+    for top, bottom in _thin_groups(wide_rows):
+        rgba.paste(clear.crop((0, top, w, bottom)), (0, top))
+    for left, right in _thin_groups(tall_cols):
+        rgba.paste(clear.crop((left, 0, right, h)), (left, 0))
+    return rgba
+
+
+def _component_boxes(image) -> list[tuple[tuple[int, int, int, int], int]]:
+    """Connected opaque components as ``[(bbox, mass)]``.
+
+    A full ML segmenter would be overkill here: after chroma keying, "the pet" is
+    the dominant connected alpha component inside each known slot. Tiny detached
+    sparkles, tears, UI dots, and neighbour slivers are separate components.
+    """
+    from collections import deque
+
+    rgba = image.convert("RGBA")
+    bbox = rgba.getbbox()
+    if bbox is None:
+        return []
+    l0, t0, r0, b0 = bbox
+    w, h = r0 - l0, b0 - t0
+    alpha = rgba.getchannel("A").load()
+    visited = bytearray(w * h)
+    out: list[tuple[tuple[int, int, int, int], int]] = []
+
+    for start in range(w * h):
+        if visited[start]:
+            continue
+        sx, sy = start % w, start // w
+        ax, ay = l0 + sx, t0 + sy
+        visited[start] = 1
+        if alpha[ax, ay] <= _ALPHA_FLOOR:
+            continue
+
+        queue: deque[tuple[int, int]] = deque([(sx, sy)])
+        left = right = sx
+        top = bottom = sy
+        mass = 0
+        while queue:
+            x, y = queue.popleft()
+            mass += 1
+            left, right = min(left, x), max(right, x)
+            top, bottom = min(top, y), max(bottom, y)
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < w and 0 <= ny < h:
+                    idx = ny * w + nx
+                    if not visited[idx]:
+                        visited[idx] = 1
+                        if alpha[l0 + nx, t0 + ny] > _ALPHA_FLOOR:
+                            queue.append((nx, ny))
+        out.append(((l0 + left, t0 + top, l0 + right + 1, t0 + bottom + 1), mass))
+    return out
+
+
+def _isolate_slot_subject(image):
+    """Keep the slot's real subject; drop detached effects/noise."""
+    from PIL import Image
+
+    rgba = _erase_long_axis_lines(image)
+    comps = _component_boxes(rgba)
+    if not comps:
+        return rgba
+
+    main_box, main_mass = max(comps, key=lambda item: item[1])
+    ml, mt, mr, mb = main_box
+    mw = max(1, mr - ml)
+    keep: list[tuple[int, int, int, int]] = []
+    for box, mass in comps:
+        if box == main_box:
+            keep.append(box)
+            continue
+        left, _top, right, _bottom = box
+        overlap = max(0, min(right, mr) - max(left, ml))
+        center_x = (left + right) / 2
+        near_main = (ml - mw * 0.25) <= center_x <= (mr + mw * 0.25)
+        # Keep meaningful attached-looking accessories such as halos; drop
+        # sparkles/tears/noise that don't overlap the body column.
+        if mass >= max(24, main_mass * 0.035) and (overlap >= mw * 0.3 or near_main):
+            keep.append(box)
+
+    out = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+    for box in keep:
+        out.alpha_composite(rgba.crop(box), (box[0], box[1]))
+    return out
+
+
+def _has_slot_padding(image) -> bool:
+    """True when content has empty room on all four slot edges."""
+    bbox = image.getbbox()
+    if bbox is None:
+        return False
+    w, h = image.size
+    left, top, right, bottom = bbox
+    min_x = max(4, min(12, round(w * 0.025)))
+    min_y = max(4, min(16, round(h * 0.02)))
+    return left >= min_x and top >= min_y and w - right >= min_x and h - bottom >= min_y
+
+
+def _slot_bounds(width: int, frame_count: int) -> list[tuple[int, int]]:
+    return [
+        (round(i * width / frame_count), round((i + 1) * width / frame_count))
+        for i in range(frame_count)
+    ]
+
+
+def _group_component_rows(boxes: list[tuple[int, int, int, int]]) -> list[list[tuple[int, int, int, int]]]:
+    """Group component boxes into visual rows, then sort left→right."""
+    if not boxes:
+        return []
+    heights = sorted(max(1, b[3] - b[1]) for b in boxes)
+    row_tol = max(12, heights[len(heights) // 2] * 0.55)
+    rows: list[list[tuple[int, int, int, int]]] = []
+    centers: list[float] = []
+    for box in sorted(boxes, key=lambda b: (b[1] + b[3]) / 2):
+        cy = (box[1] + box[3]) / 2
+        for i, center in enumerate(centers):
+            if abs(cy - center) <= row_tol:
+                rows[i].append(box)
+                centers[i] = sum((b[1] + b[3]) / 2 for b in rows[i]) / len(rows[i])
+                break
+        else:
+            rows.append([box])
+            centers.append(cy)
+    ordered = [row for _center, row in sorted(zip(centers, rows, strict=False), key=lambda item: item[0])]
+    for row in ordered:
+        row.sort(key=lambda b: (b[0] + b[2]) / 2)
+    return ordered
+
+
+def _merge_related_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """Merge disconnected parts that clearly belong to one subject.
+
+    Capes, tails, horns, and held props sometimes key as separate components.
+    Merge components on the same visual row when their vertical spans overlap and
+    the horizontal gap is tiny compared with the component size. Do not bridge the
+    much larger gaps between separate poses.
+    """
+    boxes = list(boxes)
+    changed = True
+    while changed:
+        changed = False
+        merged: list[tuple[int, int, int, int]] = []
+        used = [False] * len(boxes)
+        for i, a in enumerate(boxes):
+            if used[i]:
+                continue
+            al, at, ar, ab = a
+            used[i] = True
+            for j in range(i + 1, len(boxes)):
+                if used[j]:
+                    continue
+                bl, bt, br, bb = boxes[j]
+                v_overlap = max(0, min(ab, bb) - max(at, bt))
+                min_h = max(1, min(ab - at, bb - bt))
+                gap = max(0, max(al, bl) - min(ar, br))
+                min_w = max(1, min(ar - al, br - bl))
+                if v_overlap >= min_h * 0.45 and gap <= max(14, min_w * 0.22):
+                    al, at, ar, ab = min(al, bl), min(at, bt), max(ar, br), max(ab, bb)
+                    used[j] = True
+                    changed = True
+            merged.append((al, at, ar, ab))
+        boxes = merged
+    return boxes
+
+
+def _component_crops(strip, frame_count: int, *, require_padding: bool = False) -> list | None:
+    """Extract frame subjects as connected non-background objects.
+
+    This is the robust path for models that ignore "one horizontal row" and emit a
+    2D sprite grid. We count real opaque subject components, discard tiny
+    detached effects, sort in reading order, and return exactly *frame_count*
+    frames. Slot slicing is only a fallback when object detection can't satisfy
+    the contract.
+    """
+    from PIL import Image
+
+    def attempt(source) -> list | None:
+        comps = _component_boxes(source)
+        if not comps:
+            return None
+
+        max_mass = max(m for _box, m in comps)
+        subjects = _merge_related_boxes([box for box, mass in comps if mass >= max(64, max_mass * 0.12)])
+        if len(subjects) < frame_count:
+            return None
+
+        rows = _group_component_rows(subjects)
+        ordered = [box for row in rows for box in row][:frame_count]
+        if len(ordered) < frame_count:
+            return None
+
+        if require_padding:
+            min_x = max(4, min(12, round(source.width * 0.01)))
+            min_y = max(4, min(16, round(source.height * 0.015)))
+            for left, top, right, bottom in ordered:
+                if left < min_x or top < min_y or source.width - right < min_x or source.height - bottom < min_y:
+                    return None
+
+        multirow = len(rows) > 1
+        frames = []
+        for left, top, right, bottom in ordered:
+            pad_x = max(8, round((right - left) * 0.08))
+            pad_y = max(8, round((bottom - top) * 0.08))
+            if multirow:
+                crop_box = (
+                    max(0, left - pad_x),
+                    max(0, top - pad_y),
+                    min(source.width, right + pad_x),
+                    min(source.height, bottom + pad_y),
+                )
+            elif frame_count == 1:
+                crop_box = (0, 0, source.width, source.height)
+            else:
+                # Preserve vertical motion for true one-row strips (jumping,
+                # bobbing) while still narrowing X around the object.
+                crop_box = (max(0, left - pad_x), 0, min(source.width, right + pad_x), source.height)
+            frame = Image.new("RGBA", (crop_box[2] - crop_box[0], crop_box[3] - crop_box[1]), (0, 0, 0, 0))
+            rel = (left - crop_box[0], top - crop_box[1], right - crop_box[0], bottom - crop_box[1])
+            frame.alpha_composite(source.crop((left, top, right, bottom)), (rel[0], rel[1]))
+            # The global component pass already chose the subject box. Do not run
+            # another component filter here: capes/tails can be legitimate
+            # disconnected lobes inside the chosen subject box.
+            frames.append(frame)
+        return frames
+
+    return attempt(strip) or attempt(_erase_long_axis_lines(strip))
+
+
 def _sever_expected_gutters(strip, frame_count: int):
     """Cut thin vertical gutters at expected frame boundaries before labeling.
 
@@ -397,17 +687,23 @@ def _sever_expected_gutters(strip, frame_count: int):
     return out
 
 
-def _slot_crops(strip, frame_count: int) -> list:
+def _slot_crops(strip, frame_count: int, *, require_padding: bool = False) -> list | None:
     """Slice *strip* into *frame_count* uniform columns (one coordinate space).
 
     Equal-width columns keep every frame in a single shared coordinate frame, so
     a later union-crop + shared placement (:func:`normalize_cells`) preserves the
     row's real motion without the per-frame re-centering that makes a pet visibly
-    slide. Neighbour side-bleed is trimmed per column.
+    slide. Each slot is cleaned independently so detached effects, floors,
+    dividers, and neighbour slivers do not become "frames".
     """
-    w0 = max(1, strip.width // frame_count)
     h = strip.height
-    return [_drop_side_bleed(strip.crop((i * w0, 0, i * w0 + w0, h))) for i in range(frame_count)]
+    frames = []
+    for left, right in _slot_bounds(strip.width, frame_count):
+        slot = _drop_side_bleed(_isolate_slot_subject(strip.crop((left, 0, right, h))))
+        if require_padding and not _has_slot_padding(slot):
+            return None
+        frames.append(slot)
+    return frames
 
 
 def _content_runs(profile: list[int], *, threshold: int = 2) -> list[tuple[int, int]]:
@@ -465,6 +761,52 @@ def _frame_x_ranges(strip, frame_count: int) -> list[tuple[int, int]] | None:
     return [(l, r) for l, r in groups]
 
 
+def _significant_subject_boxes(image) -> list[tuple[int, int, int, int]]:
+    comps = _component_boxes(image)
+    if not comps:
+        return []
+    max_mass = max(mass for _box, mass in comps)
+    return _merge_related_boxes([box for box, mass in comps if mass >= max(32, max_mass * 0.12)])
+
+
+def _validate_extracted_frames(frames: list, frame_count: int) -> None:
+    """Reject rows where one "frame" is really multiple poses.
+
+    A bad provider roll can collapse a strip into tiny repeated poses. If we let
+    that through, normalization sees a huge motion envelope and shrinks the
+    entire pet to postage-stamp size. Catch the row here so hatch can regenerate
+    it instead of saving a technically non-empty but visually broken atlas.
+    """
+    if len(frames) != frame_count:
+        raise ValueError(f"expected {frame_count} frames, got {len(frames)}")
+
+    boxes = []
+    for i, frame in enumerate(frames):
+        bbox = frame.getbbox()
+        if bbox is None:
+            raise ValueError(f"frame {i} is empty")
+        subjects = _significant_subject_boxes(frame)
+        if len(subjects) >= 3:
+            raise ValueError(f"frame {i} contains multiple separated subjects")
+        boxes.append(bbox)
+
+    if frame_count <= 1:
+        return
+
+    widths = sorted(b[2] - b[0] for b in boxes)
+    heights = sorted(b[3] - b[1] for b in boxes)
+    med_w = max(1, widths[len(widths) // 2])
+    med_h = max(1, heights[len(heights) // 2])
+    for i, (left, top, right, bottom) in enumerate(boxes):
+        width = right - left
+        height = bottom - top
+        # A legitimate wing/arm can be wider than the median pose. A frame that is
+        # several times wider while not proportionally taller is usually multiple
+        # mini-poses packed into one accepted frame.
+        if width > max(med_w * 3.0, med_w + 96) and height <= med_h * 1.6:
+            raise ValueError(f"frame {i} is a multi-pose width outlier")
+
+
 def extract_strip_frames(
     strip,
     frame_count: int,
@@ -475,15 +817,15 @@ def extract_strip_frames(
 ) -> list:
     """Turn one generated row strip into *frame_count* frames.
 
-    The background is keyed out, thin connecting bridges at the expected
-    boundaries are severed, then the strip is sliced at its empty chroma gutters
-    (:func:`_frame_x_ranges`) — the plain "find each object, make a frame" cut
-    that works once poses are spaced apart (which generation now enforces).
+    The background is keyed out, then strict extraction treats the requested
+    frame count as the source of truth: slice known equal slots, isolate the real
+    subject in each slot, and require empty padding on X and Y. Empty chroma
+    gutters are only a lenient salvage fallback.
 
     Each frame is cropped at full cell height so tall ears / halos are never
-    clipped; :func:`_drop_side_bleed` trims any faint neighbour sliver. When the
-    poses are touching (fewer gutters than frames) ``components`` raises and
-    ``auto`` falls back to equal-width slots.
+    clipped; detached effects and neighbour slivers are dropped per slot. When a
+    pose does not have required space around it, ``components`` raises and
+    ``auto`` falls back to best-effort slicing.
 
     *fit* (default) fits+centers each frame into a 192x208 cell — the standalone
     contract for callers that don't normalize. Hatching passes ``fit=False`` to
@@ -500,28 +842,38 @@ def extract_strip_frames(
 
     strip = remove_background(strip, chroma_key=chroma_key)
 
-    # Prefer the real gutters as-is: when poses are already spaced (generation
-    # enforces this), slicing the strip untouched keeps each pose's own bounds and
-    # never cuts through an unevenly-placed silhouette. Only fall back to severing
-    # the expected boundaries when gaps alone can't separate the row — i.e. poses
-    # are bridged by a shared shadow/glow/1px line and read as one blob.
-    source = strip
-    ranges = _frame_x_ranges(source, frame_count)
-    if ranges is None:
-        source = _sever_expected_gutters(strip, frame_count)
-        ranges = _frame_x_ranges(source, frame_count)
-
-    if ranges is None:
+    # Strict path: count actual non-background subjects first. This handles both
+    # the intended one-row strip and model-cheated 2D grids without ever stacking
+    # two visual rows into one frame.
+    frames = _component_crops(strip, frame_count, require_padding=True)
+    if frames is None:
+        frames = _slot_crops(strip, frame_count, require_padding=True)
+    if frames is None:
         if method == "components":
-            raise ValueError(f"could not segment {frame_count} sprites from strip")
-        frames = _slot_crops(source, frame_count)
-    else:
-        h = source.height
-        pad = max(2, min(16, round((source.width / max(1, frame_count)) * 0.04)))
-        frames = [
-            _drop_side_bleed(source.crop((max(0, left - pad), 0, min(source.width, right + pad), h)))
-            for left, right in ranges
-        ]
+            raise ValueError(f"could not segment {frame_count} padded sprites from strip")
+
+        # Lenient salvage for the final attempt: prefer real gutters when they
+        # exist, then sever expected boundaries, then fall back to raw slots. Still
+        # try object extraction first, just without edge-padding enforcement, so
+        # cached/borderline model rolls can be inspected without stacking a 2D grid.
+        frames = _component_crops(strip, frame_count, require_padding=False)
+    if frames is None:
+        source = strip
+        ranges = _frame_x_ranges(source, frame_count)
+        if ranges is None:
+            source = _sever_expected_gutters(strip, frame_count)
+            ranges = _frame_x_ranges(source, frame_count)
+
+        if ranges is None:
+            frames = _slot_crops(source, frame_count, require_padding=False) or []
+        else:
+            h = source.height
+            pad = max(2, min(16, round((source.width / max(1, frame_count)) * 0.04)))
+            frames = [
+                _drop_side_bleed(_isolate_slot_subject(source.crop((max(0, left - pad), 0, min(source.width, right + pad), h))))
+                for left, right in ranges
+            ]
+    _validate_extracted_frames(frames, frame_count)
     return [_fit_to_cell(f) for f in frames] if fit else frames
 
 
@@ -746,21 +1098,71 @@ def validate_atlas(atlas) -> dict:
         return {"ok": False, "width": atlas.width, "height": atlas.height, "errors": errors, "warnings": warnings, "filled_states": []}
 
     filled_states: list[str] = []
+    cell_boxes_by_state: dict[str, list[tuple[int, int, int, int]]] = {}
     for state, row, count in ROW_SPECS:
         row_pixels = 0
+        boxes: list[tuple[int, int, int, int]] = []
         for col in range(count):
             left = col * CELL_WIDTH
             top = row * CELL_HEIGHT
             cell = atlas.crop((left, top, left + CELL_WIDTH, top + CELL_HEIGHT))
             nonblank = sum(cell.getchannel("A").histogram()[1:])
             row_pixels += nonblank
+            bbox = cell.getbbox()
+            if bbox is not None:
+                boxes.append(bbox)
         if row_pixels > 0:
             filled_states.append(state)
+            cell_boxes_by_state[state] = boxes
         else:
             warnings.append(f"state '{state}' has no frames")
 
     if not filled_states:
         errors.append("atlas is empty — no state produced any frames")
+
+    # A visually valid pet must occupy the cell. A single bad row can otherwise
+    # poison global normalization and shrink every state to a tiny postage stamp
+    # while still passing the old "non-empty cells" check.
+    all_widths = sorted(
+        right - left
+        for boxes in cell_boxes_by_state.values()
+        for left, _top, right, _bottom in boxes
+    )
+    all_heights = sorted(
+        bottom - top
+        for boxes in cell_boxes_by_state.values()
+        for _left, top, _right, bottom in boxes
+    )
+    global_med_w = 0
+    global_med_h = 0
+    if all_widths and all_heights:
+        global_med_w = all_widths[len(all_widths) // 2]
+        median_h = all_heights[len(all_heights) // 2]
+        global_med_h = median_h
+        min_h = max(56, round(CELL_HEIGHT * 0.28))
+        if median_h < min_h:
+            errors.append(f"atlas sprites are too small after normalization (median frame height {median_h}px)")
+
+    for state, boxes in cell_boxes_by_state.items():
+        if len(boxes) <= 1:
+            continue
+        widths = sorted(right - left for left, _top, right, _bottom in boxes)
+        heights = sorted(bottom - top for _left, top, _right, bottom in boxes)
+        med_w = max(1, widths[len(widths) // 2])
+        med_h = max(1, heights[len(heights) // 2])
+        max_w = widths[-1]
+        max_h = heights[-1]
+        if max_w > max(med_w * 3.0, med_w + 96) and max_h <= med_h * 1.6:
+            errors.append(f"state '{state}' contains a multi-pose frame outlier")
+        # Per-state collapse guard: one malformed row (tiny slivers / chopped
+        # fragments) should not pass because other rows are healthy.
+        if global_med_w and global_med_h:
+            min_state_w = max(32, round(global_med_w * 0.42))
+            min_state_h = max(40, round(global_med_h * 0.50))
+            if med_w < min_state_w or med_h < min_state_h:
+                errors.append(
+                    f"state '{state}' appears collapsed (median {med_w}x{med_h}px, global median {global_med_w}x{global_med_h}px)"
+                )
 
     # Transparent pixels must carry zero RGB (no halo residue).
     data = atlas.tobytes()

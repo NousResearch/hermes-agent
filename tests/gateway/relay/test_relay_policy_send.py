@@ -23,6 +23,8 @@ def _clean_env(monkeypatch):
         "GATEWAY_RELAY_SECRET",
         "GATEWAY_RELAY_PLATFORM",
         "GATEWAY_RELAY_BOT_ID",
+        "GATEWAY_RELAY_PLATFORMS",
+        "GATEWAY_RELAY_BOT_IDS",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(k, raising=False)
@@ -34,7 +36,7 @@ def _clean_env(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_projection_maps_require_mention_and_free_response(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
         lambda: {"discord": {"require_mention": True, "free_response_channels": ["c-support", "c-help"]}},
@@ -50,7 +52,7 @@ def test_projection_maps_require_mention_and_free_response(monkeypatch):
 
 
 def test_projection_allow_other_bots_from_env(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
@@ -62,7 +64,7 @@ def test_projection_allow_other_bots_from_env(monkeypatch):
 
 
 def test_projection_comma_string_free_response(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
         lambda: {"discord": {"free_response_channels": "c1, c2 ,c3"}},
@@ -73,7 +75,7 @@ def test_projection_comma_string_free_response(monkeypatch):
 
 
 def test_projection_falls_back_to_top_level_require_mention(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",
         lambda: {"require_mention": True},  # top-level, no discord: block
@@ -86,7 +88,7 @@ def test_projection_falls_back_to_top_level_require_mention(monkeypatch):
 def test_projection_none_when_all_default(monkeypatch):
     # No require_mention, no free-response, no allow-bots ⇒ nothing to declare
     # (the connector's quiet default already matches).
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"discord": {}}, raising=False)
     assert relay.relay_relevance_policy() is None
 
@@ -109,7 +111,7 @@ def _arm(monkeypatch, *, url="wss://connector.example/relay"):
     monkeypatch.setenv("GATEWAY_RELAY_URL", url)
     monkeypatch.setenv("GATEWAY_RELAY_ID", "gw-x")
     monkeypatch.setenv("GATEWAY_RELAY_SECRET", "s" * 48)
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
 
 
 def test_send_posts_projected_policy_with_token(monkeypatch):
@@ -137,7 +139,7 @@ def test_send_posts_projected_policy_with_token(monkeypatch):
 
 def test_send_skips_when_no_secret(monkeypatch):
     monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://connector.example/relay")
-    monkeypatch.setenv("GATEWAY_RELAY_PLATFORM", "discord")
+    monkeypatch.setenv("GATEWAY_RELAY_PLATFORMS", "discord")
     # no GATEWAY_RELAY_ID / SECRET
     monkeypatch.setattr(
         "gateway.run._load_gateway_config",

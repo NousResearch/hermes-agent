@@ -130,6 +130,18 @@ export function useSessionStateCache({
     return created
   }, [])
 
+  const resetViewSync = useCallback(() => {
+    // Drop any RAF-pending transcript stage so a backgrounded turn cannot
+    // repaint over the chat the user just switched to (#47709 / #47743).
+    pendingViewStateRef.current = null
+    viewSessionIdRef.current = null
+
+    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(viewSyncRafRef.current)
+      viewSyncRafRef.current = null
+    }
+  }, [])
+
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
     pendingViewStateRef.current = null
@@ -146,6 +158,7 @@ export function useSessionStateCache({
     // jerks the scroll position while the user is reading. Skip the publish when
     // the merged result is content-identical to what's already on screen.
     const currentMessages = $messages.get()
+
     // On a thread switch `$messages` still holds the *previous* thread, so
     // preserving its local errors would graft that thread's failed turn (e.g.
     // an out-of-funds error) onto this one — then cascade it everywhere as the
@@ -305,6 +318,7 @@ export function useSessionStateCache({
   return {
     activeSessionIdRef,
     ensureSessionState,
+    resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
   deleteEnvVar,
   getActionStatus,
   getToolsetConfig,
+  getToolsetModels,
   revealEnvVar,
   runToolsetPostSetup,
+  selectToolsetModel,
   selectToolsetProvider,
   setEnvVar
 } from '@/hermes'
@@ -17,7 +18,13 @@ import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { notify, notifyError } from '@/store/notifications'
-import type { ActionStatusResponse, ToolEnvVar, ToolProvider, ToolsetConfig } from '@/types/hermes'
+import type {
+  ActionStatusResponse,
+  ToolEnvVar,
+  ToolProvider,
+  ToolsetConfig,
+  ToolsetModelsResponse
+} from '@/types/hermes'
 
 import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
 import { Pill } from './primitives'
@@ -28,6 +35,10 @@ interface ToolsetConfigPanelProps {
    *  can refresh the "Configured / Needs keys" pill. */
   onConfiguredChange?: () => void
 }
+
+/** Toolsets whose backends expose a selectable model catalog (mirrors the
+ *  backend's _MODEL_CATALOG_TOOLSETS map). */
+const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
 
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
   if (provider.env_vars.length === 0) {
@@ -283,6 +294,135 @@ function PostSetupRunner({ toolset, postSetupKey, onComplete }: PostSetupRunnerP
   )
 }
 
+interface ModelCatalogPickerProps {
+  toolset: string
+  /** The picker-row name of the provider whose catalog to show. */
+  providerName: string
+  /** True when this provider is the one written to config — selecting a model
+   *  only makes sense for the active backend. */
+  isActiveBackend: boolean
+}
+
+/**
+ * Backend model catalog — the GUI counterpart of the model picker `hermes
+ * tools` runs after you choose an image/video generation backend (e.g. FAL's
+ * multi-model catalog). Renders speed / strengths / price per model as a
+ * radio-card list and persists the choice to `image_gen.model` /
+ * `video_gen.model`.
+ */
+function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCatalogPickerProps) {
+  const { t } = useI18n()
+  const copy = t.settings.toolsets
+  const [catalog, setCatalog] = useState<ToolsetModelsResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    setLoading(true)
+    getToolsetModels(toolset, providerName)
+      .then(next => {
+        if (!cancelled) {
+          setCatalog(next)
+        }
+      })
+      .catch(() => {
+        // Backend predates the models endpoint or the provider has no
+        // catalog — hide the section entirely rather than erroring.
+        if (!cancelled) {
+          setCatalog(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+
+    return () => void (cancelled = true)
+  }, [toolset, providerName])
+
+  const pick = async (modelId: string) => {
+    setSaving(modelId)
+
+    try {
+      await selectToolsetModel(toolset, modelId, providerName)
+      setCatalog(current => (current ? { ...current, current: modelId } : current))
+      notify({ kind: 'success', title: copy.modelSelectedTitle, message: copy.modelSelectedMessage(modelId) })
+    } catch (err) {
+      notifyError(err, copy.failedSelectModel(modelId))
+    } finally {
+      setSaving(null)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 px-1 py-2 text-[0.72rem] text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" />
+        {copy.loadingModels}
+      </div>
+    )
+  }
+
+  if (!catalog || !catalog.has_models || catalog.models.length === 0) {
+    return null
+  }
+
+  const selected = catalog.current ?? catalog.default
+
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex items-baseline justify-between gap-2 px-0.5">
+        <span className="text-[0.72rem] font-medium">{copy.modelSectionTitle}</span>
+        <span className="text-[0.68rem] text-muted-foreground">{copy.modelCount(catalog.models.length)}</span>
+      </div>
+      {!isActiveBackend && <p className="px-0.5 text-[0.68rem] text-muted-foreground">{copy.modelInactiveHint}</p>}
+      <div className="grid gap-1">
+        {catalog.models.map(model => {
+          const isSelected = selected === model.id
+          const isDefault = catalog.default === model.id
+
+          return (
+            <button
+              aria-pressed={isSelected}
+              className={cn(
+                'grid gap-0.5 rounded-lg border px-2.5 py-2 text-left transition',
+                isSelected
+                  ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary)'
+                  : 'border-transparent bg-background/55 hover:bg-accent/40',
+                !isActiveBackend && 'opacity-60'
+              )}
+              disabled={saving !== null || !isActiveBackend}
+              key={model.id}
+              onClick={() => void pick(model.id)}
+              type="button"
+            >
+              <span className="flex flex-wrap items-center gap-2">
+                <span className="font-mono text-xs font-medium">{model.display || model.id}</span>
+                {isSelected && (
+                  <Pill tone="primary">
+                    <Check className="size-3" />
+                    {copy.modelInUse}
+                  </Pill>
+                )}
+                {!isSelected && isDefault && <Pill>{copy.modelDefault}</Pill>}
+                {saving === model.id && <Loader2 className="size-3 animate-spin" />}
+              </span>
+              <span className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[0.68rem] text-muted-foreground">
+                {model.speed && <span>{model.speed}</span>}
+                {model.strengths && <span>{model.strengths}</span>}
+                {model.price && <span className="font-mono">{model.price}</span>}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
@@ -313,7 +453,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [toolset])
+  }, [copy.failedLoad, toolset])
 
   useEffect(() => {
     void refresh()
@@ -346,6 +486,17 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
     try {
       await selectToolsetProvider(toolset, provider.name)
+      // Mirror the backend write locally so dependent UI (model catalog
+      // enablement) tracks the new active backend without a refetch.
+      setCfg(current =>
+        current
+          ? {
+              ...current,
+              active_provider: provider.name,
+              providers: current.providers.map(p => ({ ...p, is_active: p.name === provider.name }))
+            }
+          : current
+      )
       notify({ kind: 'success', title: copy.selectedTitle, message: copy.selectedMessage(provider.name) })
       onConfiguredChange?.()
     } catch (err) {
@@ -360,32 +511,31 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     onConfiguredChange?.()
   }
 
-  const emptyMessage = useMemo(() => {
-    if (loading || !cfg) {
-      return null
-    }
-
-    if (!cfg.has_category) {
-      return copy.noProviderOptions
-    }
-
-    if (providers.length === 0) {
-      return copy.noProviders
-    }
-
-    return null
-  }, [cfg, copy, loading, providers.length])
-
   if (loading) {
-    return <PageLoader className="min-h-32" label={copy.loadingConfig} />
+    // Inline row, not a full block loader — a big centered spinner is what
+    // caused the Skills/Tools tab-switch layout jump; this reads as "more
+    // config incoming" without reserving a tall empty area.
+    return (
+      <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" />
+        {copy.loadingConfig}
+      </div>
+    )
   }
 
-  if (emptyMessage) {
-    return <p className="px-1 py-3 text-xs text-muted-foreground">{emptyMessage}</p>
+  // Nothing to configure → render nothing. An inspector explaining that there
+  // is nothing to explain is noise (the old expander UX needed the message so
+  // an expanded-empty panel didn't look broken; the always-open detail doesn't).
+  if (!cfg || !cfg.has_category) {
+    return null
+  }
+
+  if (providers.length === 0) {
+    return <p className="px-1 py-3 text-xs text-muted-foreground">{copy.noProviders}</p>
   }
 
   return (
-    <div className="mt-3 grid gap-2">
+    <div className="grid gap-2">
       {providers.map(provider => {
         const isActive = activeProvider === provider.name
         const configured = providerConfigured(provider, envState)
@@ -418,9 +568,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               <div className="grid gap-2 bg-muted/20 p-3">
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
                 {provider.requires_nous_auth && (
-                  <p className="text-[0.72rem] text-muted-foreground">
-                    {copy.nousIncluded}
-                  </p>
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.nousIncluded}</p>
                 )}
                 {provider.env_vars.length === 0 ? (
                   <p className="text-[0.72rem] text-muted-foreground">{copy.noApiKeyRequired}</p>
@@ -439,6 +587,13 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                   <PostSetupRunner
                     onComplete={() => void refresh()}
                     postSetupKey={provider.post_setup}
+                    toolset={toolset}
+                  />
+                )}
+                {MODEL_CATALOG_TOOLSETS.has(toolset) && (
+                  <ModelCatalogPicker
+                    isActiveBackend={provider.is_active || cfg?.active_provider === provider.name}
+                    providerName={provider.name}
                     toolset={toolset}
                   />
                 )}

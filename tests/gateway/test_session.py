@@ -1,6 +1,7 @@
 """Tests for gateway session management."""
 import json
 import pytest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
@@ -944,6 +945,130 @@ class TestSessionStoreLookupBySessionId:
         assert store.lookup_by_session_id(entry.session_id) is entry
         assert store.lookup_by_session_id("missing") is None
         assert store.lookup_by_session_id("") is None
+
+
+class TestSlackWorkspaceSessionIsolation:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            session_store = SessionStore(sessions_dir=tmp_path, config=config)
+        session_store._db = None
+        session_store._loaded = True
+        return session_store
+
+    def test_dm_keys_include_only_slack_workspace_scope(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T111",
+            chat_id="D123",
+            chat_type="dm",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T222",
+            chat_id="D123",
+            chat_type="dm",
+        )
+
+        assert build_session_key(first) == "agent:main:slack:dm:T111:D123"
+        assert build_session_key(second) == "agent:main:slack:dm:T222:D123"
+        assert build_session_key(first) != build_session_key(second)
+
+        discord = SessionSource(
+            platform=Platform.DISCORD,
+            scope_id="G111",
+            chat_id="D123",
+            chat_type="dm",
+        )
+        assert build_session_key(discord) == "agent:main:discord:dm:D123"
+
+    def test_channel_keys_include_workspace_scope(self):
+        first = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T111",
+            chat_id="C123",
+            chat_type="group",
+            user_id="U1",
+            thread_id="1700000000.000100",
+        )
+        second = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T222",
+            chat_id="C123",
+            chat_type="group",
+            user_id="U1",
+            thread_id="1700000000.000100",
+        )
+
+        expected_suffix = "C123:1700000000.000100"
+        assert build_session_key(first) == f"agent:main:slack:group:T111:{expected_suffix}"
+        assert build_session_key(second) == f"agent:main:slack:group:T222:{expected_suffix}"
+        assert build_session_key(first) != build_session_key(second)
+
+    def test_legacy_routing_entry_moves_to_first_workspace_only(self, store):
+        legacy_source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="D_SHARED",
+            chat_type="dm",
+            user_id="U_SHARED",
+        )
+        legacy_entry = store.get_or_create_session(legacy_source)
+        legacy_key = legacy_entry.session_key
+
+        team_one_source = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T_ONE",
+            chat_id="D_SHARED",
+            chat_type="dm",
+            user_id="U_SHARED",
+        )
+        team_one_entry = store.get_or_create_session(team_one_source)
+
+        assert team_one_entry.session_id == legacy_entry.session_id
+        assert team_one_entry.session_key == "agent:main:slack:dm:T_ONE:D_SHARED"
+        assert legacy_key not in store._entries
+
+        team_two_source = replace(team_one_source, scope_id="T_TWO", guild_id="T_TWO")
+        team_two_entry = store.get_or_create_session(team_two_source)
+        assert team_two_entry.session_id != team_one_entry.session_id
+        assert team_two_entry.session_key == "agent:main:slack:dm:T_TWO:D_SHARED"
+
+    def test_legacy_db_fallback_is_exact_and_rewrites_peer_key(self, store):
+        source = SessionSource(
+            platform=Platform.SLACK,
+            scope_id="T_ONE",
+            chat_id="D_SHARED",
+            chat_type="dm",
+            user_id="U_SHARED",
+        )
+        scoped_key = build_session_key(source)
+        legacy_key = build_session_key(replace(source, scope_id=None, guild_id=None))
+        store._db = MagicMock()
+        store._db.find_latest_gateway_session_for_peer.side_effect = [
+            None,
+            {
+                "id": "legacy-session",
+                "session_key": legacy_key,
+                "started_at": 1.0,
+            },
+        ]
+
+        entry = store.get_or_create_session(source)
+
+        assert entry.session_id == "legacy-session"
+        assert entry.session_key == scoped_key
+        calls = store._db.find_latest_gateway_session_for_peer.call_args_list
+        assert [call.kwargs["session_key"] for call in calls] == [
+            scoped_key,
+            legacy_key,
+        ]
+        assert all(call.kwargs["chat_id"] is None for call in calls)
+        assert all(call.kwargs["chat_type"] is None for call in calls)
+        assert (
+            store._db.record_gateway_session_peer.call_args.kwargs["session_key"]
+            == scoped_key
+        )
 
 
 class TestWhatsAppSessionKeyConsistency:

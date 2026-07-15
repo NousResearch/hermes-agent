@@ -287,6 +287,87 @@ class TestSlashCommandSessionIsolation:
         assert event.source.thread_id == "1700000000.123456"
 
 
+class TestSlackWorkspaceCollisionIsolation:
+    @pytest.mark.asyncio
+    async def test_same_ids_in_two_workspaces_are_both_delivered(self, adapter):
+        from gateway.session import build_session_key
+
+        team_one, team_two = AsyncMock(), AsyncMock()
+        team_one.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Alice"}}}
+        )
+        team_two.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Bob"}}}
+        )
+        adapter._team_clients.update({"T_ONE": team_one, "T_TWO": team_two})
+
+        event = {
+            "text": "same Slack-local ids",
+            "user": "U_SHARED",
+            "channel": "D_SHARED",
+            "channel_type": "im",
+            "ts": "171.000",
+        }
+        await adapter._handle_slack_message(event, {"team_id": "T_ONE"})
+        await adapter._handle_slack_message(event, {"team_id": "T_TWO"})
+
+        assert adapter.handle_message.await_count == 2
+        first = adapter.handle_message.await_args_list[0].args[0]
+        second = adapter.handle_message.await_args_list[1].args[0]
+        assert first.source.scope_id == "T_ONE"
+        assert second.source.scope_id == "T_TWO"
+        assert build_session_key(first.source) != build_session_key(second.source)
+        assert adapter._channel_teams["D_SHARED"] == {"T_ONE", "T_TWO"}
+        assert "D_SHARED" not in adapter._channel_team
+
+    @pytest.mark.asyncio
+    async def test_same_ids_route_outbound_through_each_workspace_client(self, adapter):
+        one, two = AsyncMock(), AsyncMock()
+        one.chat_postMessage = AsyncMock(return_value={"ts": "171.000"})
+        two.chat_postMessage = AsyncMock(return_value={"ts": "171.000"})
+        adapter._team_clients.update({"T_ONE": one, "T_TWO": two})
+
+        await adapter.send(
+            "D_SHARED", "one", metadata={"scope_id": "T_ONE"}
+        )
+        await adapter.send(
+            "D_SHARED", "two", metadata={"slack_team_id": "T_TWO"}
+        )
+
+        one.chat_postMessage.assert_awaited_once_with(
+            channel="D_SHARED", text="one", mrkdwn=True
+        )
+        two.chat_postMessage.assert_awaited_once_with(
+            channel="D_SHARED", text="two", mrkdwn=True
+        )
+        assert ("T_ONE", "171.000") in adapter._bot_message_ts
+        assert ("T_TWO", "171.000") in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_same_ids_keep_slash_contexts_workspace_scoped(self, adapter):
+        import time
+        from plugins.platforms.slack.adapter import _slash_user_id
+
+        for team_id in ("T_ONE", "T_TWO"):
+            adapter._slash_command_contexts[
+                (team_id, "C_SHARED", "U_SHARED")
+            ] = {
+                "response_url": f"https://hooks.slack.com/{team_id}",
+                "ts": time.monotonic(),
+            }
+
+        token = _slash_user_id.set("U_SHARED")
+        try:
+            first = adapter._pop_slash_context("C_SHARED", "T_ONE")
+            second = adapter._pop_slash_context("C_SHARED", "T_TWO")
+        finally:
+            _slash_user_id.reset(token)
+
+        assert first["response_url"].endswith("T_ONE")
+        assert second["response_url"].endswith("T_TWO")
+        assert adapter._slash_command_contexts == {}
+
+
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
@@ -4797,7 +4878,7 @@ class TestThreadReplyHandling:
     ):
         """Thread replies without mention should be processed if there's an active session."""
         # Simulate an active session for this thread
-        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
         mock_session_store._entries = {session_key: MagicMock()}
 
         event = {
@@ -4906,7 +4987,7 @@ class TestThreadReplyHandling:
     ):
         """Thread replies with @mention should still strip the bot ID."""
         # Even with a session, mentions should be stripped
-        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
         mock_session_store._entries = {session_key: MagicMock()}
 
         event = {

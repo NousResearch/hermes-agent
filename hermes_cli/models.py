@@ -98,6 +98,12 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_openrouter_catalog_cache_ts: float = 0.0  # monotonic() of last successful build
+# Guardrails against a poisoned in-process cache. See issue: the OpenRouter
+# picker froze at 1 model after a transient API hiccup cached a bad result
+# forever, because the cache had no TTL and no invalidation path.
+_OPENROUTER_CATALOG_TTL: float = 3600.0  # rebuild at least hourly even if cached
+_OPENROUTER_CATALOG_MIN: int = 3         # never freeze a build smaller than this
 
 
 
@@ -1436,9 +1442,15 @@ def fetch_openrouter_models(
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
     """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
-    global _openrouter_catalog_cache
+    import time as _t
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_ts
 
-    if _openrouter_catalog_cache is not None and not force_refresh:
+    _now = _t.monotonic()
+    if (
+        _openrouter_catalog_cache is not None
+        and not force_refresh
+        and (_now - _openrouter_catalog_cache_ts) < _OPENROUTER_CATALOG_TTL
+    ):
         return list(_openrouter_catalog_cache)
 
     # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
@@ -1498,10 +1510,19 @@ def fetch_openrouter_models(
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
+    # Poison guard: a build this small is almost certainly a transient parse/API
+    # glitch, not reality (the curated manifest alone has ~35 entries). Do NOT
+    # freeze it into the in-process cache — return the safe fallback instead so
+    # the next call can rebuild correctly. Without this, a single hiccup during
+    # a cache-miss sticks a bad (often 1-model) result forever.
+    if len(curated) < _OPENROUTER_CATALOG_MIN:
+        return list(fallback)
+
     first_id, first_desc = curated[0]
     if not first_desc:
         curated[0] = (first_id, "recommended")
     _openrouter_catalog_cache = curated
+    _openrouter_catalog_cache_ts = _t.monotonic()
     return list(curated)
 
 

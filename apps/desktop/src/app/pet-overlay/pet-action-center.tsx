@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
 import type { PetActionCenterLiveStatus, PetActionCenterState } from '@/store/pet-action-center'
 import type { PetActionCenterApprovalChoice, PetActionCenterControl } from '@/store/pet-overlay'
 import { sendPetOverlayControl } from '@/store/pet-overlay'
@@ -511,11 +513,7 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
   }
 
   return (
-    <div
-      onPointerDown={onPanelPointerDown}
-      onPointerUp={onPanelPointerUp}
-      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}
-    >
+    <div className="flex flex-col items-center gap-1" onPointerDown={onPanelPointerDown} onPointerUp={onPanelPointerUp}>
       {/* Trigger button — collapsed state */}
       {!panelOpen && (
         <Button aria-label={ac.open} onClick={openPanel} ref={triggerRef} size="xs" variant="secondary">
@@ -523,49 +521,44 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
         </Button>
       )}
 
-      {/* Panel — open state */}
+      {/* Panel — open state. Floating-panel language per DESIGN.md: shadow-nous
+          + --stroke-nous hairline, rounded-lg, backdrop-blur, all token-driven
+          so it inherits the active desktop theme instead of looking like a
+          foreign body. */}
       {panelOpen && (
         <div
           aria-label={ac.title}
           aria-modal="true"
+          className={cn(
+            'flex w-80 max-w-xs flex-col gap-2 rounded-lg border border-(--stroke-nous)',
+            'bg-(--ui-bg-elevated)/95 p-3 text-(--foreground) shadow-(--shadow-nous)',
+            'backdrop-blur-xl [-webkit-backdrop-filter:blur(0.75rem)]'
+          )}
           onKeyDown={onDialogKeyDown}
           ref={dialogRef}
           role="dialog"
-          style={{
-            background: 'var(--ui-bg-elevated)',
-            border: '1px solid var(--stroke-nous)',
-            borderRadius: 4,
-            boxShadow: 'var(--shadow-nous)',
-            color: 'var(--foreground)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            maxWidth: 320,
-            padding: 12,
-            width: 320
-          }}
           tabIndex={-1}
         >
           {/* Header: count + close */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>
+          <div className="flex items-center justify-between">
+            <span className="text-[0.6875rem] font-semibold text-(--ui-text-primary)">
               {ac.itemCount(state.items.length, state.attentionCount)}
             </span>
             <Button aria-label={ac.close} onClick={closePanel} size="icon-xs" variant="ghost">
-              ✕
+              <Codicon name="close" size="0.75rem" />
             </Button>
           </div>
 
           {/* Secure input hint */}
           {state.secureInputCount > 0 && (
-            <div style={{ fontSize: 11, color: 'var(--ui-text-secondary)' }}>
+            <div className="text-[0.6875rem] text-(--ui-text-secondary)">
               {ac.secureInputHint(state.secureInputCount)}
             </div>
           )}
 
           {/* Live region for action status */}
           {liveMessage && (
-            <div role="status" style={{ fontSize: 11, color: 'var(--ui-text-secondary)' }}>
+            <div className="text-[0.6875rem] text-(--ui-text-secondary)" role="status">
               {liveMessage}
             </div>
           )}
@@ -588,24 +581,12 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
           {item && isLiveTurnItem(item) && item.reply?.text && (
             <div
               aria-label={ac.replyLabel}
+              className="max-h-45 flex flex-col gap-0.5 overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words pt-1 text-[0.6875rem] text-(--ui-text-secondary) [user-select:text]"
               role="region"
-              style={{
-                borderTop: '1px solid var(--stroke-nous)',
-                marginTop: 4,
-                paddingTop: 4,
-                fontSize: 11,
-                color: 'var(--ui-text-secondary)',
-                maxHeight: 180,
-                overflowX: 'hidden',
-                overflowY: 'auto',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                userSelect: 'text'
-              }}
               tabIndex={0}
             >
-              <div style={{ fontWeight: 600, marginBottom: 2 }}>{ac.replyLabel}</div>
-              {item.reply.text}
+              <div className="mb-0.5 font-semibold">{ac.replyLabel}</div>
+              <div className="border-t border-(--ui-stroke-tertiary) pt-1">{item.reply.text}</div>
             </div>
           )}
 
@@ -615,12 +596,12 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
 
           {/* Navigation */}
           {state.items.length > 1 && nestedMode === 'none' && (
-            <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
-              <Button aria-label={ac.previous} onClick={() => navigate(-1)} size="xs" variant="ghost">
-                ‹
+            <div className="flex items-center justify-center gap-1">
+              <Button aria-label={ac.previous} onClick={() => navigate(-1)} size="icon-xs" variant="ghost">
+                <Codicon name="chevron-left" size="0.875rem" />
               </Button>
-              <Button aria-label={ac.next} onClick={() => navigate(1)} size="xs" variant="ghost">
-                ›
+              <Button aria-label={ac.next} onClick={() => navigate(1)} size="icon-xs" variant="ghost">
+                <Codicon name="chevron-right" size="0.875rem" />
               </Button>
             </div>
           )}
@@ -683,7 +664,7 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
 
           {/* Exact-session navigation is capability-gated for every item kind. */}
           {item && item.allowedActions.includes('open-in-app') && nestedMode === 'none' && (
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div className="flex justify-end">
               <Button disabled={isSubmitting} onClick={onOpenInApp} size="inline" variant="textStrong">
                 {ac.openInApp}
               </Button>
@@ -692,7 +673,7 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
 
           {/* No items */}
           {state.items.length === 0 && state.secureInputCount === 0 && (
-            <div style={{ fontSize: 11, color: 'var(--ui-text-tertiary)', textAlign: 'center' }}>{ac.noItems}</div>
+            <div className="text-center text-[0.6875rem] text-(--ui-text-tertiary)">{ac.noItems}</div>
           )}
         </div>
       )}
@@ -704,18 +685,10 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
 
 function ApprovalDetail({ ac, item }: { ac: ActionCenterStrings; item: ApprovalItem }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>{ac.approvalTitle}</div>
-      <div style={{ fontSize: 11, color: 'var(--ui-text-secondary)' }}>{item.description}</div>
-      <div
-        style={{
-          fontFamily: 'var(--font-mono, monospace)',
-          fontSize: 10,
-          color: 'var(--ui-text-tertiary)',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-all'
-        }}
-      >
+    <div className="flex flex-col gap-1">
+      <div className="text-[0.6875rem] font-semibold text-(--ui-text-primary)">{ac.approvalTitle}</div>
+      <div className="text-[0.6875rem] text-(--ui-text-secondary)">{item.description}</div>
+      <div className="break-all whitespace-pre-wrap font-mono text-[0.625rem] text-(--ui-text-tertiary)">
         {item.command}
       </div>
     </div>
@@ -724,9 +697,9 @@ function ApprovalDetail({ ac, item }: { ac: ActionCenterStrings; item: ApprovalI
 
 function ClarifyDetail({ ac, item }: { ac: ActionCenterStrings; item: ClarifyItem }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>{ac.clarifyTitle}</div>
-      <div style={{ fontSize: 11, color: 'var(--ui-text-secondary)' }}>{item.question}</div>
+    <div className="flex flex-col gap-1">
+      <div className="text-[0.6875rem] font-semibold text-(--ui-text-primary)">{ac.clarifyTitle}</div>
+      <div className="text-[0.6875rem] text-(--ui-text-secondary)">{item.question}</div>
     </div>
   )
 }
@@ -775,10 +748,10 @@ function ApprovalActions({
   return (
     <>
       {nestedMode === 'confirm-always' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>{ac.alwaysConfirmTitle}</div>
-          <div style={{ fontSize: 11, color: 'var(--ui-text-secondary)' }}>{ac.alwaysConfirmDescription(command)}</div>
-          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+        <div className="flex flex-col gap-1.5">
+          <div className="text-[0.6875rem] font-semibold text-(--ui-text-primary)">{ac.alwaysConfirmTitle}</div>
+          <div className="text-[0.6875rem] text-(--ui-text-secondary)">{ac.alwaysConfirmDescription(command)}</div>
+          <div className="flex justify-end gap-1">
             <Button onClick={onNestedCancel} ref={alwaysCancelRef} size="xs" variant="text">
               {ac.cancel}
             </Button>
@@ -790,8 +763,8 @@ function ApprovalActions({
       )}
 
       {nestedMode === 'deny-reason' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ui-text-primary)' }}>{ac.denyReason}</div>
+        <div className="flex flex-col gap-1.5">
+          <div className="text-[0.6875rem] font-semibold text-(--ui-text-primary)">{ac.denyReason}</div>
           <Input
             aria-label={ac.denyReason}
             disabled={isSubmitting}
@@ -801,7 +774,7 @@ function ApprovalActions({
             size="sm"
             value={denyReason}
           />
-          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+          <div className="flex justify-end gap-1">
             <Button onClick={onNestedCancel} size="xs" variant="text">
               {ac.cancel}
             </Button>
@@ -821,7 +794,7 @@ function ApprovalActions({
       {/* Keep source buttons mounted while a nested layer is open so focus can
           return to the exact button node that opened it. */}
       <div hidden={nestedMode !== 'none'}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+        <div className="flex flex-wrap gap-1">
           {has('approve-once') && (
             <Button disabled={isSubmitting} onClick={onApproveOnce} size="xs" variant="default">
               {ac.approveOnce}
@@ -880,7 +853,7 @@ function ClarifyActions({
   const has = (action: string) => allowedActions.includes(action as Item['allowedActions'][number])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div className="flex flex-col gap-1.5">
       {/* Backend choices */}
       {choices?.map(choice => (
         <Button
@@ -908,7 +881,7 @@ function ClarifyActions({
       />
 
       {/* Submit + Skip */}
-      <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+      <div className="flex justify-end gap-1">
         {has('clarify-skip') && (
           <Button aria-label={ac.skip} disabled={isSubmitting} onClick={onSkip} size="xs" variant="ghost">
             {ac.skip}

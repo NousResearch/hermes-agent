@@ -79,6 +79,32 @@ interface DragState {
   moved: boolean
 }
 
+interface QueuedZoomIntent {
+  anchor: PetZoomAnchor
+  scale: number
+}
+
+function parsedOverlayBounds(value: unknown): PetOverlayBounds | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const bounds = value as Partial<PetOverlayBounds>
+
+  if (
+    !Number.isFinite(bounds.x) ||
+    !Number.isFinite(bounds.y) ||
+    !Number.isFinite(bounds.width) ||
+    !Number.isFinite(bounds.height) ||
+    (bounds.width ?? 0) <= 0 ||
+    (bounds.height ?? 0) <= 0
+  ) {
+    return null
+  }
+
+  return bounds as PetOverlayBounds
+}
+
 export function PetOverlayApp() {
   const { t } = useI18n()
   const info = useStore($petInfo)
@@ -91,9 +117,12 @@ export function PetOverlayApp() {
   const [unread, setUnread] = useState(false)
 
   const dragRef = useRef<DragState | null>(null)
-  // Last Alt+wheel anchor, consumed by the resize effect to zoom toward the
-  // cursor; null means a non-wheel scale change (slider) → anchor bottom-center.
-  const zoomAnchorRef = useRef<PetZoomAnchor | null>(null)
+  const dragBoundsRef = useRef<PetOverlayBounds | null>(null)
+  const dragRafRef = useRef<number | null>(null)
+  // Preserve every wheel step until the resize frame consumes it. Each intent
+  // carries an absolute screen cursor so it can be rebased after a pending
+  // native resize moves the window underneath the gesture.
+  const zoomIntentsRef = useRef<QueuedZoomIntent[]>([])
   const petRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   // Last mirrored reaction id — a bump means the main window fired a reaction.
@@ -103,6 +132,57 @@ export function PetOverlayApp() {
   const actionCenterOpenRef = useRef(false)
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const boundsRequestRef = useRef(0)
+
+  // Last actual window bounds returned by the main process (clamped + applied).
+  // The resize effect reads from here instead of `window.outerWidth/Height/
+  // screenX/Y`, which can be stale for one or more frames after a setBounds
+  // call — especially on macOS where the OS applies bounds asynchronously.
+  // Without this, a rapid open/close of the action center can race: the second
+  // resize reads pre-resize DOM geometry and anchors the pet off-position.
+  const actualBoundsRef = useRef<PetOverlayBounds | null>(null)
+  // Tracks the newest request until the main process confirms it. A content
+  // change can return to the confirmed size while a grow request is still in
+  // flight; without this, the grow may land after the close and leave the
+  // overlay enlarged because the close looked like a local no-op.
+  const pendingBoundsRef = useRef<PetOverlayBounds | null>(null)
+  const boundsActiveRef = useRef(true)
+  // Pending rAF for the resize effect, so rapid content changes (panel open
+  // → items pushed → nested layer) coalesce into one setBounds call.
+  const resizeRafRef = useRef<number | null>(null)
+
+  const requestOverlayBounds = useCallback((bounds: PetOverlayBounds, persist: boolean) => {
+    const api = window.hermesDesktop?.petOverlay
+
+    if (!api || !boundsActiveRef.current) {
+      return
+    }
+
+    const requestId = ++boundsRequestRef.current
+    pendingBoundsRef.current = bounds
+
+    void api
+      .setBounds(bounds)
+      .then(result => {
+        if (!boundsActiveRef.current || requestId !== boundsRequestRef.current) {
+          return
+        }
+
+        pendingBoundsRef.current = null
+
+        if (result.ok && result.bounds) {
+          actualBoundsRef.current = result.bounds
+
+          if (persist) {
+            api.control({ bounds: result.bounds, type: 'bounds' })
+          }
+        }
+      })
+      .catch(() => {
+        if (boundsActiveRef.current && requestId === boundsRequestRef.current) {
+          pendingBoundsRef.current = null
+        }
+      })
+  }, [])
 
   const setIgnore = (ignore: boolean) => {
     if (ignoreRef.current !== ignore) {
@@ -141,6 +221,53 @@ export function PetOverlayApp() {
 
     return off
   }, [])
+
+  // Electron can move/reclamp the native window independently when display
+  // topology changes. Keep the renderer's confirmed basis synchronized, and
+  // invalidate every outstanding response when the overlay is disabled or
+  // unmounted so stale promises cannot persist old geometry.
+  useEffect(() => {
+    const active = Boolean(info.enabled && info.spritesheetBase64)
+    const api = window.hermesDesktop?.petOverlay
+    boundsActiveRef.current = active
+
+    const offBounds = active
+      ? api?.onBounds(payload => {
+          const bounds = parsedOverlayBounds(payload)
+
+          if (bounds) {
+            actualBoundsRef.current = bounds
+          }
+        })
+      : undefined
+
+    if (!active) {
+      actualBoundsRef.current = null
+      pendingBoundsRef.current = null
+      zoomIntentsRef.current = []
+      dragBoundsRef.current = null
+    }
+
+    return () => {
+      boundsActiveRef.current = false
+      boundsRequestRef.current += 1
+      pendingBoundsRef.current = null
+      zoomIntentsRef.current = []
+      dragBoundsRef.current = null
+
+      if (resizeRafRef.current !== null) {
+        cancelAnimationFrame(resizeRafRef.current)
+        resizeRafRef.current = null
+      }
+
+      if (dragRafRef.current !== null) {
+        cancelAnimationFrame(dragRafRef.current)
+        dragRafRef.current = null
+      }
+
+      offBounds?.()
+    }
+  }, [info.enabled, info.spritesheetBase64])
 
   // Click-through: make only the *solid* sprite pixels (plus the bubble / mail
   // button / open composer) interactive — clicks on the transparent rectangle
@@ -263,15 +390,22 @@ export function PetOverlayApp() {
       return
     }
 
+    const baseBounds = pendingBoundsRef.current ?? actualBoundsRef.current ?? {
+      height: window.outerHeight,
+      width: window.outerWidth,
+      x: window.screenX,
+      y: window.screenY
+    }
+
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
     dragRef.current = {
-      height: window.outerHeight,
+      height: baseBounds.height,
       moved: false,
-      offX: e.screenX - window.screenX,
-      offY: e.screenY - window.screenY,
+      offX: e.screenX - baseBounds.x,
+      offY: e.screenY - baseBounds.y,
       startX: e.screenX,
       startY: e.screenY,
-      width: window.outerWidth
+      width: baseBounds.width
     }
   }
 
@@ -286,14 +420,24 @@ export function PetOverlayApp() {
       drag.moved = true
     }
 
-    void window.hermesDesktop?.petOverlay
-      ?.setBounds({
-        height: drag.height,
-        width: drag.width,
-        x: e.screenX - drag.offX,
-        y: e.screenY - drag.offY
+    dragBoundsRef.current = {
+      height: drag.height,
+      width: drag.width,
+      x: e.screenX - drag.offX,
+      y: e.screenY - drag.offY
+    }
+
+    if (dragRafRef.current === null) {
+      dragRafRef.current = requestAnimationFrame(() => {
+        dragRafRef.current = null
+        const bounds = dragBoundsRef.current
+        dragBoundsRef.current = null
+
+        if (bounds) {
+          requestOverlayBounds(bounds, false)
+        }
       })
-      .catch(() => undefined)
+    }
   }
 
   const onPetPointerUp = (e: React.PointerEvent) => {
@@ -320,16 +464,13 @@ export function PetOverlayApp() {
         y: e.screenY - drag.offY
       }
 
-      const requestId = ++boundsRequestRef.current
+      if (dragRafRef.current !== null) {
+        cancelAnimationFrame(dragRafRef.current)
+        dragRafRef.current = null
+      }
 
-      void window.hermesDesktop?.petOverlay
-        ?.setBounds(requestedBounds)
-        .then(result => {
-          if (requestId === boundsRequestRef.current && result.ok && result.bounds) {
-            window.hermesDesktop?.petOverlay?.control({ bounds: result.bounds, type: 'bounds' })
-          }
-        })
-        .catch(() => undefined)
+      dragBoundsRef.current = null
+      requestOverlayBounds(requestedBounds, true)
 
       return
     }
@@ -396,7 +537,7 @@ export function PetOverlayApp() {
   // renderer to persist it (it pushes the reconciled scale back). Stash the
   // cursor anchor for the resize effect; the window itself is grown to fit there.
   const onScale = useCallback((next: number, anchor: PetZoomAnchor) => {
-    zoomAnchorRef.current = anchor
+    zoomIntentsRef.current.push({ anchor, scale: next })
     setPetInfo({ ...$petInfo.get(), scale: next })
     window.hermesDesktop?.petOverlay?.control({ scale: next, type: 'scale' })
   }, [])
@@ -406,57 +547,81 @@ export function PetOverlayApp() {
   // One resize pipeline owns scale and content measurement. The compact pet
   // size is the floor; an open action center can only grow it, so a scale push
   // can never race the observer and shrink around live content.
+  //
+  // Reads actual window bounds from `actualBoundsRef` (updated by every
+  // setBounds response) instead of `window.outer*` / `window.screen*`, which
+  // lag the OS by one+ frame on macOS. A rAF coalesces rapid content changes
+  // (panel open → items → nested layer) into a single setBounds.
   useEffect(() => {
     if (!info.enabled || !info.spritesheetBase64) {
       return
     }
 
-    const targetSize = overlayWindowTargetSize(
-      info.frameW ?? DEFAULT_FRAME_W,
-      info.frameH ?? DEFAULT_FRAME_H,
-      info.scale ?? DEFAULT_SCALE,
-      measuredContent
-    )
-
-    const currentBounds: PetOverlayBounds = {
-      height: window.outerHeight,
-      width: window.outerWidth,
-      x: window.screenX,
-      y: window.screenY
+    if (resizeRafRef.current !== null) {
+      cancelAnimationFrame(resizeRafRef.current)
     }
 
-    if (targetSize.width === currentBounds.width && targetSize.height === currentBounds.height) {
-      zoomAnchorRef.current = null
+    resizeRafRef.current = requestAnimationFrame(() => {
+      resizeRafRef.current = null
 
-      return
-    }
+      const currentBounds: PetOverlayBounds = pendingBoundsRef.current ?? actualBoundsRef.current ?? {
+        height: window.outerHeight,
+        width: window.outerWidth,
+        x: window.screenX,
+        y: window.screenY
+      }
+      const zoomIntents = zoomIntentsRef.current.splice(0)
+      let bounds = currentBounds
 
-    const anchor = zoomAnchorRef.current
-    zoomAnchorRef.current = null
+      if (zoomIntents.length > 0) {
+        for (const intent of zoomIntents) {
+          const targetSize = overlayWindowTargetSize(
+            info.frameW ?? DEFAULT_FRAME_W,
+            info.frameH ?? DEFAULT_FRAME_H,
+            intent.scale,
+            measuredContent
+          )
 
-    const bounds = anchoredOverlayBounds({
-      currentBounds,
-      paddingBottom: PET_PADDING_BOTTOM,
-      targetSize,
-      wheelAnchor: anchor
+          bounds = anchoredOverlayBounds({
+            currentBounds: bounds,
+            paddingBottom: PET_PADDING_BOTTOM,
+            targetSize,
+            wheelAnchor: {
+              ...intent.anchor,
+              clientX: intent.anchor.screenX - bounds.x,
+              clientY: intent.anchor.screenY - bounds.y
+            }
+          })
+        }
+      } else {
+        const targetSize = overlayWindowTargetSize(
+          info.frameW ?? DEFAULT_FRAME_W,
+          info.frameH ?? DEFAULT_FRAME_H,
+          info.scale ?? DEFAULT_SCALE,
+          measuredContent
+        )
+
+        if (targetSize.width === currentBounds.width && targetSize.height === currentBounds.height) {
+          return
+        }
+
+        bounds = anchoredOverlayBounds({
+          currentBounds,
+          paddingBottom: PET_PADDING_BOTTOM,
+          targetSize
+        })
+      }
+
+      requestOverlayBounds(bounds, true)
     })
 
-    const requestId = ++boundsRequestRef.current
-    const api = window.hermesDesktop?.petOverlay
-
-    if (!api) {
-      return
+    return () => {
+      if (resizeRafRef.current !== null) {
+        cancelAnimationFrame(resizeRafRef.current)
+        resizeRafRef.current = null
+      }
     }
-
-    void api
-      .setBounds(bounds)
-      .then(result => {
-        if (requestId === boundsRequestRef.current && result.ok && result.bounds) {
-          api.control({ bounds: result.bounds, type: 'bounds' })
-        }
-      })
-      .catch(() => undefined)
-  }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH, measuredContent])
+  }, [info.enabled, info.spritesheetBase64, info.scale, info.frameW, info.frameH, measuredContent, requestOverlayBounds])
 
   if (!info.enabled || !info.spritesheetBase64) {
     return null
@@ -528,9 +693,16 @@ export function PetOverlayApp() {
         }}
       >
         <PetActionCenter onOpenChange={onActionCenterOpenChange} state={actionCenterState} />
-        <div style={{ marginBottom: 4 }}>
-          <PetBubble />
-        </div>
+        {/* The action center already owns live status while open. Keeping the
+            separate speech bubble mounted there makes transient navigation
+            state add/remove a second row, which forces the native overlay to
+            grow, shrink, then grow again around the dialog. Suppress that
+            duplicate surface so action-center geometry changes monotonically. */}
+        {!actionCenterOpen && (
+          <div style={{ marginBottom: 4 }}>
+            <PetBubble />
+          </div>
+        )}
         <div style={{ lineHeight: 0, position: 'relative' }}>
           <PetSprite info={info} />
 

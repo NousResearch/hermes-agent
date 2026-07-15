@@ -7069,6 +7069,10 @@ function applyPetOverlayBounds(bounds, { persist = false } = {}) {
 
   const applied = win.getBounds()
 
+  if (!win.webContents.isDestroyed()) {
+    win.webContents.send('hermes:pet-overlay:bounds', applied)
+  }
+
   if (persist && changed) {
     persistActualPetOverlayBounds(applied)
   }

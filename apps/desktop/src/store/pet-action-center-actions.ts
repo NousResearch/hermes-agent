@@ -25,7 +25,7 @@ export interface PetActionCenterGateway extends PetLiveTurnGateway {}
 export interface PetActionCenterActionDependencies extends PetLiveTurnActionDependencies {
   ensureProfile: (profile: string) => Promise<void>
   gatewayForProfile: (profile: string) => PetActionCenterGateway | null
-  resumeSession: (profile: string, storedSessionId: string) => Promise<boolean> | boolean
+  openSession: (profile: string, storedSessionId: string) => Promise<boolean> | boolean
 }
 
 export interface PetActionCenterActions {
@@ -333,7 +333,7 @@ async function openExactSession(
       return
     }
 
-    const opened = await dependencies.resumeSession(item.profile, item.storedSessionId)
+    const opened = await dependencies.openSession(item.profile, item.storedSessionId)
 
     if (!opened) {
       finish(control.itemId, { status: 'error', errorCode: 'open-failed' })

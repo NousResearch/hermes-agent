@@ -90,76 +90,41 @@ export function LiveStatusStrip({
 
   return (
     <div
+      className="flex flex-col gap-1 rounded-md border-l-2 border-(--ui-stroke-primary) bg-(--ui-bg-quaternary) px-2 py-1.5"
       data-testid="live-status-strip"
-      style={{
-        background: 'var(--ui-bg-quaternary)',
-        borderLeft: '2px solid var(--ui-stroke-primary)',
-        borderRadius: 3,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
-        padding: '6px 8px'
-      }}
     >
-      <div style={{ alignItems: 'baseline', display: 'flex', gap: 6, minWidth: 0 }}>
-        <span style={{ color: 'var(--ui-text-primary)', fontSize: 11, fontWeight: 600 }}>{safeProfileLabel}</span>
-        <span
-          style={{
-            color: 'var(--ui-text-secondary)',
-            fontSize: 11,
-            minWidth: 0,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap'
-          }}
-        >
-          {safeSessionTitle}
-        </span>
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <span className="text-[0.6875rem] font-semibold text-(--ui-text-primary)">{safeProfileLabel}</span>
+        <span className="min-w-0 truncate text-[0.6875rem] text-(--ui-text-secondary)">{safeSessionTitle}</span>
       </div>
 
-      <div style={{ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+      <div className="flex flex-wrap items-center gap-1.5">
         <span
           aria-live="polite"
+          className="text-[0.6875rem] font-semibold text-(--ui-text-primary)"
           data-testid="live-status-announcement"
-          style={{ color: 'var(--ui-text-primary)', fontSize: 11, fontWeight: 600 }}
         >
           {statusLabel}
         </span>
         {hasStartedAt && (
-          <span aria-hidden="true" style={{ color: 'var(--ui-text-tertiary)', fontSize: 10 }}>
+          <span aria-hidden="true" className="text-[0.625rem] text-(--ui-text-tertiary)">
             {formatElapsed(elapsedSeconds(status.turnStartedAt ?? 0, now))}
           </span>
         )}
         {status.queuedCount > 0 && (
-          <span
-            style={{
-              background: 'var(--ui-bg-tertiary)',
-              borderRadius: 3,
-              color: 'var(--ui-text-secondary)',
-              fontSize: 10,
-              padding: '1px 4px'
-            }}
-          >
+          <span className="rounded-sm bg-(--ui-bg-tertiary) px-1 py-px text-[0.625rem] text-(--ui-text-secondary)">
             {ac.queuedCount(status.queuedCount)}
           </span>
         )}
         {connection && (
-          <span
-            style={{
-              border: '1px solid var(--ui-stroke-secondary)',
-              borderRadius: 3,
-              color: 'var(--ui-text-secondary)',
-              fontSize: 10,
-              padding: '1px 4px'
-            }}
-          >
+          <span className="rounded-sm border border-(--ui-stroke-secondary) px-1 py-px text-[0.625rem] text-(--ui-text-secondary)">
             {connection}
           </span>
         )}
       </div>
 
       {(status.activityKind === 'reasoning' || activityName) && (
-        <div style={{ color: 'var(--ui-text-tertiary)', display: 'flex', flexWrap: 'wrap', fontSize: 10, gap: 4 }}>
+        <div className="flex flex-wrap gap-1 text-[0.625rem] text-(--ui-text-tertiary)">
           {status.activityKind === 'reasoning' && <span>{ac.reasoning}</span>}
           {activityName && <span>{activityName}</span>}
         </div>

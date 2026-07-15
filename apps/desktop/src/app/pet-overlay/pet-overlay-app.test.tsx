@@ -6,7 +6,11 @@ import { usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
 import { en } from '@/i18n/en'
 import { setPetInfo } from '@/store/pet'
 import type { PetActionCenterState } from '@/store/pet-action-center'
-import type { PetOverlayStatePayload } from '@/store/pet-overlay'
+import {
+  anchoredOverlayBounds,
+  overlayWindowTargetSize,
+  type PetOverlayStatePayload
+} from '@/store/pet-overlay'
 
 import { PetOverlayApp } from './pet-overlay-app'
 
@@ -37,6 +41,7 @@ let setBoundsMock: ReturnType<typeof vi.fn>
 let setFocusableMock: ReturnType<typeof vi.fn>
 let setIgnoreMouseMock: ReturnType<typeof vi.fn>
 let stateListener: ((payload: PetOverlayStatePayload) => void) | undefined
+let boundsListener: ((payload: unknown) => void) | undefined
 let windowBounds = { height: 300, width: 240, x: 100, y: 200 }
 
 const initialResizeObserver = globalThis.ResizeObserver
@@ -150,6 +155,10 @@ function pushState(payload = makePayload()) {
   act(() => stateListener?.(payload))
 }
 
+function pushBounds(payload: unknown) {
+  act(() => boundsListener?.(payload))
+}
+
 function installDesktopMock() {
   controlMock = vi.fn()
   setBoundsMock = vi.fn(async bounds => {
@@ -160,11 +169,19 @@ function installDesktopMock() {
   setFocusableMock = vi.fn()
   setIgnoreMouseMock = vi.fn()
   stateListener = undefined
+  boundsListener = undefined
 
   desktopWindow.hermesDesktop = {
     petOverlay: {
       close: vi.fn().mockResolvedValue({ ok: true }),
       control: controlMock,
+      onBounds: vi.fn(callback => {
+        boundsListener = callback
+
+        return () => {
+          boundsListener = undefined
+        }
+      }),
       onControl: vi.fn(() => () => {}),
       onState: vi.fn(callback => {
         stateListener = callback
@@ -228,6 +245,18 @@ describe('PetOverlayApp action-center integration', () => {
     expect(screen.getByRole('dialog')).not.toBeNull()
     expect(setFocusableMock).toHaveBeenCalledWith(true)
     expect(setIgnoreMouseMock).toHaveBeenCalledWith(false)
+  })
+
+  it('suppresses the duplicate speech bubble while the action center is open and restores it on close', () => {
+    render(<PetOverlayApp />)
+    pushState()
+
+    expect(screen.getByTestId('pet-bubble')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    expect(screen.queryByTestId('pet-bubble')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: ac.close }))
+    expect(screen.getByTestId('pet-bubble')).toBeTruthy()
   })
 
   it('returns to non-focusable on action-center close when the composer is closed', () => {
@@ -346,11 +375,13 @@ describe('PetOverlayApp action-center integration', () => {
     const originalCenter = windowBounds.x + windowBounds.width / 2
     const originalBottom = windowBounds.y + windowBounds.height
 
-    observer.emit(180, 200)
+    act(() => observer.emit(180, 200))
     expect(setBoundsMock).not.toHaveBeenCalled()
 
-    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    act(() => fireEvent.click(screen.getByRole('button', { name: ac.open })))
     await act(async () => observer.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
 
     const expanded = setBoundsMock.mock.calls.at(-1)?.[0]
     expect(expanded.width).toBeGreaterThan(340)
@@ -358,13 +389,58 @@ describe('PetOverlayApp action-center integration', () => {
     expect(expanded.x + expanded.width / 2).toBe(originalCenter)
     expect(expanded.y + expanded.height).toBe(originalBottom)
 
-    fireEvent.click(screen.getByRole('button', { name: ac.close }))
+    act(() => fireEvent.click(screen.getByRole('button', { name: ac.close })))
     await act(async () => observer.emit(180, 200))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
 
     const collapsed = setBoundsMock.mock.calls.at(-1)?.[0]
     expect(collapsed).toEqual({ height: 300, width: 240, x: 100, y: 200 })
     expect(collapsed.x + collapsed.width / 2).toBe(originalCenter)
     expect(collapsed.y + collapsed.height).toBe(originalBottom)
+  })
+
+  it('corrects an in-flight expansion when the panel collapses before the main process confirms it', async () => {
+    const pending: Array<{
+      bounds: typeof windowBounds
+      resolve: (result: { bounds: typeof windowBounds; ok: true }) => void
+    }> = []
+
+    setBoundsMock.mockImplementation(
+      bounds =>
+        new Promise(resolve => {
+          pending.push({ bounds, resolve })
+        })
+    )
+
+    render(<PetOverlayApp />)
+    pushState()
+    const observer = FakeResizeObserver.instances[0]!
+
+    act(() => observer.emit(180, 200))
+    act(() => vi.advanceTimersByTime(16))
+    expect(setBoundsMock).not.toHaveBeenCalled()
+
+    act(() => fireEvent.click(screen.getByRole('button', { name: ac.open })))
+    act(() => observer.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    expect(pending).toHaveLength(1)
+
+    act(() => fireEvent.click(screen.getByRole('button', { name: ac.close })))
+    act(() => observer.emit(180, 200))
+    act(() => vi.advanceTimersByTime(16))
+
+    // The confirmed bounds are still compact, but the pending grow may already
+    // have been applied by Electron. A compensating compact request must still
+    // be sent instead of treating the collapse as a no-op.
+    expect(pending).toHaveLength(2)
+    expect(pending[1]?.bounds).toEqual({ height: 300, width: 240, x: 100, y: 200 })
+
+    await act(async () => pending[0]?.resolve({ bounds: pending[0].bounds, ok: true }))
+    expect(controlMock).not.toHaveBeenCalledWith({ bounds: pending[0]?.bounds, type: 'bounds' })
+
+    await act(async () => pending[1]?.resolve({ bounds: pending[1].bounds, ok: true }))
+    expect(controlMock).toHaveBeenLastCalledWith({ bounds: pending[1]?.bounds, type: 'bounds' })
   })
 
   it('ignores repeated identical measurements and disconnects the observer on unmount', async () => {
@@ -373,8 +449,12 @@ describe('PetOverlayApp action-center integration', () => {
     const observer = FakeResizeObserver.instances[0]!
 
     await act(async () => observer.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
     const callCount = setBoundsMock.mock.calls.length
     await act(async () => observer.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
 
     expect(setBoundsMock).toHaveBeenCalledTimes(callCount)
     view.unmount()
@@ -393,8 +473,144 @@ describe('PetOverlayApp action-center integration', () => {
     pushState()
 
     await act(async () => FakeResizeObserver.instances[0]!.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
 
     expect(controlMock).toHaveBeenCalledWith({ bounds: actual, type: 'bounds' })
+  })
+
+  it('rebases clustered wheel steps against every pending target without losing the cursor anchor', async () => {
+    render(<PetOverlayApp />)
+    pushState()
+    setBoundsMock.mockClear()
+
+    const onScale = vi.mocked(usePetZoomGesture).mock.calls.at(-1)?.[1]
+    const intents = [
+      { anchor: { clientX: 60, clientY: 80, ratio: 0.4 / 0.33, screenX: 160, screenY: 280 }, scale: 0.4 },
+      { anchor: { clientX: 60, clientY: 80, ratio: 0.5 / 0.4, screenX: 160, screenY: 280 }, scale: 0.5 }
+    ]
+    let expected = { ...windowBounds }
+
+    for (const intent of intents) {
+      expected = anchoredOverlayBounds({
+        currentBounds: expected,
+        paddingBottom: 24,
+        targetSize: overlayWindowTargetSize(192, 208, intent.scale, null),
+        wheelAnchor: {
+          clientX: intent.anchor.screenX - expected.x,
+          clientY: intent.anchor.screenY - expected.y,
+          ratio: intent.anchor.ratio
+        }
+      })
+    }
+
+    act(() => {
+      for (const intent of intents) {
+        onScale?.(intent.scale, intent.anchor)
+      }
+    })
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
+
+    expect(setBoundsMock).toHaveBeenCalledTimes(1)
+    expect(setBoundsMock).toHaveBeenLastCalledWith(expected)
+  })
+
+  it('rebases a follow-up wheel step against the newest in-flight target instead of stale DOM bounds', async () => {
+    const pending: Array<{
+      bounds: typeof windowBounds
+      resolve: (result: { bounds: typeof windowBounds; ok: true }) => void
+    }> = []
+
+    setBoundsMock.mockImplementation(
+      bounds =>
+        new Promise(resolve => {
+          pending.push({ bounds, resolve })
+        })
+    )
+    render(<PetOverlayApp />)
+    pushState()
+    const onScale = vi.mocked(usePetZoomGesture).mock.calls.at(-1)?.[1]
+    const firstAnchor = { clientX: 60, clientY: 80, ratio: 0.4 / 0.33, screenX: 160, screenY: 280 }
+    const secondAnchor = { clientX: 60, clientY: 80, ratio: 0.5 / 0.4, screenX: 160, screenY: 280 }
+
+    act(() => onScale?.(0.4, firstAnchor))
+    act(() => vi.advanceTimersByTime(16))
+    expect(pending).toHaveLength(1)
+
+    const expected = anchoredOverlayBounds({
+      currentBounds: pending[0]!.bounds,
+      paddingBottom: 24,
+      targetSize: overlayWindowTargetSize(192, 208, 0.5, null),
+      wheelAnchor: {
+        clientX: secondAnchor.screenX - pending[0]!.bounds.x,
+        clientY: secondAnchor.screenY - pending[0]!.bounds.y,
+        ratio: secondAnchor.ratio
+      }
+    })
+
+    act(() => onScale?.(0.5, secondAnchor))
+    act(() => vi.advanceTimersByTime(16))
+
+    expect(pending).toHaveLength(2)
+    expect(pending[1]!.bounds).toEqual(expected)
+
+    await act(async () => pending[0]!.resolve({ bounds: pending[0]!.bounds, ok: true }))
+    await act(async () => pending[1]!.resolve({ bounds: pending[1]!.bounds, ok: true }))
+  })
+
+  it('uses Electron reclamp bounds as the next resize and drag basis and coalesces pointer moves', async () => {
+    render(<PetOverlayApp />)
+    pushState()
+    act(() => vi.advanceTimersByTime(16))
+    setBoundsMock.mockClear()
+    controlMock.mockClear()
+
+    const reclamped = { height: 420, width: 360, x: 500, y: 300 }
+    pushBounds(reclamped)
+    const sprite = screen.getByTestId('pet-sprite')
+
+    fireEvent.pointerDown(sprite, { button: 0, pointerId: 1, screenX: 560, screenY: 400 })
+    fireEvent.pointerMove(sprite, { pointerId: 1, screenX: 580, screenY: 420 })
+    fireEvent.pointerMove(sprite, { pointerId: 1, screenX: 590, screenY: 430 })
+
+    expect(setBoundsMock).not.toHaveBeenCalled()
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
+
+    expect(setBoundsMock).toHaveBeenCalledTimes(1)
+    expect(setBoundsMock).toHaveBeenLastCalledWith({ height: 420, width: 360, x: 530, y: 330 })
+
+    fireEvent.pointerUp(sprite, { button: 0, pointerId: 1, screenX: 600, screenY: 440 })
+    await act(async () => {})
+
+    expect(setBoundsMock).toHaveBeenLastCalledWith({ height: 420, width: 360, x: 540, y: 340 })
+    expect(controlMock).toHaveBeenLastCalledWith({
+      bounds: { height: 420, width: 360, x: 540, y: 340 },
+      type: 'bounds'
+    })
+  })
+
+  it('invalidates an outstanding bounds response on unmount', async () => {
+    let resolveBounds!: (result: { bounds: typeof windowBounds; ok: true }) => void
+
+    setBoundsMock.mockImplementationOnce(
+      bounds =>
+        new Promise(resolve => {
+          resolveBounds = resolve
+          windowBounds = bounds
+        })
+    )
+    const view = render(<PetOverlayApp />)
+    pushState()
+    act(() => FakeResizeObserver.instances[0]!.emit(340, 500))
+    act(() => vi.advanceTimersByTime(16))
+    const requested = setBoundsMock.mock.calls[0]![0]
+
+    view.unmount()
+    await act(async () => resolveBounds({ bounds: requested, ok: true }))
+
+    expect(controlMock).not.toHaveBeenCalledWith({ bounds: requested, type: 'bounds' })
   })
 
   it('falls back to compact geometry when ResizeObserver is unavailable', () => {
@@ -412,7 +628,11 @@ describe('PetOverlayApp action-center integration', () => {
     setBoundsMock.mockClear()
 
     const onScale = vi.mocked(usePetZoomGesture).mock.calls.at(-1)?.[1]
-    await act(async () => onScale?.(0.5, { clientX: 60, clientY: 80, ratio: 1.5 }))
+    await act(async () =>
+      onScale?.(0.5, { clientX: 60, clientY: 80, ratio: 1.5, screenX: 160, screenY: 280 })
+    )
+    act(() => vi.advanceTimersByTime(16))
+    await act(async () => {})
 
     expect(setBoundsMock).toHaveBeenCalledWith({ height: 304, width: 240, x: 130, y: 294 })
   })

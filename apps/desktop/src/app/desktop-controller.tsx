@@ -875,7 +875,14 @@ export function DesktopController() {
       ensureProfile: ensureGatewayProfile,
       enqueuePrompt: enqueueQueuedPrompt,
       gatewayForProfile,
-      resumeSession: (profile, storedSessionId) => resumeSessionRef.current(storedSessionId, false, profile)
+      // Route first and let the existing route-resume owner hydrate the exact
+      // session. Calling resumeSession here while still on #/ lets the route
+      // synchronizer cancel it as stale before navigation occurs.
+      openSession: (_profile, storedSessionId) => {
+        navigate(sessionRoute(storedSessionId))
+
+        return true
+      }
     })
 
     setPetOverlayActionCenterHandler(control => void actionCenter.handle(control))

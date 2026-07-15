@@ -79,7 +79,7 @@ export function LiveTurnActions({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div className="flex flex-col gap-1.5">
       {showDraft && (
         <Textarea
           aria-label={canQueue && !canSteer && !canSend ? ac.queueMessage : ac.messageSession}
@@ -94,7 +94,7 @@ export function LiveTurnActions({
       )}
 
       {(canSend || canSteer || canQueue || canStop || canAcknowledge) && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end' }}>
+        <div className="flex flex-wrap justify-end gap-1">
           {canSend && (
             <Button
               disabled={!trimmedDraft || isSubmitting}

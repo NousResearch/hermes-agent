@@ -46,6 +46,9 @@ declare global {
         pushState: (payload: PetOverlayStatePayload) => void
         control: (payload: PetOverlayControl) => void
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
+        // IPC receive values are untrusted until the overlay validates the
+        // finite x/y/width/height tuple.
+        onBounds: (callback: (payload: unknown) => void) => () => void
         // IPC receive values are untrusted until the renderer runtime parser
         // narrows them back to PetOverlayControl.
         onControl: (callback: (payload: unknown) => void) => () => void

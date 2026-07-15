@@ -80,7 +80,7 @@ function gateway(
 describe('pet live-turn main-renderer actions', () => {
   const gateways = new Map<string, PetActionCenterGateway>()
   const ensureProfile = vi.fn().mockResolvedValue(undefined)
-  const resumeSession = vi.fn().mockResolvedValue(true)
+  const openSession = vi.fn().mockResolvedValue(true)
   let dependencies: PetActionCenterActionDependencies
 
   beforeEach(() => {
@@ -100,12 +100,12 @@ describe('pet live-turn main-renderer actions', () => {
     $petUnread.set(false)
     gateways.clear()
     ensureProfile.mockClear()
-    resumeSession.mockClear()
+    openSession.mockClear()
     dependencies = {
       ensureProfile,
       enqueuePrompt: enqueueQueuedPrompt,
       gatewayForProfile: profile => gateways.get(profile) ?? null,
-      resumeSession
+      openSession
     }
   })
 
@@ -250,7 +250,7 @@ describe('pet live-turn main-renderer actions', () => {
     ])
     expect(recoveredArmSeen).toBe(true)
     expect(ensureProfile).not.toHaveBeenCalled()
-    expect(resumeSession).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
     expect($petActionCenter.get().action).toEqual({ status: 'success', itemId: item.id })
     expect($petLiveSessions.get()).toEqual([
       expect.objectContaining({
@@ -448,7 +448,7 @@ describe('pet live-turn main-renderer actions', () => {
     expect(getQueuedPrompts(profileSessionKey('default', 'stored'))).toEqual([])
     expect(rejected).toHaveBeenCalledTimes(1)
     expect(ensureProfile).not.toHaveBeenCalled()
-    expect(resumeSession).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
   })
 
   it('queues trimmed text locally at the canonical stored key with profile isolation', async () => {
@@ -523,7 +523,7 @@ describe('pet live-turn main-renderer actions', () => {
     await createPetActionCenterActions(dependencies).handle({ type: 'action-center-stop', itemId: item.id })
     expect(defaultRequest).toHaveBeenCalledTimes(2)
     expect(ensureProfile).not.toHaveBeenCalled()
-    expect(resumeSession).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
     expect($petActionCenter.get().action).toEqual({ status: 'error', itemId: item.id, errorCode: 'stale-runtime' })
   })
 

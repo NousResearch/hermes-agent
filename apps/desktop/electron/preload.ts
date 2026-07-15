@@ -27,6 +27,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
       return () => ipcRenderer.removeListener('hermes:pet-overlay:state', listener)
     },
+    // Overlay-only actual-bounds updates, including display-topology reclamps.
+    onBounds: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pet-overlay:bounds', listener)
+
+      return () => ipcRenderer.removeListener('hermes:pet-overlay:bounds', listener)
+    },
     // Main renderer subscribes to overlay control messages.
     onControl: callback => {
       const listener = (_event, payload) => callback(payload)

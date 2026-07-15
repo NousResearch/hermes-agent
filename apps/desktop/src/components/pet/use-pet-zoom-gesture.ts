@@ -8,6 +8,8 @@ import { nextScaleFromWheel, PET_SCALE_DEFAULT } from '@/store/pet-gallery'
 export interface PetZoomAnchor {
   clientX: number
   clientY: number
+  screenX: number
+  screenY: number
   /** new / old scale, clamp-aware (1 at a bound, so the pet doesn't drift). */
   ratio: number
 }
@@ -48,7 +50,13 @@ export function usePetZoomGesture<T extends HTMLElement>(
 
       const base = $petInfo.get().scale ?? PET_SCALE_DEFAULT
       const next = nextScaleFromWheel(base, event.deltaY)
-      onScale(next, { clientX: event.clientX, clientY: event.clientY, ratio: next / base })
+      onScale(next, {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        ratio: next / base,
+        screenX: event.screenX,
+        screenY: event.screenY
+      })
     }
 
     el.addEventListener('wheel', onWheel, { passive: false })

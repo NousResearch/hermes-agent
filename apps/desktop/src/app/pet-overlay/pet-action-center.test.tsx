@@ -1211,8 +1211,10 @@ describe('PetActionCenter — Pet-6C2 live feedback', () => {
     const replySection = within(dialog).getByText(ac.replyLabel).parentElement!
 
     expect(replySection.textContent).toContain(longText)
-    expect(replySection.style.overflowY).toBe('auto')
-    expect(replySection.style.maxHeight).toBeTruthy()
+    // Scrollable bounded region — expressed via Tailwind classes (overflow-y-auto + max-h-*),
+    // not inline styles, so it inherits the desktop theme like the rest of the panel.
+    expect(replySection.className).toMatch(/overflow-y-auto/)
+    expect(replySection.className).toMatch(/max-h-/)
   })
 
   it('does not render a reply section when reply is null or empty', () => {

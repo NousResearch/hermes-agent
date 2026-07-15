@@ -36,7 +36,7 @@ function openGateway(request = vi.fn().mockResolvedValue({ resolved: true })): P
 describe('pet action center main-renderer actions', () => {
   const gateways = new Map<string, PetActionCenterGateway>()
   const ensureProfile = vi.fn().mockResolvedValue(undefined)
-  const resumeSession = vi.fn().mockResolvedValue(true)
+  const openSession = vi.fn().mockResolvedValue(true)
   let dependencies: PetActionCenterActionDependencies
 
   beforeEach(() => {
@@ -47,12 +47,12 @@ describe('pet action center main-renderer actions', () => {
     $sessions.set([])
     gateways.clear()
     ensureProfile.mockClear()
-    resumeSession.mockClear()
+    openSession.mockClear()
     dependencies = {
       ensureProfile,
       enqueuePrompt: vi.fn(),
       gatewayForProfile: profile => gateways.get(profile) ?? null,
-      resumeSession
+      openSession
     }
   })
 
@@ -357,12 +357,12 @@ describe('pet action center main-renderer actions', () => {
     await createPetActionCenterActions(dependencies).handle({ type: 'action-center-open-session', itemId })
 
     expect(ensureProfile).toHaveBeenCalledWith('work')
-    expect(resumeSession).toHaveBeenCalledWith('work', 'stored-work')
+    expect(openSession).toHaveBeenCalledWith('work', 'stored-work')
     expect($petActionCenter.get().action).toEqual({ status: 'success', itemId })
   })
 
   it('reports open-failed when the exact resume adapter cannot confirm success', async () => {
-    resumeSession.mockResolvedValueOnce(false)
+    openSession.mockResolvedValueOnce(false)
     $sessions.set([{ id: 'stored-work', profile: 'work', title: 'Work' }] as never)
     setClarifyRequest({
       choices: null,
@@ -399,7 +399,7 @@ describe('pet action center main-renderer actions', () => {
     switching.resolve()
     await action
 
-    expect(resumeSession).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
     expect($petActionCenter.get().action).toEqual({ status: 'error', itemId, errorCode: 'session-unverified' })
   })
 
@@ -418,7 +418,7 @@ describe('pet action center main-renderer actions', () => {
     await createPetActionCenterActions(dependencies).handle({ type: 'action-center-open-session', itemId })
 
     expect(ensureProfile).not.toHaveBeenCalled()
-    expect(resumeSession).not.toHaveBeenCalled()
+    expect(openSession).not.toHaveBeenCalled()
     expect($petActionCenter.get().action).toEqual({ status: 'error', itemId, errorCode: 'session-unverified' })
   })
 })

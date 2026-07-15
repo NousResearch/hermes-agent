@@ -2,16 +2,32 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   $composerAttachments,
+  $voiceConversationStartRequest,
   addComposerAttachment,
   clearSessionDraft,
   type ComposerAttachment,
   migrateSessionDraft,
   removeComposerAttachment,
+  requestVoiceConversationStart,
   SESSION_DRAFTS_STORAGE_KEY,
   stashSessionDraft,
   takeSessionDraft,
+  takeVoiceConversationStart,
   updateComposerAttachment
 } from './composer'
+
+describe('voice conversation start requests', () => {
+  it('latches each request until the main composer consumes it once', () => {
+    requestVoiceConversationStart()
+    const first = $voiceConversationStartRequest.get()
+
+    expect(takeVoiceConversationStart(first)).toBe(true)
+    expect(takeVoiceConversationStart(first)).toBe(false)
+
+    requestVoiceConversationStart()
+    expect(takeVoiceConversationStart($voiceConversationStartRequest.get())).toBe(true)
+  })
+})
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
   return { kind: 'file', label: 'doc.pdf', ...overrides }

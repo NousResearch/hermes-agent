@@ -51,6 +51,11 @@ from typing import Optional, Dict, Any, List
 
 from utils import env_var_enabled
 
+# ANSI stripper internals are reused by _IncrementalAnsiStripper so the
+# streaming spill pipeline applies the SAME escape grammar as the visible
+# output path (tools.ansi_strip.strip_ansi).
+from tools.ansi_strip import _ANSI_ESCAPE_RE, _HAS_ESCAPE as _HAS_ANSI_BYTE
+
 logger = logging.getLogger(__name__)
 
 
@@ -2490,6 +2495,653 @@ def _resolve_notification_flag_conflict(
     return watch_patterns, ""
 
 
+# ---------------------------------------------------------------------------
+# Streaming spill redaction (bounded-memory full-file sanitization)
+# ---------------------------------------------------------------------------
+
+# Chunk size for _stream_redact_spill: bytes per binary read.  The whole
+# spill must never be loaded into RAM, so every read is a fixed-size slice.
+_SPILL_STREAM_CHUNK_BYTES = 64 * 1024
+
+# Candidate sensitive-record budget for _StreamingSpillRedactor.  A potential
+# sensitive record (token run, KEY=value, Authorization value, JWT, ...) is
+# buffered up to this many characters so the WHOLE record can be validated by
+# the same redaction rules as the visible output — a greedy rule sees the
+# complete record, so any secret inside it is masked in full.  A record
+# longer than the budget is fail-closed: it is replaced with a redaction
+# marker and the remainder is consumed WITHOUT ever emitting raw text, so a
+# >64 KiB token can never leak its second half.
+_SPILL_CONFIRM_LIMIT_CHARS = 256 * 1024
+
+# Tail carry kept in the normal state of _StreamingSpillRedactor: large
+# enough to cover the longest ANSI escape sequence (OSC <= ~1 KiB) and the
+# longest sensitive prefix (ENV key width <= 110 chars) so a construct
+# straddling a feed boundary is completed before any text is emitted.  This
+# carry is a SYNTAX-BOUNDARY guard only — it is not a guarantee for
+# arbitrarily long secrets (those are handled by the confirm budget /
+# fail-closed path).
+_SPILL_TAIL_CARRY_CHARS = 4 * 1024
+
+# Redaction marker used when a candidate sensitive record exceeds the confirm
+# budget (fail-closed) — the record's raw content is never partially emitted.
+_SPILL_OVERSIZE_MARKER = "«redacted:secret…»"
+
+
+def _derive_token_prefixes() -> tuple[str, ...]:
+    """Literal token prefixes derived from agent/redact.py's prefix rules.
+
+    Derived (not hand-maintained) so a future prefix added to the redaction
+    rules is automatically detected by the streaming redactor.
+    """
+    from agent.redact import _extract_literal_prefix, _PREFIX_PATTERNS
+
+    prefixes: list[str] = []
+    for pattern in _PREFIX_PATTERNS:
+        literal = _extract_literal_prefix(pattern)
+        if len(literal) >= 3:
+            prefixes.append(re.escape(literal))
+        else:
+            # Very short literals (e.g. "SG" from r"SG\.[...]") need at least
+            # one following token char so plain prose is not flagged; the
+            # confirm state still validates against the full prefix rule.
+            prefixes.append(re.escape(literal) + r"[A-Za-z0-9_.\-=]")
+    # Longest first so alternation prefers the more specific prefix.
+    prefixes.sort(key=len, reverse=True)
+    return tuple(prefixes)
+
+
+def _build_potential_start_re() -> "re.Pattern":
+    """Regex that finds the start of any potentially sensitive record.
+
+    Each named group maps to a confirm-state kind whose syntactic terminator
+    is known; the buffered record is then validated by
+    ``redact_terminal_output`` itself, so the streaming path applies EXACTLY
+    the same rules as the visible output.  The token group carries the same
+    ``(?<![A-Za-z0-9_-])`` guard as agent/redact._PREFIX_RE.
+
+    KEY=value / KEY: value candidates are NOT part of this regex: their
+    lower-case key classes backtrack catastrophically on long plain-text
+    runs, so they are detected by the linear keyword pre-screen
+    :func:`_find_key_value_start` instead (mirroring agent/redact's own
+    pre-check discipline).
+    """
+    return re.compile(
+        r"(?P<token>(?<![A-Za-z0-9_-])"
+        + "|".join(_derive_token_prefixes())
+        + r"[A-Za-z0-9_.\-=]*)"
+        r"|(?P<auth>(?:Proxy-)?Authorization\s*:\s*)"
+        r"|(?P<header>(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)\s*:\s*)"
+        r"|(?P<json>\"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)\"\s*:\s*\")"
+        r"|(?P<jwt>eyJ[A-Za-z0-9_-]*)"
+        r"|(?P<telegram>(?:bot)?\d{8,}:)"
+        r"|(?P<phone>\+[1-9]\d{0,14})"
+        r"|(?P<db>(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s:]+:)"
+        r"|(?P<bareurl>(?:https?|wss?|git|ssh|ftp|ftps|sftp)://[^\s:@/]*@)",
+        re.IGNORECASE,
+    )
+
+
+_KEY_CHAR_RE = re.compile(r"[A-Za-z0-9_.\-]")
+
+
+def _find_key_value_start(text: str) -> "int | None":
+    """Linear scan for a ``KEY=value`` / ``KEY: value`` candidate start.
+
+    Mirrors agent/redact's config-key passes: a secret keyword
+    (API_KEY/TOKEN/SECRET/...) inside a key followed by ``=`` or ``:``.
+    Returns the index of the key start, or None.  This linear pre-screen
+    avoids running the redaction rules' backtrack-heavy ``_CFG_*`` regexes on
+    long plain-text runs; the expensive regexes only ever run on the short
+    buffered candidate record in the confirm state.
+    """
+    from agent.redact import _CFG_SECRET_WORD_RE, _SENSITIVE_QUERY_PARAMS
+
+    for m in _CFG_SECRET_WORD_RE.finditer(text):
+        start = m.start()
+        while start > 0 and _KEY_CHAR_RE.match(text[start - 1]):
+            start -= 1
+        end = m.end()
+        while end < len(text) and _KEY_CHAR_RE.match(text[end]):
+            end += 1
+        j = end
+        while j < len(text) and text[j] in " \t":
+            j += 1
+        if j < len(text) and text[j] in "=:":
+            return start
+    # Exact-match sensitive body/query keys (``code=``, ``session=``,
+    # ``signature=``, ``x-amz-signature=``, ``id_token=``, ...).  Canonical
+    # redaction masks these only inside a PURE k=v&k=v form body
+    # (agent/redact._redact_form_body); buffering the whole line in confirm
+    # and letting redact_terminal_output decide keeps the streaming result
+    # byte-identical to the canonical pass.
+    for m in _BODY_KEY_RE.finditer(text):
+        if m.group(1).casefold() in _SENSITIVE_QUERY_PARAMS:
+            return m.start()
+    return None
+
+
+# Exact-match sensitive body/query key scan used by _find_key_value_start.
+_BODY_KEY_RE = re.compile(r"([A-Za-z0-9_.\-]+)=")
+
+# String-sequence terminators for _IncrementalAnsiStripper (OSC: BEL or ST;
+# DCS/SOS/PM/APC: ST only; 8-bit OSC: BEL or 0x9c).
+_OSC_END_RE = re.compile(r"\x07|\x1b\\")
+_DCS_END_RE = re.compile(r"\x1b\\")
+_OSC_8BIT_END_RE = re.compile(r"\x07|\x9c")
+
+
+# ---------------------------------------------------------------------------
+# Incremental ANSI stripping (must run BEFORE the secret state machine)
+# ---------------------------------------------------------------------------
+
+
+class _IncrementalAnsiStripper:
+    """Incremental ANSI/ECMA-48 stripper that mirrors strip_ansi().
+
+    Runs BEFORE ``_StreamingSpillRedactor`` so the secret state machine only
+    ever sees clean plain text.  This closes the ANSI-insertion bypass: a
+    token split by an escape sequence (``sk-\\x1b[31mAAA\\x1b[0m``) is
+    reassembled by the stripper BEFORE redaction, exactly like the canonical
+    ``redact_terminal_output(strip_ansi(...))`` ordering.
+
+    The stripper is stateful across chunk boundaries: a CSI/OSC/DCS sequence
+    split by a ``feed()`` boundary is completed by the next feed, never
+    independently stripped per chunk.  Unterminated sequences at EOF are
+    preserved verbatim, matching strip_ansi()'s behaviour on a whole string
+    (so differential tests stay byte-identical); a pathological unterminated
+    string sequence longer than the budget is dropped wholesale to keep
+    memory bounded — such input is outside the ECMA-48 grammar anyway.
+    """
+
+    _OSC_BUDGET = 8 * 1024
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+        if self._pending or _HAS_ANSI_BYTE.search(text):
+            self._pending += text
+            return self._drain()
+        # Fast path: no ESC/C1 bytes at all — nothing to strip.
+        return text
+
+    def flush(self) -> str:
+        # Unterminated sequences are preserved (strip_ansi parity).
+        out = self._pending
+        self._pending = ""
+        return out
+
+    def _drain(self) -> str:
+        out: list[str] = []
+        while True:
+            # STRING-type sequences (OSC/DCS/SOS/PM/APC) must be completed as
+            # a whole: the generic regex would otherwise split an incomplete
+            # OSC via its single-byte Fp fallback (``\x1b]`` consumed alone,
+            # leaking ``0;title``).  Detect the sequence head explicitly and
+            # wait for its terminator (BEL/ST/0x9c) across feed boundaries.
+            if self._pending:
+                ch0 = self._pending[0]
+                if ch0 == "\x1b" and len(self._pending) >= 2:
+                    ch1 = self._pending[1]
+                    if ch1 == "]":
+                        end = _OSC_END_RE.search(self._pending[1:])
+                        if end:
+                            self._pending = self._pending[end.end() + 1:]
+                            continue
+                        if len(self._pending) > self._OSC_BUDGET:
+                            self._pending = ""
+                            break
+                        break
+                    if ch1 in "PX^_":
+                        end = _DCS_END_RE.search(self._pending[1:])
+                        if end:
+                            self._pending = self._pending[end.end() + 1:]
+                            continue
+                        if len(self._pending) > self._OSC_BUDGET:
+                            self._pending = ""
+                            break
+                        break
+                elif ch0 == "\x9d":
+                    end = _OSC_8BIT_END_RE.search(self._pending[1:])
+                    if end:
+                        self._pending = self._pending[end.end() + 1:]
+                        continue
+                    if len(self._pending) > self._OSC_BUDGET:
+                        self._pending = ""
+                        break
+                    break
+            m = _ANSI_ESCAPE_RE.search(self._pending)
+            if m:
+                out.append(self._pending[:m.start()])
+                self._pending = self._pending[m.end():]
+                continue
+            # No complete sequence in the buffer: emit everything before the
+            # last escape candidate (that candidate may still complete next
+            # feed), keeping the buffer bounded.
+            escape_idx = -1
+            for i in range(len(self._pending) - 1, -1, -1):
+                ch = self._pending[i]
+                if ch in "\x1b\x9b\x9d" or "\x80" <= ch <= "\x9f":
+                    escape_idx = i
+                    break
+            if escape_idx < 0:
+                out.append(self._pending)
+                self._pending = ""
+                break
+            if escape_idx > 0:
+                out.append(self._pending[:escape_idx])
+                self._pending = self._pending[escape_idx:]
+                continue
+            # pending starts with an escape candidate; wait for completion
+            # unless it is a pathological unterminated string sequence.
+            if len(self._pending) > self._OSC_BUDGET:
+                self._pending = ""
+                break
+            break
+        return "".join(out)
+
+
+class _StreamingSpillRedactor:
+    """Incremental fail-closed secret redactor for spill streaming.
+
+    The redaction rules (agent/redact.py) contain UNBOUNDED constructs
+    (``sk-...{10,}`` tokens, ``KEY=\\S+`` values, JWTs, PEM blocks), so no
+    fixed-size window can guarantee that a secret crossing a window boundary
+    is fully masked.  This redactor therefore works on RECORD boundaries:
+
+    - normal: scans for a potential sensitive start (a bounded literal
+      prefix); plain text is streamed out directly (keeping a small tail
+      carry so a prefix or ANSI sequence straddling a feed boundary is not
+      split).
+    - confirm: a candidate sensitive record is buffered until its syntactic
+      terminator (whitespace/quote for values, a non-token character for
+      tokens, the closing quote for JSON), then the WHOLE record is validated
+      by ``redact_terminal_output`` — the same rules as the visible output —
+      so a greedy rule sees the complete record and masks any secret in it.
+    - fail-closed: a candidate record longer than
+      ``_SPILL_CONFIRM_LIMIT_CHARS`` is NEVER partially emitted; it is
+      replaced by ``_SPILL_OVERSIZE_MARKER`` and the remainder is consumed
+      (masked) until the terminator.  A >64 KiB token therefore cannot leak
+      its second half, and a "potential start" that turns out not to be a
+      secret (e.g. ``sk-ill``) is still emitted verbatim after validation.
+    - PEM blocks (the only sensitive construct that spans line boundaries)
+      use a dedicated cross-feed state from BEGIN to END.
+    """
+
+    _START_RE: "re.Pattern | None" = None
+    _PEM_BEGIN_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
+    _PEM_END_RE = re.compile(r"-----END[A-Z ]*PRIVATE KEY-----")
+
+    def __init__(self, command: str):
+        self._command = command
+        self._state = "normal"   # normal | confirm | mask | pem
+        self._kind: "str | None" = None
+        self._buf = ""           # confirm buffer / PEM budget counter (raw)
+        self._carry = ""         # confirmed-plain tail held for ANSI safety
+        self._pending = ""       # unprocessed decoded input
+        self._pem_emitted = False
+        # ANSI stripping happens BEFORE the secret state machine so the
+        # redactor only ever sees clean plain text (canonical ordering:
+        # strip_ansi -> redact).  An escape sequence inserted inside a token
+        # is removed first, so it can never split or hide a secret.
+        self._ansi = _IncrementalAnsiStripper()
+
+    @classmethod
+    def _start_re(cls) -> "re.Pattern":
+        if cls._START_RE is None:
+            cls._START_RE = _build_potential_start_re()
+        return cls._START_RE
+
+    # -- public ------------------------------------------------------------
+
+    def feed(self, text: str) -> str:
+        """Process a decoded chunk; return the text that is safe to emit."""
+        text = self._ansi.feed(text)
+        if not text and not self._pending:
+            return ""
+        out: list[str] = []
+        self._pending += text
+        while self._pending:
+            if self._state == "pem":
+                if not self._step_pem(out):
+                    break
+            elif self._state == "mask":
+                if not self._step_mask(out):
+                    break
+            elif self._state == "confirm":
+                if not self._step_confirm(out):
+                    break
+            else:
+                if not self._step_normal(out):
+                    break
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Finalize the stream at EOF; return remaining safe-to-emit text."""
+        # Any ANSI sequence still pending is finalized first (matching
+        # strip_ansi on a whole string), then the redactor state is closed.
+        tail = self._ansi.flush()
+        out: list[str] = []
+        self._pending += tail
+        while self._pending:
+            if self._state == "pem":
+                if not self._step_pem(out):
+                    break
+            elif self._state == "mask":
+                if not self._step_mask(out):
+                    break
+            elif self._state == "confirm":
+                if not self._step_confirm(out):
+                    break
+            else:
+                if not self._step_normal(out):
+                    break
+        if self._state == "pem":
+            # EOF inside a PEM block: the block is unterminated.  Drop ALL
+            # buffered body/carry/pending material — no PEM fragment (head,
+            # middle, or tail) may ever reach the durable spill — and emit a
+            # single explicit marker.  This is fail-closed and intentionally
+            # stricter than the canonical regex (which can only replace a
+            # complete BEGIN..END block).
+            if not self._pem_emitted:
+                out.append("[REDACTED PRIVATE KEY]")
+            self._pending = ""
+            self._buf = ""
+            self._carry = ""
+            self._state = "normal"
+        elif self._state == "confirm":
+            if len(self._buf) > _SPILL_CONFIRM_LIMIT_CHARS:
+                if self._carry:
+                    out.append(self._sanitize_plain(self._carry))
+                    self._carry = ""
+                out.append(_SPILL_OVERSIZE_MARKER)
+            else:
+                if self._carry:
+                    out.append(self._sanitize_plain(self._carry))
+                    self._carry = ""
+                out.append(self._finalize_record())
+            self._state = "normal"
+            self._buf = ""
+        elif self._state == "mask":
+            # Marker already emitted for the oversize record; nothing more.
+            self._state = "normal"
+        if self._pending:
+            out.append(self._sanitize_plain(self._pending))
+            self._pending = ""
+        return "".join(out)
+
+    # -- state steps -------------------------------------------------------
+
+    def _step_normal(self, out: list[str]) -> bool:
+        m = self._start_re().search(self._pending)
+        pem = self._PEM_BEGIN_RE.search(self._pending)
+        cfg = _find_key_value_start(self._pending)
+        candidates = []
+        if m is not None:
+            candidates.append((m.start(), "start"))
+        if pem is not None:
+            candidates.append((pem.start(), "pem"))
+        if cfg is not None:
+            candidates.append((cfg, "cfg"))
+        if not candidates:
+            # No sensitive candidate: stream plain text out, keeping only a
+            # small tail carry for ANSI safety.
+            safe = max(0, len(self._pending) - _SPILL_TAIL_CARRY_CHARS)
+            if safe:
+                out.append(self._sanitize_plain(self._pending[:safe]))
+                self._pending = self._pending[safe:]
+                return True
+            return False
+        # At the same position, the literal-prefix candidates (auth/header/
+        # token/...) are more precise than the cfg keyword pre-screen (e.g.
+        # "Authorization:" must not be treated as a bare KEY: value).
+        _PRIORITY = {"start": 0, "cfg": 1, "pem": 2}
+        pos, kind = min(candidates, key=lambda c: (c[0], _PRIORITY[c[1]]))
+        pre = self._pending[:pos]
+        safe = max(0, len(pre) - _SPILL_TAIL_CARRY_CHARS)
+        if safe:
+            out.append(self._sanitize_plain(pre[:safe]))
+        self._carry = pre[safe:]
+        if kind == "pem":
+            # The prefix text is confirmed plain (no earlier candidate), so
+            # emit it whole and mask from BEGIN to END.
+            if self._carry:
+                out.append(self._sanitize_plain(self._carry))
+                self._carry = ""
+            self._pending = self._pending[pos:]
+            self._state = "pem"
+            self._pem_emitted = False
+            self._buf = ""
+            return True
+        if kind == "cfg":
+            # KEY=value / KEY: value candidate from the linear pre-screen.
+            self._buf = self._pending[pos:]
+            self._kind = "cfg"
+            self._pending = ""
+            self._state = "confirm"
+            return True
+        # kind == "start": literal-prefix candidate (token/auth/header/...).
+        self._buf = m.group(0)
+        self._kind = m.lastgroup
+        self._pending = self._pending[m.end():]
+        self._state = "confirm"
+        return True
+
+    def _step_confirm(self, out: list[str]) -> bool:
+        term = self._find_terminator(self._pending, self._kind)
+        if term is not None:
+            self._buf += self._pending[:term]
+            if self._carry:
+                out.append(self._sanitize_plain(self._carry))
+                self._carry = ""
+            out.append(self._finalize_record())
+            self._pending = self._pending[term:]
+            self._state = "normal"
+            return True
+        self._buf += self._pending
+        self._pending = ""
+        if len(self._buf) > _SPILL_CONFIRM_LIMIT_CHARS:
+            # Fail-closed: never emit an unconfirmed raw tail of an
+            # unbounded secret — emit the confirmed-plain carry, mask the
+            # whole record with the marker, and keep consuming (still
+            # masked) until its syntactic terminator.
+            if self._carry:
+                out.append(self._sanitize_plain(self._carry))
+                self._carry = ""
+            out.append(_SPILL_OVERSIZE_MARKER)
+            self._state = "mask"
+            self._buf = ""
+        return False
+
+    def _step_mask(self, out: list[str]) -> bool:
+        term = self._find_terminator(self._pending, self._kind)
+        if term is not None:
+            self._pending = self._pending[term:]
+            self._state = "normal"
+            return True
+        self._pending = ""
+        return False
+
+    def _step_pem(self, out: list[str]) -> bool:
+        end = self._PEM_END_RE.search(self._pending)
+        if end:
+            if not self._pem_emitted:
+                out.append("[REDACTED PRIVATE KEY]")
+                self._pem_emitted = True
+            self._pending = self._pending[end.end():]
+            self._state = "normal"
+            return True
+        # The END marker may straddle a feed boundary: keep a tail of at
+        # least the marker length so a split marker is completed next feed.
+        keep = min(len(self._pending), 64)
+        consumed = self._pending[:-keep] if keep else self._pending
+        self._buf += consumed
+        self._pending = self._pending[-keep:] if keep else ""
+        if len(self._buf) > _SPILL_CONFIRM_LIMIT_CHARS:
+            # Fail-closed for an absurd/never-terminating PEM block: emit the
+            # marker once and keep consuming — no raw key material is ever
+            # written.  Reset the counter; we are already masking.
+            if not self._pem_emitted:
+                out.append("[REDACTED PRIVATE KEY]")
+                self._pem_emitted = True
+            self._buf = ""
+        return False
+
+    # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_plain(text: str) -> str:
+        from tools.ansi_strip import strip_ansi
+
+        return strip_ansi(text)
+
+    def _finalize_record(self) -> str:
+        """Validate the buffered candidate record with the real redaction rules.
+
+        ``force=True`` makes the durable spill a MANDATORY safety boundary:
+        even when the global model-output redaction is disabled
+        (``HERMES_REDACT_SECRETS=false`` / ``security.redact_secrets: false``),
+        the persistent spill is still sanitized.  The model-visible window
+        keeps main's original semantics (it may respect the global opt-out);
+        the durable file must never.
+        """
+        from agent.redact import redact_terminal_output
+
+        return redact_terminal_output(
+            self._sanitize_plain(self._buf), self._command, force=True,
+        )
+
+    @staticmethod
+    def _find_terminator(text: str, kind: "str | None") -> "int | None":
+        if kind in ("token", "jwt", "telegram"):
+            m = re.search(r"[^A-Za-z0-9_.\-=]", text)
+            return m.start() if m else None
+        if kind == "phone":
+            m = re.search(r"[^0-9]", text)
+            return m.start() if m else None
+        if kind == "auth":
+            # Authorization values are "<scheme> <token>" (or a bare token);
+            # buffer to EOL/quote so the WHOLE header is validated at once —
+            # agent/redact masks the token and preserves the scheme, and a
+            # buffer cut after the first whitespace would let the token leak
+            # into the normal state.
+            m = re.search(r"[\r\n\"']", text)
+            return m.start() if m else None
+        m = re.search(r"[ \t\r\n\"']", text)
+        return m.start() if m else None
+
+
+def _stream_redact_spill(
+    src_path: str, dest_path: str, command: str
+) -> tuple[str, int]:
+    """Stream-sanitize *src_path* into *dest_path* with bounded memory.
+
+    The full output is never loaded into RAM.  The file is read in fixed-size
+    binary chunks, decoded incrementally (a UTF-8 multi-byte character
+    straddling a chunk boundary is completed by the incremental decoder), and
+    fed to :class:`_StreamingSpillRedactor`, which emits only text that has
+    passed the same ``strip_ansi`` + ``redact_terminal_output`` rules as the
+    visible output — while never emitting the unconfirmed raw tail of a
+    record that may still grow.
+
+    The sanitized result is written to a ``.partial`` temp file in the same
+    directory as *dest_path* (same volume, so ``os.replace`` is atomic),
+    flushed/fsynced, then atomically renamed onto *dest_path*: the durable
+    path only ever holds sanitized content, even if the process crashes
+    mid-stream (only a ``.partial`` file is left, never a raw spill).
+
+    Returns ``(final_path, total_chars)`` — *total_chars* is the true Unicode
+    character count of the raw stream (counted at decode time, before
+    stripping/redaction), matching the terminal pipeline's
+    ``output_total_chars`` convention (characters, not bytes).
+
+    On failure the temporary sanitized file is removed and the exception
+    propagates; the caller drops the spill handle and unlinks the raw source,
+    so no unredacted file is left behind.
+    """
+    import codecs
+    import tempfile
+
+    src = Path(src_path)
+    dest = Path(dest_path)
+    parent = dest.parent
+    parent.mkdir(parents=True, exist_ok=True)
+
+    # Temp file in the SAME directory as the final dest so os.replace is
+    # atomic (same volume).  The ".partial" suffix marks an in-progress
+    # sanitized file that must never be surfaced as full_output_path.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=dest.name + ".tmp-", suffix=".partial", dir=str(parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fout:
+            with open(src, "rb") as fin:
+                redactor = _StreamingSpillRedactor(command)
+                total_chars = 0
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                while True:
+                    raw = fin.read(_SPILL_STREAM_CHUNK_BYTES)
+                    if not raw:
+                        break
+                    decoded = decoder.decode(raw)
+                    total_chars += len(decoded)
+                    cleaned = redactor.feed(decoded)
+                    if cleaned:
+                        fout.write(cleaned.encode("utf-8", errors="replace"))
+                # Final partial chunk (flush the incremental decoder) + any
+                # record still open at EOF.
+                decoded = decoder.decode(b"", final=True)
+                total_chars += len(decoded)
+                cleaned = redactor.feed(decoded)
+                tail = redactor.flush()
+                if cleaned or tail:
+                    fout.write((cleaned + tail).encode("utf-8", errors="replace"))
+                fout.flush()
+                os.fsync(fout.fileno())
+        # Atomic swap: the durable path only ever holds sanitized content.
+        os.replace(tmp_path, dest)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    return str(dest), total_chars
+
+
+def _new_elevated_spill_path() -> str:
+    """Return a fresh durable spill path for a sanitized elevated output.
+
+    The path is generated here (not by the executor) and is only ever
+    returned as ``full_output_path`` AFTER the sanitized spill has been
+    atomically written to it — the raw staged output never occupies it.
+    """
+    from hermes_constants import get_hermes_home
+
+    spill_dir = get_hermes_home() / "cache" / "terminal-output"
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    return str(
+        spill_dir
+        / f"out-elev-{int(time.time())}-{os.getpid()}-{os.urandom(4).hex()}.log"
+    )
+
+
+def _cleanup_raw_output(raw_path: str) -> None:
+    """Remove a staged raw elevated output and its throwaway directory."""
+    try:
+        raw = Path(raw_path)
+        if raw.exists():
+            raw.unlink()
+        parent = raw.parent
+        if parent.is_dir():
+            shutil.rmtree(parent, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def _resolve_command_cwd(
     *,
     workdir: Optional[str],
@@ -2541,6 +3193,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    elevated: bool = False,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2556,6 +3209,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        elevated: If True, run the command with Windows administrator privileges via UAC (Windows only). Triggers a UAC elevation prompt that the user must approve. Cannot be combined with background=True or pty=True. Output is captured via temp files. Default: False.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2589,6 +3243,44 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+
+        # Elevated execution (Windows UAC) is a local-host capability.  Fail
+        # fast BEFORE any backend is created/connected/recovered: a non-local
+        # env_type must never initialize Docker/SSH/Daytona/Vercel-sandbox
+        # machinery only to be rejected later.  background/pty are also
+        # unsupported with elevated, so block them here too — before any
+        # side effect (environment creation, cleanup thread, process spawn).
+        # The gate is re-checked after the shared approval/command guards as
+        # defense-in-depth, so no path can bypass it.
+        if elevated and (env_type != "local" or background or pty):
+            if env_type != "local":
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        "elevated=true requires the local Windows backend "
+                        f"(current env_type={env_type!r}). Elevated execution "
+                        "is only supported for env_type='local' and is blocked "
+                        "for Docker/SSH/Daytona/Vercel-sandbox backends to "
+                        "prevent UAC from touching the host from inside a "
+                        "sandbox."
+                    ),
+                    "status": "blocked",
+                }, ensure_ascii=False)
+            if background:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "elevated=true cannot be combined with background=true. Elevated commands run synchronously with UAC.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if pty:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "elevated=true cannot be combined with pty=true. Elevated commands use file-based output capture, not PTY.",
+                    "status": "error",
+                }, ensure_ascii=False)
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
@@ -2970,6 +3662,49 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
+        # Elevated execution via UAC (Windows only).  This gate sits AFTER the
+        # shared security checks (gateway lifecycle guard + _check_all_guards
+        # approval/command guard) and AFTER the workdir injection validation
+        # above, so blocked/pending-approval commands and malicious workdirs
+        # never reach the elevated executor and no guard is bypassable.
+        #
+        # Fail-closed combinations:
+        # - env_type != "local": elevated would execute on the host Windows
+        #   machine; from Docker/SSH/Daytona/Vercel-sandbox backends that would
+        #   either be meaningless (inside the sandbox) or worse (escaping the
+        #   backend to touch the host). Always blocked.
+        # - background: elevated runs synchronously with a UAC prompt.
+        # - pty: elevated uses file-based output capture, not a PTY.
+        if elevated:
+            if env_type != "local":
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": (
+                        "elevated=true requires the local Windows backend "
+                        f"(current env_type={env_type!r}). Elevated execution "
+                        "is only supported for env_type='local' and is blocked "
+                        "for Docker/SSH/Daytona/Vercel-sandbox backends to "
+                        "prevent UAC from touching the host from inside a "
+                        "sandbox."
+                    ),
+                    "status": "blocked",
+                }, ensure_ascii=False)
+            if background:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "elevated=true cannot be combined with background=true. Elevated commands run synchronously with UAC.",
+                    "status": "error",
+                }, ensure_ascii=False)
+            if pty:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": "elevated=true cannot be combined with pty=true. Elevated commands use file-based output capture, not PTY.",
+                    "status": "error",
+                }, ensure_ascii=False)
+
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -3260,55 +3995,93 @@ def terminal_tool(
                 from tools.interrupt import clear_current_thread_interrupt
                 clear_current_thread_interrupt()
 
-            while retry_count <= max_retries:
-                try:
-                    command_cwd = _resolve_command_cwd(
-                        workdir=workdir,
-                        default_cwd=cwd,
-                        session_key=session_key,
-                        env_type=env_type,
-                    )
-                    execute_kwargs = {
-                        "timeout": effective_timeout,
-                        "cwd": command_cwd,
-                        # Foreground model-facing output: cap retention while
-                        # streaming (head/tail window) so a verbose command
-                        # can't OOM the gateway before truncation (#64435).
-                        # Internal env.execute() consumers (file ops cat
-                        # reads, RPC reads) intentionally stay unbounded.
-                        "bounded_capture": True,
-                    }
-                    result = env.execute(command, **execute_kwargs)
-                except Exception as e:
-                    error_str = str(e).lower()
-                    if "timeout" in error_str:
+            if elevated:
+                # Elevated execution reuses the SAME foreground result pipeline
+                # as env.execute: cwd resolution, unified output post-processing
+                # (redaction, truncation, spill, exit notes, verification
+                # evidence) below all apply. We only swap the executor.
+                from tools.admin_executor import execute_elevated as _execute_elevated
+                command_cwd = _resolve_command_cwd(
+                    workdir=workdir,
+                    default_cwd=cwd,
+                    session_key=session_key,
+                )
+                elevated_result = _execute_elevated(
+                    command=command,
+                    cwd=command_cwd,
+                    timeout=effective_timeout,
+                )
+                # Normalize the elevated executor's dict to the env.execute
+                # shape the unified pipeline expects below.
+                elevated_output = elevated_result.get("output", "")
+                result = {
+                    "output": elevated_output,
+                    "returncode": elevated_result.get("exit_code", -1),
+                }
+                if elevated_result.get("error"):
+                    result["error"] = elevated_result["error"]
+                # Spill/truncation metadata: the elevated executor hands over
+                # a STAGED RAW file (raw_output_path — a throwaway temp file,
+                # never a durable path) when the output overflowed the
+                # model-facing cap.  Forward it so the unified pipeline below
+                # sanitizes it into a NEW durable spill path and reports
+                # output_total_chars / full_output_path with the same
+                # semantics as normal foreground output.  A plain
+                # (non-overflowing) result carries no spill metadata and
+                # degrades exactly like a small env.execute result.
+                if elevated_result.get("raw_output_path"):
+                    result["output_total_chars"] = elevated_result["output_total_chars"]
+                    result["raw_output_path"] = elevated_result["raw_output_path"]
+            else:
+                while retry_count <= max_retries:
+                    try:
+                        command_cwd = _resolve_command_cwd(
+                            workdir=workdir,
+                            default_cwd=cwd,
+                            session_key=session_key,
+                            env_type=env_type,
+                        )
+                        execute_kwargs = {
+                            "timeout": effective_timeout,
+                            "cwd": command_cwd,
+                            # Foreground model-facing output: cap retention while
+                            # streaming (head/tail window) so a verbose command
+                            # can't OOM the gateway before truncation (#64435).
+                            # Internal env.execute() consumers (file ops cat
+                            # reads, RPC reads) intentionally stay unbounded.
+                            "bounded_capture": True,
+                        }
+                        result = env.execute(command, **execute_kwargs)
+                    except Exception as e:
+                        error_str = str(e).lower()
+                        if "timeout" in error_str:
+                            return json.dumps({
+                                "output": "",
+                                "exit_code": 124,
+                                "error": f"Command timed out after {effective_timeout} seconds"
+                            }, ensure_ascii=False)
+
+                        # Retry on transient errors
+                        if retry_count < max_retries:
+                            retry_count += 1
+                            wait_time = 2 ** retry_count
+                            logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                                           wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                            time.sleep(wait_time)
+                            continue
+
+                        logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
+                                     max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                         return json.dumps({
                             "output": "",
-                            "exit_code": 124,
-                            "error": f"Command timed out after {effective_timeout} seconds"
+                            "exit_code": -1,
+                            "error": _redact_terminal_error_text(
+                                f"Command execution failed: {type(e).__name__}: {e}"
+                            )
                         }, ensure_ascii=False)
-                    
-                    # Retry on transient errors
-                    if retry_count < max_retries:
-                        retry_count += 1
-                        wait_time = 2 ** retry_count
-                        logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                       wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
-                        time.sleep(wait_time)
-                        continue
-                    
-                    logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
-                    return json.dumps({
-                        "output": "",
-                        "exit_code": -1,
-                        "error": _redact_terminal_error_text(
-                            f"Command execution failed: {type(e).__name__}: {e}"
-                        )
-                    }, ensure_ascii=False)
-                
-                # Got a result
-                break
+
+                    # Got a result
+                    break
 
             # Dual-write (cwd rearch step 1): the env's post-command tracking
             # (marker parse / local sync) has just updated env.cwd with the
@@ -3334,10 +4107,19 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            # Spill metadata from the bounded collector: present only when
-            # output overflowed the capture window (see _wait_for_process).
-            spill_total_chars = result.get("output_total_chars")
+            # Spill metadata from the bounded collector/executor: present only
+            # when output overflowed the capture window.  Two shapes:
+            #   - NORMAL path: ``full_output_path`` is the collector's raw
+            #     spill file (streamed and sanitized in place below);
+            #   - ELEVATED path: ``raw_output_path`` is a staged raw file in a
+            #     throwaway temp dir — the durable spill path is generated
+            #     here and only filled with SANITIZED content.
+            # The authoritative character count is recomputed by the streaming
+            # spill redaction below, so the forwarded value (which the
+            # elevated executor may only know as a byte size) is never
+            # trusted verbatim.
             spill_file_path = result.get("full_output_path")
+            raw_output_path = result.get("raw_output_path")
 
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
@@ -3427,7 +4209,10 @@ def terminal_tool(
             result_dict = {
                 "output": output,
                 "exit_code": returncode,
-                "error": None,
+                # Elevated executor errors (UAC cancel, ShellExecuteExW failure,
+                # timeout, ...) surface here; normal env.execute results have
+                # no "error" key and keep the historical None.
+                "error": result.get("error"),
             }
             # cwd echo: when the command changed the session's working
             # directory (cd, pushd, ...), tell the model where it ended up.
@@ -3449,39 +4234,40 @@ def terminal_tool(
             # Truncation metadata (codex/opencode/goose pattern): report the
             # pre-truncation size and a spill-file handle so the model can
             # retrieve the omitted middle with read_file/search_files instead
-            # of re-running the command. The spill was written raw by the
-            # collector; redact it here with the same pass as the visible
-            # output so no secret persists unmasked on disk.
-            if spill_file_path:
+            # of re-running the command.  Stream-sanitize with the same pass
+            # as the visible output so no secret persists unmasked on disk —
+            # and never load the whole spill into RAM to do it.  The ELEVATED
+            # raw file is sanitized into a NEW durable path (the durable
+            # spill dir never sees raw content); the raw file is then deleted.
+            if spill_file_path or raw_output_path:
                 try:
-                    _sp = Path(spill_file_path)
-                    raw_spill = _sp.read_text(encoding="utf-8", errors="replace")
-                    from tools.spill_safety import write_text_exclusive
-
-                    # Rewrite in place via lstat-checked unlink + exclusive
-                    # create so the redacted copy can't be diverted through a
-                    # symlink planted between the collector's write and now.
-                    write_text_exclusive(
-                        _sp,
-                        redact_terminal_output(strip_ansi(raw_spill), command),
-                        private=True,
-                        overwrite=True,
-                        errors="replace",
-                    )
-                    result_dict["output_total_chars"] = spill_total_chars
-                    result_dict["full_output_path"] = spill_file_path
+                    if raw_output_path:
+                        final_path = _new_elevated_spill_path()
+                        final_path, streamed_chars = _stream_redact_spill(
+                            raw_output_path, final_path, command
+                        )
+                    else:
+                        final_path, streamed_chars = _stream_redact_spill(
+                            spill_file_path, spill_file_path, command
+                        )
+                    result_dict["output_total_chars"] = streamed_chars
+                    result_dict["full_output_path"] = final_path
                     result_dict["truncation_note"] = (
                         "Output exceeded the capture window (head+tail shown). "
-                        f"Full output ({spill_total_chars:,} chars) saved to "
-                        f"{spill_file_path} — search it with search_files or page it "
+                        f"Full output ({streamed_chars:,} chars) saved to "
+                        f"{final_path} — search it with search_files or page it "
                         "with read_file instead of re-running the command."
                     )
                 except Exception:
                     logger.debug("spill redaction failed; dropping spill handle", exc_info=True)
-                    try:
-                        Path(spill_file_path).unlink()
-                    except OSError:
-                        pass
+                    if spill_file_path:
+                        try:
+                            Path(spill_file_path).unlink()
+                        except OSError:
+                            pass
+                finally:
+                    if raw_output_path:
+                        _cleanup_raw_output(raw_output_path)
             try:
                 from agent.verification_evidence import record_terminal_result
 
@@ -3808,6 +4594,11 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background output. ONLY for rare one-shot mid-process signals on processes that never exit (e.g. ['Application startup complete'] on a server). NOT for end-of-run markers (use notify_on_complete) and NOT for per-iteration patterns like 'ERROR' in loops — rate-limited to 1 notification/15s; repeated over-firing auto-disables it and falls back to notify-on-exit. When in doubt, use notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete."
+            },
+            "elevated": {
+                "type": "boolean",
+                "description": "Run the command with Windows administrator privileges via UAC. Only works on Windows. When true, triggers a UAC elevation prompt — the user must approve. Output is captured via temp files (no PTY support). Cannot be used with background=true or pty=true. Default: false.",
+                "default": False
             }
         },
         "required": ["command"]
@@ -3837,6 +4628,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        elevated=args.get("elevated", False),
     )
 
 

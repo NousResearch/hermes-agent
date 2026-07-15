@@ -1,6 +1,7 @@
 ---
 name: github-self-hosted-runner
-description: Setup, persistence, and troubleshooting of GitHub Actions self-hosted runners on Linux (x64/ARM64), specifically for quota-free CI/CD environments like Oracle Cloud Free Tier.
+author: rafael.zendron22@gmail.com
+description: "Setup GitHub Actions self-hosted runners on Linux ARM64."
 triggers:
   - CI jobs failing with "runner offline" or "no available runners"
   - Setting up a new repo for deployment with self-hosted runners
@@ -44,7 +45,7 @@ triggers:
      ```
    - Get registration token (uses authenticated `gh`, no PAT needed):
      ```bash
-     REGISTRATION_TOKEN=*** api -X POST /repos/{owner}/{repo}/actions/runners/registration-token | jq -r '.token')
+     REGISTRATION_TOKEN=$(gh api -X POST repos/{owner}/{repo}/actions/runners/registration-token --jq '.token')
      ```
    - Download latest runner (check arch: x64 vs ARM64):
      ```bash

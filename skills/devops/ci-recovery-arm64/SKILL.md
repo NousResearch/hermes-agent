@@ -1,6 +1,7 @@
 ---
 name: ci-recovery-arm64
-description: "Recover from failed CI on ARM64 runners, diagnose bottlenecks, and fix main after premature merge. Oracle Cloud Free Tier specific."
+author: rafael.zendron22@gmail.com
+description: "Recover from failed CI on ARM64 runners and Oracle Cloud."
 version: 1.0.0
 license: MIT
 platforms: [linux]
@@ -215,30 +216,30 @@ gh workflow run ci.yml --ref main
 
 ## Cronjob Monitoring Pattern
 
-When CI is queued or taking longer than expected, create a monitoring cronjob:
+When CI is queued or taking longer than expected, create a monitoring cronjob using the native Hermes `cronjob` tool (NOT a shell command):
 
-```bash
-cronjob action=create \
-  name="ci-monitor-<run-id>" \
-  schedule="every 5m" \
-  repeat=3 \
-  deliver="discord" \
-  prompt="Check CI run <run-id> on hireme-agent:
+```
+cronjob action='create'
+  name='ci-monitor-<run-id>'
+  schedule='every 5m'
+  repeat=3
+  deliver='discord'
+  prompt='Check CI run <run-id> on hireme-agent:
 
 1. If green:
    - Merge PR: https://github.com/OWNER/hireme-agent/pull/<pr-number>
    - Trigger new CI on main
-   - Report: 'CI verde! PR merged. Verificando main...'
+   - Report: "CI verde! PR merged. Verificando main..."
 
 2. If red:
-   - Exibir erros de TypeScript
-   - Pedir direção ao usuário
+   - Show TypeScript errors
+   - Ask user for direction
 
 3. If queued/in_progress:
    - Report elapsed time since trigger
-   - 'CI ainda rodando: <min> minutos'
+   - "CI ainda rodando: <min> minutos"
 
-Use gh CLI to check status. Runner: oracle-arm64-hireme-agent."
+Use gh CLI to check status. Runner: oracle-arm64-hireme-agent.'
 ```
 
 ---

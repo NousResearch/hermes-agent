@@ -1,6 +1,7 @@
 ---
 name: llm-provider-healthcheck
-description: Systematically test, diagnose, and fix LLM API provider integrations. Health-check all configured providers, detect auth failures, quota exhaustion, discontinued models, and key mismatches. Works with any OpenAI-compatible API and provider-specific endpoints.
+author: rafael.zendron22@gmail.com
+description: "Test and diagnose LLM API provider integrations."
 tags: [llm, providers, healthcheck, api, diagnostics, hermes]
 version: 1.0.0
 ---
@@ -153,7 +154,6 @@ delegation:
 
 ## Pitfalls
 
-- **Cascade failure from reasoning_content**: If the primary model is a reasoning model (GLM-5, DeepSeek-V4, Kimi) and it fails, every non-reasoning fallback (Groq, Cerebras, NVIDIA, Cloudflare, Mistral, SambaNova) will also fail with HTTP 400 "reasoning_content is unsupported". This is NOT a provider issue — it's a Hermes source code issue in `copy_reasoning_content_for_api()`. The function does NOT strip `reasoning_content` when the target provider doesn't support it. **Z.AI/GLM-5.1 is NOT in `_needs_thinking_reasoning_pad`** (only DeepSeek/Kimi/MiMo are). See `references/provider-quirks.md` for the fix.
 - **OpenRouter credits exhaust silently**: Free-tier credits can be consumed by a single large-context request. This produces HTTP 402, not 429. Remove those fallbacks immediately — they'll never recover without topping up.
 - **Delegation config is independent from fallbacks**: The `delegation` section in config.yaml has its own `provider`, `model`, `base_url`, and `api_key`. It does NOT inherit from the primary or fallback chain. When you remove a broken provider from fallbacks, ALSO check delegation — if it still points to the dead provider, `delegate_task` will fail on every call with no visible error to the user.
 - **Delegation base_url must match provider**: When switching delegation from one provider to another (e.g., NVIDIA → Groq), you MUST also update `base_url` and `api_key`. Otherwise Hermes sends Groq model names to NVIDIA's endpoint, causing confusing errors. Remove the old `base_url` and `api_key` fields to let delegation inherit from the named provider section.
@@ -161,7 +161,7 @@ delegation:
 
 ## Provider-Specific Quirks
 
-See `references/provider-quirks.md` for known behaviors per provider (Z.AI reasoning models, NIM key sync, Cloudflare auth, model deprecation patterns, etc.).
+Each provider has unique behaviors (auth formats, rate limits, model deprecation). Test empirically with the healthcheck script above and record findings here as you discover them.
 
 ## Free Tier Model Catalog & Task Routing
 

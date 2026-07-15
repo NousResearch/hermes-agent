@@ -1,6 +1,7 @@
 ---
 name: arm64-deployment-patterns
-description: "Deployment patterns for ARM64 platforms (Oracle Cloud Free Tier, Raspberry Pi). Covers Next.js local builds, Docker context fixes, Cloudflare tunnel visibility, and performance workarounds."
+author: rafael.zendron22@gmail.com
+description: "ARM64 deployment patterns for Oracle Cloud and Docker."
 version: 1.0.0
 license: MIT
 platforms: [linux]

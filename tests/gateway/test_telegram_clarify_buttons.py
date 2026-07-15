@@ -391,7 +391,7 @@ class TestTelegramClarifyCallback:
         prompt expired instead of silently entering text-capture mode."""
         adapter = _make_adapter()
         # No clarify primitive entry → mark_awaiting_text returns False.
-        adapter._clarify_state["cidOtherExpired"] = "sk-other-expired"
+        adapter._clarify_state["cidOtherExpired"] = "***"
 
         query = AsyncMock()
         query.data = "cl:cidOtherExpired:other"
@@ -415,6 +415,43 @@ class TestTelegramClarifyCallback:
         assert "expired" in answer_text
         # State popped so a subsequent typed message is not mis-captured.
         assert "cidOtherExpired" not in adapter._clarify_state
+
+    @pytest.mark.asyncio
+    async def test_allowed_user_who_does_not_own_session_cannot_resolve(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        session_key = "agent:main:telegram:group:-10012345:111"
+        cm.register("cidOwner", session_key, "Pick", ["a", "b"])
+        adapter._clarify_state["cidOwner"] = session_key
+
+        query = AsyncMock()
+        query.data = "cl:cidOwner:0"
+        query.message = MagicMock()
+        query.message.chat_id = -10012345
+        query.message.chat.type = "group"
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = "222"
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, context)
+
+        with cm._lock:
+            entry = cm._entries.get("cidOwner")
+        assert entry is not None
+        assert not entry.event.is_set()
+        query.answer.assert_called_once()
+        assert "belongs to another user" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()
+        assert adapter._clarify_state["cidOwner"] == session_key
 
     @pytest.mark.asyncio
     async def test_invalid_choice_token(self):

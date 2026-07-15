@@ -184,6 +184,22 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
         self._loop_ref = asyncio.get_running_loop()
 
 
+def _sse_frame(data: Any, *, event: str = None) -> bytes:
+    """Encode one SSE frame: optional ``event:`` line, then ``data: <json>\\n\\n``.
+
+    Replaces five near-identical inline
+    ``f"data: {json.dumps(...)}\\n\\n".encode()`` call sites in the
+    ``_write_sse_chat_completion`` streaming path — pure dedup, no
+    behavior change intended for those. Left the pre-serialized-string
+    sites elsewhere (e.g. the ``_write_event``/``queue`` writers that
+    already dumps with ``ensure_ascii=False``) alone, since routing them
+    through this helper's plain ``json.dumps(data)`` would silently
+    change their unicode-escaping behavior.
+    """
+    prefix = f"event: {event}\n" if event else ""
+    return f"{prefix}data: {json.dumps(data)}\n\n".encode()
+
+
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -4260,7 +4276,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+            await response.write(_sse_frame(role_chunk))
             last_activity = time.monotonic()
 
             # Helper — route a queue item to the correct SSE event.
@@ -4275,17 +4291,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
+                    await response.write(_sse_frame(item[1], event="hermes.tool.progress"))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
                         "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
                     }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    await response.write(_sse_frame(content_chunk))
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent. Woken
@@ -4380,7 +4393,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "error": err_msg,
                     "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
                 }
-            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
@@ -4412,7 +4425,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "created": created, "model": model,
                     "choices": [{"index": 0, "delta": {}, "finish_reason": "error"}],
                 }
-                await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                await response.write(_sse_frame(error_chunk))
                 await response.write(b"data: [DONE]\n\n")
             except Exception:
                 pass

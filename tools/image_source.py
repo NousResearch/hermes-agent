@@ -24,12 +24,15 @@ while container-only images (tmpfs ``/workspace``, root-owned) are still
 deliverable. This is the unified delivery + confinement model: the same
 mechanism that fixes "vision can't see container files" also closes the escape.
 """
+
 from __future__ import annotations
 
 import asyncio
 import base64
 import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -108,7 +111,24 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
 
     # Everything else is a filesystem path — including bare relative names
     # like "pic.png" (accepted on main; a path-shape gate here regressed them).
-    candidate = s[len("file://"):] if s.lower().startswith("file://") else s
+    candidate = s[len("file://") :] if s.lower().startswith("file://") else s
+    # On Windows, translate MSYS / Git Bash / Cygwin style paths
+    # (e.g. /c/Users/... or /tmp/img.jpg) to a Windows-native path
+    # via cygpath so resolve_image_source resolves correctly.
+    # If cygpath is unavailable the path falls through to a normal
+    # file-not-found error, which is accurate.
+    if sys.platform == "win32" and candidate.startswith("/"):
+        try:
+            _proc = subprocess.run(
+                ["cygpath", "-w", candidate],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if _proc.returncode == 0 and _proc.stdout.strip():
+                candidate = _proc.stdout.strip()
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
     p = Path(os.path.expanduser(candidate))
     # Confinement decision (see module docstring). Under a non-local backend
     # a path is host-readable ONLY if it lands in a media cache (after
@@ -149,7 +169,9 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
     header, _, payload = s.partition(",")
     if ";base64" not in header:
         raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
-    declared = header[len("data:"):].split(";", 1)[0].strip() or "application/octet-stream"
+    declared = (
+        header[len("data:") :].split(";", 1)[0].strip() or "application/octet-stream"
+    )
     # Cheap pre-decode size gate on the encoded length (~4/3 expansion).
     if (len(payload) * 3) // 4 > _MAX_INGEST_BYTES:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
@@ -270,7 +292,9 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
-async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
+async def _resolve_container_fallback(
+    p: Path, ctx: ResolveContext, src: str
+) -> ResolvedImage:
     """Read the image bytes inside the sandbox (fail-closed when none exists).
 
     Reached when a host read is not permitted or the host file is absent. The
@@ -291,7 +315,9 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
         raise SourceNotFound(
             f"'{p}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
-            src=src, origin="container")
+            src=src,
+            origin="container",
+        )
 
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 bytes
     # so a huge file (or /dev/zero) can't stream unbounded base64 into host
@@ -303,10 +329,12 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     # multi-MB base64 read doesn't stall every other coroutine.
     qp = shlex.quote(str(p))
     res = await asyncio.to_thread(
-        env.execute,
-        f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'")
+        env.execute, f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
+    )
     if res.get("returncode", 1) != 0:
-        raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
+        raise SourceNotFound(
+            f"could not read '{p}' inside the sandbox", src=src, origin="container"
+        )
     try:
         data = base64.b64decode(res.get("output", ""), validate=True)
     except Exception as exc:

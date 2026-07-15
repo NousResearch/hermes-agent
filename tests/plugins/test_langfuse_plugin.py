@@ -1,6 +1,7 @@
 """Tests for the bundled observability/langfuse plugin."""
 from __future__ import annotations
 
+import base64
 import importlib
 import logging
 import sys
@@ -145,6 +146,251 @@ class TestRuntimeGate:
             "the rejected per-hook load_config() design"
         )
 
+
+class TestTrustedEdgeCorrelation:
+    @staticmethod
+    def _fresh_plugin():
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    @staticmethod
+    def _secret(key: bytes) -> str:
+        payload = base64.urlsafe_b64encode(key).decode("ascii").rstrip("=")
+        return f"base64:{payload}"
+
+    @staticmethod
+    def _enabled_config(mod, key: bytes):
+        return mod.CorrelationConfig(
+            scheme="hmac-sha256-v1:k1",
+            emitter_metadata_enabled=True,
+            hmac_key=key,
+        )
+
+    @staticmethod
+    def _root_metadata(mod, monkeypatch, correlation_config, task_id="task-123"):
+        class FakeSpan:
+            def set_trace_io(self, **_kwargs):
+                return None
+
+        class FakeContext:
+            def __init__(self):
+                self.span = FakeSpan()
+
+            def __enter__(self):
+                return self.span
+
+        class FakeClient:
+            def __init__(self):
+                self.root_calls = []
+
+            def create_trace_id(self, *, seed):
+                self.seed = seed
+                return "trace-1"
+
+            def start_as_current_observation(self, **kwargs):
+                self.root_calls.append(kwargs)
+                return FakeContext()
+
+        client = FakeClient()
+        monkeypatch.setattr(mod, "propagate_attributes", None)
+        monkeypatch.setattr(mod, "_CORRELATION_CONFIG", correlation_config)
+        mod._start_root_trace(
+            "task-key",
+            task_id=task_id,
+            session_id="session-1",
+            platform="cli",
+            provider="openrouter",
+            model="test-model",
+            api_mode="chat_completions",
+            messages=[{"role": "user", "content": "hello"}],
+            client=client,
+        )
+        return client.root_calls[0]
+
+    def test_strict_k1_secret_parser_accepts_canonical_32_to_64_byte_keys(self):
+        mod = self._fresh_plugin()
+
+        for key in (b"3" * 32, b"6" * 64):
+            assert mod._parse_correlation_hmac_k1(self._secret(key)) == key
+
+    def test_strict_k1_secret_parser_rejects_invalid_encodings_and_lengths(self):
+        mod = self._fresh_plugin()
+        canonical_32 = self._secret(b"6" * 32)
+        payload_32 = canonical_32.removeprefix("base64:")
+        noncanonical_32 = f"base64:{payload_32[:-1]}h"
+
+        invalid = [
+            None,
+            b"not-a-string",
+            "",
+            "base64:",
+            canonical_32 + "=",
+            canonical_32 + " ",
+            " " + canonical_32,
+            "base64:AA+_",
+            "base64:AA/_",
+            "base64:A",
+            self._secret(b"3" * 31),
+            self._secret(b"7" * 65),
+            noncanonical_32,
+        ]
+        for value in invalid:
+            assert mod._parse_correlation_hmac_k1(value) is None
+
+    def test_frozen_k1_vector(self):
+        mod = self._fresh_plugin()
+        config = self._enabled_config(mod, b"6" * 64)
+
+        assert mod._derive_correlation_id("task-123", config) == (
+            "dcceed6ab66a3b83dffcb3487ec7b84761456033dd804ce5f14709279ebdcb4c"
+        )
+        assert mod._derive_correlation_id("TASK-123", config) != (
+            mod._derive_correlation_id("task-123", config)
+        )
+
+    @pytest.mark.parametrize(
+        "task_id",
+        [None, 123, "", " ", " task-123", "task-123 ", "task\x00-123", "\ud800"],
+    )
+    def test_invalid_task_ids_do_not_derive(self, task_id):
+        mod = self._fresh_plugin()
+        config = self._enabled_config(mod, b"6" * 64)
+
+        assert mod._derive_correlation_id(task_id, config) is None
+
+    def test_disabled_missing_key_and_wrong_scheme_do_not_derive(self):
+        mod = self._fresh_plugin()
+        key = b"6" * 64
+
+        configs = [
+            mod.CorrelationConfig(
+                scheme="hmac-sha256-v1:k1",
+                emitter_metadata_enabled=False,
+                hmac_key=key,
+            ),
+            mod.CorrelationConfig(
+                scheme="hmac-sha256-v1:k1",
+                emitter_metadata_enabled=True,
+                hmac_key=None,
+            ),
+            mod.CorrelationConfig(
+                scheme="HMAC-SHA256-V1:K1",
+                emitter_metadata_enabled=True,
+                hmac_key=key,
+            ),
+        ]
+        assert all(
+            mod._derive_correlation_id("task-123", config) is None
+            for config in configs
+        )
+
+    def test_valid_k1_adds_only_generic_correlation_metadata(self, monkeypatch):
+        mod = self._fresh_plugin()
+        call = self._root_metadata(
+            mod,
+            monkeypatch,
+            self._enabled_config(mod, b"6" * 64),
+        )
+
+        assert call["trace_context"]["session_id"] == "session-1"
+        assert call["metadata"]["task_id"] == "task-123"
+        assert call["metadata"]["correlation_scheme"] == "hmac-sha256-v1:k1"
+        assert call["metadata"]["correlation_id"] == (
+            "dcceed6ab66a3b83dffcb3487ec7b84761456033dd804ce5f14709279ebdcb4c"
+        )
+        assert not any("zebi" in key.lower() for key in call["metadata"])
+        assert "history_execution_writer_enabled" not in call["metadata"]
+
+    def test_invalid_or_disabled_config_omits_both_metadata_fields(self, monkeypatch):
+        mod = self._fresh_plugin()
+        configs = [
+            mod.CorrelationConfig(),
+            mod.CorrelationConfig(
+                scheme="hmac-sha256-v1:k1",
+                emitter_metadata_enabled=True,
+                hmac_key=None,
+            ),
+        ]
+
+        for config in configs:
+            call = self._root_metadata(mod, monkeypatch, config)
+            assert "correlation_scheme" not in call["metadata"]
+            assert "correlation_id" not in call["metadata"]
+        call = self._root_metadata(
+            mod,
+            monkeypatch,
+            self._enabled_config(mod, b"6" * 64),
+            task_id=" task-123",
+        )
+        assert "correlation_scheme" not in call["metadata"]
+        assert "correlation_id" not in call["metadata"]
+
+    def test_register_loads_and_caches_correlation_config_once(self, monkeypatch):
+        mod = self._fresh_plugin()
+        config_mod = importlib.import_module("hermes_cli.config")
+
+        loads = {"count": 0}
+
+        def fake_load_config():
+            loads["count"] += 1
+            return {
+                "observability": {
+                    "correlation": {
+                        "scheme": "hmac-sha256-v1:k1",
+                        "emitter_metadata_enabled": True,
+                    },
+                },
+            }
+
+        class FakeContext:
+            def __init__(self):
+                self.hooks = {}
+
+            def register_hook(self, name, hook):
+                self.hooks[name] = hook
+
+        monkeypatch.setattr(config_mod, "load_config_readonly", fake_load_config)
+        monkeypatch.setenv(
+            "HERMES_OBSERVABILITY_CORRELATION_HMAC_K1",
+            self._secret(b"6" * 64),
+        )
+        ctx = FakeContext()
+        mod.register(ctx)
+
+        monkeypatch.setenv(
+            "HERMES_OBSERVABILITY_CORRELATION_HMAC_K1",
+            self._secret(b"7" * 64),
+        )
+        assert mod._derive_correlation_id("task-123") == (
+            "dcceed6ab66a3b83dffcb3487ec7b84761456033dd804ce5f14709279ebdcb4c"
+        )
+        assert loads["count"] == 1
+        assert set(ctx.hooks) == {
+            "pre_api_request",
+            "post_api_request",
+            "pre_llm_call",
+            "post_llm_call",
+            "pre_tool_call",
+            "post_tool_call",
+        }
+
+    def test_config_defaults_schema_and_secret_metadata(self):
+        from hermes_cli.config import (
+            DEFAULT_CONFIG,
+            OPTIONAL_ENV_VARS,
+            _KNOWN_ROOT_KEYS,
+        )
+
+        correlation = DEFAULT_CONFIG["observability"]["correlation"]
+        assert correlation == {
+            "scheme": "hmac-sha256-v1:k1",
+            "emitter_metadata_enabled": False,
+            "history_execution_writer_enabled": False,
+        }
+        assert "observability" in _KNOWN_ROOT_KEYS
+        secret = OPTIONAL_ENV_VARS["HERMES_OBSERVABILITY_CORRELATION_HMAC_K1"]
+        assert secret["password"] is True
 
 # ---------------------------------------------------------------------------
 # Hooks are inert when the client is unavailable.

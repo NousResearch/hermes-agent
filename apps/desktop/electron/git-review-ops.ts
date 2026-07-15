@@ -11,6 +11,7 @@ import path from 'node:path'
 import simpleGit from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
+import { toWindowsShortPath } from './windows-short-path'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
@@ -43,7 +44,20 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // `gitBin` is resolved inside the Electron main process from known install
+  // locations or PATH; it is never renderer/user input. Prefer a warning-free
+  // Windows 8.3 path when available. If short names are disabled, use
+  // simple-git's explicit trusted-binary escape hatch rather than falling back
+  // to PATH (which may be absent in GUI apps or resolve a repo-local git.exe).
+  const binary = gitBin && process.platform === 'win32' ? toWindowsShortPath(gitBin) : gitBin || 'git'
+
+  return simpleGit({
+    baseDir: cwd,
+    binary,
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    ...(gitBin ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+  })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -680,6 +694,7 @@ async function repoStatus(repoPath, gitBin) {
 export {
   branchBase,
   fileDiffVsHead,
+  gitFor,
   repoStatus,
   resolveRenamePath,
   reviewCommit,

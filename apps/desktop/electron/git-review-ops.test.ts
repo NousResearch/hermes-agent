@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { repoStatus, resolveRenamePath } from './git-review-ops'
+import { gitFor, repoStatus, resolveRenamePath } from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -29,6 +29,38 @@ function makeRepo() {
 
   return dir
 }
+
+test('gitFor accepts an internally resolved git binary path containing spaces', () => {
+  assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
+})
+
+test('gitFor executes status with the spaced Git for Windows binary instead of a repo-local executable', async () => {
+  if (process.platform !== 'win32') {
+    return
+  }
+
+  const gitBin = path.join(process.env.ProgramFiles || String.raw`C:\Program Files`, 'Git', 'cmd', 'git.exe')
+  const windowsRoot = process.env.SystemRoot || process.env.WINDIR || String.raw`C:\Windows`
+  const decoyGit = path.join(windowsRoot, 'System32', 'where.exe')
+
+  if (!fs.existsSync(gitBin) || !fs.existsSync(decoyGit)) {
+    return
+  }
+
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-git-review-'))
+
+  try {
+    execFileSync(gitBin, ['init', repo], { stdio: 'ignore' })
+    fs.copyFileSync(decoyGit, path.join(repo, 'git.exe'))
+    fs.writeFileSync(path.join(repo, 'changed.txt'), 'review me\n')
+
+    const status = await gitFor(repo, gitBin).status()
+
+    assert.equal(status.not_added.includes('changed.txt'), true)
+  } finally {
+    fs.rmSync(repo, { force: true, recursive: true })
+  }
+})
 
 test('resolveRenamePath: plain path is unchanged', () => {
   assert.equal(resolveRenamePath('src/a.ts'), 'src/a.ts')

@@ -1,6 +1,6 @@
 ---
 name: nextjs-metadata
-description: Configure and debug SEO, OpenGraph, and Twitter Card metadata in Next.js App Router. Handle root layouts vs. route-specific overrides and asset generation.
+description: "SEO, OpenGraph, and Twitter Card metadata in Next.js."
 requirements: []
 ---
 

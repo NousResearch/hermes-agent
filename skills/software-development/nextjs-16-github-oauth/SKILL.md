@@ -1,6 +1,6 @@
 ---
 name: nextjs-16-github-oauth
-description: GitHub-only OAuth pattern for Next.js 16 with NextAuth v5. Simplifies auth flow for dev tools, avoids multi-provider maintenance. Covers setup, route group conflicts, Vercel deployment, and LGPD compliance integration.
+description: "GitHub-only OAuth for Next.js 16 + NextAuth v5."
 tags: [nextjs, auth, nextauth, github-oauth, oauth, typescript, vercel]
 related_skills: [lgpd-compliance, nextjs-16-deployment]
 ---

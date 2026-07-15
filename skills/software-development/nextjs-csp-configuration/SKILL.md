@@ -1,7 +1,7 @@
 ---
 name: Next.js Content-Security-Policy Configuration
 title: Next.js Content-Security-Policy Configuration
-description: Configure and debug Content-Security-Policy headers in Next.js applications, including handling external media sources (audio/video), CDN access, and common CSP violations.
+description: "Content-Security-Policy headers for Next.js apps."
 tags: [nextjs, security, csp, headers, media, cdn, debugging]
 ---
 
@@ -126,25 +126,6 @@ pkill -f "next dev"
 
 # Restart
 npm run dev
-```
-
-### Missing `todayId` in API Response
-
-**Symptom**: Component shows "Lição indisponível" even when API returns data.
-
-**Cause**: API response missing `todayId` field that client expects.
-
-**Fix**: Ensure API route includes `todayId` in response:
-```typescript
-// src/app/api/escola-sabatina/route.ts
-return NextResponse.json({
-  success: true,
-  data: {
-    today: dayContentMeta,
-    todayId: dayContentMeta?.id,  // ✅ Include this
-    // ... other fields
-  }
-});
 ```
 
 ## Debugging Steps

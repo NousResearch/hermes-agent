@@ -1,6 +1,6 @@
 ---
 name: typescript-api-patterns
-description: TypeScript patterns for consuming external APIs - Zod validation, type safety, error handling, and common patterns for OAuth, REST, and GraphQL clients.
+description: "TypeScript patterns for consuming external APIs."
 triggers:
   - TypeScript errors about unknown types
   - Consuming external APIs (OAuth, REST, GraphQL)

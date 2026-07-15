@@ -1,6 +1,6 @@
 ---
 name: typescript-package-migration
-description: "Migrate between TypeScript package variants (e.g., @sentry/browser → @sentry/react) safely, updating source, tests, and mocks."
+description: "Migrate between TypeScript package variants safely."
 version: 1.0.0
 license: MIT
 platforms: [linux, macos, windows]

@@ -354,13 +354,13 @@ class TestBuildCallKwargsMaxTokens:
         ],
     )
     def test_moa_task_sends_max_tokens_on_openai_compatible(self, provider, model, base_url, expected_key):
-        """MoA reference/aggregator tasks must honor max_tokens regardless of provider.
+        """MoA reference tasks must honor max_tokens regardless of provider.
 
         The ``reference_max_tokens`` config option (PR #56756) caps advisor output
         to reduce turn latency.  Before the fix, ``_build_call_kwargs`` silently
         dropped the value for OpenAI-compatible providers (PR #34845), so the cap
         never reached the API.  With the ``task`` parameter threaded through,
-        any task starting with ``moa_`` must include the output cap in kwargs.
+        ``task == "moa_reference"`` includes the output cap in kwargs.
 
         Models that require ``max_completion_tokens`` (GPT-5 family, Copilot)
         get the correct parameter name via ``auxiliary_max_tokens_param()``.
@@ -378,7 +378,7 @@ class TestBuildCallKwargsMaxTokens:
         assert kwargs[expected_key] == 800
 
     def test_moa_task_sends_max_tokens_on_anthropic_wire(self):
-        """MoA tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""
+        """MoA reference tasks on Anthropic-compat endpoints keep max_tokens (unchanged behavior)."""
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -387,9 +387,29 @@ class TestBuildCallKwargsMaxTokens:
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=600,
             base_url="https://api.minimax.io/v1",
-            task="moa_aggregator",
+            task="moa_reference",
         )
         assert kwargs["max_tokens"] == 600
+
+    def test_moa_aggregator_does_not_get_max_tokens_on_openai_compat(self):
+        """``reference_max_tokens`` is an advisors-only contract (#56756).
+
+        The aggregator is the acting model — it must NOT be capped by the
+        reference token budget.  Only ``task == "moa_reference"`` triggers
+        the exception in ``_build_call_kwargs``.
+        """
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="zai",
+            model="glm-5.2",
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=800,
+            base_url="https://api.z.ai/api/coding/paas/v4",
+            task="moa_aggregator",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
 
     def test_non_moa_tasks_still_omit_max_tokens(self):
         """Regression guard: compression/titles/vision keep PR #34845 behavior."""
@@ -406,8 +426,9 @@ class TestBuildCallKwargsMaxTokens:
             )
             assert "max_tokens" not in kwargs, f"max_tokens should be dropped for task={task!r}"
 
-    def test_moa_prefix_matching(self):
-        """Only tasks prefixed with 'moa_' trigger the cap — not arbitrary task names."""
+    def test_moa_task_exact_match(self):
+        """Only task == "moa_reference" triggers the cap — not the aggregator,
+        not arbitrary 'moa_' prefixed tasks."""
         from agent.auxiliary_client import _build_call_kwargs
 
         # 'moa_reference' → honored
@@ -420,23 +441,23 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert kw["max_tokens"] == 500
 
-        # 'moa_xyz' → honored (prefix match)
+        # 'moa_aggregator' → dropped (aggregator is the acting model, not an advisor)
         kw2 = _build_call_kwargs(
             provider="zai", model="glm-5.2",
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=500,
             base_url="https://api.z.ai/api/coding/paas/v4",
-            task="moa_custom_future",
+            task="moa_aggregator",
         )
-        assert kw2["max_tokens"] == 500
+        assert "max_tokens" not in kw2
 
-        # 'mopha_reference' (similar but not moa_) → dropped
+        # 'moa_custom_future' → dropped (only moa_reference is whitelisted)
         kw3 = _build_call_kwargs(
             provider="zai", model="glm-5.2",
             messages=[{"role": "user", "content": "hi"}],
             max_tokens=500,
             base_url="https://api.z.ai/api/coding/paas/v4",
-            task="mopha_reference",
+            task="moa_custom_future",
         )
         assert "max_tokens" not in kw3
 

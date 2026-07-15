@@ -6410,7 +6410,7 @@ def _build_call_kwargs(
             _provider_norm in {"nvidia", "nvidia-nim", "nim", "build-nvidia", "nemotron"}
             or base_url_host_matches(_effective_base, "integrate.api.nvidia.com")
         )
-        _is_moa = bool(task) and str(task).startswith("moa_")
+        _is_moa = bool(task) and str(task) == "moa_reference"
         if (
             _is_anthropic_compat_endpoint(provider, _effective_base)
             or _is_nvidia_nim

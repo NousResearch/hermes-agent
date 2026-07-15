@@ -348,7 +348,10 @@ function findToolPartIndex(
     // Some live streams start without an id, then complete with one. Fall
     // through to pending same-name/context matching so the completion updates
     // the synthetic live row instead of appending a duplicate completed row.
-    if (phase === 'running' && !matchValues.length) {
+    // clarify.request can synthesize the row before the matching tool.start
+    // arrives. Reuse that one pending clarify row instead of rendering a
+    // duplicate prompt card.
+    if (phase === 'running' && !matchValues.length && name !== 'clarify') {
       return -1
     }
   }

@@ -475,6 +475,66 @@ def test_patch_status_complete(client):
     assert any(x["id"] == t["id"] for x in done["tasks"])
 
 
+def test_patch_status_complete_from_active_statuses(client, kanban_home):
+    """Manual completion accepts every non-terminal source status."""
+    from hermes_cli import kanban_db as kb
+
+    for source_status in sorted(kb.VALID_STATUSES - {"done", "archived"}):
+        t = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": f"complete-from-{source_status}"},
+        ).json()["task"]
+        conn = kb.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?",
+                    (source_status, t["id"]),
+                )
+        finally:
+            conn.close()
+
+        r = client.patch(
+            f"/api/plugins/kanban/tasks/{t['id']}",
+            json={
+                "status": "done",
+                "result": f"shipped from {source_status}",
+            },
+        )
+        assert r.status_code == 200, (
+            f"{source_status}->done should succeed, got {r.status_code}: {r.text}"
+        )
+        assert r.json()["task"]["status"] == "done"
+
+
+def test_patch_status_complete_rejects_terminal_statuses(client, kanban_home):
+    """Manual completion rejects already-done and archived tasks."""
+    from hermes_cli import kanban_db as kb
+
+    for source_status in ("done", "archived"):
+        t = client.post(
+            "/api/plugins/kanban/tasks",
+            json={"title": f"complete-from-{source_status}"},
+        ).json()["task"]
+        conn = kb.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?",
+                    (source_status, t["id"]),
+                )
+        finally:
+            conn.close()
+
+        r = client.patch(
+            f"/api/plugins/kanban/tasks/{t['id']}",
+            json={"status": "done", "result": "should fail"},
+        )
+        assert r.status_code == 409, (
+            f"{source_status}->done should be 409, got {r.status_code}: {r.text}"
+        )
+
+
 def test_patch_block_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

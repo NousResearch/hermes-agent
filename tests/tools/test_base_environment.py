@@ -196,7 +196,10 @@ class TestAtomicSnapshotWrite:
         captured = {}
 
         def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
+            # Capture only the login bootstrap; the non-login ambient-PATH probe
+            # and the failure-path probe (both login=False) are ignored.
+            if login:
+                captured["cmd"] = cmd_string
             raise RuntimeError("stop after capture")
 
         env._run_bash = fake_run_bash  # type: ignore[assignment]
@@ -223,7 +226,10 @@ class TestAtomicSnapshotWrite:
         captured = {}
 
         def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
-            captured.setdefault("cmd", cmd_string)  # only the bootstrap; ignore the failure-path probe
+            # Capture only the login bootstrap; the non-login ambient-PATH probe
+            # and the failure-path probe (both login=False) are ignored.
+            if login:
+                captured["cmd"] = cmd_string
             raise RuntimeError("stop after capture")
 
         env._run_bash = fake_run_bash  # type: ignore[assignment]

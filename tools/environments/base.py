@@ -401,6 +401,10 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Restore PATH entries a login shell's /etc/profile dropped before export -p
+    # snapshots them (#56634). Off for Windows Git Bash (see LocalEnvironment).
+    _restore_ambient_login_path: bool = True
+
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
 
@@ -454,6 +458,74 @@ class BaseEnvironment(ABC):
     # Session snapshot (init_session)
     # ------------------------------------------------------------------
 
+    def _capture_ambient_login_path(self) -> str | None:
+        """PATH from a non-login shell (never sources /etc/profile), or None.
+
+        Best-effort. A per-session marker frames the value so BASH_ENV output
+        can't pollute it; the bytes between markers are returned as-is (PATH
+        entries may contain spaces, so never stripped).
+        """
+        if not self._restore_ambient_login_path:
+            return None
+        probe_timeout = min(15, self._snapshot_timeout)
+        marker = f"__HERMES_PATH_{self._session_id}__"
+        try:
+            proc = self._run_bash(
+                # `builtin` bypasses a printf shadowed by a function/BASH_ENV.
+                f"builtin printf '{marker}%s{marker}' \"${{PATH-}}\"",
+                login=False,
+                timeout=probe_timeout,
+            )
+            result = self._wait_for_process(proc, timeout=probe_timeout)
+        except Exception:
+            return None
+        if int(result.get("returncode") or 0) != 0:
+            return None
+        output = result.get("output") or ""
+        first = output.find(marker)
+        if first == -1:
+            return None
+        second = output.find(marker, first + len(marker))
+        if second == -1:
+            return None
+        ambient = output[first + len(marker) : second]
+        return ambient or None
+
+    @staticmethod
+    def _render_login_path_restore(ambient_path: str | None) -> str:
+        """Bootstrap shell (before export -p) that prepends ambient PATH entries
+        missing from the login PATH, restoring a venv /etc/profile dropped
+        (#56634). Order-stable, deduped, no-op if nothing is missing. Safe under
+        the login shell's set -e/-u (uses ${PATH-} and guarded constructs, never
+        toggles options); an empty login PATH is assigned directly so no
+        current-dir ``:`` is introduced.
+        """
+        if not ambient_path:
+            return ""
+        quoted = shlex.quote(ambient_path)
+        return (
+            f"__hermes_amb={quoted}\n"
+            "__hermes_login=${PATH-}\n"
+            "__hermes_add=\n"
+            "__hermes_rest=$__hermes_amb\n"
+            'while [ -n "$__hermes_rest" ]; do\n'
+            "  __hermes_e=${__hermes_rest%%:*}\n"
+            '  if [ "$__hermes_rest" = "$__hermes_e" ]; then __hermes_rest=; '
+            "else __hermes_rest=${__hermes_rest#*:}; fi\n"
+            '  [ -n "$__hermes_e" ] || continue\n'
+            '  case ":$__hermes_login:$__hermes_add:" in\n'
+            '    *":$__hermes_e:"*) ;;\n'
+            "    *) __hermes_add=${__hermes_add:+$__hermes_add:}$__hermes_e ;;\n"
+            "  esac\n"
+            "done\n"
+            'if [ -n "$__hermes_add" ]; then\n'
+            '  if [ -n "$__hermes_login" ]; then PATH=$__hermes_add:$__hermes_login; '
+            "else PATH=$__hermes_add; fi\n"
+            "  export PATH\n"
+            "fi\n"
+            "unset __hermes_amb __hermes_login __hermes_add __hermes_rest __hermes_e\n"
+        )
+
     def init_session(self):
         """Capture login shell environment into a snapshot file.
 
@@ -497,8 +569,13 @@ class BaseEnvironment(ABC):
         # static path is shell-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
         _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Repair a login /etc/profile PATH reset before export -p captures it (#56634).
+        _path_restore = self._render_login_path_restore(
+            self._capture_ambient_login_path()
+        )
         bootstrap = (
             f"umask 077\n"
+            f"{_path_restore}"
             f"export -p > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -553,7 +630,8 @@ class BaseEnvironment(ABC):
                 probe_result = self._wait_for_process(probe, timeout=min(15, self._snapshot_timeout))
                 prefer_nonlogin = int(probe_result.get("returncode") or 0) == 0
                 if not prefer_nonlogin:
-                    detail = (probe_result.get("stdout") or detail).strip() or detail
+                    # _wait_for_process returns captured text under "output".
+                    detail = (probe_result.get("output") or detail).strip() or detail
             except Exception as probe_exc:
                 detail = f"{detail}; non-login probe: {probe_exc}"
 

@@ -1101,6 +1101,10 @@ class LocalEnvironment(BaseEnvironment):
     CWD persists via file-based read after each command.
     """
 
+    # Git Bash's /etc/profile is additive (nothing to repair) and its PATH order
+    # must not be disturbed, so keep the #56634 repair POSIX-only.
+    _restore_ambient_login_path: bool = not _IS_WINDOWS
+
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         if cwd:
             cwd = os.path.expanduser(cwd)

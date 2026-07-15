@@ -112,7 +112,8 @@ def _broker_health(port: int) -> Optional[dict]:
     import httpx
 
     try:
-        response = httpx.get(f"http://127.0.0.1:{port}/health", timeout=5.0)
+        with httpx.Client(timeout=5.0, trust_env=False) as client:
+            response = client.get(f"http://127.0.0.1:{port}/health")
         if response.status_code != 200:
             return None
         return response.json()
@@ -125,11 +126,11 @@ def _broker_health_detailed(port: int) -> Optional[dict]:
 
     try:
         key = _read_client_key()
-        response = httpx.get(
-            f"http://127.0.0.1:{port}/health/detailed",
-            headers={"Authorization": f"Bearer {key}"},
-            timeout=5.0,
-        )
+        with httpx.Client(timeout=5.0, trust_env=False) as client:
+            response = client.get(
+                f"http://127.0.0.1:{port}/health/detailed",
+                headers={"Authorization": f"Bearer {key}"},
+            )
         if response.status_code not in (200, 503):
             return None
         payload = response.json()

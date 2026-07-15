@@ -414,6 +414,45 @@ def test_doctor_reports_pass_fail_lines(monkeypatch, capsys, tmp_path):
     assert SYNTHETIC_ACCESS not in out
 
 
+def test_loopback_health_checks_ignore_proxy_environment(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"status": "ok"}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, **kwargs):
+            calls.append(("get", url, kwargs))
+            return FakeResponse()
+
+    monkeypatch.setattr("httpx.Client", FakeClient)
+    monkeypatch.setattr(cli_mod, "_read_client_key", lambda: "synthetic-local-key")
+
+    assert cli_mod._broker_health(17880) == {"status": "ok"}
+    assert cli_mod._broker_health_detailed(17880) == {"status": "ok"}
+
+    init_calls = [entry for entry in calls if entry[0] == "init"]
+    assert len(init_calls) == 2
+    assert all(entry[1].get("trust_env") is False for entry in init_calls)
+    get_calls = [entry for entry in calls if entry[0] == "get"]
+    assert get_calls[0][1] == "http://127.0.0.1:17880/health"
+    assert get_calls[1][1] == "http://127.0.0.1:17880/health/detailed"
+    assert get_calls[1][2]["headers"]["Authorization"].startswith("Bearer ")
+
+
 # ---------------------------------------------------------------------------
 # install / uninstall
 # ---------------------------------------------------------------------------

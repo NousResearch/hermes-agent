@@ -9750,7 +9750,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
+                if isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -10134,7 +10134,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _denied is not None:
                     return _denied
                 qcmd = quick_commands[command]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    return f"Quick command '/{command}' has malformed configuration."
+                qcmd_type = qcmd.get("type")
+                if qcmd_type == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
@@ -10162,7 +10165,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Quick command error: {e}"
                     else:
                         return f"Quick command '/{command}' has no command defined."
-                elif qcmd.get("type") == "alias":
+                elif qcmd_type == "argv":
+                    from hermes_cli.quick_commands import (
+                        QUICK_COMMAND_TIMEOUT_SECONDS,
+                        QuickCommandConfigError,
+                        QuickCommandOutputError,
+                        bounded_quick_command_output,
+                        build_gateway_argv_environment,
+                        prepare_argv_command,
+                    )
+
+                    try:
+                        argv = prepare_argv_command(qcmd, event.get_command_args())
+                        platform_name = getattr(source.platform, "value", source.platform)
+                        child_env = build_gateway_argv_environment(
+                            qcmd,
+                            platform=platform_name,
+                            message_id=event.message_id,
+                            update_id=getattr(event, "platform_update_id", None),
+                        )
+                    except QuickCommandConfigError as exc:
+                        return f"Quick command '/{command}' configuration error: {exc}."
+
+                    proc = None
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *argv,
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=child_env,
+                        )
+                        stdout, stderr = await asyncio.wait_for(
+                            proc.communicate(), timeout=QUICK_COMMAND_TIMEOUT_SECONDS
+                        )
+                    except asyncio.TimeoutError:
+                        if proc is not None:
+                            try:
+                                proc.terminate()
+                            except ProcessLookupError:
+                                pass
+                            try:
+                                await asyncio.wait_for(proc.wait(), timeout=2)
+                            except asyncio.TimeoutError:
+                                try:
+                                    proc.kill()
+                                except ProcessLookupError:
+                                    pass
+                                await proc.wait()
+                        return f"Quick command timed out ({QUICK_COMMAND_TIMEOUT_SECONDS}s)."
+                    except Exception as exc:
+                        return f"Quick command error: {exc}"
+
+                    try:
+                        output = bounded_quick_command_output(stdout, stderr)
+                    except QuickCommandOutputError as exc:
+                        return f"Quick command '/{command}' {exc}."
+                    if proc.returncode != 0:
+                        detail = output or f"exit code {proc.returncode}"
+                        return f"Quick command '/{command}' failed: {detail}"
+                    return output if output else "Command returned no output."
+                elif qcmd_type == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -10174,7 +10237,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:
-                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'alias')."
+                    return f"Quick command '/{command}' has unsupported type (supported: 'exec', 'argv', 'alias')."
 
         # Plugin-registered slash commands
         if command:

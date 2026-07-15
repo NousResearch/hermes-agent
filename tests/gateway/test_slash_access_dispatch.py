@@ -342,6 +342,34 @@ async def test_non_admin_denied_for_unlisted_quick_command_exec():
 
 
 @pytest.mark.asyncio
+async def test_non_admin_denied_before_quick_command_argv_spawn(monkeypatch):
+    runner = _make_runner(
+        platform_extra={
+            "allow_admin_from": ["111"],
+            "user_allowed_commands": [],
+        }
+    )
+    runner.config.quick_commands = {
+        "remember": {
+            "type": "argv",
+            "command": ["atlas-spool-append", "--type", "fact"],
+            "argument_mode": "text",
+            "destination_alias": "owner",
+        }
+    }
+    spawn = AsyncMock()
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+
+    result = await runner._handle_message(
+        _make_event("/remember never-run", _make_source(user_id="999"))
+    )
+
+    assert result is not None
+    assert "/remember is admin-only here" in result
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_listed_quick_command_runs_for_non_admin():
     """When the operator lists the quick command in user_allowed_commands, a
     non-admin can run it — the gate must allow, not blanket-deny."""

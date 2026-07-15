@@ -8927,7 +8927,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             quick_commands = self.config.get("quick_commands", {})
             if base_cmd.lstrip("/") in quick_commands:
                 qcmd = quick_commands[base_cmd.lstrip("/")]
-                if qcmd.get("type") == "exec":
+                if not isinstance(qcmd, dict):
+                    self._console_print(
+                        f"[bold red]Quick command '{base_cmd}' has malformed configuration[/]"
+                    )
+                elif qcmd.get("type") == "exec":
                     import subprocess
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
@@ -8956,6 +8960,55 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             self._console_print(f"[bold red]Quick command error: {e}[/]")
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                elif qcmd.get("type") == "argv":
+                    import subprocess
+                    from hermes_cli.quick_commands import (
+                        QUICK_COMMAND_TIMEOUT_SECONDS,
+                        QuickCommandConfigError,
+                        QuickCommandOutputError,
+                        bounded_quick_command_output,
+                        build_argv_environment,
+                        prepare_argv_command,
+                    )
+
+                    command_parts = cmd_original.split(maxsplit=1)
+                    argument_text = command_parts[1] if len(command_parts) > 1 else ""
+                    try:
+                        argv = prepare_argv_command(qcmd, argument_text)
+                        result = subprocess.run(
+                            argv,
+                            capture_output=True,
+                            text=True,
+                            timeout=QUICK_COMMAND_TIMEOUT_SECONDS,
+                            stdin=subprocess.DEVNULL,
+                            env=build_argv_environment(),
+                        )
+                        output = bounded_quick_command_output(
+                            result.stdout, result.stderr
+                        )
+                        if result.returncode != 0:
+                            detail = output or f"exit code {result.returncode}"
+                            self._console_print(
+                                f"[bold red]Quick command failed: {detail}[/]"
+                            )
+                        elif output:
+                            self._console_print(_rich_text_from_ansi(output))
+                        else:
+                            self._console_print("[dim]Command returned no output[/]")
+                    except QuickCommandConfigError as exc:
+                        self._console_print(
+                            f"[bold red]Quick command '{base_cmd}' configuration error: {exc}[/]"
+                        )
+                    except subprocess.TimeoutExpired:
+                        self._console_print(
+                            f"[bold red]Quick command timed out ({QUICK_COMMAND_TIMEOUT_SECONDS}s)[/]"
+                        )
+                    except QuickCommandOutputError as exc:
+                        self._console_print(
+                            f"[bold red]Quick command '{base_cmd}' {exc}[/]"
+                        )
+                    except Exception as exc:
+                        self._console_print(f"[bold red]Quick command error: {exc}[/]")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -8966,7 +9019,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         self._console_print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    self._console_print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'argv', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import (

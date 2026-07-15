@@ -1,7 +1,8 @@
 """Tests for user-defined quick commands that bypass the agent loop."""
+import asyncio
 import os
 import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from rich.text import Text
 import pytest
 
@@ -128,6 +129,104 @@ class TestCLIQuickCommands:
         args = cli.console.print.call_args[0][0]
         assert "timed out" in args.lower()
 
+    def test_argv_text_is_one_item_without_shell_or_credentials(self):
+        cli = self._make_cli({
+            "remember": {
+                "type": "argv",
+                "command": ["/opt/atlas/bin/atlas-spool-append", "--type", "fact"],
+                "argument_mode": "text",
+            }
+        })
+        completed = subprocess.CompletedProcess([], 0, stdout="saved\n", stderr="")
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "BOT_TOKEN": "secret"}), \
+             patch("subprocess.run", return_value=completed) as run:
+            result = cli.process_command("/remember hello; echo not-a-shell")
+
+        assert result is True
+        assert run.call_args.args[0] == [
+            "/opt/atlas/bin/atlas-spool-append",
+            "--type",
+            "fact",
+            "hello; echo not-a-shell",
+        ]
+        assert "shell" not in run.call_args.kwargs
+        assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+        assert run.call_args.kwargs["env"]["PATH"] == "/usr/bin"
+        assert "BOT_TOKEN" not in run.call_args.kwargs["env"]
+        assert self._printed_plain(cli.console.print.call_args[0][0]) == "saved"
+
+    @pytest.mark.parametrize(
+        "qcmd",
+        [
+            "not-a-mapping",
+            {"type": "argv", "command": "echo unsafe"},
+            {"type": "argv", "command": []},
+            {"type": "argv", "command": ["/bin/echo", "  "]},
+            {"type": "argv", "command": ["/bin/echo"], "argument_mode": "words"},
+        ],
+    )
+    def test_argv_malformed_config_is_user_facing(self, qcmd):
+        cli = self._make_cli({"broken": qcmd})
+        with patch("subprocess.run") as run:
+            cli.process_command("/broken hello")
+
+        run.assert_not_called()
+        assert "quick command" in str(cli.console.print.call_args[0][0]).lower()
+
+    def test_argv_text_rejects_blank_and_oversized_input(self):
+        cli = self._make_cli({
+            "remember": {
+                "type": "argv",
+                "command": ["/bin/echo"],
+                "argument_mode": "text",
+            }
+        })
+        with patch("subprocess.run") as run:
+            cli.process_command("/remember   ")
+            blank = str(cli.console.print.call_args[0][0]).lower()
+            cli.console.reset_mock()
+            cli.process_command("/remember " + ("é" * 4097))
+            oversized = str(cli.console.print.call_args[0][0]).lower()
+
+        run.assert_not_called()
+        assert "requires text" in blank
+        assert "8192 utf-8 bytes" in oversized
+
+    def test_argv_output_is_bounded(self):
+        cli = self._make_cli({
+            "qstatus": {"type": "argv", "command": ["/bin/echo"]}
+        })
+        completed = subprocess.CompletedProcess([], 0, stdout="x" * 65537, stderr="")
+        with patch("subprocess.run", return_value=completed):
+            cli.process_command("/qstatus")
+
+        assert "65536 utf-8 bytes" in str(cli.console.print.call_args[0][0]).lower()
+
+    def test_argv_nonzero_exit_is_not_reported_as_success(self):
+        cli = self._make_cli({
+            "remember": {"type": "argv", "command": ["/bin/false"]}
+        })
+        completed = subprocess.CompletedProcess([], 9, stdout="", stderr="spool failed")
+        with patch("subprocess.run", return_value=completed):
+            cli.process_command("/remember")
+
+        rendered = str(cli.console.print.call_args[0][0]).lower()
+        assert "failed" in rendered
+        assert "spool failed" in rendered
+
+    def test_argv_output_redaction_is_forced(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        cli = self._make_cli({
+            "qstatus": {"type": "argv", "command": ["/bin/echo"]}
+        })
+        secret = "sk-ant-api03-supersecretkey1234567890"
+        completed = subprocess.CompletedProcess([], 0, stdout=secret, stderr="")
+        with patch("subprocess.run", return_value=completed):
+            cli.process_command("/qstatus")
+
+        rendered = self._printed_plain(cli.console.print.call_args[0][0])
+        assert "supersecretkey1234567890" not in rendered
+
 
 # ── Gateway tests ──────────────────────────────────────────────────────────
 
@@ -145,7 +244,21 @@ class TestGatewayQuickCommands:
         event.source.platform.value = "telegram"
         event.source.chat_type = "dm"
         event.source.chat_id = "123"
+        event.source.thread_id = None
+        event.message_id = "msg-42"
+        event.platform_update_id = 77
         return event
+
+    def _make_runner(self, qcmd):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"remember": qcmd}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._draining = False
+        return runner
 
     @pytest.mark.asyncio
     async def test_exec_command_returns_output(self):
@@ -224,7 +337,13 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("slow")
-        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+
+        async def timeout_and_close(awaitable, timeout):
+            del timeout
+            awaitable.close()
+            raise asyncio.TimeoutError
+
+        with patch("asyncio.wait_for", new=timeout_and_close):
             result = await runner._handle_message(event)
         assert result is not None
         assert "timed out" in result.lower()
@@ -245,3 +364,127 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_argv_passes_one_text_item_and_exact_provenance_env(self):
+        runner = self._make_runner({
+            "type": "argv",
+            "command": ["/opt/atlas/bin/atlas-spool-append", "--type", "fact"],
+            "argument_mode": "text",
+            "destination_alias": "owner",
+        })
+        event = self._make_event("remember", "hello; echo not-a-shell")
+        proc = MagicMock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b"saved\n", b""))
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "BOT_TOKEN": "secret"}), \
+             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as create:
+            result = await runner._handle_message(event)
+
+        assert result == "saved"
+        assert create.await_args.args == (
+            "/opt/atlas/bin/atlas-spool-append",
+            "--type",
+            "fact",
+            "hello; echo not-a-shell",
+        )
+        child_env = create.await_args.kwargs["env"]
+        assert child_env["HERMES_QUICK_COMMAND_PLATFORM"] == "telegram"
+        assert child_env["HERMES_QUICK_COMMAND_MESSAGE_ID"] == "msg-42"
+        assert child_env["HERMES_QUICK_COMMAND_UPDATE_ID"] == "77"
+        assert child_env["HERMES_QUICK_COMMAND_DESTINATION_ALIAS"] == "owner"
+        assert child_env["PATH"] == "/usr/bin"
+        assert "BOT_TOKEN" not in child_env
+        assert "shell" not in create.await_args.kwargs
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "qcmd",
+        [
+            "not-a-mapping",
+            {"type": "argv", "command": "echo unsafe", "destination_alias": "owner"},
+            {"type": "argv", "command": [], "destination_alias": "owner"},
+            {"type": "argv", "command": ["/bin/echo"], "destination_alias": ""},
+            {"type": "argv", "command": ["/bin/echo"], "destination_alias": "bad alias"},
+            {"type": "argv", "command": ["/bin/echo"], "argument_mode": "words", "destination_alias": "owner"},
+        ],
+    )
+    async def test_gateway_argv_malformed_config_is_user_facing(self, qcmd):
+        runner = self._make_runner(qcmd)
+        with patch("asyncio.create_subprocess_exec", AsyncMock()) as create:
+            result = await runner._handle_message(self._make_event("remember", "hello"))
+
+        create.assert_not_awaited()
+        assert "quick command" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_gateway_argv_timeout_terminates_and_reaps(self):
+        runner = self._make_runner({
+            "type": "argv",
+            "command": ["/bin/echo"],
+            "destination_alias": "owner",
+        })
+        proc = MagicMock()
+
+        async def communicate_forever():
+            await asyncio.Event().wait()
+
+        proc.communicate = communicate_forever
+        proc.wait = AsyncMock(return_value=0)
+
+        async def timeout_then_reap(awaitable, timeout):
+            if timeout == 30:
+                awaitable.close()
+                raise asyncio.TimeoutError
+            return await awaitable
+
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
+             patch("asyncio.wait_for", new=timeout_then_reap):
+            result = await runner._handle_message(self._make_event("remember"))
+
+        assert "timed out" in result.lower()
+        proc.terminate.assert_called_once_with()
+        proc.wait.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_gateway_argv_output_is_bounded(self):
+        runner = self._make_runner({
+            "type": "argv",
+            "command": ["/bin/echo"],
+            "destination_alias": "owner",
+        })
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"x" * 65537, b""))
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            result = await runner._handle_message(self._make_event("remember"))
+
+        assert "65536 utf-8 bytes" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_gateway_argv_nonzero_exit_is_not_reported_as_success(self):
+        runner = self._make_runner({
+            "type": "argv",
+            "command": ["/bin/false"],
+            "destination_alias": "owner",
+        })
+        proc = MagicMock(returncode=7)
+        proc.communicate = AsyncMock(return_value=(b"", b"spool failed"))
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            result = await runner._handle_message(self._make_event("remember"))
+
+        assert "failed" in result.lower()
+        assert "spool failed" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_gateway_argv_without_destination_alias_remains_generic(self):
+        runner = self._make_runner({
+            "type": "argv",
+            "command": ["/bin/echo"],
+        })
+        proc = MagicMock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as create:
+            result = await runner._handle_message(self._make_event("remember"))
+
+        assert result == "ok"
+        assert "HERMES_QUICK_COMMAND_DESTINATION_ALIAS" not in create.await_args.kwargs["env"]

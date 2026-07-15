@@ -11,7 +11,7 @@ Tests are parametrized over platforms via the ``platform`` fixture in conftest.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -158,6 +158,39 @@ class TestSlashCommands:
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert response_text == "status via alias"
         runner._handle_status_command.assert_awaited_once()
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_quick_command_argv_runs_through_full_platform_pipeline(
+        self, adapter, runner, platform
+    ):
+        runner.config.quick_commands = {
+            "remember": {
+                "type": "argv",
+                "command": ["atlas-spool-append", "--type", "fact"],
+                "argument_mode": "text",
+                "destination_alias": "owner",
+            }
+        }
+        proc = MagicMock(returncode=0)
+        proc.communicate = AsyncMock(return_value=(b"saved", b""))
+
+        with patch(
+            "asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+        ) as spawn:
+            send = await send_and_capture(
+                adapter, "/remember hello; echo not-a-shell", platform
+            )
+
+        assert spawn.await_args.args == (
+            "atlas-spool-append",
+            "--type",
+            "fact",
+            "hello; echo not-a-shell",
+        )
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        assert response_text == "saved"
         runner._handle_message_with_agent.assert_not_awaited()
 
 

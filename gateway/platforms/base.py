@@ -4154,6 +4154,16 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        # A platform may have delivered a prefix of a multi-message payload
+        # before a later chunk failed. Retrying or plain-text-falling-back with
+        # the whole payload would duplicate that visible prefix. Preserve the
+        # partial receipt for the caller and never resend the full content.
+        if (
+            isinstance(result.raw_response, dict)
+            and result.raw_response.get("partial_send") is True
+        ):
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 

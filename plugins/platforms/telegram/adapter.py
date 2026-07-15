@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import faulthandler
+import hashlib
 import inspect
 import json
 import logging
@@ -3922,6 +3923,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 ]
             
             message_ids = []
+            attempt_counts = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
@@ -4134,6 +4136,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                attempt_counts.append(_send_attempt + 1)
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -4156,6 +4159,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id=message_ids[0] if message_ids else None,
                 raw_response={
                     "message_ids": message_ids,
+                    "attempt_counts": attempt_counts,
+                    "chunk_count": len(chunks),
+                    "chunk_sha256": [
+                        hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+                        for chunk in chunks
+                    ],
+                    "chunk_utf16_units": [utf16_len(chunk) for chunk in chunks],
                     "requested_thread_id": requested_thread_id,
                     "thread_fallback": used_thread_fallback,
                 },
@@ -4164,6 +4174,31 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             safe_error = _redact_telegram_error_text(e)
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
+            delivered_ids = list(locals().get("message_ids") or [])
+            all_chunks = list(locals().get("chunks") or [])
+            if delivered_ids and all_chunks:
+                # At least one ordinary text chunk is already visible. A full
+                # retry in BasePlatformAdapter._send_with_retry would duplicate
+                # that prefix, so return an explicit non-retryable partial
+                # receipt. The generic retry layer recognizes partial_send and
+                # returns it unchanged.
+                delivered_count = len(delivered_ids)
+                return SendResult(
+                    success=False,
+                    message_id=delivered_ids[0],
+                    error=f"partial_send after {delivered_count}/{len(all_chunks)} chunks: {safe_error}",
+                    raw_response={
+                        "partial_send": True,
+                        "message_ids": delivered_ids,
+                        "delivered_chunks": delivered_count,
+                        "total_chunks": len(all_chunks),
+                        "remaining_chunks": len(all_chunks) - delivered_count,
+                        "requested_thread_id": locals().get("requested_thread_id"),
+                        "thread_fallback": bool(locals().get("used_thread_fallback", False)),
+                    },
+                    retryable=False,
+                    error_kind="partial_send",
+                )
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
             # Message too long — content exceeded 4096 chars. Return failure so

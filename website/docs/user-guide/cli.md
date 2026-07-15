@@ -158,12 +158,17 @@ quick_commands:
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
+  remember:
+    type: argv
+    command: [atlas-spool-append, --type, fact]
+    argument_mode: text
+    destination_alias: owner
   restart:
     type: alias
     target: /gateway restart
 ```
 
-Then type `/status`, `/gpu`, or `/restart` in any chat. See the [Configuration guide](/user-guide/configuration#quick-commands) for more examples.
+Then type `/status`, `/gpu`, `/remember a fact`, or `/restart` in any chat. `argv` commands pass trailing text as one literal no-shell argument and use a minimal credential-free environment. See the [Configuration guide](/user-guide/configuration#quick-commands) for the full contract.
 
 ## Preloading Skills at Launch
 

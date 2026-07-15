@@ -1737,7 +1737,7 @@ whatsapp:
 
 ## Quick Commands
 
-Define custom commands that either run shell commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
+Define custom commands that run shell commands, run a bounded no-shell argv program, or alias one slash command to another. Quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.
 
 ```yaml
 quick_commands:
@@ -1756,15 +1756,22 @@ quick_commands:
   restart:
     type: alias
     target: /gateway restart
+  remember:
+    type: argv
+    command: [atlas-spool-append, --type, fact]
+    argument_mode: text
+    destination_alias: owner
 ```
 
-Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
+Usage: type `/status`, `/disk`, `/update`, `/gpu`, `/remember a fact`, or `/restart` in the CLI or any messaging platform. `exec` commands run a trusted static shell string. `argv` commands require a non-empty list-valued `command`; `argument_mode: text` appends all trailing user text as exactly one literal argument. `alias` commands rewrite to the configured slash command target.
 
 - **30-second timeout** — long-running commands are killed with an error message
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
-- **Type** — supported types are `exec` and `alias`; other types show an error
+- **Type** — supported types are `exec`, `argv`, and `alias`; other types show an error
 - **Works everywhere** — CLI, Telegram, Discord, Slack, WhatsApp, Signal, Email, Home Assistant
+
+`argv` commands never invoke a shell. They receive no stdin, have an 8,192-byte UTF-8 input limit and a 65,536-byte combined output limit, use a minimal environment without Hermes credentials, and force secret redaction before output is displayed. Messaging gateways additionally expose bounded provenance as `HERMES_QUICK_COMMAND_PLATFORM`, `HERMES_QUICK_COMMAND_MESSAGE_ID`, and `HERMES_QUICK_COMMAND_UPDATE_ID`. If the command config includes `destination_alias`, it is exposed as `HERMES_QUICK_COMMAND_DESTINATION_ALIAS`. Raw chat IDs, usernames, and bot tokens are not passed.
 
 String-only prompt shortcuts are not valid quick commands. For reusable prompt workflows, create a skill or alias to an existing slash command.
 

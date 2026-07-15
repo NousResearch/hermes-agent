@@ -856,10 +856,18 @@ class HonchoSessionManager:
         *,
         reason: str,
         uploaded_files: list[str] | None = None,
+        complete: bool = True,
     ) -> None:
-        """Persist an idempotency marker on the Honcho session metadata."""
+        """Persist migration state on the Honcho session metadata.
+
+        ``complete=True`` writes the idempotency marker that stops future
+        migration attempts. ``complete=False`` records only which files made
+        it up, so a partially-failed run can retry the missing files on the
+        next startup without re-uploading the ones that succeeded.
+        """
         metadata = self._metadata_dict(honcho_session)
-        metadata[self._MEMORY_MIGRATION_MARKER] = True
+        if complete:
+            metadata[self._MEMORY_MIGRATION_MARKER] = True
         metadata["hermes_memory_files_migrated_reason"] = reason
         if uploaded_files is not None:
             metadata["hermes_memory_files_migrated_files"] = sorted(uploaded_files)
@@ -875,6 +883,14 @@ class HonchoSessionManager:
         metadata = self._metadata_dict(honcho_session)
         if metadata.get(self._MEMORY_MIGRATION_MARKER):
             return True
+
+        # A files list WITHOUT the marker is the partial-failure state: a
+        # previous run uploaded some files and failed on others. Report "not
+        # migrated" so the retry runs — the upload loop skips the recorded
+        # files, and the message-probe backfill below must not misread the
+        # partial run's messages as a completed migration.
+        if metadata.get("hermes_memory_files_migrated_files"):
+            return False
 
         # Backfill protection for deployments created before the marker existed.
         # Honcho v3 supports metadata filters on Session.messages(); using the
@@ -938,8 +954,17 @@ class HonchoSessionManager:
         user_peer = self._get_or_create_peer(session.user_peer_id)
         assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
 
+        # Files a previous partial run already uploaded — skip them so a retry
+        # only sends what is missing (no duplicate <prior_memory_file> floods).
+        previously_uploaded = set(
+            self._metadata_dict(honcho_session).get(
+                "hermes_memory_files_migrated_files"
+            )
+            or []
+        )
         uploaded = False
-        uploaded_files: list[str] = []
+        uploaded_files: list[str] = sorted(previously_uploaded)
+        failed_files: list[str] = []
         files = [
             (
                 "MEMORY.md",
@@ -965,6 +990,8 @@ class HonchoSessionManager:
         ]
 
         for filename, upload_name, description, target_peer, target_kind in files:
+            if filename in previously_uploaded:
+                continue
             filepath = memory_path / filename
             if not filepath.exists():
                 continue
@@ -1003,8 +1030,24 @@ class HonchoSessionManager:
                 uploaded_files.append(filename)
             except Exception as e:
                 logger.error("Failed to upload %s to Honcho: %s", filename, e)
+                failed_files.append(filename)
 
-        if uploaded:
+        if failed_files:
+            # Do NOT write the completion marker: it would permanently skip
+            # the failed files. Record what did make it up so the next
+            # startup retries only the missing ones.
+            if uploaded:
+                self._mark_memory_files_migrated(
+                    honcho_session,
+                    reason="partial_local_memory_upload",
+                    uploaded_files=uploaded_files,
+                    complete=False,
+                )
+            logger.warning(
+                "Honcho memory migration incomplete (failed: %s); retrying on next startup",
+                ", ".join(failed_files),
+            )
+        elif uploaded or previously_uploaded:
             self._mark_memory_files_migrated(
                 honcho_session,
                 reason="uploaded_local_memory_files",

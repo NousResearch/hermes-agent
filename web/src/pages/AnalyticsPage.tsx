@@ -408,7 +408,7 @@ export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Gated on `dashboard.show_token_analytics` (default off).  When off the
+  // Gated on `dashboard.show_token_analytics` (default on).  When off the
   // page renders an explanation card instead of fetching analytics — the
   // local token counts exclude auxiliary calls and provider retries, so
   // they diverge from provider billing in ways that mislead users.

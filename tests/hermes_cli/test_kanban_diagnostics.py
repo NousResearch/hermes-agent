@@ -633,6 +633,27 @@ def test_stranded_in_ready_ignores_non_ready_status_event():
     assert stranded[0].data["age_seconds"] == 4 * 3600
 
 
+def test_stranded_in_ready_handles_malformed_status_payload():
+    """A ``status`` event with no payload, or a payload that is not a
+    dict with a ``status`` key, must not crash and should fall back to
+    ``created_at``.  ``_parse_payload`` already normalises None / JSON
+    strings / parse errors to ``{}``, so the ``isinstance(p, dict)``
+    guard is defensive — this test confirms the fallback path."""
+    now = 100_000
+    task = _task(
+        status="ready", assignee="demo", created_at=now - 4 * 3600,
+    )
+    # No payload at all.
+    events = [
+        _event("created", ts=now - 4 * 3600),
+        _event("status", ts=now - 10 * 60),  # no kwargs → payload=None
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+    assert len(stranded) == 1
+    assert stranded[0].data["age_seconds"] == 4 * 3600
+
+
 def test_stranded_in_ready_works_on_real_db_row(kanban_home):
     """Round-trip through real kanban_db.connect() — confirms the rule
     works on sqlite3.Row objects, not just dicts."""

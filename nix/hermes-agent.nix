@@ -63,6 +63,17 @@ let
     filter = path: _type: !(lib.hasInfix "/index-cache/" path);
   };
 
+  # Official optional skills (optional-skills/). Shipped into the store and
+  # pointed at by HERMES_OPTIONAL_SKILLS so `hermes skills install official/...`
+  # and `hermes skills repair-official` resolve them locally. Without this the
+  # CLI falls back to <site-packages>/optional-skills (absent in the nix build),
+  # so repair-official errors "No official optional skills directory found" and
+  # install official/... has no local source to fall back on.
+  bundledOptionalSkills = lib.cleanSourceWith {
+    src = ../optional-skills;
+    filter = path: _type: !(lib.hasInfix "/index-cache/" path);
+  };
+
   # Import bundled plugins (memory, context_engine, platforms/*).  Keeping
   # them out of the Python site-packages keeps import semantics identical
   # to a dev checkout — the loader reads them from HERMES_BUNDLED_PLUGINS.
@@ -163,6 +174,7 @@ stdenv.mkDerivation (finalAttrs: {
 
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
+    cp -r ${bundledOptionalSkills} $out/share/hermes-agent/optional-skills
     cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
     cp -r ${bundledLocales} $out/share/hermes-agent/locales
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
@@ -175,6 +187,7 @@ stdenv.mkDerivation (finalAttrs: {
         makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+          --set HERMES_OPTIONAL_SKILLS $out/share/hermes-agent/optional-skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \

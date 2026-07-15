@@ -619,6 +619,14 @@ Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `s
 | `SIMPLEX_HOME_CHANNEL` | Default contact/group ID for cron / notification delivery. |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the ID). |
 
+### Delta Chat
+
+Delta Chat deliberately has no user-facing environment variables. Configure
+the account address, account-store path, access policy, groups, and home channel
+under `platforms.deltachat` in `config.yaml`. Delta Chat Core stores mailbox
+credentials and encryption keys in the account store, not in Hermes' `.env`
+file. See the [Delta Chat messaging guide](/user-guide/messaging/deltachat).
+
 ### Photon
 
 Connect Hermes to [Photon](https://photon.codes/) / Spectrum (iMessage and other Spectrum platforms) via the Node sidecar. See [the Photon messaging guide](/user-guide/messaging/photon).

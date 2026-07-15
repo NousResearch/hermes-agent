@@ -1,0 +1,9 @@
+name: deltachat-platform
+label: Delta Chat
+kind: platform
+version: 1.0.0
+description: >
+  Delta Chat gateway adapter for Hermes Agent. Runs a local
+  deltachat-rpc-server process and relays end-to-end encrypted Chatmail
+  conversations, group messages, voice notes, and attachments.
+author: NousResearch, pancake

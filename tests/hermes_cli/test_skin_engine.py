@@ -60,7 +60,9 @@ class TestBuiltinSkins:
         from hermes_cli.skin_engine import load_skin
 
         monkeypatch.setattr(skin_engine.platform, "system", lambda: "Darwin")
-        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: "/usr/bin/defaults")
+        monkeypatch.setattr(
+            skin_engine.shutil, "which", lambda command: "/usr/bin/defaults"
+        )
         monkeypatch.setattr(
             skin_engine.subprocess,
             "run",
@@ -81,11 +83,53 @@ class TestBuiltinSkins:
             skin_engine.subprocess,
             "run",
             lambda *args, **kwargs: subprocess.CompletedProcess(
-                args[0], 1, stdout="", stderr="not found"
+                args[0],
+                1,
+                stdout="",
+                stderr=(
+                    "The domain/default pair of "
+                    "(kCFPreferencesAnyApplication, AppleInterfaceStyle) "
+                    "does not exist"
+                ),
             ),
         )
 
         assert load_skin("auto").name == "daylight"
+
+    def test_auto_skin_macos_unknown_failure_uses_default(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        monkeypatch.setattr(skin_engine.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(skin_engine.shutil, "which", lambda command: "/usr/bin/defaults")
+        monkeypatch.setattr(
+            skin_engine.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 1, stdout="", stderr="permission denied"
+            ),
+        )
+
+        assert load_skin("auto").name == "default"
+
+    def test_user_auto_skin_takes_precedence_over_alias(self, tmp_path, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        (skins_dir / "auto.yaml").write_text(
+            "name: custom-auto\ndescription: Existing user auto skin\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(skin_engine, "_skins_dir", lambda: skins_dir)
+        monkeypatch.setattr(
+            skin_engine,
+            "_resolve_auto_skin_name",
+            lambda: pytest.fail("the alias should not resolve when auto.yaml exists"),
+        )
+
+        assert load_skin("auto").name == "custom-auto"
 
     def test_auto_skin_resolves_windows_light_to_daylight(self, monkeypatch):
         from hermes_cli import skin_engine

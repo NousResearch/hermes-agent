@@ -774,9 +774,13 @@ def _macos_uses_light_theme() -> Optional[bool]:
         return None
 
     # AppleInterfaceStyle is normally absent in light mode and "Dark" in dark
-    # mode. Treat command failure as light only when the defaults tool ran.
+    # mode. Only the expected missing-preference error identifies light mode;
+    # other failures leave the appearance unknown so callers use the default.
     if result.returncode != 0:
-        return True
+        error = result.stderr.lower()
+        if "appleinterfacestyle" in error and "does not exist" in error:
+            return True
+        return None
 
     return result.stdout.strip().lower() != "dark"
 
@@ -875,10 +879,7 @@ def _resolve_auto_skin_name() -> str:
 
 
 def load_skin(name: str) -> SkinConfig:
-    """Load a skin by name. Handles aliases, then user skins, then built-ins."""
-    if str(name or "").strip().lower() == "auto":
-        return load_skin(_resolve_auto_skin_name())
-
+    """Load a skin by name. Checks user skins, aliases, then built-ins."""
     # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"
@@ -886,6 +887,9 @@ def load_skin(name: str) -> SkinConfig:
         data = _load_skin_from_yaml(user_file)
         if data:
             return _build_skin_config(data)
+
+    if str(name or "").strip().lower() == "auto":
+        return load_skin(_resolve_auto_skin_name())
 
     # Check built-in skins
     if name in _BUILTIN_SKINS:

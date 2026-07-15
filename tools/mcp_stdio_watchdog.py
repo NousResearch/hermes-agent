@@ -61,18 +61,46 @@ except ImportError:  # pragma: no cover - psutil is a hard dependency elsewhere
 
 _POLL_INTERVAL_S = 2.0
 _TERM_GRACE_S = 3.0
+# psutil derives create_time() from wall-clock boot time. On WSL, host clock
+# resynchronisation can shift that value by a few seconds for the *same* live
+# PID. Treat only a material mismatch as PID reuse; a new process reusing the
+# same PID within this window is vanishingly unlikely.
+_CREATE_TIME_TOLERANCE_S = 5.0
 
 
-def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getppid) -> bool:
-    """Mirrors ``tui_gateway.slash_worker._is_orphaned`` exactly.
+def _read_proc_start_ticks(pid: int) -> int | None:
+    """Return Linux's stable process start token from ``/proc/<pid>/stat``.
 
-    True once the process that spawned us is gone. Never trusts a bare
-    ``getppid() == 1`` check (Linux reparents orphans to a subreaper, not
-    always PID 1), and guards against PID reuse via the recorded creation
-    time of the original parent.
+    Field 22 is measured in clock ticks since boot and does not move when WSL
+    resynchronises its wall clock. ``comm`` may contain spaces or parentheses,
+    so split only after its final closing parenthesis.
+    """
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat_file:
+            stat_line = stat_file.read()
+        fields_after_comm = stat_line[stat_line.rfind(")") + 2 :].split()
+        return int(fields_after_comm[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _is_orphaned(
+    original_ppid: int,
+    parent_create_time: float,
+    getppid=os.getppid,
+    parent_start_ticks: int | None = None,
+) -> bool:
+    """Return whether the original parent process is gone or was replaced.
+
+    Linux procfs start ticks are preferred because they are monotonic and
+    stable on WSL. Other POSIX platforms fall back to psutil create_time with
+    a small tolerance for wall-clock adjustments.
     """
     if getppid() != original_ppid:
         return True
+    if parent_start_ticks is not None:
+        current_start_ticks = _read_proc_start_ticks(original_ppid)
+        return current_start_ticks is None or current_start_ticks != parent_start_ticks
     if psutil is None:
         # No reliable staleness check available; fall back to the ppid
         # comparison alone (still catches the common case).
@@ -80,7 +108,8 @@ def _is_orphaned(original_ppid: int, parent_create_time: float, getppid=os.getpp
     try:
         if not psutil.pid_exists(original_ppid):
             return True
-        return psutil.Process(original_ppid).create_time() != parent_create_time
+        actual_create_time = psutil.Process(original_ppid).create_time()
+        return abs(actual_create_time - parent_create_time) > _CREATE_TIME_TOLERANCE_S
     except psutil.Error:
         return True
 
@@ -119,8 +148,13 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 
 def _watchdog_loop(proc: subprocess.Popen, original_ppid: int, parent_create_time: float) -> None:
+    parent_start_ticks = _read_proc_start_ticks(original_ppid)
     while proc.poll() is None:
-        if _is_orphaned(original_ppid, parent_create_time):
+        if _is_orphaned(
+            original_ppid,
+            parent_create_time,
+            parent_start_ticks=parent_start_ticks,
+        ):
             _terminate_process_group(proc)
             return
         time.sleep(_POLL_INTERVAL_S)

@@ -158,6 +158,14 @@ lsp:
   #   manual  — only use binaries already on PATH
   install_strategy: auto
 
+  # Optional bounded lifecycle for long-running, multi-workspace processes.
+  # Disabled by default: absent/false preserves process-lifetime retention.
+  lifecycle:
+    enabled: false
+    idle_timeout_seconds: 7200
+    sweep_interval_seconds: 60
+    max_clients_per_process: 0  # 0 = unlimited
+
   # Per-server overrides (all optional).
   servers:
     pyright:
@@ -209,9 +217,21 @@ budget is `wait_timeout` seconds — typically the server responds in
 tens of milliseconds for pyright/tsserver and a few seconds for
 rust-analyzer mid-indexing.
 
-Servers are kept alive for the life of the Hermes process. There's
-no idle-timeout reaper — the cost of restarting the server's index
-on every write would be far higher than holding the daemon.
+By default, servers are kept alive for the life of the Hermes process,
+preserving warm indexes and existing behavior. Long-running gateways that
+touch many workspaces can opt into `lsp.lifecycle`. The bounded lifecycle:
+
+- retires only clients that have no active diagnostics operation;
+- waits for a retired process tree to exit before replacing that slot;
+- can enforce a process-local least-recently-used client cap;
+- temporarily exceeds the cap rather than interrupting active work; and
+- respawns an intentionally retired server on the next edit.
+
+The next edit after retirement pays the server's cold-start/indexing cost.
+`idle_timeout_seconds: 0` disables idle retirement, while
+`max_clients_per_process: 0` keeps the client count unlimited. Lifecycle
+limits are per Hermes process, not shared across gateways, CLI sessions, or
+workers that happen to use the same profile.
 
 ## Disabling
 

@@ -7,6 +7,7 @@ pyright/gopls/etc. are still alive on the host.
 from __future__ import annotations
 
 import atexit
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -142,3 +143,56 @@ def test_get_service_returns_none_when_create_fails(monkeypatch):
     monkeypatch.setattr(atexit, "register", lambda fn: None)
 
     assert lsp_module.get_service() is None
+
+
+def test_restart_barrier_never_exposes_overlapping_singletons(monkeypatch):
+    closing = threading.Event()
+    release_shutdown = threading.Event()
+    replacement_created = threading.Event()
+
+    class OldService:
+        def __init__(self):
+            self.accepting = True
+
+        def is_active(self):
+            return self.accepting
+
+        def is_accepting_requests(self):
+            return self.accepting
+
+        def begin_shutdown(self):
+            self.accepting = False
+            return True
+
+        def shutdown(self):
+            closing.set()
+            assert release_shutdown.wait(timeout=2.0)
+
+    replacement = MagicMock()
+    replacement.is_active.return_value = True
+    replacement.is_accepting_requests.return_value = True
+    lsp_module._service = OldService()
+    monkeypatch.setattr(atexit, "register", lambda fn: None)
+
+    def create_replacement():
+        replacement_created.set()
+        return replacement
+
+    monkeypatch.setattr(
+        lsp_module.LSPService,
+        "create_from_config",
+        classmethod(lambda cls: create_replacement()),
+    )
+
+    shutdown_thread = threading.Thread(target=lsp_module.shutdown_service)
+    result = []
+    get_thread = threading.Thread(target=lambda: result.append(lsp_module.get_service()))
+    shutdown_thread.start()
+    assert closing.wait(timeout=1.0)
+    get_thread.start()
+    assert not replacement_created.wait(timeout=0.05)
+    release_shutdown.set()
+    shutdown_thread.join(timeout=2.0)
+    get_thread.join(timeout=2.0)
+
+    assert result == [replacement]

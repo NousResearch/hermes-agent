@@ -122,6 +122,28 @@ def _cmd_status(emit_json: bool) -> int:
         out.append(f"  wait_mode:       {info.get('wait_mode')}")
         out.append(f"  wait_timeout:    {info.get('wait_timeout')}s")
         out.append(f"  install_strategy:{info.get('install_strategy')}")
+        lifecycle_info = info.get("lifecycle")
+        if not isinstance(lifecycle_info, dict):
+            lifecycle_info = {}
+        out.append(
+            f"  lifecycle:       "
+            f"{'bounded' if lifecycle_info.get('enabled') else 'process-lifetime'}"
+        )
+        if lifecycle_info.get("enabled"):
+            out.append(
+                "  lifecycle limits:"
+                f" idle={lifecycle_info.get('idle_timeout_seconds')}s"
+                f" sweep={lifecycle_info.get('sweep_interval_seconds')}s"
+                f" max_clients={lifecycle_info.get('max_clients_per_process')}"
+            )
+            counts = lifecycle_info.get("counts") or {}
+            out.append(
+                "  lifecycle state: "
+                f"{lifecycle_info.get('service_state')} "
+                f"active={counts.get('active', 0)} "
+                f"spawning={counts.get('spawning', 0)} "
+                f"retiring={counts.get('retiring', 0)}"
+            )
         clients = info.get("clients") or []
         if clients:
             out.append(f"  active clients:  {len(clients)}")

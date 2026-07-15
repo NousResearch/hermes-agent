@@ -7,6 +7,7 @@ on.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sys
 from pathlib import Path
 
@@ -189,7 +190,9 @@ def test_idle_reaper_shuts_down_idle_clients(mock_pyright):
         wait_mode="document",
         wait_timeout=3.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
         idle_timeout=0.5,  # 0.5 second — triggers quickly for test
+        sweep_interval=0.05,
     )
     try:
         assert svc.enabled_for(str(f))
@@ -208,6 +211,15 @@ def test_idle_reaper_shuts_down_idle_clients(mock_pyright):
         # Client should be gone.
         info = svc.get_status()
         assert len(info["clients"]) == 0
+
+        # Intentional retirement is not a permanent broken mark. The next
+        # edit cold-starts a fresh generation.
+        svc.get_diagnostics_sync(str(f))
+        info = svc.get_status()
+        assert svc.enabled_for(str(f))
+        assert len(info["clients"]) == 1
+        assert info["clients"][0]["generation"] == 2
+        assert info["clients"][0]["running"] is True
     finally:
         svc.shutdown()
 
@@ -223,7 +235,9 @@ def test_idle_reaper_keeps_active_clients(mock_pyright):
         wait_mode="document",
         wait_timeout=3.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
         idle_timeout=300.0,  # 5 minutes — won't expire
+        sweep_interval=60.0,
     )
     try:
         svc.get_diagnostics_sync(str(f))
@@ -236,5 +250,67 @@ def test_idle_reaper_keeps_active_clients(mock_pyright):
         info = svc.get_status()
         assert len(info["clients"]) == 1
         assert info["clients"][0]["running"] is True
+    finally:
+        svc.shutdown()
+
+
+def test_concurrent_same_workspace_requests_share_one_spawn(mock_pyright):
+    repo = mock_pyright
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        lifecycle_enabled=True,
+        idle_timeout=300.0,
+        sweep_interval=60.0,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(
+                pool.map(lambda _: svc.get_diagnostics_sync(str(f)), range(8))
+            )
+        assert all(isinstance(result, list) for result in results)
+        status = svc.get_status()
+        assert len(status["clients"]) == 1
+        assert status["clients"][0]["generation"] == 1
+    finally:
+        svc.shutdown()
+
+
+def test_capacity_retires_lru_before_spawning_replacement(
+    tmp_path, mock_pyright
+):
+    files = []
+    for index in range(3):
+        repo = tmp_path / f"repo-{index}"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        file_path = repo / "x.py"
+        file_path.write_text("print('hi')\n")
+        files.append(file_path)
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=3.0,
+        install_strategy="manual",
+        lifecycle_enabled=True,
+        idle_timeout=0.0,
+        sweep_interval=60.0,
+        max_clients=2,
+    )
+    try:
+        for file_path in files:
+            assert len(svc.get_diagnostics_sync(str(file_path))) == 1
+        status = svc.get_status()
+        assert len(status["clients"]) == 2
+        assert status["lifecycle"]["capacity_evictions"] == 1
+        roots = {client["workspace_root"] for client in status["clients"]}
+        assert str(files[0].parent.resolve()) not in roots
+        assert str(files[1].parent.resolve()) in roots
+        assert str(files[2].parent.resolve()) in roots
     finally:
         svc.shutdown()

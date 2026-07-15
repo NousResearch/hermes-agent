@@ -206,6 +206,7 @@ class LSPClient:
         self._initialize_result: Optional[Dict[str, Any]] = None
         self._sync_kind: int = 1  # 1=Full, 2=Incremental
         self._stopping: bool = False
+        self._shutdown_future: Optional[asyncio.Future] = None
 
         # Push event for waiters.
         self._push_event = asyncio.Event()
@@ -409,29 +410,60 @@ class LSPClient:
         return 1  # default to Full
 
     async def shutdown(self) -> None:
-        """Best-effort graceful shutdown.
+        """Best-effort graceful, completion-idempotent shutdown.
 
-        Sends ``shutdown`` + ``exit``, then SIGTERMs/SIGKILLs the
-        process if it doesn't exit cleanly.  Idempotent.
+        Concurrent callers await one cleanup future.  This prevents a later
+        service shutdown from closing the event loop while an earlier caller
+        is still terminating the subprocess tree.
         """
-        if self._stopping:
+        existing = self._shutdown_future
+        if existing is not None:
+            await asyncio.shield(existing)
             return
+
+        loop = asyncio.get_running_loop()
+        completion = loop.create_future()
+        self._shutdown_future = completion
         self._stopping = True
+        descendants = self._capture_descendants()
         try:
             if self.is_running:
                 try:
-                    await asyncio.wait_for(self._send_request("shutdown", None), timeout=2.0)
+                    await asyncio.wait_for(
+                        self._send_request("shutdown", None), timeout=2.0
+                    )
                 except (asyncio.TimeoutError, LSPRequestError, LSPProtocolError):
                     pass
                 try:
                     await self._send_notification("exit", None)
                 except Exception:
                     pass
+                proc = self._proc
+                if proc is not None and proc.returncode is None:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                    except asyncio.TimeoutError:
+                        pass
         finally:
-            self._state = "stopped"
-            await self._cleanup_process()
+            try:
+                self._state = "stopped"
+                await self._cleanup_process(descendants)
+            finally:
+                if not completion.done():
+                    completion.set_result(None)
 
-    async def _cleanup_process(self) -> None:
+    def _capture_descendants(self):
+        proc = self._proc
+        if proc is None:
+            return []
+        try:
+            import psutil
+
+            return psutil.Process(proc.pid).children(recursive=True)
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def _cleanup_process(self, descendants=None) -> None:
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             try:
@@ -446,21 +478,68 @@ class LSPClient:
                 pass
         proc = self._proc
         self._proc = None
-        if proc is None:
+        captured = list(descendants or [])
+        if proc is not None:
+            captured.extend(self._capture_descendants_for_pid(proc.pid))
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                            await proc.wait()
+                        except ProcessLookupError:
+                            pass
+                except ProcessLookupError:
+                    pass
+        if captured:
+            await asyncio.to_thread(self._terminate_descendants, captured)
+
+    @staticmethod
+    def _capture_descendants_for_pid(pid: int):
+        try:
+            import psutil
+
+            return psutil.Process(pid).children(recursive=True)
+        except Exception:  # noqa: BLE001
+            return []
+
+    @staticmethod
+    def _terminate_descendants(processes) -> None:
+        """Terminate only descendants captured from this LSP wrapper."""
+        try:
+            import psutil
+        except ImportError:
             return
-        if proc.returncode is None:
+        unique = {}
+        for proc in processes:
+            try:
+                if proc.pid != os.getpid() and proc.is_running():
+                    unique[(proc.pid, proc.create_time())] = proc
+            except (psutil.Error, OSError):
+                continue
+        alive = list(unique.values())
+        for proc in alive:
             try:
                 proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
-                    try:
-                        proc.kill()
-                        await proc.wait()
-                    except ProcessLookupError:
-                        pass
-            except ProcessLookupError:
+            except psutil.Error:
                 pass
+        _, alive = psutil.wait_procs(alive, timeout=SHUTDOWN_GRACE)
+        for proc in alive:
+            try:
+                proc.kill()
+            except psutil.Error:
+                pass
+        _, alive = psutil.wait_procs(alive, timeout=SHUTDOWN_GRACE)
+        if alive:
+            logger.warning(
+                "[%s] %d LSP descendant process(es) survived cleanup: %s",
+                "process-tree",
+                len(alive),
+                [proc.pid for proc in alive],
+            )
 
     # ------------------------------------------------------------------
     # request / notification plumbing

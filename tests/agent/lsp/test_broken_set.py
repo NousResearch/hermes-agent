@@ -1,16 +1,10 @@
-"""Tests for the broken-set short-circuit added to handle outer-timeout failures.
+"""Tests for transient LSP failure cooldowns.
 
-When ``snapshot_baseline`` or ``get_diagnostics_sync`` time out from the
-service layer (because a language server hangs during initialize, or
-the binary is wedged), the inner spawn task is cancelled — but the
-inner exception handler that adds to ``_broken`` never runs.  Without
-the service-layer fallback added in this module, every subsequent
-edit re-pays the full timeout cost until the process exits.
-
-This module verifies:
-- ``_mark_broken_for_file`` adds the right key
-- ``enabled_for`` short-circuits on broken keys
-- a missing binary is broken-set'd after one snapshot attempt
+Request-level and cold-index timeouts must stop repeated edits from paying the
+same timeout immediately, without permanently disabling the workspace. A
+short monotonic cooldown replaces the old process-lifetime broken mark.
+Deterministic configuration failures (for example, no spawn command) still
+use ``_broken``.
 """
 from __future__ import annotations
 
@@ -39,31 +33,35 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     return repo
 
 
-def test_mark_broken_for_file_adds_correct_key(tmp_path, monkeypatch):
-    """``_mark_broken_for_file`` keys the broken-set on
-    (server_id, per_server_root) so subsequent ``enabled_for`` calls
-    for files in the same project skip immediately."""
+def test_mark_failed_file_adds_retryable_cooldown_key(tmp_path, monkeypatch):
     repo = _make_git_workspace(tmp_path)
     monkeypatch.chdir(str(repo))
     src = repo / "x.py"
     src.write_text("")
+    now = [100.0]
 
     svc = LSPService(
         enabled=True,
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        clock=lambda: now[0],
     )
     try:
         svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
-        # The pyright server resolves to the repo root via pyproject.toml.
-        assert ("pyright", str(repo)) in svc._broken
+        key = ("pyright", str(repo.resolve()))
+        assert key in svc._cooldowns
+        assert key not in svc._broken
+        assert svc.enabled_for(str(src)) is False
+        now[0] = 106.0
+        assert svc.enabled_for(str(src)) is True
+        assert key not in svc._cooldowns
     finally:
         svc.shutdown()
 
 
-def test_enabled_for_returns_false_after_broken(tmp_path, monkeypatch):
-    """Once a (server_id, root) pair is in the broken-set,
+def test_enabled_for_returns_false_during_cooldown(tmp_path, monkeypatch):
+    """Once a (server_id, root) pair is cooling down,
     ``enabled_for`` returns False so the file_operations layer skips
     the LSP path entirely."""
     repo = _make_git_workspace(tmp_path)
@@ -80,16 +78,16 @@ def test_enabled_for_returns_false_after_broken(tmp_path, monkeypatch):
     try:
         # Initially enabled.
         assert svc.enabled_for(str(src)) is True
-        # Mark broken.
+        # Start the retry cooldown.
         svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
-        # Now disabled — the broken-set short-circuits.
+        # Now disabled — the cooldown short-circuits.
         assert svc.enabled_for(str(src)) is False
     finally:
         svc.shutdown()
 
 
 def test_enabled_for_other_file_in_same_project_also_skipped(tmp_path, monkeypatch):
-    """The broken key is (server_id, root), so ALL files routed through
+    """The cooldown key is (server_id, root), so ALL files routed through
     the same server in the same project are skipped — not just the one
     that triggered the failure."""
     repo = _make_git_workspace(tmp_path)
@@ -114,8 +112,8 @@ def test_enabled_for_other_file_in_same_project_also_skipped(tmp_path, monkeypat
         svc.shutdown()
 
 
-def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
-    """Marking pyright broken for project A must NOT affect project B."""
+def test_unrelated_project_not_affected_by_cooldown(tmp_path, monkeypatch):
+    """Cooling down pyright for project A must NOT affect project B."""
     repo_a = _make_git_workspace(tmp_path)
     repo_b = tmp_path / "repo-b"
     repo_b.mkdir()
@@ -137,7 +135,7 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
         svc._mark_broken_for_file(str(a_src), RuntimeError("simulated"))
         # Project A skipped.
         assert svc.enabled_for(str(a_src)) is False
-        # Project B still enabled — the broken key is per-project.
+        # Project B still enabled — the cooldown key is per-project.
         monkeypatch.chdir(str(repo_b))
         assert svc.enabled_for(str(b_src)) is True
     finally:
@@ -157,6 +155,7 @@ def test_mark_broken_handles_missing_server_silently(tmp_path):
         # No registered server for .xyz; must not raise.
         svc._mark_broken_for_file(str(tmp_path / "weird.xyz"), RuntimeError("x"))
         assert len(svc._broken) == 0
+        assert len(svc._cooldowns) == 0
     finally:
         svc.shutdown()
 
@@ -174,27 +173,27 @@ def test_mark_broken_handles_no_workspace_silently(tmp_path):
     try:
         svc._mark_broken_for_file(str(src), RuntimeError("x"))
         assert len(svc._broken) == 0
+        assert len(svc._cooldowns) == 0
     finally:
         svc.shutdown()
 
 
-def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
-    """End-to-end: ``snapshot_baseline``'s outer ``_loop.run`` timeout
-    triggers ``_mark_broken_for_file``, so a second call to
-    ``enabled_for`` returns False."""
+def test_snapshot_failure_enters_retryable_cooldown(tmp_path, monkeypatch):
+    """A snapshot failure skips immediate retries without permanent disablement."""
     repo = _make_git_workspace(tmp_path)
     monkeypatch.chdir(str(repo))
     src = repo / "x.py"
     src.write_text("")
+    now = [100.0]
 
     svc = LSPService(
         enabled=True,
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        clock=lambda: now[0],
     )
     try:
-        # Force the inner snapshot coroutine to raise.
         async def boom(_path):
             raise RuntimeError("outer-timeout simulated")
 
@@ -202,9 +201,11 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
             assert svc.enabled_for(str(src)) is True
             svc.snapshot_baseline(str(src))
 
-        # After the failure, the file's pair is in the broken-set and
-        # ``enabled_for`` skips it.
-        assert ("pyright", str(repo)) in svc._broken
+        key = ("pyright", str(repo.resolve()))
+        assert key in svc._cooldowns
+        assert key not in svc._broken
         assert svc.enabled_for(str(src)) is False
+        now[0] = 106.0
+        assert svc.enabled_for(str(src)) is True
     finally:
         svc.shutdown()

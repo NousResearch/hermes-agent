@@ -126,6 +126,69 @@ async def test_client_shutdown_idempotent(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_concurrent_shutdown_callers_wait_for_same_cleanup(tmp_path: Path, monkeypatch):
+    client = _client(tmp_path, "clean")
+    await client.start()
+    cleanup_entered = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    original_cleanup = client._cleanup_process
+
+    async def blocked_cleanup(descendants=None):
+        cleanup_entered.set()
+        await allow_cleanup.wait()
+        await original_cleanup(descendants)
+
+    monkeypatch.setattr(client, "_cleanup_process", blocked_cleanup)
+    first = asyncio.create_task(client.shutdown())
+    await cleanup_entered.wait()
+    second = asyncio.create_task(client.shutdown())
+    await asyncio.sleep(0)
+    assert not second.done()
+    allow_cleanup.set()
+    await asyncio.gather(first, second)
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+async def test_shutdown_removes_wrapper_descendant_tree(tmp_path: Path):
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    env = {
+        "MOCK_LSP_SCRIPT": "child",
+        "MOCK_LSP_CHILD_PID_FILE": str(pid_file),
+        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+    }
+    client = LSPClient(
+        server_id="mock-child",
+        workspace_root=str(tmp_path),
+        command=[sys.executable, MOCK_SERVER],
+        env=env,
+        cwd=str(tmp_path),
+    )
+    await client.start()
+    for _ in range(100):
+        if pid_file.exists():
+            break
+        await asyncio.sleep(0.01)
+    child_pid = int(pid_file.read_text())
+    assert psutil.pid_exists(child_pid)
+
+    await client.shutdown()
+
+    for _ in range(100):
+        if not psutil.pid_exists(child_pid):
+            break
+        try:
+            if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                break
+        except psutil.NoSuchProcess:
+            break
+        await asyncio.sleep(0.01)
+    assert not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE
+
+
+@pytest.mark.asyncio
 async def test_client_diagnostics_are_deduped(tmp_path: Path):
     """Repeated identical pushes must not produce duplicate diagnostics."""
     f = tmp_path / "x.py"

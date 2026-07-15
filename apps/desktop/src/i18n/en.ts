@@ -689,6 +689,7 @@ export const en: Translations = {
       catalogEnabled: 'Enabled',
       catalogNeedsInstall: 'Needs build',
       catalogInstall: 'Install',
+      catalogConnect: 'Connect',
       catalogInstalling: 'Installing...',
       catalogInstallStarted: name => `Installing ${name}... applies to new sessions when done.`,
       catalogInstallFailed: name => `Failed to install ${name}`,
@@ -839,7 +840,7 @@ export const en: Translations = {
   skills: {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
-    tabMcp: 'MCP',
+    tabMcp: 'Connectors',
     tabHub: 'Browse Hub',
     all: 'All',
     searchSkills: 'Search skills...',

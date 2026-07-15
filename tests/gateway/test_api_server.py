@@ -989,32 +989,34 @@ class TestCapabilitiesEndpoint:
     @pytest.mark.asyncio
     async def test_capabilities_advertises_plugin_safe_contract(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/v1/capabilities")
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["object"] == "hermes.api_server.capabilities"
-            assert data["platform"] == "hermes-agent"
-            assert data["model"] == "hermes-agent"
-            assert data["auth"]["type"] == "bearer"
-            assert data["auth"]["required"] is False
-            assert data["runtime"]["mode"] == "server_agent"
-            assert data["runtime"]["tool_execution"] == "server"
-            assert data["runtime"]["split_runtime"] is False
-            assert "API-server host" in data["runtime"]["description"]
-            assert data["features"]["chat_completions"] is True
-            assert data["features"]["run_status"] is True
-            assert data["features"]["run_events_sse"] is True
-            assert data["features"]["run_permission_mode"] is True
-            assert data["features"]["run_task_updates"] is True
-            assert data["features"]["run_subagent_updates"] is True
-            assert data["features"]["mobile_notifications"] is True
-            assert data["features"]["active_session_registry"] is True
-            assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
-            assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
-            assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
-            assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
-            assert data["endpoints"]["active_sessions"]["path"] == "/v1/active-sessions"
+        with patch.object(adapter, "_resolve_default_model", return_value="gpt-5.6-luna"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/capabilities")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "hermes.api_server.capabilities"
+                assert data["platform"] == "hermes-agent"
+                assert data["model"] == "hermes-agent"
+                assert data["default_model"] == "gpt-5.6-luna"
+                assert data["auth"]["type"] == "bearer"
+                assert data["auth"]["required"] is False
+                assert data["runtime"]["mode"] == "server_agent"
+                assert data["runtime"]["tool_execution"] == "server"
+                assert data["runtime"]["split_runtime"] is False
+                assert "API-server host" in data["runtime"]["description"]
+                assert data["features"]["chat_completions"] is True
+                assert data["features"]["run_status"] is True
+                assert data["features"]["run_events_sse"] is True
+                assert data["features"]["run_permission_mode"] is True
+                assert data["features"]["run_task_updates"] is True
+                assert data["features"]["run_subagent_updates"] is True
+                assert data["features"]["mobile_notifications"] is True
+                assert data["features"]["active_session_registry"] is True
+                assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+                assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+                assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
+                assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+                assert data["endpoints"]["active_sessions"]["path"] == "/v1/active-sessions"
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -1054,6 +1056,12 @@ class TestMobileControlPlane:
 
     @pytest.mark.asyncio
     async def test_active_sessions_returns_privacy_safe_rows(self, adapter):
+        adapter._run_statuses["run-1"] = {
+            "run_id": "run-1",
+            "status": "running",
+            "latest_status": "Using terminal…",
+            "updated_at": 3,
+        }
         app = _create_app(adapter)
         with patch(
             "hermes_cli.active_sessions.active_session_registry_snapshot",
@@ -1063,7 +1071,7 @@ class TestMobileControlPlane:
                 "surface": "gateway:telegram",
                 "started_at": 1,
                 "updated_at": 2,
-                "metadata": {"state": "active"},
+                "metadata": {"state": "active", "run_id": "run-1"},
             }],
         ), patch.object(adapter, "_mobile_session_title", return_value="Release work"):
             async with TestClient(TestServer(app)) as cli:
@@ -1072,7 +1080,19 @@ class TestMobileControlPlane:
                 data = await resp.json()
                 assert data["active_count"] == 1
                 assert data["data"][0]["title"] == "Release work"
+                assert data["data"][0]["latest_status"] == "Using terminal…"
+                assert data["data"][0]["updated_at"] == 3
                 assert "messages" not in data["data"][0]
+
+    def test_run_latest_status_is_bounded_and_safe(self, adapter):
+        assert adapter._safe_run_latest_status({
+            "event": "tool.started",
+            "tool": "terminal<script>",
+        }) == "Using terminalscript…"
+        assert adapter._safe_run_latest_status({
+            "event": "reasoning.available",
+            "text": "Checking\n  the next step",
+        }) == "Checking the next step"
 
 
 # ---------------------------------------------------------------------------

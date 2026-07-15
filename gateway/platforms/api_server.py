@@ -1121,6 +1121,26 @@ class APIServerAdapter(BasePlatformAdapter):
             pass
         return "hermes-agent"
 
+    @staticmethod
+    def _resolve_default_model() -> str:
+        """Return the configured host default without exposing provider credentials."""
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config() or {}
+            model_config = config.get("model") if isinstance(config, dict) else None
+            if isinstance(model_config, dict):
+                value = (
+                    model_config.get("default")
+                    or model_config.get("model")
+                    or model_config.get("name")
+                )
+            else:
+                value = model_config
+            return str(value or "").strip()
+        except Exception:
+            return ""
+
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
         if not origin or not self._cors_origins:
@@ -1717,6 +1737,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
+            "default_model": self._resolve_default_model() or self._model_name,
             "auth": {
                 "type": "bearer",
                 "required": bool(self._api_key),
@@ -4424,15 +4445,27 @@ class APIServerAdapter(BasePlatformAdapter):
         for entry in active_session_registry_snapshot():
             session_id = str(entry.get("session_id") or "")
             metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+            run_id = str(metadata.get("run_id") or "")
+            run_status = self._run_statuses.get(run_id, {}) if run_id else {}
+            updated_candidates = [entry.get("updated_at"), run_status.get("updated_at")]
+            updated_at = max(
+                (value for value in updated_candidates if isinstance(value, (int, float))),
+                default=None,
+            )
             sessions.append({
                 "lease_id": str(entry.get("lease_id") or ""),
                 "session_id": session_id,
                 "surface": str(entry.get("surface") or "unknown"),
-                "title": self._mobile_session_title(session_id),
+                "title": str(metadata.get("title") or self._mobile_session_title(session_id)),
                 "state": str(metadata.get("state") or "active"),
-                "run_id": str(metadata.get("run_id") or ""),
+                "run_id": run_id,
+                "latest_status": str(
+                    metadata.get("latest_status")
+                    or run_status.get("latest_status")
+                    or ""
+                ),
                 "started_at": entry.get("started_at"),
-                "updated_at": entry.get("updated_at"),
+                "updated_at": updated_at,
             })
         return sessions
 
@@ -4507,10 +4540,14 @@ class APIServerAdapter(BasePlatformAdapter):
         thinking_progress_enabled = self._thinking_progress_enabled()
 
         def _push(event: Dict[str, Any]) -> None:
+            fields: Dict[str, Any] = {"last_event": event.get("event")}
+            latest_status = self._safe_run_latest_status(event)
+            if latest_status:
+                fields["latest_status"] = latest_status
             self._set_run_status(
                 run_id,
                 self._run_statuses.get(run_id, {}).get("status", "running"),
-                last_event=event.get("event"),
+                **fields,
             )
             q = self._run_streams.get(run_id)
             if q is None:
@@ -4581,6 +4618,36 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
 
         return _callback
+
+    @staticmethod
+    def _safe_run_latest_status(event: Dict[str, Any]) -> str:
+        """Build bounded overlay copy from the already client-visible run event."""
+        event_type = str(event.get("event") or "")
+
+        def clean(value: Any, limit: int = 180) -> str:
+            return " ".join(str(value or "").split())[:limit]
+
+        def tool_label() -> str:
+            raw = clean(event.get("tool"), 60).replace("_", " ").replace("-", " ")
+            safe = "".join(char for char in raw if char.isalnum() or char.isspace()).strip()
+            return " ".join(safe.split()) or "tool"
+
+        if event_type == "reasoning.available":
+            return clean(event.get("text")) or "Reviewing the next step…"
+        if event_type == "tool.started":
+            return f"Using {tool_label()}…"
+        if event_type == "tool.completed":
+            return f"{tool_label().capitalize()} {'failed' if event.get('error') else 'finished'}"
+        if event_type == "tasks.updated":
+            return "Updated the task plan…"
+        if event_type == "subagent.updated":
+            subagent = event.get("subagent") if isinstance(event.get("subagent"), dict) else {}
+            activity = clean(subagent.get("activity"))
+            if activity:
+                return activity
+            status = clean(subagent.get("status"), 40).replace("_", " ") or "working"
+            return f"A subagent is {status}…"
+        return ""
 
     def _thinking_progress_enabled(self) -> bool:
         """Resolve the API server's explicit opt-in for delegated scratch progress."""
@@ -4799,10 +4866,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
+            nonlocal response_started
             if delta is None:
                 return
             if run_id not in self._run_streams:
                 return
+            if not response_started:
+                response_started = True
+                self._set_run_status(
+                    run_id,
+                    "running",
+                    last_event="message.delta",
+                    latest_status="Writing the response…",
+                )
             try:
                 loop.call_soon_threadsafe(_put_event_if_active, {
                     "event": "message.delta",
@@ -4813,17 +4889,20 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        response_started = False
         self._set_run_status(
             run_id,
             "queued",
             created_at=created_at,
             session_id=session_id,
             model=body.get("model", self._model_name),
+            latest_status="Queued…",
         )
 
         # Per-client model routing for /v1/runs (see model_routes).
         route = self._resolve_route(body.get("model"))
 
+        session_title = self._mobile_session_title(str(session_id))
         try:
             from hermes_cli.active_sessions import try_acquire_active_session
             from hermes_cli.config import load_config
@@ -4832,7 +4911,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=str(session_id),
                 surface="api_server",
                 config=load_config() or {},
-                metadata={"run_id": run_id, "state": "running"},
+                metadata={"run_id": run_id, "state": "running", "title": session_title},
             )
         except Exception:
             logger.exception("Failed to register API run as an active session")
@@ -4847,11 +4926,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=429,
                 headers={"Retry-After": "1"},
             )
-        session_title = self._mobile_session_title(str(session_id))
-
         async def _run_and_close():
             try:
-                self._set_run_status(run_id, "running")
+                self._set_run_status(run_id, "running", latest_status="Starting the task…")
                 self._queue_mobile_notification({
                     "event": "session.started",
                     "session_id": session_id,
@@ -4906,6 +4983,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         run_id,
                         "waiting_for_approval",
                         last_event="approval.request",
+                        latest_status="Waiting for your approval",
                     )
                     loop.call_soon_threadsafe(self._queue_mobile_notification, {
                         "event": "approval.required",
@@ -5242,7 +5320,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        self._set_run_status(run_id, "running", last_event="approval.responded")
+        self._set_run_status(
+            run_id,
+            "running",
+            last_event="approval.responded",
+            latest_status="Continuing after approval…",
+        )
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
@@ -5276,7 +5359,12 @@ class APIServerAdapter(BasePlatformAdapter):
         if agent is None and task is None:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+        self._set_run_status(
+            run_id,
+            "stopping",
+            last_event="run.stopping",
+            latest_status="Stopping the task…",
+        )
         self._stopping_run_ids.add(run_id)
 
         if agent is not None:

@@ -270,6 +270,25 @@ class TestParseHooksBlock:
 
 
 
+    def test_python_only_event_refused(self, caplog):
+        # classify_api_error returns a classification directive that
+        # _parse_response has no channel for — a shell registration would
+        # be silently ignored, so it must be refused with a warning.
+        specs = shell_hooks._parse_hooks_block({
+            "classify_api_error": [
+                {"command": "/tmp/hook.sh"},
+            ],
+        })
+        assert specs == []
+        assert any("Python-plugin-only" in r.message for r in caplog.records)
+
+    def test_timeout_clamped_to_max(self):
+        specs = shell_hooks._parse_hooks_block({
+            "post_tool_call": [
+                {"command": "/tmp/slow.sh", "timeout": 9999},
+            ],
+        })
+        assert specs[0].timeout == shell_hooks.MAX_TIMEOUT_SECONDS
 
 
 

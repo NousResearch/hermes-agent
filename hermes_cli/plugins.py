@@ -229,6 +229,16 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_blocked",
 }
 
+# Hooks whose return value carries a directive that the shell-hook response
+# parser (``agent/shell_hooks._parse_response``) has no channel for.
+# ``VALID_HOOKS`` doubles as the shell-hook config allow-list, so without
+# this exclusion a shell hook could register for one of these events and
+# have its output silently ignored — registration is refused loudly instead.
+# Support for a shell response shape can lift an event out of this set.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "classify_api_error",
+}
+
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"

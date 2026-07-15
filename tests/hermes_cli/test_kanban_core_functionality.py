@@ -4647,6 +4647,54 @@ def test_protocol_violation_respects_max_retries_precedence(kanban_home):
         conn.close()
 
 
+def test_detect_crashed_workers_resumable_clean_exit_requeues(kanban_home):
+    """A Hermes budget/context stop exits rc=0 but is resumable.
+
+    The worker has not completed the kanban task, but retrying is useful
+    because the log contains the resume command. This must not be treated as
+    the conversational-answer protocol violation path.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="long running", assignee="worker")
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        lock = f"{host_prefix}:mock"
+        kb.claim_task(conn, tid, claimer=lock)
+        fake_pid = 999997
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        log_path = _kb.worker_log_path(tid)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Iteration budget reached (300/300) - response may be incomplete.\n"
+            "Resume this session with:\n"
+            "  hermes --resume 20260711_165211_4f63e8 -p worker\n",
+            encoding="utf-8",
+        )
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            result_crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert tid not in result_crashed
+        assert tid in getattr(_kb.detect_crashed_workers, "_last_resumable", [])
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "resumable_exit" in kinds
+        assert "protocol_violation" not in kinds
+        assert "gave_up" not in kinds
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.

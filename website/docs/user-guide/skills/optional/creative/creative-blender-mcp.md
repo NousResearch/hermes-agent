@@ -16,8 +16,8 @@ Drive Blender via the catalog blender MCP, with bpy recipes.
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/blender-mcp` |
 | Path | `optional-skills/creative/blender-mcp` |
-| Version | `2.0.0` |
-| Author | alireza78a + Hermes Agent |
+| Version | `2.1.0` |
+| Author | alireza78a + kshitijk4poor + Hermes Agent |
 | Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
@@ -72,6 +72,14 @@ connected.
 | `get_object_info`         | Inspect one object (transform, materials)  |
 | `get_viewport_screenshot` | Visual check of what you built             |
 | `execute_blender_code`    | Everything else — arbitrary bpy Python     |
+
+Deeper material lives in the reference files (load on demand):
+
+| Reference | Contents |
+|-----------|----------|
+| `references/bpy-api.md` | Essential bpy operations: modeling, materials, modifiers, rendering |
+| `references/recipes.md` | Complete working scenes: low-poly terrain, glass sphere, HDRI lighting, turntable animation |
+| `references/pitfalls.md` | Hard-won lessons: empty code results in 5.x, ops-vs-data API, engine names by version |
 
 Optional asset-service tools (PolyHaven, Sketchfab, Hyper3D, Hunyuan3D) are
 disabled by default. If the user has enabled a service in the addon panel,

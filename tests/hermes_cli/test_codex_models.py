@@ -1,7 +1,11 @@
 import json
 from unittest.mock import patch
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    _add_forward_compat_models,
+    get_codex_model_ids,
+)
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -392,3 +396,16 @@ class TestNormalizeModelForProvider:
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
         assert cli.model == "gpt-5.3-codex"
+
+
+def test_static_codex_defaults_do_not_surface_rejected_pro_slugs():
+    """ChatGPT Codex OAuth must not advertise unsupported GPT-5.6 pro slugs."""
+    assert not [model for model in DEFAULT_CODEX_MODELS if model.endswith("-pro")]
+
+
+def test_forward_compat_does_not_synthesize_rejected_pro_slugs():
+    models = _add_forward_compat_models(["gpt-5.5", "gpt-5.4"])
+    assert "gpt-5.6-sol" in models
+    assert "gpt-5.6-terra" in models
+    assert "gpt-5.6-luna" in models
+    assert not [model for model in models if model.endswith("-pro")]

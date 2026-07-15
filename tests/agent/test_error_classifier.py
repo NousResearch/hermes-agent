@@ -22,6 +22,30 @@ class MockAPIError(Exception):
         self.body = body or {}
 
 
+class TestCodexUsageLimit429:
+    def test_usage_limit_reached_is_terminal_rate_limit(self):
+        err = MockAPIError(
+            "HTTP 429: The usage limit has been reached",
+            status_code=429,
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "plan_type": "plus",
+                    "resets_in_seconds": 6250,
+                }
+            },
+        )
+
+        classified = classify_api_error(err, provider="openai-codex", model="gpt-5.5")
+
+        assert classified.reason == FailoverReason.rate_limit
+        assert classified.retryable is False
+        assert classified.should_fallback is True
+        assert classified.should_rotate_credential is False
+        assert classified.error_context == {"usage_limit_reached": True}
+
+
 class MockTransportError(Exception):
     """Simulates a transport-level error with a specific type name."""
     pass

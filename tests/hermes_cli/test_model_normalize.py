@@ -145,6 +145,12 @@ class TestCopilotModelNormalization:
         """Regression: openai-codex must still strip the openai/ prefix."""
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
+    def test_openai_codex_strips_canonical_provider_colon_prefix(self):
+        """Regression: provider:model syntax must not leak to Codex backend."""
+        assert normalize_model_for_provider(
+            "openai-codex:gpt-5.6-sol", "openai-codex"
+        ) == "gpt-5.6-sol"
+
 
 # ── Aggregator providers (regression) ──────────────────────────────────
 

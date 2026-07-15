@@ -952,6 +952,22 @@ def _classify_by_status(
         )
 
     if status_code == 429:
+        # OpenAI/Codex plan usage limits include a structured
+        # ``usage_limit_reached`` payload with a reset window. Retrying the
+        # same giant request three times cannot succeed before that reset and
+        # burns more quota/time; treat it as a terminal per-turn rate limit and
+        # let the conversation loop try fallback immediately if configured.
+        if (
+            "usage_limit_reached" in error_msg
+            or "usage limit has been reached" in error_msg
+        ):
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=False,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context={"usage_limit_reached": True},
+            )
         # Already checked long_context_tier above. Some providers (notably
         # Z.AI / Zhipu) reuse HTTP 429 for server-wide overload — same status
         # code as a true per-credential rate limit, but the credential is

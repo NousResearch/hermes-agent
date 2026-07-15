@@ -1898,6 +1898,7 @@ class SessionStore:
         # ---- Phase 2: lock write -- apply decisions to _entries ----
         _needs_save = False
         _needs_recover = False
+        _skip_recover = False
         entry: Optional[SessionEntry] = None
         was_auto_reset = False
         auto_reset_reason = None
@@ -1915,20 +1916,20 @@ class SessionStore:
                 if _is_stale and entry.session_id == _stale_session_id:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
-                    # state.db.  Drop it and fall through to recovery/create.
-                    # Recovery finder reopens ``agent_close`` rows (preserving
-                    # the transcript) but returns None for other end_reasons
-                    # (e.g. /new), starting a fresh session.
+                    # state.db. Drop it and start fresh instead of recovering
+                    # the same ended row. Reopening stale rows resurrects old
+                    # history and persisted /model overrides after /new or a
+                    # restart, pinning the user to a broken provider/session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "
-                        "stale entry and recovering/recreating the session "
-                        "(#54878)",
+                        "stale entry and creating a fresh session (#54878)",
                         session_key, entry.session_id,
                     )
                     self._entries.pop(session_key, None)
                     entry = None
                     _needs_recover = True
+                    _skip_recover = True
                 elif entry.session_id != _stale_session_id:
                     # Another thread handled this entry during our lock-free
                     # window.  Treat as healthy -- bump updated_at and save.
@@ -1952,7 +1953,7 @@ class SessionStore:
                     _needs_recover = True
 
         # ---- Phase 3: no-lock I/O -- recovery + create + save + DB ops ----
-        if _needs_recover and db_end_session_id is None:
+        if _needs_recover and db_end_session_id is None and not _skip_recover:
             recovered = self._query_recoverable_session(
                 session_key=session_key, source=source, now=now,
             )

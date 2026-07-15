@@ -224,16 +224,18 @@ def _normalize_provider_alias(provider_name: str) -> str:
 
 
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
-    """Strip ``provider/`` only when the prefix matches the target provider.
+    """Strip ``provider/`` or ``provider:`` when the prefix matches the target provider.
 
-    This prevents arbitrary slash-bearing model IDs from being mangled on
+    This prevents arbitrary slash/colon-bearing model IDs from being mangled on
     native providers while still repairing manual config values like
-    ``zai/glm-5.1`` for the ``zai`` provider.
+    ``zai/glm-5.1`` for the ``zai`` provider and Hermes' canonical
+    ``openai-codex:gpt-5.6-sol`` form for the Codex backend.
     """
-    if "/" not in model_name:
+    separator = "/" if "/" in model_name else (":" if ":" in model_name else "")
+    if not separator:
         return model_name
 
-    prefix, remainder = model_name.split("/", 1)
+    prefix, remainder = model_name.split(separator, 1)
     if not prefix.strip() or not remainder.strip():
         return model_name
 

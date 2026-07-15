@@ -12,9 +12,9 @@ next restart pruned it.
 This is the live-gateway variant of #52804/FM9 (#52808/#54138 startup prune),
 which required an actual gateway *crash*. Here the guard inside
 `get_or_create_session` detects the ended row at routing time and drops the
-stale entry, falling through to `_recover_session_from_db` (which reopens
-`agent_close`-ended rows and resumes the SAME session_id, preserving the
-transcript) or, failing recovery, to a fresh session.
+stale entry. It must NOT reopen the ended row: doing so resurrects old history
+and persisted /model overrides after a reset/restart. The next route should be
+a fresh session.
 """
 
 from datetime import datetime, timedelta
@@ -120,11 +120,10 @@ class TestIsSessionEndedInDb:
 # ---------------------------------------------------------------------------
 
 class TestRuntimeStaleGuard:
-    def test_stale_agent_close_entry_recovered_preserving_session_id(self, tmp_path):
-        """Stale `agent_close` entry → recovery reopens the SAME session_id."""
+    def test_stale_agent_close_entry_creates_fresh_session(self, tmp_path):
+        """Stale ended entry must not resurrect the old session_id."""
         source = _source()
         db = _db_returning({"sid_stale": {"end_reason": "agent_close", "id": "sid_stale"}})
-        # Recovery finds the agent_close row and reopens it (transcript-preserving).
         db.find_latest_gateway_session_for_peer.return_value = {
             "id": "sid_stale",
             "started_at": (datetime.now() - timedelta(hours=2)).timestamp(),
@@ -135,12 +134,9 @@ class TestRuntimeStaleGuard:
 
         result = store.get_or_create_session(source)
 
-        # SAME session_id (resumed), not a brand-new one, and not silently
-        # routed into the closed entry.
-        assert result.session_id == "sid_stale"
-        db.reopen_session.assert_called_once_with("sid_stale")
-        # A brand-new session row must NOT have been created.
-        db.create_session.assert_not_called()
+        assert result.session_id != "sid_stale"
+        db.reopen_session.assert_not_called()
+        db.create_session.assert_called_once()
 
     def test_stale_entry_creates_fresh_when_recovery_returns_none(self, tmp_path):
         """Stale entry, no recoverable row → brand-new session (no silent drop)."""

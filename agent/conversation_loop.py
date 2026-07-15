@@ -3721,7 +3721,12 @@ def run_conversation(
                         not classified.retryable
                         and not classified.should_compress
                         and classified.reason not in {
-                            FailoverReason.rate_limit,
+                            # Terminal usage_limit_reached 429s classify as
+                            # rate_limit but retryable=False. Do not exclude
+                            # those from the non-retryable/fallback branch, or
+                            # the loop burns api_max_retries on a reset-window
+                            # quota wall.
+                            FailoverReason.rate_limit if classified.retryable else None,
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,

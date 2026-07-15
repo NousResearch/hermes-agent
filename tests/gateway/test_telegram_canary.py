@@ -253,6 +253,69 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
     ordinary_cache.write_bytes(ordinary_bytes[:16] + alternate_payload)
     assert marshal.loads(alternate_payload) == equivalent_code
     assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
+
+    stale_source = tmp_path / "stale_cache_source.py"
+    stale_source.write_text(
+        'PWNED = "stale ordinary cache payload must not execute"\n',
+        encoding="utf-8",
+    )
+    for invalidation_mode in (
+        py_compile.PycInvalidationMode.TIMESTAMP,
+        py_compile.PycInvalidationMode.CHECKED_HASH,
+    ):
+        py_compile.compile(
+            str(stale_source),
+            cfile=str(ordinary_cache),
+            doraise=True,
+            invalidation_mode=invalidation_mode,
+        )
+        assert verify_running_runtime_sha(sha, source_root=tmp_path) is False
+        stale_source.unlink()
+        assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
+        stale_import = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import tracked_module; "
+                "print(getattr(tracked_module, 'PWNED', 0), tracked_module.VALUE)",
+            ],
+            cwd=tmp_path,
+            env=standard_import_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert stale_import.stdout.strip() == "0 1"
+        stale_source.write_text(
+            'PWNED = "stale ordinary cache payload must not execute"\n',
+            encoding="utf-8",
+        )
+
+    py_compile.compile(
+        str(stale_source),
+        cfile=str(ordinary_cache),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    stale_source.unlink()
+    unchecked_import = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "import tracked_module; "
+            "print(bool(getattr(tracked_module, 'PWNED', 0)), "
+            "getattr(tracked_module, 'VALUE', 0))",
+        ],
+        cwd=tmp_path,
+        env=standard_import_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert unchecked_import.stdout.strip() == "True 0"
+    assert verify_running_runtime_sha(sha, source_root=tmp_path) is False
     ordinary_cache.unlink()
     ordinary_cache.parent.rmdir()
 

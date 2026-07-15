@@ -83,14 +83,19 @@ def build_live_payload(runtime_sha: str) -> str:
     return header + ("A" * 5000)
 
 
-def _pyc_matches_tracked_source(cache_path: Path, source_path: Path) -> bool:
-    """Return True only when a PEP 3147 cache contains the source's code.
+def _pyc_is_safe_for_tracked_source(cache_path: Path, source_path: Path) -> bool:
+    """Return True when a PEP 3147 cache cannot alter the tracked source.
 
     Timestamp/size metadata is insufficient: an equal-size malicious source can
     be compiled and the tracked source's timestamp restored. Compare the loaded
     code object to a fresh compilation instead, using the optimization level
     encoded in the cache filename. Raw marshal bytes are not canonical because
     equivalent code objects can encode string-reference tables differently.
+
+    PEP 552 metadata still determines whether ordinary import machinery can
+    select the cache at all. A timestamp/size mismatch or a checked-hash
+    mismatch makes the cache stale, so Python compiles the clean tracked source
+    instead. Unchecked-hash and metadata-current caches remain content-attested.
     """
     optimization = 0
     match = re.search(r"\.opt-([0-9]+)\.pyc$", cache_path.name)
@@ -103,6 +108,23 @@ def _pyc_matches_tracked_source(cache_path: Path, source_path: Path) -> bool:
         if len(cached) <= 16 or cached[:4] != importlib.util.MAGIC_NUMBER:
             return False
         source_bytes = source_path.read_bytes()
+        flags = int.from_bytes(cached[4:8], "little")
+        if flags & ~0b11:
+            return False
+        if flags & 0b1:
+            if (
+                flags & 0b10
+                and cached[8:16] != importlib.util.source_hash(source_bytes)
+            ):
+                return True
+        else:
+            source_stat = source_path.stat()
+            cached_mtime = int.from_bytes(cached[8:12], "little")
+            cached_size = int.from_bytes(cached[12:16], "little")
+            if cached_mtime != (int(source_stat.st_mtime) & 0xFFFFFFFF):
+                return True
+            if cached_size != (source_stat.st_size & 0xFFFFFFFF):
+                return True
         cached_code = marshal.loads(cached[16:])
         expected_code = compile(
             source_bytes,
@@ -247,7 +269,7 @@ def verify_running_runtime_sha(
                 # their source is tracked and their code payload exactly
                 # matches compiling that clean source. Sourceless/root bytecode,
                 # forged caches, and caches for ignored modules fail closed.
-                if tracked_source in tracked_files and _pyc_matches_tracked_source(
+                if tracked_source in tracked_files and _pyc_is_safe_for_tracked_source(
                     root / relative,
                     source,
                 ):

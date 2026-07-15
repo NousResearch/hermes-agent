@@ -1961,9 +1961,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             user_id=sender_id,
             user_name=sender_name or None,
         )
-        # Owner detection at intake (mirrors Signal). Resolves LID->phone via the
-        # on-disk alias map so only the owner gets owner-level trust.
-        self._set_owner_flag(source)
+        # NOTE: owner detection is intentionally NOT wired here. WhatsApp Cloud
+        # currently drops group-shaped inbound payloads earlier in this handler,
+        # so group owner detection can never run on the Cloud path; wiring it
+        # would be dead code. This PR is scoped to the Baileys adapter, where
+        # _set_owner_flag runs at intake (plugins/platforms/whatsapp/adapter.py).
+        # Re-add here once Cloud group intake is implemented.
 
         # Cloud API timestamps are unix seconds (string). MessageEvent
         # doesn't enforce a type but downstream code formats with it.

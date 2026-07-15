@@ -321,7 +321,15 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // The WHATSAPP_ALLOWED_USERS gate applies to DIRECT messages only.
+        // GROUP messages are passed through to the Python gateway, which
+        // authorizes the group via the documented whatsapp.group_policy /
+        // group_allow_from model and applies require_mention gating. Without
+        // this exception a concrete WHATSAPP_ALLOWED_USERS (required for owner
+        // detection — it can't be "*") would drop every non-owner group member
+        // here, before the gateway ever sees them, so only the owner could
+        // trigger the bot in a group.
+        if (!isGroup && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

@@ -370,3 +370,63 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+def test_unlisted_group_member_mention_is_authorized_e2e(monkeypatch):
+    """PR #53623 review — bridge -> adapter -> gateway authorization path.
+
+    An UNLISTED group member (not in WHATSAPP_ALLOWED_USERS) who @mentions the
+    bot in an allowlisted group must reach the agent:
+      * the bridge passes group members through (its allowlist gate is DM-only),
+      * the adapter processes the @mention (identity-agnostic mention gating),
+      * the gateway authorizes the group via whatsapp.group_policy=allowlist.
+    Contrast: the same unlisted sender in a DM is denied.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionSource
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551230000")  # owner only, concrete (not "*")
+    GROUP = "120363001234567890@g.us"
+
+    # (1) Adapter: an unlisted member @mentions the bot -> processed, not dropped.
+    adapter = _make_adapter(
+        require_mention=True,
+        group_policy="allowlist",
+        group_allow_from=[GROUP],
+    )
+    mentioned = _group_message(
+        "@bot please help",
+        chatId=GROUP,
+        senderId="6289999999999@s.whatsapp.net",       # NOT the owner
+        mentionedIds=["15551230000@s.whatsapp.net"],   # the bot
+    )
+    assert adapter._should_process_message(mentioned) is True
+
+    # (2) Gateway: the group source from that same unlisted sender is authorized
+    #     (whatsapp.group_policy=allowlist), even though the sender is not in
+    #     WHATSAPP_ALLOWED_USERS.
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"group_policy": "allowlist"})}
+    )
+    runner.adapters = {Platform.WHATSAPP: SimpleNamespace(enforces_own_access_policy=True)}
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    runner.pairing_store._is_rate_limited.return_value = False
+
+    group_src = SessionSource(
+        platform=Platform.WHATSAPP, chat_type="group", chat_id=GROUP,
+        user_id="6289999999999", user_name="Guest",
+    )
+    assert runner._is_user_authorized(group_src) is True
+
+    # (3) Contrast: the same unlisted sender in a DM is NOT authorized.
+    dm_src = SessionSource(
+        platform=Platform.WHATSAPP, chat_type="dm",
+        chat_id="6289999999999@s.whatsapp.net",
+        user_id="6289999999999", user_name="Guest",
+    )
+    assert runner._is_user_authorized(dm_src) is False

@@ -361,6 +361,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        # Reactions toggle. Behavioral setting -> config.yaml `whatsapp.reactions`
+        # (AGENTS.md requires behavioral settings live in config.yaml, not env).
+        # The legacy WHATSAPP_REACTIONS env is still honored as a fallback for
+        # back-compat. Default on.
+        _reactions_cfg = config.extra.get("reactions")
+        if _reactions_cfg is None:
+            _reactions_cfg = os.getenv("WHATSAPP_REACTIONS", "true")
+        self._reactions_on = str(_reactions_cfg).strip().lower() not in {"false", "0", "no"}
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -1023,14 +1031,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # when done, and cleared on CANCELLED so it never lingers (parity with the
     # Telegram adapter). WhatsApp replaces a sender's existing reaction, so the
     # swap needs no explicit remove. Reactions go through the bridge's
-    # /send-reaction endpoint. Disable with WHATSAPP_REACTIONS=false.
+    # /send-reaction endpoint. Disable with config.yaml `whatsapp.reactions: false`.
     # ------------------------------------------------------------------
 
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
-        """Global toggle (WHATSAPP_REACTIONS, default on). The bridge already
-        drops unauthorized DMs (group members are authorized wholesale), so a
-        message that reaches this hook is already allowed."""
-        return os.getenv("WHATSAPP_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Global toggle. Set via config.yaml `whatsapp.reactions` (default on;
+        legacy WHATSAPP_REACTIONS env honored as a fallback) — resolved once at
+        init into ``self._reactions_on``. The bridge already drops unauthorized
+        DMs (group members are authorized wholesale), so a message that reaches
+        this hook is already allowed."""
+        return self._reactions_on
 
     def _extract_reaction_target(self, event: MessageEvent):
         """Return (chat_id, message_id, participant) for the Baileys reaction key,

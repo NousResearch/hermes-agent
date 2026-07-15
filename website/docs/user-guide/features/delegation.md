@@ -27,7 +27,6 @@ finishes. If the current turn must wait for the child result before finalizing
 delegate_task(
     goal="Critique this provisional recommendation before I finalize",
     context="...",
-    toolsets=["web", "file"],
     background=False,
 )
 ```
@@ -147,6 +146,21 @@ parent waits and the children run in a thread pool:
 
 Synchronous single-task delegation runs directly without thread pool overhead.
 
+### Durable background completions
+
+When a background delegation finishes, Hermes stores its completion event in
+the active profile's `state.db` before publishing it to the normal fresh-turn
+queue. If Hermes restarts after completion but before delivery, the pending
+event is restored and routed through the same ownership checks. Competing
+consumers use a durable claim, so only the consumer that successfully accepts
+the synthetic turn acknowledges delivery; failed attempts release the claim for
+retry.
+
+This does not resume child execution after a crash. A delegation whose owner
+process disappears while it is still running is recorded as `unknown`, because
+Hermes cannot prove whether its external side effects happened. Pending and
+delivered records are bounded and profile-local.
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
@@ -244,20 +258,21 @@ delegate_task(
 ## Lifetime and Durability
 
 :::warning delegate_task is not durable
-Top-level `delegate_task` defaults to `background=True`: the parent returns a
-dispatch handle immediately and the child result re-enters the conversation when
-it finishes. Pass `background=False` when the parent must block until every child
-finishes (or is cancelled) before the current turn can finalize.
+Top-level model-facing `delegate_task` calls default to `background=True`: the
+parent returns a dispatch handle immediately and the child result re-enters the
+conversation when it finishes. Pass `background=False` when the parent must block
+until every child finishes (or is cancelled) before the current turn can finalize.
 
 Either mode is **process-local** and is not a durable background job queue:
 
 - If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
 - Foreground children do **not** continue running after the parent turn ends.
-- Background children are detached from the current turn but still process-local;
-  they do not survive a Hermes process restart.
+- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
+- A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
 
-For **durable long-running work** that must survive interrupts or outlive the current turn, use:
+For **durable execution** that must survive session closure or process restart, use:
 
 - `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
 - `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.

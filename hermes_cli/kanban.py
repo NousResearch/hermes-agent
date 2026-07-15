@@ -1356,6 +1356,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
         else _profile_author()
     )
     ambient_platform = getattr(ambient_origin, "platform", None)
+    ambient_chat_id = getattr(ambient_origin, "chat_id", None)
+    ambient_thread_id = str(
+        getattr(ambient_origin, "thread_id", None) or ""
+    ).strip()
     ambient_user_id = getattr(ambient_origin, "user_id", None)
     explicit_targets = tuple(
         kb.NotificationTarget(
@@ -1364,7 +1368,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             thread_id=target.thread_id,
             user_id=target.user_id or (
                 ambient_user_id
-                if target.platform.casefold() == str(ambient_platform or "").casefold()
+                if (
+                    target.platform.casefold()
+                    == str(ambient_platform or "").casefold()
+                    and target.chat_id == str(ambient_chat_id or "")
+                    and str(target.thread_id or "").strip() == ambient_thread_id
+                )
                 else None
             ),
             notifier_profile=target.notifier_profile or owner,

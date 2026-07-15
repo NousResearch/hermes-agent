@@ -81,6 +81,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
+    _prefix_within_utf16_limit,
     utf16_len,
 )
 from plugins.platforms.telegram.telegram_ids import (
@@ -936,9 +937,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not caption:
             return {"caption": None}
         if ParseMode is None:
-            return {"caption": caption[:1024]}
+            return {"caption": _prefix_within_utf16_limit(caption, 1024)}
         return {
-            "caption": self.format_message(caption)[:1024],
+            "caption": _prefix_within_utf16_limit(self.format_message(caption), 1024),
             "parse_mode": ParseMode.MARKDOWN_V2,
         }
 
@@ -947,7 +948,9 @@ class TelegramAdapter(BasePlatformAdapter):
         retry_kwargs = dict(send_kwargs)
         caption = retry_kwargs.get("caption")
         if caption:
-            retry_kwargs["caption"] = _strip_mdv2(str(caption))[:1024]
+            retry_kwargs["caption"] = _prefix_within_utf16_limit(
+                _strip_mdv2(str(caption)), 1024
+            )
         retry_kwargs.pop("parse_mode", None)
         return retry_kwargs
 

@@ -22,6 +22,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_VIDEO_TYPES,
+    utf16_len,
 )
 
 
@@ -151,6 +152,36 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+
+
+class TestTelegramCaptionUtf16Limits:
+    """Telegram's 1024-unit caption limit must not split astral characters."""
+
+    def test_formatted_caption_uses_longest_utf16_safe_prefix(self, adapter):
+        caption = "😀" * 513
+
+        formatted_caption = adapter._caption_kwargs(caption)["caption"]
+
+        assert formatted_caption == "😀" * 512
+        assert utf16_len(formatted_caption) == 1024
+
+    def test_unformatted_caption_uses_longest_utf16_safe_prefix(self, adapter, monkeypatch):
+        monkeypatch.setattr(telegram_adapter_mod, "ParseMode", None)
+        caption = "😀" * 513
+
+        unformatted_caption = adapter._caption_kwargs(caption)["caption"]
+
+        assert unformatted_caption == "😀" * 512
+        assert utf16_len(unformatted_caption) == 1024
+
+    def test_plain_retry_caption_uses_longest_utf16_safe_prefix(self):
+        retry_kwargs = TelegramAdapter._plain_caption_retry_kwargs(
+            {"caption": "😀" * 513, "parse_mode": "MarkdownV2"}
+        )
+
+        assert retry_kwargs["caption"] == "😀" * 512
+        assert utf16_len(retry_kwargs["caption"]) == 1024
+        assert "parse_mode" not in retry_kwargs
 
 
 # ---------------------------------------------------------------------------

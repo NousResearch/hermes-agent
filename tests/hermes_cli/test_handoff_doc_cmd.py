@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from hermes_cli.handoff_doc_cmd import (
+    _MAX_HANDOFF_BYTES,
     build_handoff_document,
     consume_handoff_markdown_text,
     handle_handoff_document_command,
@@ -95,6 +96,21 @@ class TestConsumePastedHandoffMarkdown:
     def test_ignores_non_handoff_text(self):
         assert consume_handoff_markdown_text("hello there") is None
 
+    def test_rejects_oversized_pasted_handoff(self):
+        text = (
+            "# Handoff: auth drift\n\n"
+            "## Purpose of next session\n" + ("A" * (_MAX_HANDOFF_BYTES + 128)) + "\n\n"
+            "## Current status\n- drift confirmed\n\n"
+            "## Relevant artifacts\n- workdir: /root/project\n\n"
+            "## Constraints and non-goals\n- stay narrow\n\n"
+            "## Exact first prompt\nValidate the config and fix the drift.\n\n"
+            "## Success criteria\n- [ ] config fixed\n"
+        )
+        result = consume_handoff_markdown_text(text, source_label="<paste>")
+        assert result is not None
+        assert result.agent_seed is None
+        assert "Handoff too large to consume" in result.text
+
 
 class TestHandleHandoffDocumentCommand:
     def test_save_defaults_under_hermes_home(self, tmp_path):
@@ -134,3 +150,25 @@ class TestHandleHandoffDocumentCommand:
         assert result.agent_seed is not None
         assert str(handoff) in result.agent_seed
         assert "Validate the config and fix the drift." in result.agent_seed
+
+    def test_consume_rejects_oversized_file(self, tmp_path):
+        handoff = tmp_path / "handoff.md"
+        handoff.write_text(
+            "# Handoff: auth drift\n\n"
+            "## Purpose of next session\n" + ("A" * (_MAX_HANDOFF_BYTES + 128)) + "\n\n"
+            "## Current status\n- drift confirmed\n\n"
+            "## Relevant artifacts\n- workdir: /root/project\n\n"
+            "## Constraints and non-goals\n- stay narrow\n\n"
+            "## Exact first prompt\nValidate the config and fix the drift.\n\n"
+            "## Success criteria\n- [ ] config fixed\n",
+            encoding="utf-8",
+        )
+        result = handle_handoff_document_command(
+            cmd=f"/handoff consume {handoff}",
+            conversation_history=_history(),
+            session_id="sess-1",
+            workdir="/root/project",
+            hermes_home=tmp_path / ".hermes",
+        )
+        assert result.agent_seed is None
+        assert "Handoff too large to consume" in result.text

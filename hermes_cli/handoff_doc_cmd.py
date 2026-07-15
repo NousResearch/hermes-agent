@@ -35,6 +35,8 @@ _HANDOFF_SECTIONS = (
     "Success criteria",
 )
 
+_MAX_HANDOFF_BYTES = 64 * 1024
+
 
 @dataclass
 class HandoffDocument:
@@ -48,6 +50,33 @@ class HandoffCommandResult:
     text: str
     saved_path: str | None = None
     agent_seed: str | None = None
+
+
+def _handoff_too_large_result(*, actual_bytes: int, source_label: str) -> HandoffCommandResult:
+    return HandoffCommandResult(
+        text=(
+            f"Handoff too large to consume from {source_label}: {actual_bytes} bytes "
+            f"(max {_MAX_HANDOFF_BYTES} bytes)."
+        )
+    )
+
+
+def _read_bounded_handoff_text(path: Path) -> tuple[str | None, HandoffCommandResult | None]:
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = None
+    if isinstance(size, int) and size > _MAX_HANDOFF_BYTES:
+        return None, _handoff_too_large_result(actual_bytes=size, source_label=str(path))
+
+    raw = path.read_bytes()
+    if len(raw) > _MAX_HANDOFF_BYTES:
+        return None, _handoff_too_large_result(actual_bytes=len(raw), source_label=str(path))
+
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError as exc:
+        return None, HandoffCommandResult(text=f"(._.) Could not consume handoff: {exc}")
 
 
 def _strip_leading_command(cmd: str) -> str:
@@ -320,6 +349,9 @@ def consume_handoff_markdown_text(text: str, source_label: str = "<pasted handof
     body = (text or "").strip()
     if not body.startswith("# Handoff:"):
         return None
+    body_bytes = body.encode("utf-8")
+    if len(body_bytes) > _MAX_HANDOFF_BYTES:
+        return _handoff_too_large_result(actual_bytes=len(body_bytes), source_label=source_label)
     parsed = parse_handoff_markdown(body)
     seed = build_handoff_consume_seed(parsed, source_label)
     return HandoffCommandResult(
@@ -357,7 +389,10 @@ def handle_handoff_document_command(
         if not source.exists():
             return HandoffCommandResult(text=f"(._.) Handoff file not found: {source}")
         try:
-            text = source.read_text(encoding="utf-8")
+            text, too_large = _read_bounded_handoff_text(source)
+            if too_large is not None:
+                return too_large
+            assert text is not None
             parsed = parse_handoff_markdown(text)
             seed = build_handoff_consume_seed(parsed, str(source))
         except Exception as exc:

@@ -15661,7 +15661,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception:
                 _pasted_handoff = None
-            if _pasted_handoff and getattr(_pasted_handoff, "agent_seed", None):
+            if _pasted_handoff:
                 _ack = getattr(_pasted_handoff, "text", "") or ""
                 if _ack:
                     try:
@@ -15671,7 +15671,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
                     except Exception:
                         logger.debug("pasted handoff ack send failed", exc_info=True)
-                event.text = _pasted_handoff.agent_seed
+                if getattr(_pasted_handoff, "agent_seed", None):
+                    event.text = _pasted_handoff.agent_seed
+                else:
+                    return None
 
         if not is_internal and await asyncio.to_thread(
             self._is_telegram_topic_root_lobby, source

@@ -19,6 +19,9 @@ any future refactor of that predicate must preserve the invariant:
 from __future__ import annotations
 
 import json
+import re
+
+_JITER_PARSE_ERROR_RE = re.compile(r" at line \d+ column \d+$")
 
 
 def _mirror_agent_predicate(err: BaseException) -> bool:
@@ -41,6 +44,13 @@ def _mirror_agent_predicate(err: BaseException) -> bool:
             isinstance(err, TypeError)
             and "nonetype" in str(err).lower()
             and "not iterable" in str(err).lower()
+        )
+        # jiter (openai SDK's Rust JSON parser) raises a plain ValueError
+        # on a truncated/corrupted SSE chunk — a transient provider/network
+        # issue, not a local bug. See #65147.
+        and not (
+            type(err) is ValueError
+            and _JITER_PARSE_ERROR_RE.search(str(err))
         )
     )
 
@@ -153,4 +163,50 @@ class TestAgentLoopSourceHasNoneTypeCarveOut:
         assert "nonetype" in src.lower() and "not iterable" in src.lower(), (
             "agent/conversation_loop.py must carve out 'NoneType is not iterable' "
             "TypeErrors from the is_local_validation_error classification — see #33136."
+        )
+
+
+class TestJiterParseErrorIsRetryable:
+    """Regression for #65147: jiter (openai SDK's Rust SSE JSON parser)
+    raises a plain ValueError on a truncated/corrupted stream chunk — not a
+    json.JSONDecodeError subclass, so the #14782 carve-out alone doesn't
+    catch it. Its messages consistently end in "at line N column N"."""
+
+    def test_jiter_style_value_error_is_not_local_validation(self):
+        err = ValueError("expected value at line 1 column 223")
+        assert not _mirror_agent_predicate(err), (
+            "A ValueError shaped like jiter's parse-failure message must be "
+            "excluded from is_local_validation_error — it is a transient "
+            "provider/network stream corruption, not a local bug. See #65147."
+        )
+
+    def test_unrelated_value_error_remains_local_validation(self):
+        """A bare ValueError without jiter's message shape still aborts."""
+        assert _mirror_agent_predicate(ValueError("bad arg"))
+        assert _mirror_agent_predicate(ValueError("invalid literal for int()"))
+
+    def test_value_error_subclass_is_not_matched(self):
+        """Only a bare ValueError (type(err) is ValueError) matches — a
+        subclass like json.JSONDecodeError is already excluded above via
+        isinstance, so this carve-out must not double-match/broaden scope."""
+        try:
+            json.loads("{not valid json at line 1 column 5")
+        except json.JSONDecodeError as exc:
+            # Already excluded by the JSONDecodeError isinstance check —
+            # confirm the jiter carve-out doesn't need to fire for it.
+            assert not _mirror_agent_predicate(exc)
+
+
+class TestAgentLoopSourceHasJiterCarveOut:
+    """Belt-and-suspenders: the production source must include the carve-out."""
+
+    def test_conversation_loop_excludes_jiter_parse_error_from_local_validation(self):
+        import inspect
+        from agent import conversation_loop
+        src = inspect.getsource(conversation_loop)
+        assert "is_local_validation_error" in src
+        assert "_JITER_PARSE_ERROR_RE" in src or "jiter" in src.lower(), (
+            "agent/conversation_loop.py must carve out jiter's plain-ValueError "
+            "parse failures from the is_local_validation_error classification "
+            "— see #65147."
         )

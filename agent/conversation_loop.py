@@ -73,6 +73,13 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+# jiter (the Rust JSON parser the openai SDK >=1.x uses for SSE stream
+# chunks) raises a plain ``ValueError`` on a truncated/corrupted ``data:``
+# payload — not a ``json.JSONDecodeError`` subclass, so it isn't caught by
+# the #14271/#14782 exclusion below. Its messages consistently end in
+# "at line N column N"; match on that shape (see #65147).
+_JITER_PARSE_ERROR_RE = re.compile(r" at line \d+ column \d+$")
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -3788,6 +3795,15 @@ def run_conversation(
                         isinstance(api_error, TypeError)
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
+                    )
+                    # jiter parse failures on a malformed/truncated SSE chunk
+                    # are a transient provider/network issue, the same class
+                    # as the json.JSONDecodeError exclusion above — but jiter
+                    # raises a plain ValueError with no dedicated exception
+                    # class, so match by its message shape instead (#65147).
+                    and not (
+                        type(api_error) is ValueError
+                        and _JITER_PARSE_ERROR_RE.search(str(api_error))
                     )
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this

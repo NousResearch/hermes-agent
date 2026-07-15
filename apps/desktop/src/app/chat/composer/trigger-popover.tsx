@@ -55,11 +55,11 @@ interface ComposerTriggerPopoverProps {
   activeIndex: number
   items: readonly Unstable_TriggerItem[]
   kind: '@' | '/' | ':'
-  listboxId: string
+  listboxId?: string
   loading: boolean
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
-  optionIdPrefix: string
+  optionIdPrefix?: string
   placement?: 'bottom' | 'top'
   /** The `@kind:` browse the list is filtered to, when there is one. Rendered
    *  as a header so the scope reads as the mode it is — the raw `@folder:` in
@@ -83,11 +83,11 @@ export function ComposerTriggerPopover({
   activeIndex,
   items,
   kind,
-  listboxId,
+  listboxId = 'composer-completion-listbox',
   loading,
   onHover,
   onPick,
-  optionIdPrefix,
+  optionIdPrefix = 'composer-completion',
   placement = 'top',
   scope
 }: ComposerTriggerPopoverProps) {

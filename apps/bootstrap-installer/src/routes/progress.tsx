@@ -6,13 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import { BrandMark } from '../components/brand-mark'
 import { Button } from '../components/button'
 import { Loader } from '../components/loader'
-import {
-  $mode,
-  $progress,
-  type BootstrapStateModel,
-  cancelInstall,
-  type StageState
-} from '../store'
+import { $mode, $progress, type BootstrapStateModel, cancelInstall, type StageState } from '../store'
 
 interface ProgressProps {
   bootstrap: BootstrapStateModel
@@ -57,10 +51,9 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
     : 'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.'
 
   const pct = Math.round(progress.fraction * 100)
-  const currentStage =
-    bootstrap.currentStage != null
-      ? bootstrap.stages[bootstrap.currentStage]
-      : null
+
+  const currentStage = bootstrap.currentStage != null ? bootstrap.stages[bootstrap.currentStage] : null
+
   const currentStageTitle =
     bootstrap.status === 'running'
       ? currentStage
@@ -71,6 +64,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
         : isUpdate
           ? 'Updating'
           : 'Installing'
+
   const progressText = `${progress.done} of ${progress.total} steps — ${currentStageTitle}`
 
   return (
@@ -120,10 +114,12 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
               muted. Running loader overhangs left so labels stay aligned; the
               terminal check/cross sits right of the label. */}
           <ol className="space-y-0.5">
-            {bootstrap.stageOrder.map((name) => {
+            {bootstrap.stageOrder.map(name => {
               const rec = bootstrap.stages[name]
 
-              if (!rec) {return null}
+              if (!rec) {
+                return null
+              }
 
               const meta =
                 rec.state === 'running' && rec.startedAt != null
@@ -137,9 +133,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
                   aria-label={`${rec.info.title}, ${stageStateLabel(rec.state ?? null)}`}
                   className={clsx(
                     'flex items-center gap-2.5 px-3 py-1.5 text-sm',
-                    rec.state === 'running'
-                      ? 'font-medium text-foreground'
-                      : 'text-muted-foreground'
+                    rec.state === 'running' ? 'font-medium text-foreground' : 'text-muted-foreground'
                   )}
                   key={name}
                 >
@@ -192,12 +186,16 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
           aria-controls="install-log-panel"
           aria-expanded={showLogs}
           className="inline-flex cursor-pointer items-center gap-1.5 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          onClick={() => setShowLogs((v) => !v)}
+          onClick={() => setShowLogs(v => !v)}
           type="button"
         >
           <FileText aria-hidden="true" size={14} />
           {showLogs ? 'Hide details' : 'Show details'}
-          <ChevronRight aria-hidden="true" size={12} className={clsx('transition-transform', showLogs && 'rotate-90')} />
+          <ChevronRight
+            aria-hidden="true"
+            className={clsx('transition-transform', showLogs && 'rotate-90')}
+            size={12}
+          />
         </button>
 
         {bootstrap.status === 'running' && (
@@ -215,32 +213,48 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
 // spinner on the left; pending stays icon-less.
 function StateIcon({ state }: { state: StageState | null }) {
   if (state === 'succeeded') {
-    return <Check aria-hidden="true" size={13} className="shrink-0 text-muted-foreground" />
+    return <Check aria-hidden="true" className="shrink-0 text-muted-foreground" size={13} />
   }
 
   if (state === 'skipped') {
-    return <Check aria-hidden="true" size={13} className="shrink-0 text-muted-foreground/50" />
+    return <Check aria-hidden="true" className="shrink-0 text-muted-foreground/50" size={13} />
   }
 
   if (state === 'failed') {
-    return <X aria-hidden="true" size={13} className="shrink-0 text-destructive" />
+    return <X aria-hidden="true" className="shrink-0 text-destructive" size={13} />
   }
 
   return null
 }
 
 function stageStateLabel(state: StageState | null): string {
-  if (state === 'running') return 'Running'
-  if (state === 'succeeded') return 'Completed'
-  if (state === 'skipped') return 'Skipped'
-  if (state === 'failed') return 'Failed'
+  if (state === 'running') {
+    return 'Running'
+  }
+
+  if (state === 'succeeded') {
+    return 'Completed'
+  }
+
+  if (state === 'skipped') {
+    return 'Skipped'
+  }
+
+  if (state === 'failed') {
+    return 'Failed'
+  }
+
   return 'Pending'
 }
 
 function formatDuration(ms: number): string {
-  if (ms < 1000) {return `${ms}ms`}
+  if (ms < 1000) {
+    return `${ms}ms`
+  }
 
-  if (ms < 60000) {return `${(ms / 1000).toFixed(1)}s`}
+  if (ms < 60000) {
+    return `${(ms / 1000).toFixed(1)}s`
+  }
   const m = Math.floor(ms / 60000)
   const s = Math.round((ms % 60000) / 1000)
 
@@ -251,7 +265,9 @@ function formatDuration(ms: number): string {
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000))
 
-  if (s < 60) {return `${s}s`}
+  if (s < 60) {
+    return `${s}s`
+  }
   const m = Math.floor(s / 60)
 
   return `${m}:${String(s - m * 60).padStart(2, '0')}`

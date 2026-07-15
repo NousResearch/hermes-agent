@@ -206,8 +206,11 @@ const StatusbarItemView = memo(function StatusbarItemView({
   navigate: ReturnType<typeof useNavigate>
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
+
   const accessibleTitle =
-    item.title ?? (typeof item.label === 'string' ? item.label : typeof item.detail === 'string' ? item.detail : undefined)
+    item.title ??
+    (typeof item.label === 'string' ? item.label : typeof item.detail === 'string' ? item.detail : undefined)
+
   const hasVisibleText = typeof item.label === 'string' || typeof item.detail === 'string'
   const accessibleName = hasVisibleText ? undefined : accessibleTitle
 

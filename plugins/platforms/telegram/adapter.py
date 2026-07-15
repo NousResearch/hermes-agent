@@ -3941,6 +3941,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            deferred_timeout: Optional[Exception] = None
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
@@ -4106,7 +4107,20 @@ class TelegramAdapter(BasePlatformAdapter):
                             and not self._looks_like_connect_timeout(send_err)
                             and not is_pool_timeout
                         ):
-                            raise
+                            if len(chunks) == 1:
+                                raise
+                            if deferred_timeout is None:
+                                deferred_timeout = send_err
+                            safe_send_error = _redact_telegram_error_text(send_err)
+                            logger.warning(
+                                "[%s] TimedOut on chunk %d/%d; delivery is uncertain, "
+                                "not retrying this chunk and continuing the response: %s",
+                                self.name,
+                                i + 1,
+                                len(chunks),
+                                safe_send_error,
+                            )
+                            break
                         if is_pool_timeout:
                             await self._drain_general_connections_after_pool_timeout()
                         if _send_attempt < 2:
@@ -4133,7 +4147,11 @@ class TelegramAdapter(BasePlatformAdapter):
                                 await asyncio.sleep(wait)
                                 continue
                         raise
-                message_ids.append(str(msg.message_id))
+                if msg is not None:
+                    message_ids.append(str(msg.message_id))
+
+            if deferred_timeout is not None:
+                raise deferred_timeout
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

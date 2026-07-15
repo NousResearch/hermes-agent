@@ -1327,6 +1327,31 @@ async def test_send_does_not_retry_timeout():
 
 
 @pytest.mark.asyncio
+async def test_send_continues_later_chunks_after_generic_timeout():
+    """A generic timeout must not suppress every later chunk in the response."""
+    adapter = _make_adapter()
+
+    attempted_texts = []
+
+    async def mock_send_message(**kwargs):
+        attempted_texts.append(kwargs["text"])
+        if len(attempted_texts) == 2:
+            raise FakeTimedOut("Timed out waiting for Telegram response")
+        return SimpleNamespace(message_id=len(attempted_texts))
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="A" * 9000)
+
+    assert len(attempted_texts) == 3
+    assert attempted_texts.count(attempted_texts[1]) == 1
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error is not None
+    assert "Timed out" in result.error
+
+
+@pytest.mark.asyncio
 async def test_send_retries_wrapped_connect_timeout():
     """Retry TimedOut only when it wraps a TCP connect timeout.
 

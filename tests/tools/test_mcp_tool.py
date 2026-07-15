@@ -1353,6 +1353,47 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_keepalive_ping_waits_for_rpc_lock(self):
+        """Keepalive ping must not race an active MCP tool call."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server.session = MagicMock()
+            server.session.send_ping = AsyncMock()
+
+            async with server._rpc_lock:
+                probe = asyncio.create_task(server._keepalive_probe())
+                await asyncio.sleep(0)
+                server.session.send_ping.assert_not_awaited()
+
+            await probe
+            server.session.send_ping.assert_awaited_once()
+
+        asyncio.run(_test())
+
+    def test_keepalive_list_tools_fallback_waits_for_rpc_lock(self):
+        """The no-ping fallback must use the same per-server RPC lock."""
+        from tools.mcp_tool import MCPServerTask
+
+        async def _test():
+            server = MCPServerTask("srv")
+            server.session = MagicMock()
+            server._ping_unsupported = True
+            server.session.list_tools = AsyncMock(
+                return_value=SimpleNamespace(tools=[])
+            )
+
+            async with server._rpc_lock:
+                probe = asyncio.create_task(server._keepalive_probe())
+                await asyncio.sleep(0)
+                server.session.list_tools.assert_not_awaited()
+
+            await probe
+            server.session.list_tools.assert_awaited_once()
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # discover_mcp_tools toolset injection

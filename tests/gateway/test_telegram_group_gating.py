@@ -3,7 +3,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.config import HomeChannel, Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageType
 from gateway.session import SessionSource
 
@@ -619,6 +619,57 @@ def test_allowed_topics_treat_missing_thread_as_general_topic():
 
     assert adapter._should_process_message(_group_message("hello", thread_id=None)) is True
     assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
+
+
+def test_home_forum_missing_thread_uses_configured_topic_for_gating_and_event():
+    adapter = _make_adapter(require_mention=False, allowed_topics=["846"])
+    adapter.config.home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="-1003946573900",
+        name="Work",
+        thread_id="846",
+    )
+    message = _group_message("hello", chat_id=-1003946573900, thread_id=None)
+    message.chat.is_forum = True
+
+    assert adapter._should_process_message(message) is True
+    event = adapter._build_message_event(message, MessageType.TEXT, update_id=1005)
+    assert event.source.thread_id == "846"
+
+
+def test_non_home_forum_missing_thread_remains_general_topic():
+    adapter = _make_adapter(require_mention=False, allowed_topics=["846"])
+    adapter.config.home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="-1003946573900",
+        name="Work",
+        thread_id="846",
+    )
+    message = _group_message("hello", chat_id=-100999, thread_id=None)
+    message.chat.is_forum = True
+
+    assert adapter._effective_message_thread_id(message) == "1"
+    assert adapter._should_process_message(message) is False
+
+
+def test_observed_unmentioned_gate_uses_home_forum_topic_fallback():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_topics=["846"],
+        allowed_chats=["-1003946573900"],
+        group_allowed_chats=["-1003946573900"],
+        observe_unmentioned_group_messages=True,
+    )
+    adapter.config.home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="-1003946573900",
+        name="Work",
+        thread_id="846",
+    )
+    message = _group_message("side chatter", chat_id=-1003946573900, thread_id=None)
+    message.chat.is_forum = True
+
+    assert adapter._should_observe_unmentioned_group_message(message) is True
 
 
 def _forum_message(*, chat_id, thread_id, is_topic_message, is_forum, chat_type="supergroup"):

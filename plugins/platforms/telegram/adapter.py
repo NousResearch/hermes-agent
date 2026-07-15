@@ -7086,8 +7086,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         When non-empty, group/supergroup messages from other topics are
         silently ignored. DMs are never filtered by topic. Telegram may omit
-        ``message_thread_id`` for the forum General topic, so ``None`` is
-        treated as topic ``1`` for matching purposes.
+        ``message_thread_id`` for forum messages, so inbound gates use
+        :meth:`_effective_message_thread_id` before matching.
         """
         raw = self.config.extra.get("allowed_topics")
         if raw is None:
@@ -7162,8 +7162,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
         return chat_type in {"group", "supergroup"}
 
-    @classmethod
-    def _effective_message_thread_id(cls, message: Message) -> Optional[str]:
+    def _effective_message_thread_id(self, message: Message) -> Optional[str]:
         """Return the routable thread id for a Telegram message.
 
         Forum supergroup messages posted in the General topic arrive with
@@ -7186,7 +7185,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 return str(raw)
             return None
         if is_forum_group:
-            return cls._GENERAL_TOPIC_THREAD_ID
+            home_channel = getattr(self.config, "home_channel", None)
+            home_thread_id = getattr(home_channel, "thread_id", None)
+            if (
+                home_channel is not None
+                and home_thread_id not in (None, "")
+                and normalize_telegram_chat_id(getattr(home_channel, "chat_id", None))
+                == normalize_telegram_chat_id(getattr(chat, "id", None))
+            ):
+                return str(home_thread_id)
+            return self._GENERAL_TOPIC_THREAD_ID
         return None
 
     def _is_reply_to_bot(self, message: Message) -> bool:
@@ -7364,7 +7372,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return False
 
-        thread_id = getattr(message, "message_thread_id", None)
+        thread_id = self._effective_message_thread_id(message)
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
             topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID

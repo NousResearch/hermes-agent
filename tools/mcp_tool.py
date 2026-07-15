@@ -2157,7 +2157,7 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
                             "triggering reconnect: %s",
-                            self.name, exc,
+                            self.name, _exc_str(exc),
                         )
                         self._reconnect_event.set()
                         break
@@ -3554,11 +3554,22 @@ def _is_session_expired_error(exc: BaseException) -> bool:
     """
     if isinstance(exc, InterruptedError):
         return False
+    exc_type = type(exc)
+    exc_name = exc_type.__name__
+    exc_module = getattr(exc_type, "__module__", "")
+    if (
+        exc_name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+        or (exc_module.startswith("anyio") and "Resource" in exc_name)
+        or isinstance(exc, (BrokenPipeError, EOFError))
+    ):
+        return True
     # Exception messages vary across SDK versions + server
     # implementations, so match on a small allow-list of stable
-    # substrings rather than exception type.  Kept narrow to avoid
-    # false positives on unrelated server errors.
-    msg = str(exc).lower()
+    # substrings rather than exception type.  Some transport exceptions
+    # (notably anyio.ClosedResourceError) have an empty ``str(exc)``;
+    # use the shared diagnostic formatter so their type name remains
+    # visible to the classifier as well as to logs.
+    msg = _exc_str(exc).lower()
     if not msg:
         return False
     return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)

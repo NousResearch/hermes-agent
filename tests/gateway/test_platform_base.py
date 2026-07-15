@@ -11,6 +11,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     cache_audio_from_bytes,
+    cache_document_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
     safe_url_for_log,
@@ -66,6 +67,31 @@ class TestInboundMediaSizeCap:
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 4)
         with pytest.raises(ValueError, match="Inbound video payload is too large"):
             cache_video_from_bytes(b"x" * 8, ext=".mp4")
+
+    def test_document_bytes_rejected_when_oversized(self, monkeypatch, tmp_path):
+        # Documents were the remaining gap: cache_document_from_bytes wrote the
+        # shared document cache without a size check. Verify the cap now fires
+        # BEFORE any file is persisted.
+        import gateway.platforms.base as base
+        doc_cache = tmp_path / "documents"
+        doc_cache.mkdir()
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 4)
+        monkeypatch.setattr(base, "get_document_cache_dir", lambda: doc_cache)
+        with pytest.raises(ValueError, match="Inbound document payload is too large"):
+            cache_document_from_bytes(b"x" * 4096, "report.pdf")
+        # Nothing should have been written to the cache directory.
+        assert list(doc_cache.iterdir()) == []
+
+    def test_legit_document_accepted_under_cap(self, monkeypatch, tmp_path):
+        import gateway.platforms.base as base
+        doc_cache = tmp_path / "documents"
+        doc_cache.mkdir()
+        monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: 128 * 1024 * 1024)
+        monkeypatch.setattr(base, "get_document_cache_dir", lambda: doc_cache)
+        data = b"%PDF-1.4 minimal document body"
+        path = cache_document_from_bytes(data, "report.pdf")
+        assert os.path.exists(path)
+        assert os.path.getsize(path) == len(data)
 
     def test_legit_image_accepted_under_cap(self, monkeypatch):
         import gateway.platforms.base as base

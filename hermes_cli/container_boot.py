@@ -564,6 +564,29 @@ def main() -> int:
     actions = reconcile_profile_gateways(
         hermes_home=hermes_home, scandir=scandir,
     )
+
+    # Materialize each profile's own GitHub token into its subprocess HOME as
+    # a git credential file (see hermes_cli.git_credentials_boot). This is a
+    # SANCTIONED bypass of the provider-secret env blocklist that otherwise
+    # strips GITHUB_TOKEN/GH_TOKEN from tool subprocesses (GHSA-hardened;
+    # see tools/environments/local.py) — the token becomes readable to
+    # anything running as the agent in that HOME. So it is OPT-IN and
+    # default-OFF, gated on HERMES_GIT_CREDENTIALS_BOOT (bridged from the
+    # git.provision_credentials_at_boot config setting). Runs only in the
+    # gateway container (after the dashboard early-return above) so dashboard
+    # containers never provision. provision_all stays pure/unconditional; the
+    # gate is a boot-lifecycle decision made here.
+    if os.environ.get("HERMES_GIT_CREDENTIALS_BOOT", "").lower() in ("1", "true", "yes"):
+        from hermes_cli.git_credentials_boot import provision_all
+
+        for r in provision_all(hermes_home):
+            status = (
+                f"provisioned (source={r.source})"
+                if r.provisioned
+                else f"skipped ({r.reason})"
+            )
+            print(f"git-credentials: home={r.home} {status}")
+
     for a in actions:
         print(
             f"reconcile: profile={a.profile} "

@@ -670,7 +670,16 @@ def load_cli_config() -> Dict[str, Any]:
     for config_key, env_var in browser_env_mappings.items():
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
-    
+
+    # Bridge git config → env vars. provision_credentials_at_boot gates the
+    # boot-time git-credential provisioning (container_boot.main). Mirrors the
+    # terminal.home_mode → TERMINAL_HOME_MODE precedent.
+    git_config = defaults.get("git", {})
+    if "provision_credentials_at_boot" in git_config:
+        os.environ["HERMES_GIT_CREDENTIALS_BOOT"] = (
+            "1" if git_config["provision_credentials_at_boot"] else "0"
+        )
+
     # Apply auxiliary model/direct-endpoint overrides to environment variables.
     # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
     # Compression config is read directly from config.yaml by run_agent.py and

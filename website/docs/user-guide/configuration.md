@@ -475,6 +475,25 @@ Hermes resolves each listed variable from your current shell first, then falls b
 Anything listed in `docker_forward_env` becomes visible to commands run inside the container. Only forward credentials you are comfortable exposing to the terminal session.
 :::
 
+### Provisioning Git Credentials at Boot
+
+The agent's tool subprocess deliberately **cannot** see `GITHUB_TOKEN` / `GH_TOKEN`: provider secrets are stripped from the subprocess environment (a GHSA hardening — see the env blocklist in `tools/environments/local.py`). That means `git push` from inside an agent session has no token to authenticate with, even when the profile has one configured.
+
+`git.provision_credentials_at_boot` opts into a sanctioned bypass. When enabled, at container boot Hermes reads each profile's **own** GitHub token from its `.env` and materializes it into that profile's agent HOME as a git credential file — `{HERMES_HOME}/home/.git-credentials`, mode `0600` — so git's `store` helper can authenticate over HTTPS. Tokens never cross-pollinate: each home reads only its own `.env`.
+
+```yaml
+git:
+  provision_credentials_at_boot: true   # default: false
+```
+
+Can also be set via environment variable: `HERMES_GIT_CREDENTIALS_BOOT=1` (accepts `1`/`true`/`yes`). Default is **off** — with the setting absent, no credential file is ever written. Dashboard-only containers never provision, regardless of this setting.
+
+This is distinct from `terminal.docker_forward_env`: that forwards a secret into the container's **environment** for a Docker terminal session; this writes a credential **file** into the agent's HOME so the agent's git can use it directly.
+
+:::warning
+Enabling this deliberately bypasses the subprocess env blocklist that otherwise strips `GITHUB_TOKEN` / `GH_TOKEN`. Once the credential file is written, the token becomes readable to anything running as the agent in that HOME. Only enable it when you are comfortable exposing the profile's GitHub token to the agent's git.
+:::
+
 ### Running the Container as Your Host User
 
 By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. The `terminal.docker_run_as_host_user` flag fixes this:

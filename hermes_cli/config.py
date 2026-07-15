@@ -1271,6 +1271,21 @@ DEFAULT_CONFIG = {
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
     },
 
+    "git": {
+        # When true, materialize each profile's own GitHub token (from its
+        # .env) into {HERMES_HOME}/home/.git-credentials (0600) at container
+        # boot so the agent's git can authenticate over HTTPS. Bridged to the
+        # HERMES_GIT_CREDENTIALS_BOOT env var (see cli.py / gateway/run.py).
+        #
+        # SECURITY: default OFF. Enabling this deliberately bypasses the
+        # subprocess env blocklist that otherwise strips GITHUB_TOKEN/GH_TOKEN
+        # from tool subprocesses — the token becomes readable to anything
+        # running as the agent in that HOME. Distinct from
+        # terminal.docker_forward_env (which forwards secrets into the
+        # container ENV); this writes a credential FILE into the agent HOME.
+        "provision_credentials_at_boot": False,
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
@@ -4512,6 +4527,19 @@ OPTIONAL_ENV_VARS = {
     # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
     # surfaces (dashboard keys page, setup checklists) and deprecated knobs
     # shouldn't be offered there.
+    "HERMES_GIT_CREDENTIALS_BOOT": {
+        "description": "When 1/true/yes, materialize each profile's own GitHub token into "
+                       "{HERMES_HOME}/home/.git-credentials (0600) at container boot so the "
+                       "agent's git can authenticate. Default OFF. This deliberately bypasses "
+                       "the subprocess env blocklist that otherwise strips GITHUB_TOKEN/GH_TOKEN, "
+                       "so the token becomes readable to anything running as the agent in that HOME. "
+                       "Bridged from git.provision_credentials_at_boot in config.yaml.",
+        "prompt": "Provision per-profile git credentials at boot? (1/true to enable, blank to leave OFF)",
+        "url": None,
+        "password": False,
+        "category": "setting",
+        "advanced": True,
+    },
     "HERMES_PREFILL_MESSAGES_FILE": {
         "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
         "prompt": "Prefill messages file path",

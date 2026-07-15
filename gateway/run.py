@@ -1561,6 +1561,14 @@ if _config_path.exists():
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)
+        # Bridge git config → env vars. provision_credentials_at_boot gates the
+        # boot-time git-credential provisioning (container_boot.main). Mirrors
+        # the terminal.home_mode → TERMINAL_HOME_MODE precedent above.
+        _git_cfg = _cfg.get("git", {})
+        if isinstance(_git_cfg, dict) and "provision_credentials_at_boot" in _git_cfg:
+            os.environ["HERMES_GIT_CREDENTIALS_BOOT"] = (
+                "1" if _git_cfg["provision_credentials_at_boot"] else "0"
+            )
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,

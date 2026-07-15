@@ -905,9 +905,16 @@ class SlackAdapter(BasePlatformAdapter):
         # sees (DM channel IDs are per-user), so it must be bounded on busy
         # multi-workspace installs. Eviction is safe: entries are re-learned
         # from the next event on that channel, and _get_client falls back to
-        # the primary client meanwhile.
+        # the primary client meanwhile. Entries exist only while a channel id
+        # maps to exactly one workspace (see _remember_channel_team);
+        # explicit outbound metadata remains the authoritative route.
         self._channel_team: Dict[str, str] = {}
         self._CHANNEL_TEAM_MAX = 10000
+        # channel_id → every team_id that has claimed it. Slack channel ids
+        # are workspace-local, so the same id CAN appear in two workspaces —
+        # when that happens the unqualified fallback is ambiguous and must be
+        # dropped rather than silently routed to whichever team wrote last.
+        self._channel_teams: Dict[str, set] = {}
         # user target (team_id:user_id) → opened DM conversation ID (D...)
         self._dm_conversation_cache: Dict[str, str] = {}
         self._DM_CONVERSATION_CACHE_MAX = 5000
@@ -925,12 +932,13 @@ class SlackAdapter(BasePlatformAdapter):
         self._PROCESSED_MESSAGE_TS_MAX = 5000
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons. Bounded: an approval prompt the
-        # user never clicks would otherwise leak its entry forever.
-        self._approval_resolved: Dict[str, bool] = {}
+        # user never clicks would otherwise leak its entry forever. Keys may
+        # be workspace-scoped markers (team_id, ts) in multi-workspace mode.
+        self._approval_resolved: Dict[Any, bool] = {}
         self._APPROVAL_RESOLVED_MAX = 1000
         # Same guard for clarify prompts (interactive multiple-choice
         # buttons); mirrors _approval_resolved.
-        self._clarify_resolved: Dict[str, bool] = {}
+        self._clarify_resolved: Dict[Any, bool] = {}
         self._CLARIFY_RESOLVED_MAX = 1000
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
@@ -989,9 +997,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._TITLED_ASSISTANT_THREADS_MAX = 5000
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
-        # (channel_id, user_id) to avoid cross-user collisions.
+        # (team_id, channel_id, user_id) to avoid cross-workspace and
+        # cross-user collisions. The two-part form remains readable only for
+        # commands that arrived without a workspace id.
         # Each value: {"response_url": str, "ts": float}
-        self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
         # Socket Mode resilience: track runtime connection state so we can
         # self-heal when Slack silently drops the websocket.
         self._app_token: Optional[str] = None
@@ -1036,8 +1046,15 @@ class SlackAdapter(BasePlatformAdapter):
                 break
 
     @staticmethod
-    def _slack_timestamp_sort_key(ts: str) -> Tuple[int, int, str]:
-        """Return a chronological, deterministic sort key for Slack timestamps."""
+    def _slack_timestamp_sort_key(ts: Any) -> Tuple[int, int, str]:
+        """Return a chronological, deterministic sort key for Slack timestamps.
+
+        Accepts bare ``"seconds.fraction"`` strings and workspace-scoped
+        ``(team_id, ts)`` markers (see ``_workspace_message_marker``) — the
+        embedded ts drives the chronology in both cases.
+        """
+        if isinstance(ts, tuple) and len(ts) == 2:
+            ts = ts[1]
         seconds, _, fraction = str(ts).partition(".")
         try:
             seconds_int = int(seconds)
@@ -1109,11 +1126,27 @@ class SlackAdapter(BasePlatformAdapter):
             entries.discard(entry)
 
     def _remember_channel_team(self, channel_id: str, team_id: str) -> None:
-        """Record which workspace owns *channel_id*, bounded oldest-first."""
+        """Record which workspace owns *channel_id*, bounded oldest-first.
+
+        The unqualified fallback entry exists only while a channel id maps to
+        exactly one workspace: Slack channel ids are workspace-local, so the
+        same id CAN appear in two workspaces — when that happens the fallback
+        is ambiguous and is dropped rather than silently routed to whichever
+        team wrote last. Explicit outbound metadata (team_id) remains the
+        authoritative route.
+        """
         if not channel_id or not team_id:
             return
-        self._channel_team[str(channel_id)] = str(team_id)
+        channel_id = str(channel_id)
+        team_id = str(team_id)
+        teams = self._channel_teams.setdefault(channel_id, set())
+        teams.add(team_id)
+        if len(teams) == 1:
+            self._channel_team[channel_id] = team_id
+        else:
+            self._channel_team.pop(channel_id, None)
         self._trim_oldest_dict_entries(self._channel_team, self._CHANNEL_TEAM_MAX)
+        self._trim_oldest_dict_entries(self._channel_teams, self._CHANNEL_TEAM_MAX)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -1429,17 +1462,20 @@ class SlackAdapter(BasePlatformAdapter):
     def _pop_slash_context(
         self,
         chat_id: str,
+        team_id: str = "",
     ) -> Optional[Dict[str, Any]]:
         """Return and remove the slash-command context for *chat_id*, if fresh.
 
         Contexts older than ``_SLASH_CTX_TTL`` seconds are silently discarded.
 
         Uses the ``_slash_user_id`` ContextVar (set in ``_handle_slash_command``)
-        to match the exact ``(channel_id, user_id)`` key.  This prevents a
-        concurrent slash command from a different user on the same channel from
-        stealing another user's ephemeral context. When the ContextVar is
-        unset (e.g. send() called from a non-slash code path), do not match
-        anything — otherwise normal sends can steal a pending slash reply.
+        to match the exact ``(team_id, channel_id, user_id)`` key. This prevents
+        a concurrent slash command from another user or workspace with the same
+        Slack-local ids from stealing the ephemeral context. The legacy
+        two-part form is used only for commands that arrived without a
+        workspace id. When the ContextVar is unset (e.g. send() called from a
+        non-slash code path), do not match anything — otherwise normal sends
+        can steal a pending slash reply.
         """
         now = time.monotonic()
         # Clean up stale entries on every lookup — dict is small.
@@ -1451,10 +1487,13 @@ class SlackAdapter(BasePlatformAdapter):
         for k in stale_keys:
             self._slash_command_contexts.pop(k, None)
 
-        # Precise match: (channel_id, user_id) from ContextVar.
+        team_id = str(team_id or "")
+
+        # Precise match from ContextVar.
         uid = _slash_user_id.get()
         if uid:
-            return self._slash_command_contexts.pop((chat_id, uid), None)
+            key = (team_id, chat_id, uid) if team_id else (chat_id, uid)
+            return self._slash_command_contexts.pop(key, None)
 
         return None
 
@@ -2234,12 +2273,40 @@ class SlackAdapter(BasePlatformAdapter):
         """Return Slack workspace id from generic or Slack-specific metadata."""
         if not metadata:
             return ""
-        return str(
-            metadata.get("team_id")
-            or metadata.get("team")
-            or metadata.get("slack_team_id")
-            or ""
-        )
+        for key in (
+            "scope_id",
+            "slack_team_id",
+            "team_id",
+            "team",
+            "guild_id",
+            "workspace_id",
+        ):
+            value = metadata.get(key)
+            if value:
+                return str(value)
+        source = metadata.get("source")
+        if isinstance(source, dict):
+            for key in ("scope_id", "slack_team_id", "team_id", "guild_id"):
+                value = source.get(key)
+                if value:
+                    return str(value)
+        elif source is not None:
+            value = getattr(source, "scope_id", None) or getattr(
+                source, "guild_id", None
+            )
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _workspace_event_id(team_id: str, event_id: str) -> str:
+        """Scope Slack's workspace-local event/message ids for deduplication."""
+        return f"{team_id}:{event_id}" if team_id else str(event_id)
+
+    @staticmethod
+    def _workspace_message_marker(team_id: str, message_id: str) -> Any:
+        """Return an in-memory routing marker without changing legacy no-team tests."""
+        return (str(team_id), str(message_id)) if team_id else str(message_id)
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
@@ -2332,12 +2399,13 @@ class SlackAdapter(BasePlatformAdapter):
         )
         thread_ts = None
         try:
+            team_id = self._metadata_team_id(metadata)
             # Check for a pending slash-command context.  When the user ran a
             # native slash command (e.g. /q, /stop, /model), the initial ack
             # already showed an ephemeral "Running /cmd…" message.  If we have
             # a stashed response_url for this channel, replace that ack with
             # the actual command reply ephemerally instead of posting publicly.
-            slash_ctx = self._pop_slash_context(chat_id)
+            slash_ctx = self._pop_slash_context(chat_id, team_id)
             if slash_ctx:
                 ephemeral_result = await self._send_slash_ephemeral(
                     slash_ctx,
@@ -2427,7 +2495,7 @@ class SlackAdapter(BasePlatformAdapter):
 
                 try:
                     last_result = await self._get_client(
-                        chat_id, team_id=self._metadata_team_id(metadata)
+                        chat_id, team_id=team_id
                     ).chat_postMessage(**kwargs)
                 except Exception as e:
                     if kwargs.get("blocks") and self._is_block_payload_rejection(e):
@@ -2438,7 +2506,7 @@ class SlackAdapter(BasePlatformAdapter):
                             e,
                         )
                         last_result = await self._get_client(
-                            chat_id, team_id=self._metadata_team_id(metadata)
+                            chat_id, team_id=team_id
                         ).chat_postMessage(**retry_kwargs)
                     else:
                         raise
@@ -2451,10 +2519,14 @@ class SlackAdapter(BasePlatformAdapter):
             # replies without requiring @mention.
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
-                self._bot_message_ts.add(sent_ts)
+                self._bot_message_ts.add(
+                    self._workspace_message_marker(team_id, sent_ts)
+                )
                 # Also register the thread root so replies-to-my-replies work
                 if thread_ts:
-                    self._bot_message_ts.add(thread_ts)
+                    self._bot_message_ts.add(
+                        self._workspace_message_marker(team_id, thread_ts)
+                    )
                 self._trim_bot_message_timestamps()
 
             return SendResult(
@@ -3039,7 +3111,7 @@ class SlackAdapter(BasePlatformAdapter):
                     initial_comment=caption or "",
                     thread_ts=thread_ts,
                 )
-                self._record_uploaded_file_thread(chat_id, thread_ts)
+                self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                 return SendResult(success=True, raw_response=result)
             except Exception as exc:
                 last_exc = exc
@@ -3175,7 +3247,7 @@ class SlackAdapter(BasePlatformAdapter):
                     initial_comment=initial_comment,
                     thread_ts=thread_ts,
                 )
-                self._record_uploaded_file_thread(chat_id, thread_ts)
+                self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                 _ = result
             except Exception as e:
                 logger.warning(
@@ -3190,12 +3262,18 @@ class SlackAdapter(BasePlatformAdapter):
                 )
 
     def _record_uploaded_file_thread(
-        self, chat_id: str, thread_ts: Optional[str]
+        self,
+        chat_id: str,
+        thread_ts: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Treat successful file uploads as bot participation in a thread."""
         if not thread_ts:
             return
-        self._bot_message_ts.add(thread_ts)
+        team_id = self._metadata_team_id(metadata)
+        self._bot_message_ts.add(
+            self._workspace_message_marker(team_id, thread_ts)
+        )
         self._trim_bot_message_timestamps()
 
     def _is_retryable_upload_error(self, exc: Exception) -> bool:
@@ -3580,13 +3658,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
-        if not ts or ts not in self._reacting_message_ids:
+        team_id = str(getattr(event.source, "scope_id", "") or "")
+        marker = self._workspace_message_marker(team_id, ts) if ts else None
+        if not ts or marker not in self._reacting_message_ids:
             return
         channel_id = getattr(event.source, "chat_id", None)
         if channel_id:
-            await self._add_reaction(
-                channel_id, ts, "eyes", str(getattr(event.source, "scope_id", "") or "")
-            )
+            await self._add_reaction(channel_id, ts, "eyes", team_id)
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
@@ -3595,13 +3673,14 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._reactions_enabled():
             return
         ts = getattr(event, "message_id", None)
-        if not ts or ts not in self._reacting_message_ids:
+        team_id = str(getattr(event.source, "scope_id", "") or "")
+        marker = self._workspace_message_marker(team_id, ts) if ts else None
+        if not ts or marker not in self._reacting_message_ids:
             return
-        self._reacting_message_ids.discard(ts)
+        self._reacting_message_ids.discard(marker)
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
-        team_id = str(getattr(event.source, "scope_id", "") or "")
         await self._remove_reaction(channel_id, ts, "eyes", team_id)
         if outcome == ProcessingOutcome.SUCCESS:
             await self._add_reaction(channel_id, ts, "white_check_mark", team_id)
@@ -3864,7 +3943,7 @@ class SlackAdapter(BasePlatformAdapter):
                 initial_comment=caption or "",
                 thread_ts=thread_ts,
             )
-            self._record_uploaded_file_thread(chat_id, thread_ts)
+            self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
 
             return SendResult(success=True, raw_response=result)
 
@@ -3945,7 +4024,7 @@ class SlackAdapter(BasePlatformAdapter):
                         initial_comment=caption or "",
                         thread_ts=thread_ts,
                     )
-                    self._record_uploaded_file_thread(chat_id, thread_ts)
+                    self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                     return SendResult(success=True, raw_response=result)
                 except Exception as exc:
                     last_exc = exc
@@ -4010,7 +4089,7 @@ class SlackAdapter(BasePlatformAdapter):
                         initial_comment=caption or "",
                         thread_ts=thread_ts,
                     )
-                    self._record_uploaded_file_thread(chat_id, thread_ts)
+                    self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                     return SendResult(success=True, raw_response=result)
                 except Exception as exc:
                     last_exc = exc
@@ -4836,7 +4915,9 @@ class SlackAdapter(BasePlatformAdapter):
         # If it does, _handle_slack_message records the same share ts and this
         # fallback skips instead of duplicating the user turn.
         await asyncio.sleep(0.75)
-        if ts and self._dedup.is_duplicate(ts):
+        if ts and self._dedup.is_duplicate(
+            self._workspace_event_id(team_id, ts)
+        ):
             return
 
         fallback_event = {
@@ -4854,15 +4935,19 @@ class SlackAdapter(BasePlatformAdapter):
             fallback_event["thread_ts"] = thread_ts
         await self._handle_slack_message(fallback_event)
 
-    def _register_mentioned_thread(self, thread_ts: str) -> None:
+    def _register_mentioned_thread(self, thread_ts: str, team_id: str = "") -> None:
         """Record a thread as bot-mentioned so future replies auto-trigger.
 
         Centralizes the bounded-set eviction previously inlined at the
-        mention branch of _handle_slack_message.
+        mention branch of _handle_slack_message. Markers are workspace-scoped
+        (``(team_id, ts)``) when a team id is known so identical thread ts
+        values in two workspaces never wake each other's bot.
         """
         if not thread_ts:
             return
-        self._mentioned_threads.add(thread_ts)
+        self._mentioned_threads.add(
+            self._workspace_message_marker(team_id, thread_ts)
+        )
         self._trim_mentioned_threads()
 
     async def _bot_authored_thread_root(
@@ -4943,9 +5028,19 @@ class SlackAdapter(BasePlatformAdapter):
         """
         if not event_thread_ts:
             return False
-        if is_thread_reply and event_thread_ts in self._bot_message_ts:
+        thread_marker = self._workspace_message_marker(team_id, event_thread_ts)
+        # Check both the workspace-scoped marker and the bare ts: entries
+        # recorded before a team id was learned (or by legacy paths) are bare
+        # strings, and a scoped-vs-bare mismatch must not silence the bot.
+        if is_thread_reply and (
+            thread_marker in self._bot_message_ts
+            or event_thread_ts in self._bot_message_ts
+        ):
             return True
-        if event_thread_ts in self._mentioned_threads:
+        if (
+            thread_marker in self._mentioned_threads
+            or event_thread_ts in self._mentioned_threads
+        ):
             return True
         if is_thread_reply and self._has_active_session_for_thread(
             channel_id=channel_id,
@@ -5044,8 +5139,14 @@ class SlackAdapter(BasePlatformAdapter):
             event = normalized_event
 
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
+        # Scope the dedup id by workspace: Slack event ts values are only
+        # unique within one workspace, so two teams' events with the same ts
+        # must not suppress each other.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
-        if event_ts and self._dedup.is_duplicate(event_ts):
+        dedup_team_id = self._event_team_id(event, payload)
+        if event_ts and self._dedup.is_duplicate(
+            self._workspace_event_id(dedup_team_id, event_ts)
+        ):
             return
 
         # Bot/app-authored message filtering (SLACK_ALLOW_BOTS / config
@@ -5494,7 +5595,7 @@ class SlackAdapter(BasePlatformAdapter):
                 and not self._slack_strict_mention()
                 and not self._slack_thread_require_mention()
             ):
-                self._register_mentioned_thread(thread_ts)
+                self._register_mentioned_thread(thread_ts, team_id=team_id)
 
         # Thread context rules:
         # - First message in a thread session (cold start): hydrate full
@@ -6040,9 +6141,12 @@ class SlackAdapter(BasePlatformAdapter):
         # be @mentioned to earn a reaction — same as any channel.
         _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
-            self._reacting_message_ids.add(ts)
+            self._reacting_message_ids.add(
+                self._workspace_message_marker(team_id, ts)
+            )
             if len(self._reacting_message_ids) > self._REACTING_MESSAGE_IDS_MAX:
-                # Entries are bare Slack message ts values — evict oldest first.
+                # Entries embed a Slack message ts (bare or workspace-scoped
+                # tuple) — evict oldest first by the embedded ts.
                 self._discard_oldest_slack_timestamps(
                     self._reacting_message_ids,
                     len(self._reacting_message_ids)
@@ -6171,7 +6275,10 @@ class SlackAdapter(BasePlatformAdapter):
             ).chat_postMessage(**kwargs)
             msg_ts = result.get("ts", "")
             if msg_ts:
-                self._approval_resolved[msg_ts] = False
+                team_id = self._metadata_team_id(metadata)
+                self._approval_resolved[
+                    self._workspace_message_marker(team_id, msg_ts)
+                ] = False
                 self._trim_oldest_dict_entries(
                     self._approval_resolved, self._APPROVAL_RESOLVED_MAX
                 )
@@ -6624,7 +6731,14 @@ class SlackAdapter(BasePlatformAdapter):
         choice = choice_map.get(action_id, "deny")
 
         # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
-        if self._approval_resolved.pop(msg_ts, True):
+        # Check both the workspace-scoped marker and the bare ts: the approval
+        # may have been stored without a team id (metadata-poor send path)
+        # while the click event carries one, and that mismatch must not
+        # swallow a legitimate first click.
+        approval_key = self._workspace_message_marker(team_id, msg_ts)
+        if msg_ts in self._approval_resolved:
+            approval_key = msg_ts
+        if self._approval_resolved.pop(approval_key, True):
             return
 
         # Resolve the approval FIRST — this unblocks the agent thread. Render
@@ -7462,7 +7576,12 @@ class SlackAdapter(BasePlatformAdapter):
         # the whole channel can see the agent's answer.
         response_url = command.get("response_url", "")
         if response_url and user_id and channel_id and text.startswith("/"):
-            self._slash_command_contexts[(channel_id, user_id)] = {
+            context_key = (
+                (str(team_id), str(channel_id), str(user_id))
+                if team_id
+                else (str(channel_id), str(user_id))
+            )
+            self._slash_command_contexts[context_key] = {
                 "response_url": response_url,
                 # Kept for the chat.postEphemeral fallback when response_url
                 # delivery fails — postEphemeral needs an explicit user.

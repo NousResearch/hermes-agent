@@ -813,8 +813,7 @@ Use local evidence first only long enough to name the symptom and component
 repo for matching issues and PRs:
 
 ```bash
-cd ~/.hermes/hermes-agent
-repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo NousResearch/hermes-agent)"
+repo="NousResearch/hermes-agent"
 
 gh issue list --repo "$repo" --state all \
   --search '<component symptom keywords>' \

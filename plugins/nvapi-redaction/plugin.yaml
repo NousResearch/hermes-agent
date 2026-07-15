@@ -1,4 +1,0 @@
-name: nvapi-redaction
-version: 1.0.0
-description: "Redact NVIDIA API keys (nvapi-...) from logs, terminal output, and transport errors. Reference implementation for the register_redaction_patterns plugin interface."
-author: "NousResearch (interface demo)"

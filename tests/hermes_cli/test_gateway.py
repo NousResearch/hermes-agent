@@ -295,6 +295,13 @@ def test_running_under_gateway_supervisor_markers(monkeypatch):
     monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
     assert gateway._running_under_gateway_supervisor() is True
 
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    monkeypatch.setenv("HERMES_RCD_SUPERVISED_CHILD", "1")
+    assert gateway._running_under_gateway_supervisor() is True
+
+    monkeypatch.delenv("HERMES_RCD_SUPERVISED_CHILD", raising=False)
+    assert gateway._running_under_gateway_supervisor() is False
+
 
 def test_gateway_run_force_flag_survives_parser_extraction():
     from hermes_cli.subcommands.gateway import build_gateway_parser

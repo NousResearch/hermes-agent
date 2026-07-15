@@ -55,16 +55,16 @@ def _clear_cache():
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
     mod._copilot_context_failed_time = 0.0
-    mod._copilot_reasoning_catalog_cache = None
-    mod._copilot_reasoning_catalog_cache_time = 0.0
-    mod._copilot_reasoning_catalog_failed_time = 0.0
+    mod._copilot_reasoning_catalog_cache = {}
+    mod._copilot_reasoning_catalog_cache_time = {}
+    mod._copilot_reasoning_catalog_failed_time = {}
     yield
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
     mod._copilot_context_failed_time = 0.0
-    mod._copilot_reasoning_catalog_cache = None
-    mod._copilot_reasoning_catalog_cache_time = 0.0
-    mod._copilot_reasoning_catalog_failed_time = 0.0
+    mod._copilot_reasoning_catalog_cache = {}
+    mod._copilot_reasoning_catalog_cache_time = {}
+    mod._copilot_reasoning_catalog_failed_time = {}
 
 
 class TestGetCopilotModelContext:
@@ -231,7 +231,7 @@ class TestGetCopilotReasoningEfforts:
         get_copilot_reasoning_efforts("claude-opus-4.8")
         assert mock_fetch.call_count == 1
 
-        mod._copilot_reasoning_catalog_cache_time = time.time() - 7200
+        mod._copilot_reasoning_catalog_cache_time["__no_api_key__"] = time.time() - 7200
         get_copilot_reasoning_efforts("claude-opus-4.8")
         assert mock_fetch.call_count == 2
 
@@ -263,7 +263,7 @@ class TestGetCopilotReasoningEfforts:
         get_copilot_reasoning_efforts("claude-opus-4.8")
         assert mock_fetch.call_count == 1
         # Expire the negative window: a retry is allowed.
-        mod._copilot_reasoning_catalog_failed_time = time.time() - 120
+        mod._copilot_reasoning_catalog_failed_time["__no_api_key__"] = time.time() - 120
         get_copilot_reasoning_efforts("claude-opus-4.8")
         assert mock_fetch.call_count == 2
 
@@ -278,7 +278,7 @@ class TestGetCopilotReasoningEfforts:
         # After the window expires the catalog comes back; a successful fetch
         # must clear the negative-cache timestamp so later lookups serve from the
         # positive cache without re-fetching.
-        mod._copilot_reasoning_catalog_failed_time = time.time() - 120
+        mod._copilot_reasoning_catalog_failed_time["__no_api_key__"] = time.time() - 120
         mock_fetch.return_value = _REASONING_CATALOG
         assert get_copilot_reasoning_efforts("claude-opus-4.8") == [
             "low",
@@ -287,7 +287,68 @@ class TestGetCopilotReasoningEfforts:
             "max",
         ]
         assert mock_fetch.call_count == 2
-        assert mod._copilot_reasoning_catalog_failed_time == 0.0
+        assert mod._copilot_reasoning_catalog_failed_time.get("__no_api_key__") in (None, 0.0)
         # Subsequent lookups are served from the fresh positive cache.
         get_copilot_reasoning_efforts("claude-sonnet-4.6")
+        assert mock_fetch.call_count == 2
+
+
+class TestGetCopilotReasoningEffortsMultiAccount:
+    """Regression for the multi-credential cache-leak fix (teknium1 review, PR #51953).
+
+    ``fetch_github_model_catalog(api_key=...)`` returns an ACCOUNT-SPECIFIC
+    catalog. Before the fix, the cache was a single unkeyed module global, so
+    a second Copilot credential inherited the first account's reasoning
+    capability list for the full TTL instead of fetching its own.
+    """
+
+    @patch("hermes_cli.models.fetch_github_model_catalog")
+    def test_different_api_keys_get_different_cached_reasoning_lists(self, mock_fetch):
+        account_a_catalog = [
+            {
+                "id": "claude-opus-4.8",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low", "medium", "high", "max"]},
+                },
+            },
+        ]
+        account_b_catalog = [
+            {
+                "id": "claude-opus-4.8",
+                "capabilities": {
+                    "type": "chat",
+                    "supports": {"reasoning_effort": ["low"]},
+                },
+            },
+        ]
+
+        def _fake_fetch(api_key=None, **kwargs):
+            if api_key == "token-account-a":
+                return account_a_catalog
+            if api_key == "token-account-b":
+                return account_b_catalog
+            return None
+
+        mock_fetch.side_effect = _fake_fetch
+
+        result_a = get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-a")
+        result_b = get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-b")
+
+        # The core bug: account B must NOT inherit account A's cached catalog.
+        assert result_a == ["low", "medium", "high", "max"]
+        assert result_b == ["low"]
+        assert result_a != result_b
+        # Each credential triggered its own fetch — no cross-account cache hit.
+        assert mock_fetch.call_count == 2
+
+        # Re-querying either account within the TTL is served from its own
+        # cache entry, not the other account's, and does not re-fetch.
+        assert get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-a") == [
+            "low",
+            "medium",
+            "high",
+            "max",
+        ]
+        assert get_copilot_reasoning_efforts("claude-opus-4.8", api_key="token-account-b") == ["low"]
         assert mock_fetch.call_count == 2

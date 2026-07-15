@@ -71,11 +71,13 @@ def _reset_copilot_catalog_cache():
     """
     import hermes_cli.models as mod
 
-    mod._copilot_catalog_cache = None
-    mod._copilot_catalog_cache_time = 0.0
+    mod._copilot_reasoning_catalog_cache = {}
+    mod._copilot_reasoning_catalog_cache_time = {}
+    mod._copilot_reasoning_catalog_failed_time = {}
     yield
-    mod._copilot_catalog_cache = None
-    mod._copilot_catalog_cache_time = 0.0
+    mod._copilot_reasoning_catalog_cache = {}
+    mod._copilot_reasoning_catalog_cache_time = {}
+    mod._copilot_reasoning_catalog_failed_time = {}
 
 
 @pytest.fixture

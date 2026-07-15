@@ -7,6 +7,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.parse
@@ -3458,17 +3459,37 @@ def github_model_reasoning_efforts(
 # it must be supplied to github_model_reasoning_efforts. Caching it in-process
 # for 1 hour avoids an HTTP round-trip on every turn (the reasoning gates below
 # are hit several times per turn).
-_copilot_reasoning_catalog_cache: Optional[list[dict[str, Any]]] = None
-_copilot_reasoning_catalog_cache_time: float = 0.0
-# Negative cache: timestamp of the last *failed* catalog fetch. Without it, a
-# fetch that returns None (offline / auth failure) leaves the positive cache
-# empty, so every call would re-attempt a slow HTTP fetch — and the reasoning
-# gates call this several times per turn, turning one outage into a refetch
-# storm. After a failure we back off for a short window before retrying; a
-# successful fetch clears it.
-_copilot_reasoning_catalog_failed_time: float = 0.0
+#
+# Keyed per-credential: fetch_github_model_catalog(api_key=...) returns an
+# ACCOUNT-SPECIFIC catalog, so a single unkeyed cache would leak one Copilot
+# account's reasoning-capability list to every other credential in this
+# process for the full TTL. The key is a short digest of the api_key, never
+# the secret itself.
+_copilot_reasoning_catalog_cache: dict[str, list[dict[str, Any]]] = {}
+_copilot_reasoning_catalog_cache_time: dict[str, float] = {}
+# Negative cache: timestamp of the last *failed* catalog fetch, per credential.
+# Without it, a fetch that returns None (offline / auth failure) leaves the
+# positive cache empty, so every call would re-attempt a slow HTTP fetch — and
+# the reasoning gates call this several times per turn, turning one outage
+# into a refetch storm. After a failure we back off for a short window before
+# retrying; a successful fetch clears it.
+_copilot_reasoning_catalog_failed_time: dict[str, float] = {}
 _COPILOT_REASONING_CATALOG_CACHE_TTL = 3600  # 1 hour (successful fetch)
 _COPILOT_REASONING_CATALOG_NEGATIVE_TTL = 60  # 60s backoff after a failed fetch
+
+
+def _copilot_credential_cache_key(api_key: Optional[str]) -> str:
+    """Derive a non-secret cache key from a Copilot api_key.
+
+    Never use the raw api_key as a dict key held in process memory longer than
+    necessary for lookups — a short salted digest is enough to distinguish
+    credentials without retaining the secret in a form that's easy to leak via
+    a debugger/heap dump/repr(). Missing api_key gets its own stable bucket.
+    """
+    if not api_key:
+        return "__no_api_key__"
+    digest = hashlib.sha256(f"hermes-copilot-reasoning-cache:{api_key}".encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 def get_copilot_reasoning_efforts(
@@ -3483,35 +3504,40 @@ def get_copilot_reasoning_efforts(
     cache so Claude (and any future catalog-only model) resolves correctly,
     without an HTTP fetch on every call.
 
+    The cache is scoped per-credential (see ``_copilot_credential_cache_key``)
+    so multiple Copilot accounts in the same process don't share reasoning
+    capability lists.
+
     Falls back to the bare resolver (static table) when no catalog is available,
     so behaviour degrades gracefully offline instead of raising.
     """
     global _copilot_reasoning_catalog_cache, _copilot_reasoning_catalog_cache_time
     global _copilot_reasoning_catalog_failed_time
 
+    key = _copilot_credential_cache_key(api_key)
     now = time.time()
-    catalog = _copilot_reasoning_catalog_cache
+    catalog = _copilot_reasoning_catalog_cache.get(key)
     fresh = catalog is not None and (
-        now - _copilot_reasoning_catalog_cache_time
+        now - _copilot_reasoning_catalog_cache_time.get(key, 0.0)
         < _COPILOT_REASONING_CATALOG_CACHE_TTL
     )
     # Negative cache: after a failed fetch, hold off on re-fetching for a short
     # window so the per-turn reasoning gates don't tight-loop on slow HTTP
     # attempts while offline / auth is failing. A successful fetch clears it.
     backing_off = (
-        now - _copilot_reasoning_catalog_failed_time
+        now - _copilot_reasoning_catalog_failed_time.get(key, 0.0)
         < _COPILOT_REASONING_CATALOG_NEGATIVE_TTL
     )
     if not fresh and not backing_off:
         fetched = fetch_github_model_catalog(api_key=api_key)
         if fetched:
             catalog = fetched
-            _copilot_reasoning_catalog_cache = fetched
-            _copilot_reasoning_catalog_cache_time = now
-            _copilot_reasoning_catalog_failed_time = 0.0  # clear backoff
+            _copilot_reasoning_catalog_cache[key] = fetched
+            _copilot_reasoning_catalog_cache_time[key] = now
+            _copilot_reasoning_catalog_failed_time.pop(key, None)  # clear backoff
         else:
-            catalog = _copilot_reasoning_catalog_cache  # keep any stale catalog
-            _copilot_reasoning_catalog_failed_time = now  # start backoff window
+            catalog = _copilot_reasoning_catalog_cache.get(key)  # keep stale catalog
+            _copilot_reasoning_catalog_failed_time[key] = now  # start backoff window
 
     # Pass catalog explicitly: github_model_reasoning_efforts re-fetches when
     # api_key is set but catalog is None, which would defeat this cache.

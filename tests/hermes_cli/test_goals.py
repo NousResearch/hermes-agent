@@ -438,9 +438,12 @@ class TestJudgeParseFailureAutoPause:
             "agent.auxiliary_client.call_llm",
             side_effect=RuntimeError("connection reset"),
         ):
-            verdict, _, parse_failed, _wd, _tf = goals.judge_goal("goal", "response")
+            verdict, _, parse_failed, _wd, transport_failed = goals.judge_goal(
+                "goal", "response"
+            )
         assert verdict == "continue"
         assert parse_failed is False
+        assert transport_failed is True
 
     def test_empty_judge_reply_flagged_as_parse_failure(self):
         """End-to-end: judge returns empty content → parse_failed=True."""
@@ -507,23 +510,43 @@ class TestJudgeParseFailureAutoPause:
             assert d["should_continue"] is True
             assert mgr.state.consecutive_parse_failures == 0
 
-    def test_parse_failure_counter_not_incremented_by_api_errors(self, hermes_home):
-        """API/transport errors must NOT count toward the auto-pause threshold."""
+    def test_transport_failures_do_not_increment_parse_counter(self, hermes_home):
+        """Transport failures use their own counter and a good reply resets both."""
         from hermes_cli import goals
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="parse-fail-sid-3", default_max_turns=20)
         mgr.set("goal")
+        assert mgr.state is not None
 
         with patch.object(
-            goals, "judge_goal", return_value=("continue", "judge error: RuntimeError", False, None, False)
-        ): 
-            for _ in range(5):
+            goals,
+            "judge_goal",
+            return_value=(
+                "continue",
+                "judge error: RuntimeError",
+                False,
+                None,
+                True,
+            ),
+        ):
+            for _ in range(2):
                 d = mgr.evaluate_after_turn("still going")
                 assert d["should_continue"] is True
             assert mgr.state.consecutive_parse_failures == 0
-            assert mgr.state.consecutive_transport_failures == 0
+            assert mgr.state.consecutive_transport_failures == 2
             assert mgr.state.status == "active"
+
+        with patch.object(
+            goals,
+            "judge_goal",
+            return_value=("continue", "making progress", False, None, False),
+        ):
+            d = mgr.evaluate_after_turn("recovered")
+
+        assert d["should_continue"] is True
+        assert mgr.state.consecutive_parse_failures == 0
+        assert mgr.state.consecutive_transport_failures == 0
 
     def test_consecutive_parse_failures_persists_across_goalmanager_reloads(
         self, hermes_home

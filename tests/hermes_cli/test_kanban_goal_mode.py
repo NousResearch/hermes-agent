@@ -181,8 +181,8 @@ def _patch_judge(monkeypatch, verdicts):
 
     def _fake_judge(goal, response, subgoals=None, background_processes=None, **_kw):
         v = seq.pop(0) if seq else "done"
-        # 4-tuple contract: (verdict, reason, parse_failed, wait_directive)
-        return v, f"scripted:{v}", False, None
+        # 5-tuple contract: verdict, reason, parse failure, wait, transport failure.
+        return v, f"scripted:{v}", False, None, False
 
     monkeypatch.setattr(goals, "judge_goal", _fake_judge)
 

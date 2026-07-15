@@ -20,6 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from agent.file_safety import is_project_env_basename
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -1291,11 +1292,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # _media_delivery_denied_paths only covers <hermes-root>/.env, never a
     # user's own project .env. Checked before the cache allowlist so a secret
     # env file is never deliverable regardless of location or delivery mode.
-    try:
-        from agent.file_safety import is_project_env_basename
-    except Exception:
-        is_project_env_basename = None
-    if is_project_env_basename is not None and is_project_env_basename(resolved.name):
+    if is_project_env_basename(resolved.name):
         return None
 
     # Cache / operator allowlist is always honored — these are unconditionally

@@ -14,6 +14,7 @@ import {
   declareDefaultTree,
   dismissTreePane,
   dockPaneBeside,
+  markCollapsePane,
   mirrorLayoutTree,
   paneRootSide,
   registerLayoutResetHandler,
@@ -21,6 +22,7 @@ import {
   registerPaneOpener,
   resetLayoutTree,
   revealTreePane,
+  setPaneCollapsed,
   setTreePaneHidden,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
@@ -412,6 +414,23 @@ function bindPaneVisibility(
   }
 }
 
+// TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
+// the zone to a persistent rail (tab stays) instead of hiding it — the
+// IntelliJ/VS-Code tool-window model. Restore routes back through `open` (rail
+// click / chevron) so ⌃`/the button stay truthful; the tab's ✕ removes it.
+function bindPaneCollapse(
+  paneId: string,
+  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
+  close: () => void,
+  open: () => void
+) {
+  markCollapsePane(paneId)
+  setPaneCollapsed(paneId, !$open.get())
+  $open.listen(isOpen => setPaneCollapsed(paneId, !isOpen))
+  registerPaneCloser(paneId, close)
+  registerPaneOpener(paneId, open)
+}
+
 // SIDES have one source of truth: the TREE. The legacy $panesFlipped flag is
 // DERIVED from where the sessions zone actually sits (TitlebarControls maps
 // its left/right buttons through it), so dragging sessions across — or
@@ -467,9 +486,9 @@ bindPaneVisibility(
   computed([$reviewOpen, $hasWorkspace], (open, workspace) => open && workspace),
   closeReview
 )
-// ⌃` / statusbar toggle — the terminal zone follows takeover instead of
-// being forced on (PTYs stay alive while hidden; see PersistentTerminal).
-bindPaneVisibility(
+// ⌃` / statusbar toggle — the terminal COLLAPSES to a rail (tab stays), not
+// hides; PTYs stay alive while collapsed (see PersistentTerminal).
+bindPaneCollapse(
   'terminal',
   $terminalTakeover,
   () => setTerminalTakeover(false),
@@ -489,7 +508,7 @@ bindPaneVisibility('preview', $previewVisible, closeRightRail)
 // Logs are optional chrome: off by default, toggled from ⌘K, persisted.
 const $logsOpen = persistentAtom('hermes.desktop.logsOpen', false, Codecs.bool)
 
-bindPaneVisibility(
+bindPaneCollapse(
   'logs',
   $logsOpen,
   () => $logsOpen.set(false),

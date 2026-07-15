@@ -34,7 +34,11 @@ import {
   $treeDragging,
   activateTreePane,
   closeTreePane,
+  collapseTreePane,
+  dismissTreePane,
+  isCollapsePane,
   moveTreePane,
+  restoreTreePane,
   SESSION_TILE_DRAG,
   setTreeGroupHeaderHidden,
   splitTreeZone,
@@ -254,6 +258,15 @@ export function TreeGroup({
   // MAIN strands the whole app behind a strip.
   const minimizable = !shown.some(id => paneChrome(paneFor(id)).uncloseable)
 
+  // Tab ✕: a tool panel (terminal/logs) is REMOVED from the layout (comes back
+  // via its toggle); everything else routes through its Close (a session tile
+  // closes the session, a store-bound pane collapses).
+  const closeTab = (paneId: string) => (isCollapsePane(paneId) ? dismissTreePane(paneId) : closeTreePane(paneId))
+
+  // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
+  // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.
+  const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
+
   // Same menu on the header strip and the edit veil — one prop bag.
   const zoneMenu = {
     closable,
@@ -299,7 +312,7 @@ export function TreeGroup({
               // Strip line faces the content the zone collapsed away from.
               railSide === 'right' ? PANE_TAB_STRIP_LINE_LEFT : PANE_TAB_STRIP_LINE_RIGHT
             )}
-            onClick={() => toggleTreeGroupMinimized(node.id, false)}
+            onClick={() => restoreTreePane(activeId)}
             title={t.zones.restore}
           >
             <div
@@ -319,10 +332,9 @@ export function TreeGroup({
                     key={paneId}
                     onClick={event => {
                       event.stopPropagation()
-                      toggleTreeGroupMinimized(node.id, false)
-                      activateTreePane(node.id, paneId)
+                      restoreTreePane(paneId)
                     }}
-                    onClose={closeable ? () => closeTreePane(paneId) : undefined}
+                    onClose={closeable ? () => closeTab(paneId) : undefined}
                     role="tab"
                     side={railSide}
                     vertical
@@ -359,7 +371,7 @@ export function TreeGroup({
               startPaneDrag(
                 activeId,
                 e,
-                () => minimizable && toggleTreeGroupMinimized(node.id, !node.minimized),
+                () => minimizable && toggleCollapse(),
                 undefined,
                 hideHeaderDoubleTap
               )
@@ -383,7 +395,7 @@ export function TreeGroup({
                     aria-selected={isActive}
                     data-tree-tab={paneId}
                     key={paneId}
-                    onClose={closeable ? () => closeTreePane(paneId) : undefined}
+                    onClose={closeable ? () => closeTab(paneId) : undefined}
                     onPointerDown={e =>
                       startPaneDrag(
                         paneId,
@@ -394,7 +406,7 @@ export function TreeGroup({
                           // — overloading the active tab made double-click a
                           // minimize/restore/hide lottery.
                           if (node.minimized) {
-                            toggleTreeGroupMinimized(node.id, false)
+                            restoreTreePane(paneId)
                           }
 
                           activateTreePane(node.id, paneId)
@@ -419,7 +431,7 @@ export function TreeGroup({
               <button
                 aria-label={node.minimized ? t.zones.restore : t.zones.minimize}
                 className="mx-1 grid size-5 shrink-0 place-items-center self-center rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 group-hover/pane-header:opacity-100"
-                onClick={() => toggleTreeGroupMinimized(node.id, !node.minimized)}
+                onClick={toggleCollapse}
                 onPointerDown={e => e.stopPropagation()}
                 type="button"
               >

@@ -171,6 +171,20 @@ export function registerPaneOpener(paneId: string, open: () => void) {
   paneOpeners[paneId] = open
 }
 
+// TOOL PANELS (terminal, logs, …): their toggle COLLAPSES the zone to a rail
+// (tab stays) instead of hiding it, and the tab's ✕ REMOVES it (vs a session
+// tile, whose ✕ closes the session). Membership tells the renderer which
+// semantics a tab gets. See bindPaneCollapse in the controller.
+const collapsePanes = new Set<string>()
+
+export function markCollapsePane(paneId: string) {
+  collapsePanes.add(paneId)
+}
+
+export function isCollapsePane(paneId: string): boolean {
+  return collapsePanes.has(paneId)
+}
+
 const resetHandlers = new Set<() => void>()
 
 /** Run during a layout reset, BEFORE generic adoption — lets an owner
@@ -951,6 +965,67 @@ export function toggleTreeGroupMinimized(groupId: string, minimized: boolean) {
 
   if (tree) {
     commit(setGroupMinimized(tree, groupId, minimized))
+  }
+}
+
+/** The group hosting `paneId`, or null. */
+function paneGroup(paneId: string) {
+  const tree = $layoutTree.get()
+
+  return tree ? findGroupOfPane(tree, paneId) : null
+}
+
+/** Collapse/restore a pane's ZONE to a minimized rail — its tab stays visible.
+ *  Store-driven (one-way): a tool panel's $open store mirrors here via
+ *  bindPaneCollapse, so a toggle collapses rather than hides. */
+export function setPaneCollapsed(paneId: string, collapsed: boolean) {
+  const group = paneGroup(paneId)
+
+  if (group && Boolean(group.minimized) !== collapsed) {
+    toggleTreeGroupMinimized(group.id, collapsed)
+
+    if (!collapsed) {
+      revealTreePane(paneId)
+    }
+  }
+}
+
+/** Restore a minimized tool pane the truthful way — through its store opener
+ *  when bound (keeps ⌃`/titlebar toggles in sync), else just un-minimize +
+ *  front. Used by the rail (tab / whole-rail click) and the header chevron. */
+export function restoreTreePane(paneId: string) {
+  const open = paneOpeners[paneId]
+
+  if (open) {
+    open()
+
+    return
+  }
+
+  const group = paneGroup(paneId)
+
+  if (group) {
+    toggleTreeGroupMinimized(group.id, false)
+    activateTreePane(group.id, paneId)
+  }
+}
+
+/** Collapse a tool pane through its store closer (truthful), else minimize the
+ *  zone directly. Gated on isCollapsePane so a non-tool pane's closer (a tile's
+ *  REMOVES it) is never mistaken for a collapse. */
+export function collapseTreePane(paneId: string) {
+  const close = paneClosers[paneId]
+
+  if (isCollapsePane(paneId) && close) {
+    close()
+
+    return
+  }
+
+  const group = paneGroup(paneId)
+
+  if (group) {
+    toggleTreeGroupMinimized(group.id, true)
   }
 }
 

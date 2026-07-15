@@ -1265,3 +1265,179 @@ def test_reference_messages_drops_whitespace_only_string_user_turn():
     assert view[0] == {"role": "assistant", "content": "a"}
     assert view[-1] == {"role": "user", "content": "real"}
     assert all(str(m["content"]).strip() for m in view)
+
+
+def test_reference_filtering_preserves_accounting_triples():
+    from agent.moa_loop import (
+        _RefAccounting,
+        _failed_reference_labels,
+        _successful_references,
+    )
+    from agent.usage_pricing import CanonicalUsage
+
+    good_accounting = _RefAccounting(CanonicalUsage(input_tokens=7), 0.07)
+    failed_accounting = _RefAccounting(CanonicalUsage(input_tokens=5), 0.05)
+    outputs = [
+        ("good-model", "useful advice", good_accounting),
+        ("bad-model", "[failed: raw provider secret]", failed_accounting),
+    ]
+
+    successful = _successful_references(outputs)
+    assert successful == [outputs[0]]
+    assert successful[0][2] is good_accounting
+    assert _failed_reference_labels(outputs) == ["bad-model"]
+
+
+def test_aggregate_moa_context_sanitizes_failed_reference_and_forwards_timeout(monkeypatch):
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    outputs = [
+        ("good-model", "useful advice", moa_loop._RefAccounting(CanonicalUsage())),
+        (
+            "bad-model",
+            "[failed: HTTP 401 key=super-secret]",
+            moa_loop._RefAccounting(CanonicalUsage()),
+        ),
+    ]
+    fanout_kwargs = {}
+    aggregator_calls = []
+
+    def fake_fanout(*args, **kwargs):
+        fanout_kwargs.update(kwargs)
+        return outputs
+
+    def fake_call_llm(**kwargs):
+        aggregator_calls.append(kwargs)
+        return _response("synthesized guidance")
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    result = moa_loop.aggregate_moa_context(
+        user_prompt="review this",
+        api_messages=[{"role": "user", "content": "review this"}],
+        reference_models=[
+            {"provider": "openrouter", "model": "good-model"},
+            {"provider": "openrouter", "model": "bad-model"},
+        ],
+        aggregator={"provider": "openrouter", "model": "aggregator"},
+        reference_timeout=17.5,
+        degraded_reference_policy="loud",
+    )
+
+    assert fanout_kwargs["reference_timeout"] == 17.5
+    private_prompt = aggregator_calls[0]["messages"][0]["content"]
+    assert "useful advice" in private_prompt
+    assert "super-secret" not in private_prompt
+    assert "Reference models unavailable: bad-model" in private_prompt
+    assert "super-secret" not in result
+
+
+def test_moa_facade_sanitizes_failures_without_breaking_accounting(monkeypatch, tmp_path):
+    from agent import moa_loop
+    from agent.usage_pricing import CanonicalUsage
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        """
+moa:
+  default_preset: review
+  presets:
+    review:
+      reference_timeout: 19
+      degraded_reference_policy: silent
+      reference_models:
+        - provider: openrouter
+          model: good-model
+        - provider: openrouter
+          model: bad-model
+      aggregator:
+        provider: openrouter
+        model: aggregator
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    outputs = [
+        (
+            "good-model",
+            "useful advice",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=7), 0.07),
+        ),
+        (
+            "bad-model",
+            "[failed: HTTP 401 key=super-secret]",
+            moa_loop._RefAccounting(CanonicalUsage(input_tokens=5), 0.05),
+        ),
+    ]
+    fanout_kwargs = {}
+    aggregator_calls = []
+
+    def fake_fanout(*args, **kwargs):
+        fanout_kwargs.update(kwargs)
+        return outputs
+
+    def fake_call_llm(**kwargs):
+        aggregator_calls.append(kwargs)
+        return _response("aggregator acted")
+
+    monkeypatch.setattr(moa_loop, "_run_references_parallel", fake_fanout)
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": slot["provider"], "model": slot["model"]},
+    )
+
+    facade = moa_loop.MoAChatCompletions("review")
+    facade.create(messages=[{"role": "user", "content": "review this"}], tools=[])
+
+    assert fanout_kwargs["reference_timeout"] == 19.0
+    private_prompt = str(aggregator_calls[0]["messages"])
+    assert "useful advice" in private_prompt
+    assert "super-secret" not in private_prompt
+    assert "Reference models unavailable" not in private_prompt
+    usage, cost = facade.consume_reference_usage()
+    assert usage.input_tokens == 12
+    assert cost == pytest.approx(0.12)
+    assert facade._pending_trace["reference_outputs"] == outputs
+
+
+def test_run_reference_forwards_configured_timeout(monkeypatch):
+    from agent import moa_loop
+
+    calls = []
+
+    def fake_call_llm(**kwargs):
+        calls.append(kwargs)
+        return _response("advice")
+
+    monkeypatch.setattr(moa_loop, "call_llm", fake_call_llm)
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": "openrouter", "model": slot["model"]},
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *args, **kwargs: SimpleNamespace(
+            amount_usd=None, status="unavailable", source=None
+        ),
+    )
+
+    label, text, accounting = moa_loop._run_reference(
+        {"provider": "openrouter", "model": "advisor"},
+        [{"role": "user", "content": "review"}],
+        reference_timeout=23.5,
+    )
+
+    assert (label, text) == ("openrouter:advisor", "advice")
+    assert calls[0]["timeout"] == 23.5
+    assert isinstance(accounting, moa_loop._RefAccounting)

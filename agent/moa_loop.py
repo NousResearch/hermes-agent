@@ -267,8 +267,9 @@ def _run_reference(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    reference_timeout: float = 30.0,
 ) -> tuple[str, str, Any]:
-    """Call one reference model and return ``(label, text, usage)``.
+    """Call one reference model and return ``(label, text, accounting)``.
 
     The slot is resolved to its provider's real runtime (via ``_slot_runtime``)
     and called through the same ``call_llm`` request-building path any model
@@ -319,6 +320,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            timeout=reference_timeout,
             reasoning_config=_slot_reasoning_config(slot),
             **runtime,
         )
@@ -384,6 +386,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    reference_timeout: float = 30.0,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -393,8 +396,8 @@ def _run_references_parallel(
     ``Reference {idx}`` labelling stays stable. MoA presets that reference
     another MoA preset are skipped here (recursion guard) with a labelled note.
 
-    Each element is ``(label, text, usage)`` where usage is a
-    ``CanonicalUsage`` (zeroed for skipped/failed references).
+    Each element is ``(label, text, accounting)`` where accounting is a
+    ``_RefAccounting`` object (zeroed for skipped/failed references).
     """
     from agent.usage_pricing import CanonicalUsage
 
@@ -426,6 +429,7 @@ def _run_references_parallel(
                     ref_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    reference_timeout=reference_timeout,
                 )
             ] = idx
         # Collect every reference before returning — the aggregator needs the
@@ -660,6 +664,30 @@ def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
         return None
 
 
+def _is_failed_reference(text: str) -> bool:
+    """Return whether a reference output is the internal failure sentinel."""
+    return text.lstrip().lower().startswith("[failed:")
+
+
+def _successful_references(
+    reference_outputs: list[tuple[str, str, Any]],
+) -> list[tuple[str, str, Any]]:
+    """Filter failed advice while preserving each accounting payload."""
+    return [output for output in reference_outputs if not _is_failed_reference(output[1])]
+
+
+def _failed_reference_labels(
+    reference_outputs: list[tuple[str, str, Any]],
+) -> list[str]:
+    return [label for label, text, _accounting in reference_outputs if _is_failed_reference(text)]
+
+
+def _degraded_notice(failed_labels: list[str], policy: str) -> str:
+    if not failed_labels or policy.strip().lower() == "silent":
+        return ""
+    return f"[Reference models unavailable: {', '.join(failed_labels)}]"
+
+
 def aggregate_moa_context(
     *,
     user_prompt: str,
@@ -669,6 +697,8 @@ def aggregate_moa_context(
     temperature: float | None = None,
     aggregator_temperature: float | None = None,
     max_tokens: int | None = None,
+    reference_timeout: float = 30.0,
+    degraded_reference_policy: str = "loud",
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
@@ -693,12 +723,18 @@ def aggregate_moa_context(
         ref_messages,
         temperature=temperature,
         max_tokens=max_tokens,
+        reference_timeout=reference_timeout,
     )
 
+    successful_outputs = _successful_references(reference_outputs)
+    failed_labels = _failed_reference_labels(reference_outputs)
     joined = "\n\n".join(
         f"Reference {idx} — {label}:\n{text}"
-        for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
+        for idx, (label, text, _accounting) in enumerate(successful_outputs, start=1)
     )
+    degraded = _degraded_notice(failed_labels, degraded_reference_policy)
+    if degraded:
+        joined = f"{joined}\n\n{degraded}" if joined else degraded
     synth_prompt = (
         "You are the aggregator in a Mixture of Agents process. Synthesize the "
         "reference responses into concise, actionable guidance for the main "
@@ -936,6 +972,10 @@ class MoAChatCompletions:
         # explicit values. See _preset_temperature.
         temperature = _preset_temperature(preset, "reference_temperature")
         aggregator_temperature = _preset_temperature(preset, "aggregator_temperature")
+        reference_timeout = float(preset.get("reference_timeout") or 30.0)
+        degraded_reference_policy = str(
+            preset.get("degraded_reference_policy") or "loud"
+        )
         if aggregator_temperature is None and api_kwargs.get("temperature") is not None:
             # The acting agent's own configured temperature (if any) still
             # applies to the aggregator, which IS the acting model.
@@ -1010,6 +1050,7 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
+                reference_timeout=reference_timeout,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -1050,7 +1091,7 @@ class MoAChatCompletions:
             # visible rather than a silent pause. Best-effort: never blocks the
             # turn.
             _ref_count = len(reference_outputs)
-            for _idx, (_label, _text, _usage) in enumerate(reference_outputs, start=1):
+            for _idx, (_label, _text, _accounting) in enumerate(reference_outputs, start=1):
                 self._emit(
                     "moa.reference",
                     index=_idx,
@@ -1066,11 +1107,18 @@ class MoAChatCompletions:
                 )
 
         agg_messages = [dict(m) for m in messages]
-        if reference_outputs:
-            joined = "\n\n".join(
-                f"Reference {idx} — {label}:\n{text}"
-                for idx, (label, text, _usage) in enumerate(reference_outputs, start=1)
+        successful_outputs = _successful_references(reference_outputs)
+        failed_labels = _failed_reference_labels(reference_outputs)
+        joined = "\n\n".join(
+            f"Reference {idx} — {label}:\n{text}"
+            for idx, (label, text, _accounting) in enumerate(
+                successful_outputs, start=1
             )
+        )
+        degraded = _degraded_notice(failed_labels, degraded_reference_policy)
+        if degraded:
+            joined = f"{joined}\n\n{degraded}" if joined else degraded
+        if joined:
             guidance = (
                 "[Mixture of Agents reference context]\n"
                 f"Preset: {self.preset_name}\n"

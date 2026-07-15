@@ -461,3 +461,29 @@ def test_validate_moa_payload_rejects_non_dict():
     assert validate_moa_payload(None)
     assert validate_moa_payload([1, 2])
     assert validate_moa_payload({"presets": {"p": "not-a-dict"}})
+
+
+def test_reference_failure_controls_are_normalized_per_preset_and_flattened():
+    cfg = normalize_moa_config(
+        _preset(reference_timeout="120.5", degraded_reference_policy="silent")
+    )
+
+    preset = cfg["presets"]["p"]
+    assert preset["reference_timeout"] == 120.5
+    assert preset["degraded_reference_policy"] == "silent"
+    assert cfg["reference_timeout"] == 120.5
+    assert cfg["degraded_reference_policy"] == "silent"
+
+
+@pytest.mark.parametrize("value", [None, "", 0, -1, "bad"])
+def test_reference_timeout_invalid_values_fall_back_to_default(value):
+    assert resolve_moa_preset(_preset(reference_timeout=value), "p")["reference_timeout"] == 30.0
+
+
+def test_reference_timeout_is_capped_and_unknown_policy_is_loud():
+    preset = resolve_moa_preset(
+        _preset(reference_timeout=9999, degraded_reference_policy="wat"), "p"
+    )
+
+    assert preset["reference_timeout"] == 300.0
+    assert preset["degraded_reference_policy"] == "loud"

@@ -922,6 +922,10 @@ def run_conversation(
                     temperature=_preset_temperature(moa_config, "reference_temperature"),
                     aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
                     max_tokens=moa_config.get("reference_max_tokens"),
+                    reference_timeout=float(moa_config.get("reference_timeout") or 30.0),
+                    degraded_reference_policy=str(
+                        moa_config.get("degraded_reference_policy") or "loud"
+                    ),
                 )
                 if _moa_context:
                     for _msg in reversed(api_messages):

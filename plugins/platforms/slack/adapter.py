@@ -745,6 +745,11 @@ class SlackAdapter(BasePlatformAdapter):
         # produce a second reply. max_size bounds memory, so the long window
         # is safe.
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
+        # Original Slack message timestamps that were routed into the agent.
+        # Used to avoid duplicate responses when an already-addressed message
+        # is later edited.
+        self._processed_message_ts: Dict[str, float] = {}
+        self._PROCESSED_MESSAGE_TS_MAX = 5000
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons. Bounded: an approval prompt the
         # user never clicks would otherwise leak its entry forever.
@@ -4105,8 +4110,35 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
         """Handle an incoming Slack message event."""
+        if event.get("subtype") == "message_changed":
+            updated_message = event.get("message")
+            if not isinstance(updated_message, dict):
+                return
+
+            original_message_ts = str(updated_message.get("ts") or "")
+            if original_message_ts and original_message_ts in self._processed_message_ts:
+                return
+            edited = updated_message.get("edited")
+            edited_ts = ""
+            if isinstance(edited, dict):
+                edited_ts = str(edited.get("ts") or "")
+            outer_event_ts = str(event.get("ts") or "")
+            changed_event_ts = str(event.get("event_ts") or edited_ts or "")
+            if not changed_event_ts and outer_event_ts and outer_event_ts != original_message_ts:
+                changed_event_ts = outer_event_ts
+            if not changed_event_ts and original_message_ts:
+                changed_event_ts = f"{original_message_ts}:changed"
+
+            normalized_event = dict(updated_message)
+            for key in ("channel", "channel_type", "team", "team_id"):
+                if not normalized_event.get(key) and event.get(key):
+                    normalized_event[key] = event.get(key)
+            if changed_event_ts:
+                normalized_event["_slack_changed_event_ts"] = changed_event_ts
+            event = normalized_event
+
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
-        event_ts = event.get("ts", "")
+        event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
             return
 
@@ -4151,9 +4183,10 @@ class SlackAdapter(BasePlatformAdapter):
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
 
-        # Ignore message edits and deletions
+        # Ignore message deletions. Edits are normalized above so an @mention
+        # added by edit can still wake the bot once.
         subtype = event.get("subtype")
-        if subtype in {"message_changed", "message_deleted"}:
+        if subtype == "message_deleted":
             return
 
         original_text = event.get("text", "")
@@ -4997,6 +5030,15 @@ class SlackAdapter(BasePlatformAdapter):
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}"
             )
+
+        if ts:
+            self._processed_message_ts[ts] = time.time()
+            if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
+                newest_items = sorted(
+                    self._processed_message_ts.items(),
+                    key=lambda item: item[1],
+                )[-self._PROCESSED_MESSAGE_TS_MAX :]
+                self._processed_message_ts = dict(newest_items)
 
         await self.handle_message(msg_event)
 

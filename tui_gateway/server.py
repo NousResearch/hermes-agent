@@ -8648,7 +8648,13 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
         return True
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
-        return False
+        # Fall back to parent_session_id for CLI/Desktop sessions where the
+        # session_key ContextVar may not be bound at dispatch time — the
+        # parent_session_id (the agent's durable state.db session_id) is
+        # always captured and links back to this session's lookup key.
+        evt_key = str(evt.get("parent_session_id") or "")
+        if not evt_key:
+            return False
     current_keys = {
         str(session.get("session_key") or ""),
         _session_lookup_key(session, fallback=sid),

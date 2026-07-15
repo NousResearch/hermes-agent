@@ -862,6 +862,32 @@ class TestSaveSessionLogRedactsSecrets:
         # Image part preserved untouched
         assert parts[1]["image_url"]["url"].startswith("data:image")
 
+    def test_scrubs_recall_from_nested_message_payloads(self, agent, tmp_path):
+        from agent.memory_manager import build_memory_context_block
+
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        secret = "SNAPSHOT_RECALL_SECRET"
+        recall = build_memory_context_block(secret)
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Visible response",
+                "reasoning_details": [{"type": "reasoning", "text": recall}],
+                "tool_calls": [
+                    {"function": {"name": "lookup", "arguments": json.dumps({"context": recall})}}
+                ],
+                "codex_message_items": [{"item": {"text": recall}}],
+                "metadata": {"nested": [recall]},
+            },
+        ]
+
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert secret not in snapshot
+        assert "<memory-context>" not in snapshot
+
 
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):

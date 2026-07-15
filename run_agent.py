@@ -2775,6 +2775,7 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
+                msg = sanitize_recall_payload(msg)
                 # Mirror the SQLite flush: ephemeral recovery scaffolding is
                 # internal retry state, never durable transcript content.
                 if _is_ephemeral_scaffolding(msg):

@@ -212,6 +212,157 @@ class TestRunJobScript:
         assert parsed["new_prs"][0]["number"] == 42
 
 
+class TestSplitScriptField:
+    """Platform-aware parsing of the script field into executable + args.
+
+    The Windows branch (``posix=False``) is exercised directly so these
+    regressions run on every host: POSIX shlex rules treat backslashes as
+    escape characters and would mangle native Windows paths.
+    """
+
+    def test_posix_quoting_round_trip(self):
+        import shlex
+
+        from cron.scheduler import _split_script_field
+
+        argv = ["monitors/collect.py", "--msg", "hello world", "--path", "a b/c.txt"]
+        assert _split_script_field(shlex.join(argv), posix=True) == argv
+
+    def test_windows_backslash_path_preserved(self):
+        from cron.scheduler import _split_script_field
+
+        parts = _split_script_field(r"C:\Users\me\collect.py --flag value", posix=False)
+        assert parts == [r"C:\Users\me\collect.py", "--flag", "value"]
+
+    def test_windows_quoted_path_with_spaces(self):
+        """Quoted Windows paths with spaces parse into unquoted usable tokens."""
+        from cron.scheduler import _split_script_field
+
+        field = r'"C:\My Scripts\collect.py" --in "C:\Data Files\a.csv"'
+        parts = _split_script_field(field, posix=False)
+        assert parts == [r"C:\My Scripts\collect.py", "--in", r"C:\Data Files\a.csv"]
+
+    def test_default_mode_follows_platform(self, monkeypatch):
+        """Without an explicit mode the parser keys off os.name (nt = non-POSIX)."""
+        import os as os_mod
+
+        from cron.scheduler import _split_script_field
+
+        field = r"C:\Users\me\collect.py --flag"
+        monkeypatch.setattr(os_mod, "name", "nt")
+        assert _split_script_field(field)[0] == r"C:\Users\me\collect.py"
+        monkeypatch.setattr(os_mod, "name", "posix")
+        # POSIX rules eat the backslashes — exactly why the nt branch exists.
+        assert _split_script_field(field)[0] == "C:Usersmecollect.py"
+
+    def test_unbalanced_quote_falls_back_to_whitespace_split(self):
+        from cron.scheduler import _split_script_field
+
+        parts = _split_script_field('collect.py "unclosed', posix=True)
+        assert parts == ["collect.py", '"unclosed']
+
+
+class TestRunJobScriptArguments:
+    """Argument forwarding: the script field is executable + argv, not a bare path."""
+
+    @pytest.fixture
+    def argecho(self, cron_env):
+        script = cron_env / "scripts" / "argecho.py"
+        script.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+        return script
+
+    def test_python_script_args_forwarded(self, cron_env, argecho):
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("argecho.py --flag value")
+        assert success is True
+        assert json.loads(output) == ["--flag", "value"]
+
+    def test_python_script_quoted_args_round_trip(self, cron_env, argecho):
+        """A quoted argument containing spaces arrives as ONE argv element."""
+        import shlex
+
+        from cron.scheduler import _run_job_script
+
+        field = shlex.join(["argecho.py", "--msg", "hello world", "plain"])
+        success, output = _run_job_script(field)
+        assert success is True
+        assert json.loads(output) == ["--msg", "hello world", "plain"]
+
+    def test_python_script_quoted_executable_with_spaces(self, cron_env):
+        """A quoted script path containing spaces still resolves and runs."""
+        import shlex
+
+        from cron.scheduler import _run_job_script
+
+        subdir = cron_env / "scripts" / "space dir"
+        subdir.mkdir()
+        script = subdir / "arg echo.py"
+        script.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+
+        field = shlex.join(["space dir/arg echo.py", "--tag", "a b"])
+        success, output = _run_job_script(field)
+        assert success is True
+        assert json.loads(output) == ["--tag", "a b"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Shell scripts require bash (Git Bash may be absent on CI)",
+    )
+    def test_shell_script_args_forwarded(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "args.sh"
+        script.write_text('printf "%s\\n" "$@"\n')
+
+        success, output = _run_job_script("args.sh one 'two words'")
+        assert success is True
+        assert output.splitlines() == ["one", "two words"]
+
+    def test_no_args_behaviour_unchanged(self, cron_env, argecho):
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("argecho.py")
+        assert success is True
+        assert json.loads(output) == []
+
+    def test_traversal_with_args_still_blocked(self, cron_env):
+        """Containment applies to the parsed executable when args are present."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("../../etc/passwd --flag value")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_absolute_outside_with_args_blocked(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        outside = cron_env / "outside.py"
+        outside.write_text('print("should not run")\n')
+
+        success, output = _run_job_script(f"{outside} --flag")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_empty_field_fails_cleanly(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("   ")
+        assert success is False
+        assert "empty" in output.lower()
+
+    def test_unbalanced_quotes_do_not_crash(self, cron_env, argecho):
+        """Unbalanced quotes degrade to whitespace splitting, not an exception."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script('argecho.py "unclosed')
+        assert success is True
+        args = json.loads(output)
+        # POSIX forwards the literal '"unclosed'; the Windows branch strips
+        # the stray quote — accept both so the test is platform-portable.
+        assert len(args) == 1 and "unclosed" in args[0]
+
+
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 

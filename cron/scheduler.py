@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2012,6 +2013,35 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _split_script_field(script_field: str, *, posix: bool | None = None) -> list[str]:
+    """Split a job's ``script`` field into executable + arguments, platform-aware.
+
+    POSIX ``shlex`` rules would mangle native Windows paths (backslashes are
+    escape characters: ``C:\\Users\\me\\collect.py`` becomes
+    ``C:Usersmecollect.py``), and this runner explicitly supports native
+    Windows.  Follow the repository idiom (``hermes_cli/mcp_security.py``):
+    ``posix=(os.name != "nt")`` with a whitespace-split fallback on unbalanced
+    quotes.  Non-POSIX mode keeps surrounding quotes on tokens, so strip them
+    afterwards (as ``gateway/status.py`` does when tokenizing cmdlines) —
+    otherwise the executable path never matches a real file and quoted
+    arguments reach the child with literal quote characters.
+
+    Args:
+        script_field: The raw ``script`` value, e.g. ``collect.py --flag "a b"``.
+        posix: Override the parsing mode (used by tests to exercise the
+            Windows branch on any host).  Defaults to the current platform.
+    """
+    if posix is None:
+        posix = os.name != "nt"
+    try:
+        parts = shlex.split(script_field, posix=posix)
+    except ValueError:
+        parts = script_field.split()
+    if not posix:
+        parts = [part.strip("\"'") for part in parts]
+    return parts
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2035,9 +2065,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     (SECURITY.md §2.3), matching terminal and MCP child processes.
 
     Args:
-        script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+        script_path: Path to the script, optionally followed by arguments
+            to forward (``collect.py --flag "a b"``); the field is split
+            platform-aware via ``_split_script_field``.  Relative paths are
+            resolved against HERMES_HOME/scripts/.  Absolute and ~-prefixed
+            paths are also validated to ensure they stay within the scripts
+            dir — containment applies to the parsed executable, arguments
+            never widen it.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2047,7 +2081,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
+    # Split "script.py --arg1 val --arg2" into path + args so arguments
+    # aren't incorrectly treated as part of the filename.  Parsing is
+    # platform-aware so Windows paths with backslashes/spaces survive.
+    parts = _split_script_field(script_path)
+    if not parts:
+        return False, f"Script field is empty: {script_path!r}"
+    raw = Path(parts[0]).expanduser()
+    extra_args = parts[1:]
     if raw.is_absolute():
         path = raw.resolve()
     else:
@@ -2090,9 +2131,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        argv = [_bash, str(path)] + extra_args
     else:
-        argv = [sys.executable, str(path)]
+        argv = [sys.executable, str(path)] + extra_args
 
     try:
         from tools.environments.local import _sanitize_subprocess_env

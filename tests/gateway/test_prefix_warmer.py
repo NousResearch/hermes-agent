@@ -414,10 +414,13 @@ def test_compacted_warm_survives_endpoint_failure(monkeypatch):
 # ------------------------------------------------------------------ config --
 
 def test_config_defaults_off():
+    from hermes_cli.config import DEFAULT_CONFIG
+
     cfg = PrefixWarmerConfig.from_dict({})
     assert cfg.enabled is False
     assert cfg.interval_seconds == 240
     assert GatewayConfig.from_dict({}).prefix_warmer.enabled is False
+    assert DEFAULT_CONFIG["prefix_warmer"] == cfg.to_dict()
 
 
 def test_config_roundtrip_and_coercion():

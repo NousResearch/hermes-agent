@@ -648,6 +648,13 @@ def compress_context(
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})
 
+        # Preserve the exact system message that was used for the captured
+        # outbound prefix. ``system_message`` is normally None; the fully
+        # rendered prompt lives in this cache until invalidation below.
+        old_system_prompt = getattr(agent, "_cached_system_prompt", None)
+        if not old_system_prompt:
+            old_system_prompt = agent._build_system_prompt(system_message)
+
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)
         agent._cached_system_prompt = new_system_prompt
@@ -897,7 +904,11 @@ def compress_context(
         try:
             from hermes_cli.config import load_config_readonly as _load_cfg_ro
 
-            _pw_raw = _load_cfg_ro().get("prefix_warmer") or {}
+            _pw_cfg = _load_cfg_ro()
+            _pw_raw = _pw_cfg.get("prefix_warmer")
+            if not isinstance(_pw_raw, dict):
+                _gateway_cfg = _pw_cfg.get("gateway") or {}
+                _pw_raw = _gateway_cfg.get("prefix_warmer") or {}
             if _pw_raw.get("enabled"):
                 from gateway.config import PrefixWarmerConfig as _PWConfig
                 from gateway.prefix_warmer import warm_compacted_prefix as _warm_compacted
@@ -913,7 +924,7 @@ def compress_context(
                 ]
                 threading.Thread(
                     target=_warm_compacted,
-                    args=(system_message, new_system_prompt, _warm_msgs,
+                    args=(old_system_prompt, new_system_prompt, _warm_msgs,
                           _PWConfig.from_dict(dict(_pw_raw))),
                     name="post-compaction-prefix-warm",
                     daemon=True,

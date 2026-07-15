@@ -49,14 +49,13 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     return agent
 
 
-def _run_compress(agent, monkeypatch, *, warmer_enabled: bool):
+def _run_compress(agent, monkeypatch, *, warmer_enabled: bool, nested: bool = False):
     import gateway.prefix_warmer as pw
     import hermes_cli.config as hcfg
 
-    monkeypatch.setattr(
-        hcfg, "load_config_readonly",
-        lambda: {"prefix_warmer": {"enabled": warmer_enabled}},
-    )
+    warmer = {"enabled": warmer_enabled}
+    config = {"gateway": {"prefix_warmer": warmer}} if nested else {"prefix_warmer": warmer}
+    monkeypatch.setattr(hcfg, "load_config_readonly", lambda: config)
     calls = []
     monkeypatch.setattr(
         pw, "warm_compacted_prefix",
@@ -69,7 +68,7 @@ def _run_compress(agent, monkeypatch, *, warmer_enabled: bool):
         {"role": "user", "content": "q2"},
         {"role": "assistant", "content": "a2"},
     ]
-    agent._compress_context(messages, "OLD SYSTEM PROMPT")
+    agent._compress_context(messages, None)
 
     # The warm fires on a daemon thread; give it a moment.
     deadline = time.time() + 5.0
@@ -83,12 +82,13 @@ def test_compress_fires_background_warm_with_new_prefix(tmp_path: Path, monkeypa
     sid = "POSTWARM_1"
     db.create_session(sid, source="cli")
     agent = _build_agent_with_db(db, sid)
+    agent._cached_system_prompt = "EXACT OUTBOUND SYSTEM PROMPT"
 
     calls = _run_compress(agent, monkeypatch, warmer_enabled=True)
 
     assert len(calls) == 1
     old_system, new_system, warm_msgs, cfg = calls[0]
-    assert old_system == "OLD SYSTEM PROMPT"
+    assert old_system == "EXACT OUTBOUND SYSTEM PROMPT"
     # The new prefix is the rebuilt (non-empty) system prompt.
     assert isinstance(new_system, str) and new_system.strip()
     # The compacted transcript is replayed wire-clean: private bookkeeping
@@ -106,3 +106,16 @@ def test_compress_skips_warm_when_disabled(tmp_path: Path, monkeypatch) -> None:
 
     calls = _run_compress(agent, monkeypatch, warmer_enabled=False)
     assert calls == []
+
+
+def test_compress_accepts_nested_gateway_config(tmp_path: Path, monkeypatch) -> None:
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "POSTWARM_3"
+    db.create_session(sid, source="cli")
+    agent = _build_agent_with_db(db, sid)
+    agent._cached_system_prompt = "CAPTURED PREFIX"
+
+    calls = _run_compress(agent, monkeypatch, warmer_enabled=True, nested=True)
+
+    assert len(calls) == 1
+    assert calls[0][0] == "CAPTURED PREFIX"

@@ -215,6 +215,10 @@ The response includes an `access_token` field — copy it.
 
 **Via token exchange for OIDC SSO setups**
 
+:::note
+These steps only work on homeservers that are compatible with SSO and advertise the `m.login.sso` endpoint when a `GET /_matrix/client/v3/login` request is given
+:::
+
 1. Paste this URL into your browser to authenticate with your SSO provider:
 
 ```plaintext

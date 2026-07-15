@@ -92,6 +92,9 @@ from typing import Any, Iterable, Optional
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
+# HOF-002: project finalization schema (additive, only called on the normal kanban path)
+from hermes_cli.project_finalization_contract import ensure_project_finalization_schema
+
 _log = logging.getLogger(__name__)
 
 
@@ -2528,6 +2531,8 @@ def connect(
                     # stale PRAGMA snapshots during gateway startup.
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
+                    # HOF-002: ensure project finalization tables + migration marker (additive only)
+                    ensure_project_finalization_schema(conn)
                     _INITIALIZED_PATHS.add(resolved)
         except Exception:
             conn.close()

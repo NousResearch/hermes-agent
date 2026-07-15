@@ -2173,15 +2173,38 @@ class TestOAuthSanitizerUrlPreservation:
 
     The OAuth system-prompt sanitizer must NOT rewrite the docs host
     hermes-agent.nousresearch.com when replacing the product-name slug.
+
+    These tests exercise the real production path,
+    ``build_anthropic_kwargs(..., is_oauth=True)``, and assert on the
+    returned ``kwargs["system"]`` rather than reimplementing the sanitizer
+    locally — a local reimplementation could pass even if the live
+    sanitizer in agent/anthropic_adapter.py regressed (see teknium1's
+    review on #48868).
     """
 
-    def _apply_sanitizer(self, text: str) -> str:
-        import re
-        text = text.replace("Hermes Agent", "Claude Code")
-        text = text.replace("Hermes agent", "Claude Code")
-        text = re.sub(r"(?<![:/\w])hermes-agent(?!\.nousresearch\.com)", "claude-code", text)
-        text = text.replace("Nous Research", "Anthropic")
-        return text
+    def _sanitized_system_text(self, prompt: str) -> str:
+        """Run the prompt through the real OAuth path and return the
+        sanitized text block (excluding the prepended Claude Code identity
+        block, which is unrelated to this sanitizer)."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        system = kwargs["system"]
+        assert isinstance(system, list), (
+            "OAuth system prompt should be a list of content blocks"
+        )
+        # First block is the prepended Claude Code identity prefix; the
+        # original (sanitized) prompt is the block after it.
+        assert len(system) >= 2
+        return system[-1]["text"]
 
     def test_docs_url_host_is_preserved(self):
         """hermes-agent.nousresearch.com must survive sanitization intact."""
@@ -2189,7 +2212,7 @@ class TestOAuthSanitizerUrlPreservation:
             "Consult the documentation at "
             "https://hermes-agent.nousresearch.com/docs for details."
         )
-        result = self._apply_sanitizer(prompt)
+        result = self._sanitized_system_text(prompt)
         assert "hermes-agent.nousresearch.com" in result, (
             "Docs URL host was corrupted by the OAuth sanitizer"
         )
@@ -2198,7 +2221,7 @@ class TestOAuthSanitizerUrlPreservation:
     def test_product_name_is_still_replaced(self):
         """Non-URL occurrences of the slug must still be rewritten."""
         prompt = "Welcome to Hermes Agent, powered by Nous Research."
-        result = self._apply_sanitizer(prompt)
+        result = self._sanitized_system_text(prompt)
         assert "Claude Code" in result
         assert "Anthropic" in result
         assert "Hermes Agent" not in result
@@ -2209,7 +2232,7 @@ class TestOAuthSanitizerUrlPreservation:
         prompt = (
             "Hermes Agent help: https://hermes-agent.nousresearch.com/docs"
         )
-        result = self._apply_sanitizer(prompt)
+        result = self._sanitized_system_text(prompt)
         assert "Claude Code" in result
         assert "hermes-agent.nousresearch.com" in result
         assert "claude-code.nousresearch.com" not in result

@@ -40,7 +40,7 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
 
 
-def _build_agent(monkeypatch):
+def _build_agent(monkeypatch, *, platform=None):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(
@@ -51,6 +51,7 @@ def _build_agent(monkeypatch):
         max_iterations=4,
         skip_context_files=True,
         skip_memory=True,
+        platform=platform,
     )
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
@@ -2050,7 +2051,7 @@ def test_interim_commentary_preserves_assistant_content(monkeypatch):
 
 
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):
-    agent = _build_agent(monkeypatch)
+    agent = _build_agent(monkeypatch, platform="whatsapp")
     observed = []
     agent.stream_delta_callback = observed.append
 
@@ -2077,7 +2078,7 @@ def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
     — only a stateful scrubber can.  None of the payload, system-note
     text, or "## Honcho Context" header may reach the delta callback.
     """
-    agent = _build_agent(monkeypatch)
+    agent = _build_agent(monkeypatch, platform="whatsapp")
     observed = []
     agent.stream_delta_callback = observed.append
 

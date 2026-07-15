@@ -16,6 +16,7 @@ compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
@@ -173,6 +174,71 @@ def _record_codex_app_server_usage(agent, turn) -> dict[str, Any]:
     }
 
 
+def _codex_tool_progress(note: dict) -> tuple[str, str, str, dict] | None:
+    """Translate a Codex app-server item notification to Hermes tool progress."""
+    method = note.get("method") or ""
+    if method not in {"item/started", "item/completed"}:
+        return None
+
+    item = (note.get("params") or {}).get("item") or {}
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        args = {
+            "command": item.get("command") or "",
+            "workdir": item.get("cwd") or "",
+        }
+        tool_name = "terminal"
+        preview = args["command"]
+    elif item_type == "fileChange":
+        changes = item.get("changes") or []
+        paths = [change.get("path") for change in changes if isinstance(change, dict) and change.get("path")]
+        args = {"paths": paths}
+        tool_name = "patch"
+        preview = ", ".join(paths[:3])
+    elif item_type == "mcpToolCall":
+        server = item.get("server") or "mcp"
+        tool = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        tool_name = tool if server in {"hermes", "hermes-tools", "hermes_tools"} else f"mcp.{server}.{tool}"
+        preview = json.dumps(args, ensure_ascii=False, sort_keys=True)
+    elif item_type == "dynamicToolCall":
+        tool_name = item.get("tool") or "unknown"
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        preview = json.dumps(args, ensure_ascii=False, sort_keys=True)
+    else:
+        return None
+
+    event_type = "tool.started" if method == "item/started" else "tool.completed"
+    return event_type, tool_name, preview, args
+
+
+def _emit_codex_tool_progress(agent, note: dict) -> None:
+    """Bridge native Codex tools into the callback used by gateway platforms."""
+    callback = getattr(agent, "tool_progress_callback", None)
+    if callback is None:
+        return
+    progress = _codex_tool_progress(note)
+    if progress is None:
+        return
+    event_type, tool_name, preview, args = progress
+    if event_type == "tool.started":
+        callback(event_type, tool_name, preview, args)
+        return
+    status = ((note.get("params") or {}).get("item") or {}).get("status") or ""
+    callback(
+        event_type,
+        tool_name,
+        preview,
+        args,
+        duration=0,
+        is_error=str(status).lower() in {"failed", "error", "declined"},
+    )
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -207,6 +273,13 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            on_event=lambda note: _emit_codex_tool_progress(agent, note),
+        )
+    else:
+        # Gateway display callbacks are rebound per turn on cached agents.
+        # Keep a reused Codex session pointed at the current callback state.
+        agent._codex_session.set_event_callback(
+            lambda note: _emit_codex_tool_progress(agent, note)
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

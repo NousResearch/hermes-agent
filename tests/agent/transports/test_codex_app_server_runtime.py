@@ -104,6 +104,57 @@ class TestMaybeApplyCodexAppServerRuntime:
         )
 
 
+class TestCodexToolProgressBridge:
+    def test_command_start_maps_to_terminal_progress(self) -> None:
+        from types import SimpleNamespace
+
+        from agent.codex_runtime import _emit_codex_tool_progress
+
+        calls = []
+        agent = SimpleNamespace(
+            tool_progress_callback=lambda *args, **kwargs: calls.append((args, kwargs))
+        )
+
+        _emit_codex_tool_progress(
+            agent,
+            {
+                "method": "item/started",
+                "params": {
+                    "item": {
+                        "type": "commandExecution",
+                        "id": "cmd-1",
+                        "command": "pwd",
+                        "cwd": "/tmp",
+                    }
+                },
+            },
+        )
+
+        assert calls == [
+            (("tool.started", "terminal", "pwd", {"command": "pwd", "workdir": "/tmp"}), {})
+        ]
+
+    def test_non_tool_notifications_are_ignored(self) -> None:
+        from types import SimpleNamespace
+
+        from agent.codex_runtime import _emit_codex_tool_progress
+
+        calls = []
+        agent = SimpleNamespace(
+            tool_progress_callback=lambda *args, **kwargs: calls.append((args, kwargs))
+        )
+
+        _emit_codex_tool_progress(
+            agent,
+            {
+                "method": "item/started",
+                "params": {"item": {"type": "agentMessage", "text": "hello"}},
+            },
+        )
+
+        assert calls == []
+
+
 class TestCodexAppServerModule:
     """Module-surface tests for the JSON-RPC speaker. Don't require codex CLI."""
 

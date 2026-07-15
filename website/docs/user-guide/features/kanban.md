@@ -524,7 +524,9 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
-| `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
+| `auto_subscribe_on_create` | `true` | Sole global gate for automatic origin, parent-inherited, and default subscriptions. Explicit per-create targets still work when this is `false`. |
+| `notify_default_targets` | `[]` | Fallback destinations used when automatic policy finds no origin or inherited target. |
+| `notify_inherit_depth` | `1` | Parent levels to inspect: `0` disables inheritance, a positive integer bounds it, and `null` or `"unlimited"` reads all reachable ancestors. |
 
 And the two auxiliary LLM slots:
 
@@ -532,6 +534,30 @@ And the two auxiliary LLM slots:
 |---|---|
 | `auxiliary.kanban_decomposer` | Model that produces the task graph (called by Decompose). Set `provider`/`model` to override the main chat model. |
 | `auxiliary.profile_describer` | Model that auto-generates profile descriptions (called by `hermes profile describe --auto`). |
+
+### Create-time subscription policy {#create-time-subscription-policy}
+
+Every production task creator delegates subscription decisions to the same transaction-aware policy. The policy uses this precedence:
+
+1. Per-create `no_subscribe` suppresses every source
+2. Explicit notification targets replace automatic targets
+3. `kanban.auto_subscribe_on_create: false` stops automatic resolution
+4. A durable gateway or TUI origin contributes its destination
+5. The task inherits subscriptions from its actual parent graph, bounded by `notify_inherit_depth`
+6. Configured defaults apply only when no origin or inherited target exists
+
+Automatic origin and inherited targets can coexist. The default list is a fallback, not an additional broadcast list. Parent traversal is cycle-safe. Decomposed children inspect their persisted sibling-parent graph and never treat the orchestration root as a hidden parent.
+
+Each target requires `platform` and `chat_id`. Optional `thread_id`, `user_id`, and `notifier_profile` values preserve user and delivery ownership. Hermes trims values, normalizes the platform name, and deduplicates by `platform`, `chat_id`, and `thread_id`. When duplicate identities carry different ownership metadata, the first normalized target wins.
+
+Creator-specific rules prevent accidental notification floods:
+
+- Gateway and worker creates can supply an automatic conversation origin
+- Direct CLI creates can use `--notify` or `--no-subscribe`; configured defaults remain automatic
+- Dashboard `POST /tasks` accepts explicit targets and opt-out only; the browser is never an ambient destination
+- Swarm creation applies notification context to the completed root card only, not workers, verifier, or synthesizer
+
+An idempotent create retry returns the existing task before writing create-time subscriptions or task events. Repeated targets and retried creates therefore keep one row per target identity and one original event set.
 
 ### Architecture
 
@@ -567,7 +593,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 |---|---|---|
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
-| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
+| `POST` | `/tasks` | Create (wraps `kanban_db.create_task`; accepts `triage`, `parents`, `notification_targets`, and `no_subscribe`). The dashboard never infers an ambient destination or applies automatic defaults. |
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
@@ -583,6 +609,26 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `POST` | `/dispatch?max=…&dry_run=…` | Nudge the dispatcher — skip the 60 s wait |
 | `GET` | `/config` | Read `dashboard.kanban` preferences from `config.yaml` — `default_tenant`, `lane_by_profile`, `include_archived_by_default`, `render_markdown` |
 | `WS` | `/events?since=<event_id>` | Live stream of `task_events` rows |
+
+Dashboard task creation accepts explicit notification intent in the request body:
+
+```json
+{
+  "title": "Publish release notes",
+  "notification_targets": [
+    {
+      "platform": "telegram",
+      "chat_id": "1234567890123",
+      "thread_id": "7",
+      "user_id": "1234567890123",
+      "notifier_profile": "default"
+    }
+  ],
+  "no_subscribe": false
+}
+```
+
+Each target requires `platform` and `chat_id`; the other target fields are optional. Set `no_subscribe` to `true` to suppress the supplied targets. An omitted or empty target list creates no dashboard subscription, even when automatic defaults exist.
 
 Every handler is a thin wrapper — the plugin is ~700 lines of Python (router + WebSocket tail + bulk batcher + config reader) and adds no new business logic. A tiny `_conn()` helper auto-initializes `kanban.db` on every read and write, so a fresh install works whether the user opened the dashboard first, hit the REST API directly, or ran `hermes kanban init`.
 
@@ -639,6 +685,8 @@ hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--max-runtime 30m|2h|1d|<seconds>]
                                 [--max-retries N]
                                 [--goal] [--goal-max-turns N]
+                                [--notify PLATFORM:CHAT_ID[:THREAD_ID]]...
+                                [--no-subscribe]
                                 [--skill <name>]...
                                 [--json]
 hermes kanban list [--mine] [--assignee P] [--status S] [--tenant T] [--archived]
@@ -748,7 +796,7 @@ hermes kanban swarm "Design a multi-region failover plan" \
   --verifier reviewer --synthesizer writer
 ```
 
-The resulting graph dispatches normally — workers run in parallel, the verifier wakes after they all finish, the synthesizer wakes after the verifier marks the work clean.
+The resulting graph dispatches normally: workers run in parallel, the verifier wakes after they all finish, and the synthesizer wakes after verification. Create-time notification context applies to the user-facing root only. Internal worker, verifier, and synthesizer cards do not receive automatic subscriptions.
 
 ## `/kanban` slash command {#kanban-slash-command}
 
@@ -777,14 +825,15 @@ This is the whole point of the separation:
 - You spot a card that needs human context → `/kanban comment t_xyz "use the 2026 schema, not 2025"` lands on the task thread and the *next* run of that task will read it in `kanban_show()`.
 - You want to know what your fleet is doing without stopping the orchestrator → `/kanban list --mine` or `/kanban stats` inspects the board without touching your main conversation.
 
-### Auto-subscribe on `/kanban create` (gateway only)
+### Automatic subscription on `/kanban create`
 
-When you create a task from the gateway with `/kanban create "…"`, the originating chat (platform + chat id + thread id) is automatically subscribed to that task's terminal events (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`). You'll get one message back per terminal event — including the first line of the worker's result summary on `completed` — without having to poll or remember the task id.
+When `kanban.auto_subscribe_on_create` is enabled and you create a task from the gateway with `/kanban create "…"`, the originating chat is an automatic target. Its identity includes platform, chat id, and thread id. The target also retains user id and notifier-profile ownership when available.
+
+The following flow is schematic. The completion notification prefix varies by board, assignee, and notifier surface.
 
 ```
 you> /kanban create "transcribe today's podcast" --assignee transcriber
 bot> Created t_9fc1a3  (ready, assignee=transcriber)
-     (subscribed — you'll be notified when t_9fc1a3 completes or blocks)
 
 … ~8 minutes later …
 
@@ -792,7 +841,7 @@ bot> ✓ t_9fc1a3 completed by transcriber
      transcribed 42 minutes, saved to podcast/2026-05-04.md
 ```
 
-Subscriptions auto-remove themselves once the task reaches `done` or `archived`. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
+The `--json` output flag does not change subscription behavior. Use `--no-subscribe` for a quiet create, or use `--notify` for an explicit destination. Explicit targets work even when automatic subscriptions are disabled.
 
 ### Output truncation in messaging
 
@@ -835,7 +884,7 @@ Workers receive `$HERMES_TENANT` and namespace their memory writes by prefix. Th
 
 ## Gateway notifications
 
-When you run `/kanban create …` from the gateway (Telegram, Discord, Slack, etc.), the originating chat is automatically subscribed to the new task. The gateway's background notifier polls `task_events` every few seconds and delivers one message per terminal event (`completed`, `blocked`, `gave_up`, `crashed`, `timed_out`) to that chat. Completed tasks also send the first line of the worker's `--result` so you see the outcome without having to `/kanban show`.
+When automatic subscriptions are enabled, `/kanban create …` subscribes the originating gateway chat. The gateway notifier delivers terminal events (`completed`, `blocked`, `gave_up`, `crashed`, and `timed_out`) to each subscribed target. Completed events include the first line of the worker result.
 
 You can manage subscriptions explicitly from the CLI — useful when a script / cron job wants to notify a chat it didn't originate from:
 

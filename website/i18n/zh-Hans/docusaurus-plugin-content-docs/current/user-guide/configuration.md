@@ -55,6 +55,33 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 机密（API 密钥、bot token、密码）放入 `.env`。其他所有内容（模型、终端后端、压缩设置、内存限制、工具集）放入 `config.yaml`。当两者都设置时，`config.yaml` 对非机密设置优先。
 :::
 
+## Kanban 任务订阅
+
+在 `config.yaml` 的 `kanban` 下配置创建任务时的自动 Kanban 订阅：
+
+```yaml
+kanban:
+  auto_subscribe_on_create: true
+  notify_default_targets:
+    - platform: telegram
+      chat_id: "1234567890123"
+      thread_id: "7"
+      notifier_profile: default
+  notify_inherit_depth: 1
+```
+
+`auto_subscribe_on_create` 是自动来源、父任务继承和默认订阅的唯一全局开关。将其设为 `false` 会禁用这三种来源。即使全局开关已禁用，通过 `hermes kanban create --notify` 或创建 API 提供的显式目标仍然有效。
+
+每个默认目标都必须包含 `platform` 和 `chat_id`，还可以包含 `thread_id`、`user_id` 和 `notifier_profile`。Hermes 按 `platform`、`chat_id` 和 `thread_id` 对目标进行规范化和去重；其余字段记录用于投递的用户和通知器归属信息。
+
+`notify_inherit_depth` 控制父任务图的继承深度：
+
+- `0` 禁用继承
+- 正整数读取对应层数的祖先任务
+- `null` 或 `"unlimited"` 读取所有可达祖先任务
+
+每次创建时的 `no_subscribe` 意图优先级最高，会禁止所有目标来源。有关优先级和不同创建入口的行为，请参阅 [Kanban 创建时订阅策略](/user-guide/features/kanban#create-time-subscription-policy)。
+
 ## 环境变量替换
 
 可以在 `config.yaml` 中使用 `${VAR_NAME}` 语法引用环境变量：

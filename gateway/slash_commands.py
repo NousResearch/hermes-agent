@@ -404,9 +404,9 @@ class GatewaySlashCommandsMixin:
         mutations are allowed too because the board is profile-agnostic
         and does not touch the running agent's state.
 
-        Creation carries the originating gateway source into the shared task
-        creation seam, which applies the configured subscription policy in
-        the task transaction.
+        Task and swarm creation carry the originating gateway source into the
+        shared creation seam, which applies the configured subscription policy
+        in the task transaction.
         """
         import shlex
         from hermes_cli.kanban import run_slash
@@ -436,7 +436,7 @@ class GatewaySlashCommandsMixin:
             break
 
         subscription_context = None
-        if action == "create":
+        if action in {"create", "swarm"}:
             source = event.source
             platform = getattr(source, "platform", None)
             platform_str = (

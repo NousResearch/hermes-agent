@@ -404,7 +404,7 @@ hermes kanban [--board <slug>] <action> [options]
 | `boards show` / `boards current` | 打印当前活跃看板的名称、数据库路径和任务数量。 |
 | `boards rename <slug> "<name>"` | 更改看板的显示名称。Slug 不可变。 |
 | `boards rm <slug>` | 归档（默认）或硬删除看板。`--delete` 跳过归档步骤。已归档看板移至 `boards/_archived/<slug>-<ts>/`。`default` 看板拒绝此操作。 |
-| `create "<title>"` | 在活跃看板上创建新任务。标志：`--body`、`--assignee`、`--parent`（可重复）、`--workspace scratch\|worktree\|dir:<path>`、`--tenant`、`--priority`、`--triage`、`--idempotency-key`、`--max-runtime`、`--max-retries`、`--skill`（可重复）。 |
+| `create "<title>"` | 在活跃看板上创建新任务。标志：`--body`、`--assignee`、`--parent`（可重复）、`--workspace scratch\|worktree\|dir:<path>`、`--tenant`、`--priority`、`--triage`、`--idempotency-key`、`--max-runtime`、`--max-retries`、`--notify PLATFORM:CHAT_ID[:THREAD_ID]`（可重复）、`--no-subscribe`、`--skill`（可重复）。 |
 | `list` / `ls` | 列出活跃看板上的任务。可用 `--mine`、`--assignee`、`--status`、`--tenant`、`--archived`、`--json` 过滤。 |
 | `show <id>` | 显示任务及其评论和事件。`--json` 用于机器输出。 |
 | `assign <id> <profile>` | 分配或重新分配。使用 `none` 取消分配。任务运行时拒绝此操作。 |
@@ -441,6 +441,22 @@ hermes kanban boards rm atm10-server --delete
 ```
 
 看板解析顺序（优先级从高到低）：`--board <slug>` 标志 → `HERMES_KANBAN_BOARD` 环境变量 → `~/.hermes/kanban/current` 文件 → `default`。
+
+### 创建时通知标志
+
+使用 `--notify PLATFORM:CHAT_ID[:THREAD_ID]` 为任务终态事件订阅一个投递目标。可重复使用该标志以指定多个目标。即使 `kanban.auto_subscribe_on_create` 为 `false`，显式目标仍然有效。
+
+使用 `--no-subscribe` 可在单次创建中禁止显式目标和所有自动来源。其优先级高于 `--notify`、gateway 来源、父任务订阅和配置的默认目标。
+
+```bash
+hermes kanban create "发布发行说明" \
+  --assignee writer \
+  --notify telegram:1234567890123:7
+
+hermes kanban create "静默维护" --no-subscribe
+```
+
+Hermes 以规范化后的平台、聊天和线程值来标识通知目标。重复指定同一目标只会创建一条订阅记录。使用相同的 `--idempotency-key` 重试创建时，会返回现有任务，不会新增订阅记录或任务事件。
 
 所有操作也可作为 gateway 中的斜杠命令使用（`/kanban …`），参数界面相同——包括 `boards` 子命令和 `--board` 标志。
 

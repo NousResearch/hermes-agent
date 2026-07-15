@@ -2806,7 +2806,8 @@ Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
-  `create <title>…`     Create a task (auto-subscribes you to events)
+  `create <title>…`     Create a task; automatic event subscription requires `kanban.auto_subscribe_on_create`
+                         Use `--notify` for explicit targets or `--no-subscribe` for none
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive

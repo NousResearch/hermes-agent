@@ -84,6 +84,14 @@ def test_run_slash_no_args_shows_usage(kanban_home):
     assert "create" in out.lower() or "subcommand" in out.lower() or "action" in out.lower()
 
 
+def test_run_slash_help_describes_create_subscription_controls(kanban_home):
+    out = kc.run_slash("help")
+
+    assert "kanban.auto_subscribe_on_create" in out
+    assert "--notify" in out
+    assert "--no-subscribe" in out
+
+
 def test_run_slash_create_and_list(kanban_home):
     out = kc.run_slash("create 'ship feature' --assignee alice")
     assert "Created" in out

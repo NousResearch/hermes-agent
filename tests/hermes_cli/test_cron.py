@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs
+from cron.jobs import (
+    claim_dispatch,
+    create_job,
+    get_job,
+    list_jobs,
+    mark_job_run,
+)
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
 
@@ -133,9 +139,25 @@ class TestCronCommandLifecycle:
         save_jobs(jobs)
 
         cron_command(Namespace(cron_command="list", all=True))
-
         out = capsys.readouterr().out
         assert "Repeat:    ∞" in out
+
+    def test_list_shows_retained_completed_job_by_default(
+        self, tmp_cron_dir, capsys
+    ):
+        job = create_job(
+            prompt="Retained report",
+            schedule="30m",
+            delete_after=7,
+        )
+        assert claim_dispatch(job["id"]) is True
+        mark_job_run(job["id"], success=True)
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "[completed]" in out
 
     def test_list_does_not_crash_when_deliver_is_null(self, tmp_cron_dir, capsys):
         """A job can be persisted with ``"deliver": null`` (present-but-null).

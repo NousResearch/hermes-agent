@@ -551,6 +551,10 @@ NAS-managed provider for scale-to-zero hosted gateways) — configured via the
 the built-in, so cron is never left without a trigger. See the
 [cron internals](../developer-guide/cron-internals.md#gateway-integration) doc.
 
+`create` and `edit` accept `--delete-after <days>` to control how long
+completed finite jobs stay listed before removal. New jobs default to seven
+days; use `--delete-after 0` to delete immediately after completion.
+
 ## `hermes kanban`
 
 ```bash

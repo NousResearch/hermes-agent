@@ -264,6 +264,50 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_delete_after_defaults_to_seven_days(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create", prompt="Check", schedule="every 1h"
+            )
+        )
+
+        assert get_job(created["job_id"])["delete_after"] == 7
+
+    def test_delete_after_survives_unrelated_update(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                delete_after=3,
+            )
+        )
+        job_id = created["job_id"]
+
+        updated = json.loads(
+            cronjob(action="update", job_id=job_id, name="Renamed")
+        )
+
+        assert updated["success"] is True
+        assert get_job(job_id)["delete_after"] == 3
+
+    def test_negative_delete_after_is_rejected(self):
+        result = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                delete_after=-1,
+            )
+        )
+
+        assert result["success"] is False
+        assert "non-negative" in result["error"]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

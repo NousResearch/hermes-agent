@@ -1271,6 +1271,20 @@ DEFAULT_CONFIG = {
         "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
         "extract_char_limit": 15000,  # per-page char budget for web_extract; larger pages truncate + store full text in cache/web
+        # Native local-fetch extract provider (web/native plugin). No API key —
+        # httpx GET + readability-lxml + html2text. Empty user_agent falls
+        # back to the provider default.
+        "native": {
+            "timeout": 30,               # HTTP request timeout (seconds)
+            "max_redirects": 5,          # Max redirects to follow (each hop SSRF-checked)
+            "max_response_bytes": 2000000,  # Max raw response body size (2 MB)
+            "max_chars": 50000,          # Default chars returned per URL
+            "max_chars_cap": 200000,     # Absolute hard cap on returned chars
+            "cache_ttl": 900,            # In-memory cache TTL (seconds, 15 min)
+            "readability": True,         # Enable readability-lxml main-content extraction
+            "use_trusted_proxy": False,  # Route through HTTP_PROXY/HTTPS_PROXY when set
+            "user_agent": "",            # Override User-Agent; empty → provider default
+        },
     },
 
     "browser": {

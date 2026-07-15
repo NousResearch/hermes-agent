@@ -330,6 +330,29 @@ class TestInstall:
 
         assert skill.read_text() == "old skill\n"
 
+    def test_force_install_restores_existing_dir_when_staged_swap_fails(
+        self, profile_env, monkeypatch
+    ):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="target")
+        skill = plan.target_dir / "skills" / "demo" / "SKILL.md"
+        skill.write_text("old skill\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("new skill\n")
+        original_rename = Path.rename
+
+        def fail_staged_swap(path, target):
+            if ".skills.hermes-dist-staging-" in path.name:
+                raise OSError("staged swap failed")
+            return original_rename(path, target)
+
+        monkeypatch.setattr(Path, "rename", fail_staged_swap)
+
+        with pytest.raises(OSError, match="staged swap failed"):
+            install_distribution(str(staged), name="target", force=True)
+
+        assert skill.read_text() == "old skill\n"
+        assert not list(plan.target_dir.parent.glob(".skills.hermes-dist-*"))
+
     def test_force_install_succeeds_when_old_dir_cleanup_fails(self, profile_env, monkeypatch):
         staged = _make_staging_dir(profile_env, "src")
         plan = install_distribution(str(staged), name="target")

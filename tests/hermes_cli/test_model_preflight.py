@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -227,3 +230,31 @@ def test_cmd_model_preflight_does_not_require_tty(monkeypatch, capsys):
 
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["status"] == "PASS"
+
+
+def test_console_preflight_propagates_non_pass_and_creates_no_files(tmp_path):
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(tmp_path)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    before = sorted(
+        (str(path.relative_to(tmp_path)), path.is_file(), path.stat().st_size if path.is_file() else 0)
+        for path in tmp_path.rglob("*")
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "model", "--preflight", "--json"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 2
+    assert json.loads(completed.stdout)["status"] in {"FAIL", "INCONCLUSIVE"}
+    after = sorted(
+        (str(path.relative_to(tmp_path)), path.is_file(), path.stat().st_size if path.is_file() else 0)
+        for path in tmp_path.rglob("*")
+    )
+    assert after == before

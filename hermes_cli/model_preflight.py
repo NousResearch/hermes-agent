@@ -41,6 +41,7 @@ class ModelPreflightResult:
     auth_present: bool
     status: str
     blockers: tuple[str, ...]
+    profile_id: str = ""
 
 
 def _model_config(config: Mapping[str, Any]) -> tuple[str, str]:
@@ -219,6 +220,7 @@ def evaluate_model_preflight(
         auth_present=auth_present,
         status=status,
         blockers=blockers,
+        profile_id=actual_profile or expected_profile,
     )
 
 

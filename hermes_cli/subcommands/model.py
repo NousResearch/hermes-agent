@@ -6,7 +6,20 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
+
+MODEL_COMMAND_HELP = "Select and configure the default AI model"
+
+
+def _positive_seconds(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("timeout must be a number") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("timeout must be greater than zero")
+    return parsed
 
 
 def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
@@ -35,7 +48,47 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
     model_parser.add_argument(
         "--json",
         action="store_true",
-        help="Emit --preflight result as stable JSON",
+        help="Emit --preflight or transaction result as stable JSON",
+    )
+    model_parser.add_argument(
+        "--provider",
+        dest="transaction_provider",
+        help="Target provider for a non-interactive transaction preview/apply",
+    )
+    model_parser.add_argument(
+        "--model",
+        dest="transaction_model",
+        help="Target model for a non-interactive transaction preview/apply",
+    )
+    model_parser.add_argument(
+        "--confirm-profile",
+        help="Required profile name binding for transaction preview/apply",
+    )
+    model_parser.add_argument(
+        "--apply-transaction",
+        action="store_true",
+        help=(
+            "Apply the previewed provider/model, restart the active gateway, "
+            "verify a real API event, and roll back automatically on failure"
+        ),
+    )
+    model_parser.add_argument(
+        "--config-lock-timeout",
+        type=_positive_seconds,
+        default=10.0,
+        help="Cross-process config lock timeout for --apply-transaction",
+    )
+    model_parser.add_argument(
+        "--restart-timeout",
+        type=_positive_seconds,
+        default=90.0,
+        help="Gateway restart/readiness timeout for --apply-transaction",
+    )
+    model_parser.add_argument(
+        "--smoke-timeout",
+        type=_positive_seconds,
+        default=180.0,
+        help="Active-interpreter API smoke timeout for --apply-transaction",
     )
     model_parser.add_argument(
         "--portal-url",
@@ -60,7 +113,7 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
     )
     model_parser.add_argument(
         "--timeout",
-        type=float,
+        type=_positive_seconds,
         default=15.0,
         help="HTTP request timeout in seconds for Nous login (default: 15)",
     )

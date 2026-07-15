@@ -39,6 +39,15 @@ def is_readonly_diagnostic_argv(argv: list[str] | tuple[str, ...] | None = None)
             return True
     if "model" in normalized and "--preflight" in normalized:
         return True
+    if (
+        "model" in normalized
+        and "--apply-transaction" not in normalized
+        and any(
+            flag in normalized
+            for flag in ("--provider", "--model", "--confirm-profile")
+        )
+    ):
+        return True
     if "logs" in normalized and "--triage-current-start" in normalized:
         return True
     return False

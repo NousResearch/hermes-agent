@@ -2765,6 +2765,45 @@ def cmd_postinstall(args):
 
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
+    transaction_requested = any(
+        (
+            getattr(args, "transaction_provider", None),
+            getattr(args, "transaction_model", None),
+            getattr(args, "confirm_profile", None),
+            getattr(args, "apply_transaction", False),
+        )
+    )
+    if transaction_requested:
+        from hermes_cli.model_transaction import (
+            ModelPair,
+            build_production_hooks,
+            execute_model_transaction,
+            format_model_transaction,
+        )
+
+        result = execute_model_transaction(
+            ModelPair(
+                getattr(args, "transaction_provider", "") or "",
+                getattr(args, "transaction_model", "") or "",
+            ),
+            confirm_profile=getattr(args, "confirm_profile", "") or "",
+            apply=bool(getattr(args, "apply_transaction", False)),
+            hooks=build_production_hooks(
+                config_lock_timeout=float(
+                    getattr(args, "config_lock_timeout", 10.0)
+                ),
+                restart_timeout=float(getattr(args, "restart_timeout", 90.0)),
+                smoke_timeout=float(getattr(args, "smoke_timeout", 180.0)),
+            ),
+        )
+        print(format_model_transaction(result, as_json=getattr(args, "json", False)))
+        if result.status in {"PREVIEW", "NOOP", "PASS"}:
+            return 0
+        if result.status == "ROLLED_BACK":
+            return 3
+        if result.status == "ROLLBACK_FAILED":
+            return 4
+        return 2
     if getattr(args, "preflight", False):
         from hermes_cli.model_preflight import (
             collect_model_preflight,
@@ -14808,10 +14847,22 @@ def main():
     # Execute the command
     if hasattr(args, "func"):
         result = args.func(args)
-        # Preserve legacy return behavior for all commands except the new
-        # automation-oriented log triage surface, whose PASS/FAIL status must
-        # reach the shell without changing unrelated command semantics.
-        if args.command == "logs" and getattr(args, "triage_current_start", False):
+        # Preserve legacy return behavior except for automation-oriented
+        # diagnostics/transactions whose PASS/FAIL status must reach the shell.
+        propagate_result = (
+            args.command == "logs"
+            and getattr(args, "triage_current_start", False)
+        ) or (
+            args.command == "model"
+            and (
+                getattr(args, "preflight", False)
+                or getattr(args, "transaction_provider", None)
+                or getattr(args, "transaction_model", None)
+                or getattr(args, "confirm_profile", None)
+                or getattr(args, "apply_transaction", False)
+            )
+        )
+        if propagate_result:
             return result
     else:
         parser.print_help()

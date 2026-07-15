@@ -17,6 +17,20 @@ def test_readonly_argv_detection():
         ["hermes", "--profile", "main-gateway-v2", "model", "--preflight", "--json"]
     )
     assert is_readonly_diagnostic_argv(
+        [
+            "hermes", "--profile", "main-gateway-v2", "model",
+            "--provider", "openai-codex", "--model", "gpt-next",
+            "--confirm-profile", "main-gateway-v2", "--json",
+        ]
+    )
+    assert not is_readonly_diagnostic_argv(
+        [
+            "hermes", "--profile", "main-gateway-v2", "model",
+            "--provider", "openai-codex", "--model", "gpt-next",
+            "--confirm-profile", "main-gateway-v2", "--apply-transaction",
+        ]
+    )
+    assert is_readonly_diagnostic_argv(
         ["hermes", "--profile", "main-gateway-v2", "logs", "gateway", "--triage-current-start", "--json"]
     )
     assert not is_readonly_diagnostic_argv(["hermes", "doctor", "--fix"])

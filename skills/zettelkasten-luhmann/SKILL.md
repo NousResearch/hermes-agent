@@ -1,138 +1,228 @@
 ---
 name: zettelkasten-luhmann
-description: >-
-  Assistente de escrita e arquivamento de notas Zettelkasten com a mentalidade
-  de Niklas Luhmann — transforma notas descritivas em teses contestáveis e
-  força a decisão consciente de arquivamento. Use sempre que o usuário quiser
-  criar uma nota, zettel, nota permanente, processar uma fleeting note ou
-  daily note, registrar uma ideia, insight ou aprendizado no vault Obsidian,
-  ou disser coisas como "quero anotar isso", "vira uma nota", "arquivar essa
-  ideia", "processar minhas fleetings", mesmo que não mencione Zettelkasten
-  explicitamente. Também inicializa um vault do zero (estrutura de pastas e
-  templates): use quando o usuário quiser começar, montar ou configurar um
-  Zettelkasten, ou quando a estrutura do vault não existir. Works in any
-  language — also triggers on "turn this into a note", "save this idea",
-  "start a zettelkasten".
+description: Notas Zettelkasten com o método Luhmann.
+version: 2.0.0
+author: "Danilo Neto"
+platforms: [linux, macos]
+tags:
+  - zettelkasten
+  - luhmann
+  - obsidian
+  - vault
+related_skills:
+  - obsidian
 ---
 
-# Zettelkasten com mentalidade Luhmann
+# Zettelkasten Luhmann Skill
 
-Você é o "parceiro de comunicação" do vault — como Luhmann descrevia seu arquivo: um interlocutor que precisa ser capaz de **surpreender**. Seu papel não é guardar notas; é criar atrito produtivo entre ideias e devolver a decisão de pensamento ao usuário.
+Transforma notas descritivas em teses contestáveis com o método de Niklas
+Luhmann. Força o arquivamento consciente — cada nova nota entra *atrás de
+uma nota específica*, e o atrito entre afirmações gera originalidade.
 
-## O vault
+Não arquiva automaticamente. Não cria notas órfãs. A decisão de onde conectar
+é sempre do usuário.
 
-Localize o vault Obsidian do usuário: uma pasta `ZettelKasten/` contendo `zettels/` (as notas), `Daily/` (diários) e `templates/`. As notas usam frontmatter YAML com `type` (permanent | literature | moc | fleeting), `date`, `tags` (taxonomia com prefixos: `carreira/`, `aprendizado/`, `projeto/`, `origem/pessoal|empresa`, `zettel/`) e wikilinks no formato curto `[[Nota]]`. Os MOCs (`MOC *.md`) são os mapas de entrada.
+## When to Use
 
-## Idioma
+- Usuário quer criar uma nota, zettel, ou nota permanente
+- Processar fleeting note ou daily note em conhecimento reutilizável
+- Registrar ideia, insight ou aprendizado no vault Obsidian
+- "Quero anotar isso", "vira uma nota", "arquivar essa ideia"
+- Montar ou configurar um Zettelkasten do zero
 
-A skill funciona em qualquer idioma. Duas regras:
+## Prerequisites
 
-1. **Converse no idioma do usuário** — perguntas, opções e explicações sempre na língua da mensagem dele.
-2. **Escreva as notas no idioma do vault** — detecte pela leitura de 2-3 notas existentes (títulos e seções). Um vault é uma conversa de décadas; misturar idiomas nas notas quebra busca e conexões. Se o usuário escrever em inglês num vault em português, a conversa é em inglês, mas a nota nasce em português (avise-o e ofereça a exceção).
-3. **Vault novo**: o idioma do vault é o do usuário. O `init_vault.py` aceita `--lang pt` ou `--lang en`; para outros idiomas, rode com o mais próximo e traduza os templates e a nota inicial gerados antes de apresentar ao usuário.
+- Vault Obsidian em `~/obsidian/ZettelKasten/` com pastas `zettels/`,
+  `Daily/`, `templates/`
+- `init_vault.py` script na skill (cria estrutura se não existir)
+- Notas seguem frontmatter YAML: `type` (permanent | literature | moc | fleeting),
+  `date`, `tags` (taxonomia hierárquica)
 
-## Etapa 0 — Verificar a estrutura (sempre, antes de qualquer fluxo)
-
-Antes de criar ou arquivar qualquer nota, confirme que o vault existe: uma pasta `ZettelKasten/` contendo pelo menos `zettels/` e `templates/`. Sem essa estrutura, o arquivamento forçado não tem onde acontecer — as "threads candidatas" pressupõem notas existentes.
-
-**Se a estrutura não existir**, não improvise criando arquivos soltos. Explique ao usuário que o vault precisa ser inicializado e ofereça rodar o script incluído na skill:
+## How to Run
 
 ```bash
-python scripts/init_vault.py <pasta-onde-criar-o-vault>
+# Inicializar vault novo (detecta idioma do usuário automaticamente)
+python scripts/init_vault.py ~/obsidian --lang pt
+
+# Vault em inglês
+python scripts/init_vault.py ~/obsidian --lang en
 ```
 
-O script é idempotente (nunca sobrescreve o que já existe) e cria: `zettels/`, `Daily/`, `templates/` (permanent, literature, fleeting, moc — já com a mentalidade de tese embutida), `arquivos/`, e uma nota inicial ("Uma nota é uma tese, não um tópico") que serve de âncora para a primeira conexão do usuário.
+O script é idempotente — nunca sobrescreve o que já existe. O agente detecta
+o idioma da conversa e passa o `--lang` correspondente.
 
-**Se o usuário pedir explicitamente para começar/montar um Zettelkasten**, rode o script, mostre o que foi criado e oriente o primeiro passo: a próxima nota dele deve nascer conectada à nota inicial — pergunte qual relação (contradiz, completa, exemplifica, responde). Assim a primeira experiência já ensina o método.
+## Quick Reference
 
-**Caso especial — vault existente com estrutura diferente**: se houver notas markdown mas sem o layout esperado, pergunte ao usuário onde ficam as notas em vez de assumir; adapte os caminhos e siga o fluxo normal.
+| Etapa | O que | Ferramenta |
+|-------|-------|------------|
+| 0 | Verificar estrutura do vault | `search_files` no `ZettelKasten/` |
+| 1 | Transformar ideia em tese | Debate com o usuário |
+| 2 | Escrever corpo como argumento | `read_file` + `write_file` |
+| 3 | Buscar threads candidatas | `search_files` no vault |
+| 4 | Efetivar conexão + backlink | `write_file` + `patch` |
+| 5 | Validar no chat | Mostrar antes de sincronizar |
+| 6 | Vizinho improvável | Sugerir conexão de outro cluster |
+| 7 | Git (opt-in) | `terminal` com `git status` |
 
-## Os três princípios (o porquê)
+## Procedure
 
-Luhmann produziu 70 livros não por acumular conteúdo interessante, mas por três práticas que esta skill reproduz:
+### Etapa 0 — Verificar estrutura (sempre)
 
-1. **Nota é tese, não tópico.** Ele nunca resumia — afirmava. Uma tese pode ser contestada por outra nota; um resumo fica parado. Originalidade nasce do atrito entre afirmações.
-2. **O arquivamento é o momento criativo.** Cada nota nova era forçada a entrar *atrás de uma nota específica* — a decisão "com qual conversa isso se conecta?" era onde o pensamento acontecia. Por isso a skill NUNCA arquiva sozinha: analisar candidatos é seu trabalho; escolher é o trabalho dele.
-3. **Ler perguntando "o que isso significa para as MINHAS perguntas?"** — nunca "o que o autor disse?".
+Antes de criar ou arquivar, confirme que o vault existe:
 
-## Fluxo de trabalho
+```
+search_files(target="files", pattern="*.md", path="~/obsidian/ZettelKasten")
+```
+
+Sem as pastas `zettels/` e `templates/`, o arquivamento não tem onde
+acontecer. Se faltar, ofereça rodar `init_vault.py`.
 
 ### Etapa 1 — Da ideia à tese
 
 Quando o usuário trouxer uma ideia, rascunho ou fleeting note:
 
-- Se o título/ideia **descreve** um assunto, provoque: *"Qual é a afirmação? O que alguém poderia contestar aqui?"* Proponha 2-3 títulos-tese e deixe ele escolher ou reformular.
-- Teste do título: se não dá para discordar dele, ainda é tópico.
+- Se o título **descreve** um assunto, provoque: *"Qual é a afirmação?
+  O que alguém poderia contestar aqui?"*
+- Proponha 2-3 títulos-tese e deixe ele escolher ou reformular
+- Teste do título: se não dá para discordar dele, ainda é tópico
 
-**Exemplo:**
-- Descreve (fraco): "Observabilidade no Open Ferramentaria"
-- Afirma (forte): "Sem telemetria, todo incidente vira arqueologia"
-
-- Descreve: "Reunião com fornecedor SAP"
-- Afirma: "O gargalo de integração não é técnico, é o modelo de relacionamento"
+**Provocação disfarçada:** Neto às vezes dropa uma afirmação provocativa
+sem sinal de que é um pedido de nota. Sinais: frase absoluta ou
+simplificada demais, pede debate em vez de resposta. Engaje a provocação,
+depois ofereça a nota — não crie nota prematura (nota rasa).
 
 ### Etapa 2 — Corpo como argumento
 
-Ajude a escrever o corpo como resposta a uma pergunta, nas palavras do usuário, curto e atômico (uma tese por nota). Estrutura das notas permanentes do vault: Ideia Principal, Contexto, Expansão, Conexões. Para literature notes: o que importa não é o resumo do autor, é a seção de Comentários Pessoais — o que a leitura significa para as perguntas dele.
+Ajude a escrever o corpo como resposta a uma pergunta. Estrutura:
 
-### Etapa 3 — Arquivamento forçado (o coração da skill)
+- **Permanente:** Ideia Principal, Contexto, Expansão, Conexões
+- **Literature:** Resumo (breve), Citações, Comentários Pessoais (o que
+  importa), Conexões — a seção de comentários pessoais é a parte que vale
 
-Antes de salvar, analise o vault e apresente **2 a 4 threads candidatas**: notas existentes com as quais a nova nota conversa. Para cada candidata, nomeie a **relação**:
+### Etapa 3 — Arquivamento forçado (coração da skill)
 
-**⚠️ Busca no vault:** `search_files()` do Hermes falha em padrões acentuados em português. Fallback confiável:
-```bash
-cd ~/obsidian/ZettelKasten/zettels && rg -il 'gest[oó]r|raciocínio|simulação' -- *.md
+Antes de salvar, analise o vault e apresente 2 a 4 threads candidatas:
+notas existentes com as quais a nova nota conversa.
+
+**Busca no vault:** Use `search_files` do Hermes:
+
+```python
+search_files(target="content", pattern="gestor|raciocínio|simulação",
+             path="~/obsidian/ZettelKasten/zettels", file_glob="*.md")
 ```
-Prefira `rg -il` (case-insensitive, UTF-8 seguro) sempre que a busca envolver acentos.
+
+`search_files` é ripgrep-backed e lida corretamente com UTF-8 e acentos.
+
+Para cada candidata, nomeie a **relação**:
 
 - **contradiz** — a nova nota tensiona ou refuta a existente
 - **completa** — adiciona evidência ou desdobramento
 - **exemplifica** — é caso concreto de um princípio existente
-- **responde** — resolve pergunta aberta em outra nota (ex.: seções "Pontes a construir" ou "Expansão" com perguntas)
+- **responde** — resolve pergunta aberta em outra nota
 
-Então **pergunte ao usuário qual thread a nota entra**. Relações de contradição valem mais que as de semelhança — atrito gera originalidade, semelhança gera redundância. Nunca escolha por ele, mesmo que uma opção pareça óbvia: a decisão É o exercício mental que ele está treinando.
+**Pergunte ao usuário qual thread a nota entra.** Nunca escolha por ele
+— a decisão é o exercício mental.
+
+#### Sub-etapa — MOC relevante
+
+Após a escolha da thread, identifique qual MOC cobre o tema. Varra MOCs
+com `search_files` por tag ou prefixo de tag. Pergunte se quer conectar
+ao MOC — se sim, anote para atualizar no passo seguinte.
 
 ### Etapa 4 — Efetivar a conexão
 
-Após a escolha:
-- Crie a nota em `zettels/` com frontmatter completo (type, date de hoje, tags da taxonomia existente) e link `[[...]]` para a thread escolhida na seção Conexões.
-- Adicione o link reverso na nota escolhida (na seção Conexões dela), citando a relação: `- [[Nota Nova]] — contradiz a tese central`.
-- Nunca crie nota órfã: toda nota nova nasce com pelo menos 1 conexão real.
-- Nunca crie notas-stub vazias como alvo de link.
+1. Crie a nota em `zettels/` com frontmatter completo e `[[link]]` para
+   a thread escolhida na seção Conexões
+2. Adicione o link reverso na nota escolhida, citando a relação:
+   `- [[Nota Nova]] — contradiz a tese central`
+3. Se o MOC foi atualizado, adicione a linha no MOC
+4. Nunca crie nota órfã (mínimo 1 conexão real) nem notas-stub vazias
 
-### Etapa 5 — A surpresa
+### Etapa 5 — Validação no chat
 
-Feche sempre com **um vizinho improvável**: uma nota de um cluster *diferente* (outro domínio de tag) que poderia se conectar de forma não óbvia. Uma frase explicando o cruzamento possível. É opcional para o usuário — mas é o que faz o arquivo "responder de volta".
+**SEMPRE** exiba o conteúdo da nota e o backlink criado no chat antes de
+sincronizar. Espere confirmação explícita do usuário.
 
-### Etapa 6 — Sincronizar com git
+### Etapa 6 — Vizinho improvável
 
-Após criar a nota e inserir backlinks, sincronize com o remoto. O vault é versionado (origin no GitHub, branch main).
+Feche com um vizinho improvável: uma nota de um cluster *diferente*
+(outro domínio de tag) que poderia se conectar de forma não óbvia. Uma
+frase explicando o cruzamento possível. Opcional — mas é o que faz o
+arquivo "responder de volta".
+
+### Etapa 7 — Git (opt-in, com segurança)
+
+Após o usuário aprovar a nota e backlinks:
 
 ```bash
 cd ~/obsidian/ZettelKasten
-git add -A
+git status
+```
+
+Mostre o status ao usuário. **Pergunte se quer commitar** — só então:
+
+```bash
+git add zettels/<nova-nota>.md zettels/<nota-existente>.md
 git commit -m "Nota: <título> — <relação> a <thread>"
 git pull --rebase && git push
 ```
 
-**Pitfall:** outro dispositivo pode ter feito push enquanto você trabalhava. Sempre use `git pull --rebase && git push` — nunca apenas `git push`.
+Regras:
+- **Não use `git add -A`** — stage apenas os arquivos que o workflow
+  tocou (a nova nota e as que receberam backlinks)
+- **Sempre `git pull --rebase && git push`** — outro dispositivo pode ter
+  feito push enquanto você trabalhava
 
-Não pule esta etapa. Se o usuário tiver que lembrar você de push, o ciclo não fechou.
+## Idiomas
 
-## Caso especial — nota de marco pessoal / milestone
+A skill funciona em qualquer idioma:
 
-Quando o tema do usuário é **um feito pessoal relevante** (PR submetido a projeto notável, skill publicada, certificação conquistada, palestra, repo em milestone), **não aplique o fluxo Luhmann padrão** — o registro de marco não é uma tese contestável, é um registro retrospectivo.
+1. **Converse no idioma do usuário** — perguntas, opções e explicações
+2. **Escreva as notas no idioma do vault** — detecte pela leitura de 2-3
+   notas existentes (títulos e seções). Vault é uma conversa de décadas;
+   misturar idiomas quebra busca e conexões
+3. **Vault novo:** o `init_vault.py` aceita `--lang pt` ou `--lang en`
 
-Use o formato alternativo documentado em `references/milestone-notes.md`.
+## Casos especiais
 
-Sinais de acionamento: "conquistei X", "consegui Y", "fiz meu primeiro Z", "submeti PR para W", "passei na certificação".
+### Nota de marco pessoal
 
-Pulo do gato: o valor do marco não está no arquivamento forçado — está em conectar o feito à trajetória (por que isso importa, o que viabilizou, qual o próximo passo). A nota de marco fecha um ciclo; a nota Luhmann abre uma conversa.
+Quando o tema é um **feito pessoal relevante** (PR submetido, skill
+publicada, certificação, palestra), **não aplique o fluxo Luhmann padrão**
+— o registro de marco não é tese contestável. Use o formato em
+`references/milestone-notes.md`.
 
-## Anti-padrões
+### Provocação diária (cron)
 
-- Resumir em vez de afirmar (especialmente em literature notes)
-- Arquivar automaticamente "para agilizar" — destrói o propósito da skill
-- Criar a nota antes da Etapa 3 — a análise de candidatas vem ANTES do arquivo existir
-- Sugerir só candidatas semelhantes — procure ativamente a nota que a nova tese incomoda
-- Notas longas cobrindo várias teses — sugira dividir em notas atômicas conectadas
+O sistema pode provocar o usuário com notas antigas usando spaced
+repetition. Script em `~/.hermes/scripts/vault-provoke.py` com `--json`
+para saída estruturada. Detalhes em `references/daily-vault-provocation.md`.
+
+## Pitfalls
+
+- **Resumir em vez de afirmar** — especialmente em literature notes.
+  Comentários pessoais > resumo do autor.
+- **Arquivar automaticamente** "para agilizar" — destrói o propósito da
+  skill. A decisão é do usuário.
+- **Criar nota antes da Etapa 3** — análise de candidatas vem ANTES do
+  arquivo existir.
+- **Sugerir só candidatas semelhantes** — procure a nota que a nova tese
+  incomoda (contradição > semelhança).
+- **Notas longas cobrindo várias teses** — sugira dividir em notas
+  atômicas conectadas. Dividir proativamente é mais barato que dividir
+  retroativamente.
+- **Criar notas sem verificar MOC existente** — 3+ notas no mesmo tema
+  sem MOC? Ofereça criar um.
+- **`git add -A`** — pode commitar mudanças não relacionadas no vault.
+  Stage apenas os arquivos tocados pelo workflow.
+- **Push sem `--rebase`** — vault editado de múltiplos dispositivos.
+  Sempre `git pull --rebase && git push`.
+
+## Verification
+
+- Após criar nota, verifique que o wikilink na nova nota resolve
+- Verifique que o backlink na nota existente foi adicionado
+- Verifique que nenhuma nota órfã foi criada
+- Se MOC foi atualizado, verifique a entrada
+- Execute `git status` para confirmar que só os arquivos esperados
+  foram modificados

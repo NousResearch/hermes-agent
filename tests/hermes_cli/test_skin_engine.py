@@ -130,12 +130,13 @@ class TestBuiltinSkins:
 
     def test_user_auto_skin_takes_precedence_over_alias(self, tmp_path, monkeypatch):
         from hermes_cli import skin_engine
-        from hermes_cli.skin_engine import load_skin
+        from hermes_cli.skin_engine import list_skins, load_skin
 
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
         (skins_dir / "auto.yaml").write_text(
-            "name: custom-auto\ndescription: Existing user auto skin\n",
+            "name: auto\ndescription: Existing user auto skin\n"
+            "colors:\n  banner_title: '#123456'\n",
             encoding="utf-8",
         )
         monkeypatch.setattr(skin_engine, "_skins_dir", lambda: skins_dir)
@@ -145,7 +146,18 @@ class TestBuiltinSkins:
             lambda: pytest.fail("the alias should not resolve when auto.yaml exists"),
         )
 
-        assert load_skin("auto").name == "custom-auto"
+        skin = load_skin("auto")
+        auto_entries = [entry for entry in list_skins() if entry["name"] == "auto"]
+
+        assert skin.name == "auto"
+        assert skin.get_color("banner_title") == "#123456"
+        assert auto_entries == [
+            {
+                "name": "auto",
+                "description": "Existing user auto skin",
+                "source": "user",
+            }
+        ]
 
     def test_auto_skin_resolves_windows_light_to_daylight(self, monkeypatch):
         from hermes_cli import skin_engine
@@ -387,6 +399,21 @@ class TestSkinManagement:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name
         init_skin_from_config({"display": {"skin": "ares"}})
         assert get_active_skin_name() == "ares"
+
+    def test_init_skin_from_config_resolves_auto(self, monkeypatch):
+        from hermes_cli import skin_engine
+        from hermes_cli.skin_engine import (
+            get_active_skin,
+            get_active_skin_name,
+            init_skin_from_config,
+        )
+
+        monkeypatch.setattr(skin_engine, "_resolve_auto_skin_name", lambda: "daylight")
+
+        init_skin_from_config({"display": {"skin": "auto"}})
+
+        assert get_active_skin_name() == "auto"
+        assert get_active_skin().name == "daylight"
 
     def test_init_skin_from_empty_config(self):
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin_name

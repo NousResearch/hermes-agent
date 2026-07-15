@@ -746,14 +746,25 @@ def list_skins() -> List[Dict[str, str]]:
             data = _load_skin_from_yaml(f)
             if data:
                 skin_name = data.get("name", f.stem)
-                # Skip if it shadows a built-in
-                if any(s["name"] == skin_name for s in result):
-                    continue
-                result.append({
+                entry = {
                     "name": skin_name,
                     "description": data.get("description", ""),
                     "source": "user",
-                })
+                }
+                # ``load_skin`` gives a valid auto.yaml precedence over the
+                # dynamic alias. Keep the catalog consistent with that lookup
+                # so /skin reports the skin that selecting "auto" will load.
+                if skin_name == "auto":
+                    auto_index = next(
+                        i for i, skin in enumerate(result) if skin["name"] == "auto"
+                    )
+                    if result[auto_index]["source"] != "user":
+                        result[auto_index] = entry
+                    continue
+                # Skip if it shadows a built-in
+                if any(s["name"] == skin_name for s in result):
+                    continue
+                result.append(entry)
 
     return result
 

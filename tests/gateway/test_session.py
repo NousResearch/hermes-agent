@@ -405,7 +405,7 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Multi-user thread" in prompt
-        assert "[sender name]" in prompt
+        assert "[sender label]" in prompt
         # Should NOT show a specific **User:** line (would bust cache)
         assert "**User:** Alice" not in prompt
 
@@ -448,7 +448,7 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Multi-user session" in prompt
-        assert "[sender name]" in prompt
+        assert "[sender label]" in prompt
         assert "**User:** Alice" not in prompt
 
     def test_dm_thread_shows_user_not_multi(self):

@@ -16,7 +16,7 @@ Generate images, video, and audio with ComfyUI — install, launch, manage nodes
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/comfyui` |
-| Version | `5.1.0` |
+| Version | `5.2.0` |
 | Author | ['kshitijk4poor', 'alt-glitch', 'purzbeats'] |
 | License | MIT |
 | Platforms | macos, linux, windows |
@@ -77,6 +77,33 @@ SDXL inpaint, ESRGAN upscale, AnimateDiff video, Wan T2V. See
 - User needs ControlNet, inpainting, img2img, or other advanced pipelines
 - User asks to manage ComfyUI queue, check models, or install custom nodes
 - User wants video/audio/3D generation via AnimateDiff, Hunyuan, Wan, AudioCraft, etc.
+
+## Route First: Comfy Cloud MCP vs. This Skill
+
+Hermes can also drive Comfy Cloud through the `comfy-cloud` MCP server from
+the Nous-approved catalog (`hermes mcp install comfy-cloud`) — a hosted
+remote server with browser OAuth sign-in, no API keys to copy around, and no
+local compute. Decide which surface to use **before** running anything from
+this skill:
+
+1. **Default to the Comfy Cloud MCP.** It is the easiest path — one-command
+   install, OAuth on first connect, nothing to run locally. Recommend it
+   especially when the machine is a Mac or the local GPU has less than
+   24 GB VRAM.
+2. **Offer a choice only when local is genuinely viable**: the local GPU has
+   24 GB+ VRAM AND a local ComfyUI setup already exists. Then ask the user
+   whether they want to run Comfy locally or on cloud.
+3. **If the user chooses local**, remind them it takes a bit longer, and use
+   this skill to handle the rest — it will find or set up the ComfyUI
+   instance (`comfyui_setup.sh`) and install any missing models/nodes
+   (`auto_fix_deps.py`) if they don't have them already.
+4. **The MCP and this skill are alternatives, not layers.** Pick one for the
+   task at hand; don't mix MCP tool calls with this skill's CLI/REST scripts
+   against the same job.
+
+The API-key Cloud path in this skill (**Path A** below) remains the right
+choice for headless / CI / scripted use where a browser OAuth flow isn't
+available.
 
 ## Architecture: Two Layers
 
@@ -238,6 +265,11 @@ When a user asks to set up ComfyUI, **the FIRST thing to do is ask whether
 they want Comfy Cloud (hosted, zero install, API key) or Local (install
 ComfyUI on their machine)**. Don't start running install commands or hardware
 checks until they've answered.
+
+(If you haven't already routed between the Comfy Cloud MCP and this skill,
+do that first — see **Route First** above. Interactive cloud users are
+usually better served by `hermes mcp install comfy-cloud` than by this
+skill's API-key path.)
 
 **Official docs:** https://docs.comfy.org/installation
 **CLI docs:** https://docs.comfy.org/comfy-cli/getting-started

@@ -90,6 +90,7 @@ def create_swarm(
     workspace_path: Optional[str] = None,
     priority: int = 0,
     idempotency_key: Optional[str] = None,
+    subscription_context: Optional[kb.SubscriptionContext] = None,
 ) -> SwarmCreated:
     """Create a durable Kanban swarm graph.
 
@@ -124,6 +125,7 @@ def create_swarm(
         idempotency_key=idempotency_key,
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
+        subscription_context=subscription_context,
     )
 
     # If idempotency returned an existing non-archived root, do not duplicate the

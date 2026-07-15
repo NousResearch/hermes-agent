@@ -12,6 +12,7 @@ grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
 from gateway import status
+from hermes_cli.config import DEFAULT_CONFIG
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -39,6 +40,27 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    def test_configured_wrapper_is_preserved_by_refresh_comparison(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "preflight"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+        unit_path = tmp_path / "hermes-gateway.service"
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit_path,
+        )
+        unit_path.write_text(gateway_cli.generate_systemd_unit(), encoding="utf-8")
+
+        assert gateway_cli.systemd_unit_is_current() is True
+        assert gateway_cli.refresh_systemd_unit_if_needed() is False
+        assert f"ExecStart={wrapper} " in unit_path.read_text(encoding="utf-8")
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -419,6 +441,9 @@ class TestRequireServiceInstalled:
 
 
 class TestGeneratedSystemdUnits:
+    def test_gateway_service_wrapper_has_a_registered_default(self):
+        assert DEFAULT_CONFIG["gateway"]["service_wrapper"] == ""
+
     def _expected_timeout_stop_sec(self) -> str:
         timeout = int(max(60, DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT) + 30)
         return f"TimeoutStopSec={timeout}"
@@ -561,35 +586,74 @@ class TestGeneratedSystemdUnits:
         assert "KillMode=mixed" in unit
 
 
-    def test_user_unit_uses_configured_service_wrapper(self, monkeypatch):
+    def test_user_unit_uses_configured_service_wrapper(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "preflight"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
         monkeypatch.setattr(
             gateway_cli,
             "read_raw_config",
-            lambda: {"gateway": {"service_wrapper": "/opt/hermes/bin/preflight"}},
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
         )
 
         unit = gateway_cli.generate_systemd_unit(system=False)
 
-        assert "ExecStart=/opt/hermes/bin/preflight " in unit
-        assert " -m hermes_cli.main gateway run --replace" in unit
+        assert f"ExecStart={wrapper} " in unit
+        assert " -m hermes_cli.main gateway run" in unit
+        assert "--replace" not in unit
 
-    def test_system_unit_remaps_service_wrapper_for_target_user(self, monkeypatch):
-        local_wrapper = str(Path.home() / ".local/bin/preflight")
+    def test_system_unit_validates_remapped_wrapper_for_target_user(self, tmp_path, monkeypatch):
+        current_home = tmp_path / "root"
+        target_home = tmp_path / "hermes"
+        local_wrapper = current_home / ".local/bin/preflight"
+        remapped_wrapper = target_home / ".local/bin/preflight"
+        remapped_wrapper.parent.mkdir(parents=True)
+        remapped_wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        remapped_wrapper.chmod(0o755)
+        monkeypatch.setattr(Path, "home", lambda: current_home)
         monkeypatch.setattr(
             gateway_cli,
             "read_raw_config",
-            lambda: {"gateway": {"service_wrapper": local_wrapper}},
+            lambda: {"gateway": {"service_wrapper": str(local_wrapper)}},
         )
         monkeypatch.setattr(
             gateway_cli,
             "_system_service_identity",
-            lambda run_as_user=None: ("hermes", "hermes", "/var/lib/hermes"),
+            lambda run_as_user=None: ("hermes", "hermes", str(target_home)),
         )
 
         unit = gateway_cli.generate_systemd_unit(system=True)
 
-        assert "ExecStart=/var/lib/hermes/.local/bin/preflight " in unit
-        assert " -m hermes_cli.main gateway run --replace" in unit
+        assert f"ExecStart={remapped_wrapper} " in unit
+        assert " -m hermes_cli.main gateway run" in unit
+        assert "--replace" not in unit
+
+    def test_system_unit_rejects_missing_final_remapped_wrapper(self, tmp_path, monkeypatch):
+        current_home = tmp_path / "root"
+        target_home = tmp_path / "hermes"
+        local_wrapper = current_home / ".local/bin/preflight"
+        local_wrapper.parent.mkdir(parents=True)
+        local_wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        local_wrapper.chmod(0o755)
+        monkeypatch.setattr(Path, "home", lambda: current_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(local_wrapper)}},
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("hermes", "hermes", str(target_home)),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        assert str(local_wrapper) not in unit
+        assert str(target_home / ".local/bin/preflight") not in unit
+        assert "ExecStart=" in unit
+        assert " -m hermes_cli.main gateway run" in unit
+        assert "--replace" not in unit
 
 
 class TestGatewayStopCleanup:
@@ -672,20 +736,38 @@ class TestLaunchdServiceRecovery:
             == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
         )
 
-    def test_launchd_plist_uses_configured_service_wrapper(self, monkeypatch):
+    def test_launchd_plist_uses_configured_service_wrapper(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "preflight"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o755)
         monkeypatch.setattr(
             gateway_cli,
             "read_raw_config",
-            lambda: {"gateway": {"service_wrapper": "/opt/hermes/bin/preflight"}},
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
         )
 
         plist = gateway_cli.generate_launchd_plist()
 
-        assert "<string>/opt/hermes/bin/preflight</string>" in plist
+        assert f"<string>{wrapper}</string>" in plist
         assert "<string>hermes_cli.main</string>" in plist
-        assert plist.index("<string>/opt/hermes/bin/preflight</string>") < plist.index(
+        assert plist.index(f"<string>{wrapper}</string>") < plist.index(
             "<string>hermes_cli.main</string>"
         )
+
+    def test_launchd_plist_ignores_non_executable_service_wrapper(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "preflight"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        wrapper.chmod(0o644)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert str(wrapper) not in plist
+        assert "<string>hermes_cli.main</string>" in plist
 
     def test_launchd_plist_ignores_relative_service_wrapper(self, monkeypatch):
         monkeypatch.setattr(

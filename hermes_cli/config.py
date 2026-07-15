@@ -2959,7 +2959,6 @@ DEFAULT_CONFIG = {
         # (gateway/platforms/base.py), so the cap holds across every platform
         # adapter. ``0`` disables the cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
-
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,

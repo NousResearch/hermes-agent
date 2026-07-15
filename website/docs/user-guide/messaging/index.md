@@ -478,6 +478,22 @@ hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed he
 
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
+To run credential or runtime preflight work before a supervised gateway starts,
+configure a wrapper in `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  service_wrapper: /opt/hermes/bin/gateway-preflight
+```
+
+The wrapper must be an existing executable at the final service-side path. It
+receives the normal Python gateway command as arguments and should end with
+`exec "$@"`. Hermes applies the same setting to user/system systemd services
+and launchd; for a system service, a wrapper under the invoking user's home is
+remapped to the target service user's home before validation. Missing,
+relative, or non-executable paths are ignored. `gateway.service_wrapper` is the
+sole configuration surface; there is no `HERMES_*` environment override.
+
 :::info Multiple installations
 If you run multiple Hermes installations on the same machine (with different `HERMES_HOME` directories), each gets its own systemd service name. The default `~/.hermes` uses `hermes-gateway`; other installations use `hermes-gateway-<hash>`. The `hermes gateway` commands automatically target the correct service for your current `HERMES_HOME`.
 :::

@@ -1682,7 +1682,8 @@
       return h(SelectOption, { key: p.name, value: p.name }, p.name + tag);
     });
 
-    return h(Card, { ref: panelRef, className: "p-3" },
+    return h("div", { ref: panelRef },
+      h(Card, { className: "p-3" },
       h(CardContent, { className: "p-2 flex flex-col gap-3" },
         h("div", { className: "flex items-center justify-between" },
           h("button", {
@@ -1781,7 +1782,7 @@
               ),
         ),
       ),
-    );
+    ));
   }
 
   function ProfileDescriptionRow(props) {

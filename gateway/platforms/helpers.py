@@ -251,15 +251,32 @@ class ThreadParticipationTracker:
 
     def mark(self, thread_id: str) -> None:
         """Mark *thread_id* as participated and persist."""
+        thread_id = str(thread_id)
         if thread_id not in self._threads:
             self._threads[thread_id] = None
             self._save()
 
+    def discard(self, thread_id: str) -> bool:
+        """Forget *thread_id* and persist the change.
+
+        Returns ``True`` when a tracked thread was removed.  This is used by
+        platform controls such as Discord's ``/leave-thread`` so leaving a
+        thread also disables the local follow-up shortcut until the bot is
+        explicitly mentioned again.
+        """
+        thread_id = str(thread_id)
+        if thread_id not in self._threads:
+            return False
+        del self._threads[thread_id]
+        self._save()
+        return True
+
     def __contains__(self, thread_id: str) -> bool:
-        return thread_id in self._threads
+        return str(thread_id) in self._threads
 
     def clear(self) -> None:
         self._threads.clear()
+        self._save()
 
 
 # ─── Phone Number Redaction ──────────────────────────────────────────────────

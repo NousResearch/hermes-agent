@@ -2045,24 +2045,30 @@ def _resolve_command_cwd(
     env: Any,
     default_cwd: str,
     prev_owner: Optional[str] = None,
+    session_key: Optional[str] = None,
 ) -> str:
-    """Return the cwd for a command, preferring the live session cwd.
+    """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
-    ``terminal_tool`` historically re-sent the init-time/config cwd on every
-    call. That broke session-local ``cd`` state: the environment tracked the
-    new directory in ``env.cwd``, but foreground/background calls kept forcing
-    the old cwd back through ``env.execute(..., cwd=...)``. Explicit
-    ``workdir=`` must still override everything.
+    Resolution (cwd rearch, step 3):
 
-    When ``prev_owner`` is provided and differs from the current session,
-    ``env.cwd`` was mutated by a *different* session's ``cd`` and must NOT be
-    trusted — fall through to ``default_cwd`` (the config/override cwd) so
-    the command runs in this session's own workspace, not the previous
-    session's leftover checkout.  This mirrors the ``_live_cwd_if_owned``
-    guard file_tools uses for the same shared-env problem.
+      1. ``workdir`` — the caller said exactly where to run.
+      2. The session's own cwd RECORD (``get_session_cwd(session_key)``) —
+         written after every completed command for this session, so it IS the
+         session's ``cd`` state, with no shared-env ambiguity: another
+         session's ``cd`` lands in another record and can't affect us.
+      3. Transition-only: the shared env's live cwd, gated by the legacy
+         ownership guard. Only reachable for a session with no record yet
+         (no command completed since this code loaded). When ``prev_owner``
+         differs from the current session, ``env.cwd`` is a different
+         session's leftover ``cd`` and falls through to ``default_cwd``.
+      4. ``default_cwd`` (config/override cwd).
     """
     if workdir:
         return workdir
+
+    recorded = get_session_cwd(session_key)
+    if recorded:
+        return recorded
 
     live_cwd = getattr(env, "cwd", None)
     if isinstance(live_cwd, str) and live_cwd.strip():
@@ -2071,10 +2077,10 @@ def _resolve_command_cwd(
         # before this call claimed it, env.cwd is that session's leftover `cd`
         # — not ours.  Don't use it.
         if prev_owner is not None:
-            session_key = getattr(env, "cwd_owner", "")
+            owner_key = getattr(env, "cwd_owner", "")
             # cwd_owner was already overwritten to the current session at the
             # call site, so compare against the captured previous owner.
-            if prev_owner and prev_owner != "default" and session_key != prev_owner:
+            if prev_owner and prev_owner != "default" and owner_key != prev_owner:
                 return default_cwd
         return live_cwd
 
@@ -2459,6 +2465,7 @@ def terminal_tool(
                 env=env,
                 default_cwd=cwd,
                 prev_owner=prev_cwd_owner,
+                session_key=session_key,
             )
             try:
                 if env_type == "local":
@@ -2720,6 +2727,7 @@ def terminal_tool(
                         env=env,
                         default_cwd=cwd,
                         prev_owner=prev_cwd_owner,
+                        session_key=session_key,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

@@ -174,3 +174,87 @@ class TestDelegateSeedsChildRecord:
         tt.record_session_cwd("child-1", "/child/scratch")
         assert tt.get_session_cwd("parent-task") == "/parent/worktree"
         assert tt.get_session_cwd("child-1") == "/child/scratch"
+
+
+class TestCommandCwdReadsTheRecord:
+    """Step 3: _resolve_command_cwd prefers the session's own record."""
+
+    def test_record_beats_foreign_env_cwd_for_commands(self):
+        class _Env:
+            cwd = "/other/sessions/worktree"
+            cwd_owner = ""  # unowned shared env — the leak-A shape
+
+        tt.record_session_cwd("sess-a", "/my/worktree")
+        resolved = tt._resolve_command_cwd(
+            workdir=None,
+            env=_Env(),
+            default_cwd="/config/default",
+            prev_owner="",
+            session_key="sess-a",
+        )
+        assert resolved == "/my/worktree"
+
+    def test_workdir_still_beats_the_record(self):
+        tt.record_session_cwd("sess-a", "/my/worktree")
+        resolved = tt._resolve_command_cwd(
+            workdir="/explicit/place",
+            env=None,
+            default_cwd="/config/default",
+            session_key="sess-a",
+        )
+        assert resolved == "/explicit/place"
+
+    def test_no_record_falls_back_to_legacy_env_cwd(self):
+        """Transition path: session with no record keeps prior behavior."""
+        class _Env:
+            cwd = "/live/dir"
+            cwd_owner = "sess-a"
+
+        resolved = tt._resolve_command_cwd(
+            workdir=None,
+            env=_Env(),
+            default_cwd="/config/default",
+            prev_owner="sess-a",
+            session_key="sess-a",
+        )
+        assert resolved == "/live/dir"
+
+    def test_no_record_no_env_falls_back_to_default(self):
+        resolved = tt._resolve_command_cwd(
+            workdir=None,
+            env=None,
+            default_cwd="/config/default",
+            session_key="sess-a",
+        )
+        assert resolved == "/config/default"
+
+    def test_cd_then_next_command_runs_in_the_new_dir(self, monkeypatch):
+        """E2E through terminal_tool: the record round-trips cd state."""
+        import json
+
+        class FakeEnv:
+            env = {}
+            cwd = "/start"
+            def execute(self, command, **kwargs):
+                self.last_cwd_arg = kwargs.get("cwd")
+                if command.startswith("cd "):
+                    self.cwd = command[3:]
+                return {"output": "", "returncode": 0}
+
+        fake = FakeEnv()
+        monkeypatch.setattr(tt, "_active_environments", {"sess-a": fake})
+        monkeypatch.setattr(tt, "_last_activity", {})
+        monkeypatch.setattr(
+            tt, "_get_env_config",
+            lambda: {"env_type": "local", "cwd": "/default", "timeout": 60,
+                     "lifetime_seconds": 3600},
+        )
+        monkeypatch.setattr(
+            tt, "_check_all_guards",
+            lambda command, env_type, **kwargs: {"approved": True},
+        )
+
+        json.loads(tt.terminal_tool(command="cd /project", task_id="sess-a"))
+        assert tt.get_session_cwd("sess-a") == "/project"
+        json.loads(tt.terminal_tool(command="pwd", task_id="sess-a"))
+        assert fake.last_cwd_arg == "/project"

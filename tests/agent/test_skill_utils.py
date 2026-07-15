@@ -166,8 +166,17 @@ def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch
     assert get_disabled_skill_names() == {"old-skill"}
 
     config_path.write_text("skills:\n  disabled: [new-skill]\n", encoding="utf-8")
+    # Force an mtime the cache is guaranteed to read as newer. The cache keys
+    # on (path, st_mtime_ns, st_size); both configs are the same byte length,
+    # so mtime is the only field that can invalidate the entry. `os.utime(...,
+    # None)` stamps the current time, which on filesystems with coarse (1s)
+    # mtime granularity can equal the first write's mtime when both writes land
+    # in the same second — leaving the stale entry cached and flaking the
+    # assertion. Bump a full second past the current value instead, which
+    # survives second-granularity truncation.
     import os
-    os.utime(config_path, None)
+    bumped_ns = config_path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(config_path, ns=(bumped_ns, bumped_ns))
 
     assert get_disabled_skill_names() == {"new-skill"}
 

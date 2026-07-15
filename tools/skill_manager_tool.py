@@ -288,19 +288,13 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     are visible — Python 3.11's rglob does not follow directory symlinks
     (the follow_symlinks parameter was added in 3.12).
     """
-    from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
-    import os
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
-        for root, _dirs, files in os.walk(skills_dir, followlinks=True):
-            if "SKILL.md" not in files:
-                continue
-            if os.path.basename(root) == name:
-                skill_md_path = Path(root) / "SKILL.md"
-                if is_excluded_skill_path(skill_md_path):
-                    continue
-                return {"path": Path(root)}
+        for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
+            if skill_md.parent.name == name:
+                return {"path": skill_md.parent}
     return None
 
 
@@ -316,7 +310,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
     matches: List[Tuple[str, Path]] = []
     try:
         from hermes_constants import get_default_hermes_root
-        from agent.skill_utils import is_excluded_skill_path
+        from agent.skill_utils import iter_skill_index_files
     except Exception:
         return matches
 
@@ -359,9 +353,7 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         if not skills_dir.is_dir():
             continue
         try:
-            for skill_md in skills_dir.rglob("SKILL.md"):
-                if is_excluded_skill_path(skill_md):
-                    continue
+            for skill_md in iter_skill_index_files(skills_dir, "SKILL.md"):
                 if skill_md.parent.name == name:
                     matches.append((profile_name, skill_md.parent))
                     break  # one match per profile is enough

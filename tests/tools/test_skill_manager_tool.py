@@ -12,6 +12,8 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
+    _find_skill,
+    _find_skill_in_other_profiles,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -196,6 +198,68 @@ class TestValidateFilePath:
         # Only SKILL.md gets the root-level exception, not arbitrary files.
         err = _validate_file_path("README.md")
         assert "File must be under one of:" in err
+
+
+# ---------------------------------------------------------------------------
+# Skill discovery — symlinked skill directories
+# ---------------------------------------------------------------------------
+
+
+class TestSkillDiscovery:
+    @staticmethod
+    def _make_skill(root: Path, name: str) -> Path:
+        skill_dir = root / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: A symlink test skill.\n---\n\n"
+            "# Symlink Test\n\nBody.\n"
+        )
+        return skill_dir
+
+    def test_find_skill_follows_direct_skill_symlink(self, tmp_path):
+        source = self._make_skill(tmp_path / "source", "source-skill")
+        link = tmp_path / "direct-skill"
+        try:
+            link.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        with _skill_dir(tmp_path):
+            result = _find_skill("direct-skill")
+
+        assert result == {"path": link}
+
+    def test_find_skill_follows_category_skill_symlink(self, tmp_path):
+        source = self._make_skill(tmp_path / "source", "source-skill")
+        link = tmp_path / "category" / "category-skill"
+        link.parent.mkdir()
+        try:
+            link.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        with _skill_dir(tmp_path):
+            result = _find_skill("category-skill")
+
+        assert result == {"path": link}
+
+    def test_find_skill_in_other_profiles_follows_skill_symlink(self, tmp_path):
+        hermes_root = tmp_path / "hermes"
+        active_skills = hermes_root / "profiles" / "active" / "skills"
+        other_skills = hermes_root / "profiles" / "other" / "skills"
+        source = self._make_skill(tmp_path / "source", "source-skill")
+        link = other_skills / "category" / "other-skill"
+        link.parent.mkdir(parents=True)
+        try:
+            link.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", active_skills), \
+             patch("hermes_constants.get_default_hermes_root", return_value=hermes_root):
+            result = _find_skill_in_other_profiles("other-skill")
+
+        assert result == [("other", link)]
 
 
 # ---------------------------------------------------------------------------

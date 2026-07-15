@@ -9,6 +9,7 @@ avoid retrying with a partial topic route that can render outside the lane.
 """
 
 import sys
+import socket
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1082,15 +1083,15 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
         async def get(self, _url):
             return _FakeResponse()
 
-    monkeypatch.setitem(
-        sys.modules,
-        "httpx",
-        SimpleNamespace(AsyncClient=_FakeAsyncClient),
-    )
     adapter._bot = SimpleNamespace(send_photo=mock_send_photo)
     import tools.url_safety as url_safety
 
     monkeypatch.setattr(url_safety, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(
+        url_safety,
+        "create_ssrf_safe_async_client",
+        lambda **_kwargs: _FakeAsyncClient(),
+    )
 
     result = await adapter.send_image(
         chat_id="123",
@@ -1110,6 +1111,61 @@ async def test_send_image_upload_dm_topic_reply_not_found_retry_drops_thread_id(
     assert call_log[2]["reply_to_message_id"] is None
     assert "message_thread_id" not in call_log[2]
     assert "direct_messages_topic_id" not in call_log[2]
+
+
+@pytest.mark.asyncio
+async def test_send_image_upload_fallback_blocks_connect_time_rebind(monkeypatch):
+    import httpcore
+    from httpcore._backends.auto import AutoBackend
+    from gateway.platforms.base import BasePlatformAdapter
+
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        send_photo=AsyncMock(side_effect=RuntimeError("force URL upload fallback"))
+    )
+
+    for proxy_var in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(proxy_var, raising=False)
+
+    answers = iter(("93.184.216.34", "169.254.169.254"))
+
+    def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+        ip = next(answers)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))]
+
+    connect_attempts = []
+
+    async def fake_connect_tcp(
+        _self,
+        host,
+        port,
+        timeout=None,
+        local_address=None,
+        socket_options=None,
+    ):
+        connect_attempts.append((host, port))
+        raise httpcore.ConnectError("stop before network")
+
+    async def fake_base_send_image(*_args, **_kwargs):
+        return SendResult(success=False, error="fallback")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
+    monkeypatch.setattr(BasePlatformAdapter, "send_image", fake_base_send_image)
+
+    await adapter.send_image(
+        chat_id="123",
+        image_url="http://rebind.example/photo.png",
+    )
+
+    assert connect_attempts == []
 
 
 @pytest.mark.asyncio

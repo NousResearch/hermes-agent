@@ -11,6 +11,7 @@ We mock the slack modules at import time to avoid collection errors.
 import asyncio
 import contextlib
 import os
+import socket
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
@@ -4085,6 +4086,59 @@ class TestSendImageSSRFGuards:
 
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert call_kwargs.get("thread_ts") == "parent_ts_789"
+
+
+class TestSendMultipleImagesSSRFGuards:
+    """Batch image downloads must revalidate DNS at TCP connect time."""
+
+    @pytest.mark.asyncio
+    async def test_batch_download_blocks_connect_time_rebind(
+        self, adapter, monkeypatch
+    ):
+        import httpcore
+        from httpcore._backends.auto import AutoBackend
+
+        for proxy_var in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            monkeypatch.delenv(proxy_var, raising=False)
+
+        answers = iter(("93.184.216.34", "169.254.169.254"))
+
+        def fake_getaddrinfo(_host, port, *_args, **_kwargs):
+            ip = next(answers)
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))
+            ]
+
+        connect_attempts = []
+
+        async def fake_connect_tcp(
+            _self,
+            host,
+            port,
+            timeout=None,
+            local_address=None,
+            socket_options=None,
+        ):
+            connect_attempts.append((host, port))
+            raise httpcore.ConnectError("stop before network")
+
+        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+        monkeypatch.setattr(AutoBackend, "connect_tcp", fake_connect_tcp)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        await adapter.send_multiple_images(
+            "C123", [("http://rebind.example/image.png", "image")]
+        )
+
+        assert connect_attempts == []
+        adapter._app.client.files_upload_v2.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

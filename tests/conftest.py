@@ -412,6 +412,17 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
+    yield
+
+    # setup_logging routes file handlers through a process-global
+    # QueueListener. HERMES_HOME changes for every test, so retaining those
+    # handlers would keep prior tmpdirs open and fan later records into stale
+    # homes. Tear the queue down before monkeypatch restores the environment.
+    logging_mod = sys.modules.get("hermes_logging")
+    if logging_mod is not None:
+        logging_mod._reset_queued_handlers()
+        logging_mod._logging_initialized = False
+
 
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.

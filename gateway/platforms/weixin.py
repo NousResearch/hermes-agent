@@ -979,6 +979,18 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
             # gibberish). Return empty so the central STT pipeline in
             # ``gateway/run.py`` produces the body from the downloaded
             # audio instead.
+            voice_item = item.get("voice_item") or {}
+            if not (voice_item.get("media") or {}):
+                # No raw audio to download — Weixin supplied only its own
+                # speech-to-text result. Use it, but preserve the voice
+                # origin so the agent can distinguish this from text the
+                # user typed (#65022).
+                voice_text = str(voice_item.get("text") or "")
+                if voice_text:
+                    return (
+                        "[Voice transcription provided by Weixin]\n"
+                        f"{voice_text}"
+                    )
             continue
     return ""
 

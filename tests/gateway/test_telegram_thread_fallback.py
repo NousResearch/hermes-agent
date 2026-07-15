@@ -1352,6 +1352,88 @@ async def test_send_continues_later_chunks_after_generic_timeout():
 
 
 @pytest.mark.asyncio
+async def test_send_preserves_deferred_timeout_if_later_chunk_fails(monkeypatch):
+    """A later retryable failure must not make an uncertain response retryable."""
+    import plugins.platforms.telegram.adapter as telegram_mod
+
+    adapter = _make_adapter()
+    monkeypatch.setattr(telegram_mod.asyncio, "sleep", AsyncMock())
+
+    attempted_texts = []
+
+    async def mock_send_message(**kwargs):
+        attempted_texts.append(kwargs["text"])
+        if len(attempted_texts) == 2:
+            raise FakeTimedOut("Timed out waiting for Telegram response")
+        if len(attempted_texts) >= 3:
+            raise FakeNetworkError("Connection reset")
+        return SimpleNamespace(message_id=1)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="A" * 9000)
+
+    assert len(attempted_texts) == 5
+    assert attempted_texts.count(attempted_texts[1]) == 1
+    assert attempted_texts[2] == attempted_texts[3] == attempted_texts[4]
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == "Timed out waiting for Telegram response"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("metadata", "later_error"),
+    [
+        (
+            {
+                "thread_id": "32343",
+                "telegram_dm_topic_created_for_send": True,
+            },
+            "Message thread not found",
+        ),
+        (
+            {
+                "thread_id": "20197",
+                "telegram_dm_topic_reply_fallback": True,
+                "telegram_reply_to_message_id": "462",
+            },
+            "Message to be replied not found",
+        ),
+    ],
+)
+async def test_send_preserves_deferred_timeout_over_direct_bad_request_failure(
+    metadata,
+    later_error,
+):
+    """Direct BadRequest failures must not replace an earlier uncertain timeout."""
+    adapter = _make_adapter()
+    attempted_texts = []
+
+    async def mock_send_message(**kwargs):
+        attempted_texts.append(kwargs["text"])
+        if len(attempted_texts) == 2:
+            raise FakeTimedOut("Timed out waiting for Telegram response")
+        if len(attempted_texts) == 3:
+            raise FakeBadRequest(later_error)
+        return SimpleNamespace(message_id=1)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="A" * 9000,
+        metadata=metadata,
+    )
+
+    assert len(attempted_texts) == 3
+    assert attempted_texts.count(attempted_texts[1]) == 1
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == "Timed out waiting for Telegram response"
+
+
+@pytest.mark.asyncio
 async def test_send_retries_wrapped_connect_timeout():
     """Retry TimedOut only when it wraps a TCP connect timeout.
 

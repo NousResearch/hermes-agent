@@ -452,6 +452,9 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
+    # s6 deploys on Linux, where CI remains authoritative for the 03730
+    # setgid contract. Darwin's temp filesystem strips setgid here, so local
+    # macOS runs can only assert the remaining 01730 permission bits.
     expected_event_mode = 0o1730 if sys.platform == "darwin" else 0o3730
     assert stat.S_IMODE(event.stat().st_mode) == expected_event_mode, (
         f"event/ mode = {oct(event.stat().st_mode)}, want {oct(expected_event_mode)}"

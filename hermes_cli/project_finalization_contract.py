@@ -1260,7 +1260,7 @@ def schedule_project_cleanup(
     generation: int,
     cleanup_after: str,
 ) -> ProjectFinalization:
-    """Schedule cleanup for a finalized project. Requires cleanup_after."""
+    """Schedule cleanup for a terminal project. Requires cleanup_after."""
     validate_generation(generation)
     validate_cleanup_after(cleanup_after)
 
@@ -1269,6 +1269,8 @@ def schedule_project_cleanup(
         row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         if row is None:
             raise ValueError("project finalization does not exist")
+        if row["terminal_outcome"] not in TERMINAL_OUTCOMES:
+            raise ValueError("terminal_outcome is required before cleanup scheduling")
         _validate_immutable_persisted_value(row, "cleanup_after", cleanup_after)
         if row["cleanup_after"] == cleanup_after:
             return _row_to_project_finalization(row)

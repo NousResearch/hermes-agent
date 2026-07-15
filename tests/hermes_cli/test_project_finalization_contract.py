@@ -491,15 +491,44 @@ def test_cleanup_schedule_rejects_invalid_or_naive_timestamp_before_mutation(cle
         _close_and_unlink(conn, path)
 
 
+def test_cleanup_schedule_rejects_open_generation_before_mutation():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        original = create_project_finalization(
+            conn, board_id="b", root_task_id="rt", final_checker_task_id="chk"
+        )
+
+        with pytest.raises(ValueError, match="terminal_outcome"):
+            schedule_project_cleanup(
+                conn,
+                board_id="b",
+                root_task_id="rt",
+                generation=1,
+                cleanup_after="2026-08-01T00:00:00Z",
+            )
+
+        assert get_project_finalization(conn, board_id="b", root_task_id="rt", generation=1) == original
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+    finally:
+        _close_and_unlink(conn, path)
+
+
+@pytest.mark.parametrize("outcome", TERMINAL_OUTCOMES)
 @pytest.mark.parametrize(
     "cleanup_after",
     ("2026-08-01T00:00:00Z", "2026-08-01T05:30:00+05:30"),
 )
-def test_cleanup_schedule_accepts_timezone_aware_iso8601_timestamp(cleanup_after: str):
+def test_cleanup_schedule_accepts_timezone_aware_iso8601_timestamp(
+    outcome: str, cleanup_after: str
+):
     conn, path = _make_temp_db()
     try:
         ensure_project_finalization_schema(conn)
         create_project_finalization(conn, board_id="b", root_task_id="rt", final_checker_task_id="chk")
+        terminal = record_terminal_outcome(
+            conn, board_id="b", root_task_id="rt", generation=1, outcome=outcome
+        )
 
         scheduled = schedule_project_cleanup(
             conn, board_id="b", root_task_id="rt", generation=1, cleanup_after=cleanup_after
@@ -507,6 +536,7 @@ def test_cleanup_schedule_accepts_timezone_aware_iso8601_timestamp(cleanup_after
 
         assert scheduled.cleanup_after == cleanup_after
         assert scheduled.state == "cleanup_scheduled"
+        assert scheduled.terminal_outcome == terminal.terminal_outcome
     finally:
         _close_and_unlink(conn, path)
 

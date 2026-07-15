@@ -1932,6 +1932,7 @@ export interface Translations {
     noProjects: string
     noSchedules: string
     invalidSchedule: string
+    invalidScheduleFiles: string
     loading: string
     retry: string
     examDate: string
@@ -1939,13 +1940,52 @@ export interface Translations {
     phase: string
     timezone: string
     range: string
+    phases: string
     events: string
+    noConcreteSessions: string
     goals: string
     source: string
     status: string
     readOnly: string
+    settings: string
+    setupTitle: string
+    setupDescription: string
+    vaultPath: string
+    chooseFolder: string
+    saveSettings: string
+    settingsSaved: string
+    newSessionRequired: string
+    selectProjectPrompt: string
+    todayTab: string
     calendarTab: string
     reviewTab: string
+    inboxTab: string
+    todayTitle: string
+    scheduledToday: string
+    noEventsToday: string
+    dueNow: string
+    completedToday: string
+    activityToday: string
+    evidenceStatus: string
+    evidenceCoverage: string
+    verifiedDimensions: string
+    independentEvidence: string
+    latestEvidence: string
+    noEvidence: string
+    attempts: string
+    nextAction: string
+    openReview: string
+    startWithAgent: string
+    noSuggestions: string
+    suggestionsTitle: string
+    suggestionsDescription: string
+    pendingChanges: string
+    recommendations: string
+    emptyInbox: string
+    proposalNotice: string
+    accept: string
+    reject: string
+    actions: string
     reviewTitle: string
     dueReviews: string
     newMaterial: string
@@ -1963,7 +2003,7 @@ export interface Translations {
     allLevels: string
     streak: string
     days: string
-    masteryProgress: string
+    spacingCoverage: string
     learningState: string
     prerequisites: string
     newConcepts: string

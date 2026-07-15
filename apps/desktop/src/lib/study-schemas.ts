@@ -291,6 +291,21 @@ function validatePhases(value: unknown, errors: string[]): void {
     if (start && end && end < start) {
       errors.push(`${path}.end must be on or after start`)
     }
+    if (
+      phase.effort_minutes !== undefined &&
+      (!Number.isInteger(phase.effort_minutes) || Number(phase.effort_minutes) < 1)
+    ) {
+      errors.push(`${path}.effort_minutes must be a positive integer`)
+    }
+    if (phase.goals !== undefined) {
+      validateStringArray(phase.goals, `${path}.goals`, errors, true)
+    }
+    if (phase.source_curricula !== undefined) {
+      validateStringArray(phase.source_curricula, `${path}.source_curricula`, errors, true)
+    }
+    if (phase.status !== undefined && (typeof phase.status !== 'string' || !phase.status.trim())) {
+      errors.push(`${path}.status must be a non-empty string`)
+    }
   })
 }
 
@@ -345,7 +360,11 @@ function validateEvents(
       }
       if (Number.isInteger(event.duration_minutes)) {
         const actualMinutes = Math.floor((end.getTime() - start.getTime()) / 60000)
-        if (actualMinutes !== event.duration_minutes) {
+        if (actualMinutes > 720) {
+          errors.push(
+            `${path} spans more than 720 minutes; use phases for long-term ranges and events only for concrete study sessions`
+          )
+        } else if (actualMinutes !== event.duration_minutes) {
           errors.push(`${path}.duration_minutes does not match start/end`)
         }
       }

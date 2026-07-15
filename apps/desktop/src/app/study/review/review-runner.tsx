@@ -1,13 +1,13 @@
-import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { getStudyReviewDetail, getStudyReviewStats, submitStudyReviewAttempt } from '@/hermes'
+import { getStudyOverview, getStudyReviewDetail, getStudyReviewStats, submitStudyReviewAttempt } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $studyOverview } from '@/store/study'
 import { $reviewCompletedToday, $reviewDueItems, $reviewStats } from '@/store/study-review'
 import type {
   StudyReviewDetail,
@@ -40,7 +40,6 @@ export function ReviewRunner({
   projectId
 }: ReviewRunnerProps) {
   const { t } = useI18n()
-  const completed = useStore($reviewCompletedToday)
   const [activeItem, setActiveItem] = useState(initialItem)
   const [detail, setDetail] = useState<null | StudyReviewDetail>(null)
   const [loading, setLoading] = useState(false)
@@ -109,16 +108,24 @@ export function ReviewRunner({
           self_confidence: confidence,
           transfer_level: 'execution',
           diagnoses: [],
+          evaluator: { kind: 'self', id: 'desktop-review' },
+          assistance: { level: 'independent', hints_used: 0 },
           session_id: sessionIdRef.current
         })
 
         const remaining = items.filter(item => item.path !== activeItem.path)
         const remainingAll = allItems.filter(item => item.path !== activeItem.path)
-        const nextCompleted = completed + submitted.completed_today_increment
+        const nextCompleted = submitted.completed_today
         $reviewDueItems.set(remainingAll)
         $reviewCompletedToday.set(nextCompleted)
         void getStudyReviewStats()
           .then(nextStats => $reviewStats.set(nextStats))
+          .catch(() => undefined)
+        void getStudyOverview(projectId)
+          .then(nextOverview => {
+            $studyOverview.set(nextOverview)
+            $reviewCompletedToday.set(nextOverview.completed_today)
+          })
           .catch(() => undefined)
         setLastResult(submitted)
 
@@ -135,18 +142,7 @@ export function ReviewRunner({
         setSubmitting(false)
       }
     },
-    [
-      activeItem.path,
-      allItems,
-      completed,
-      confidence,
-      elapsedSeconds,
-      items,
-      onSessionComplete,
-      openItem,
-      projectId,
-      response
-    ]
+    [activeItem.path, allItems, confidence, elapsedSeconds, items, onSessionComplete, openItem, projectId, response]
   )
 
   if (loading) {

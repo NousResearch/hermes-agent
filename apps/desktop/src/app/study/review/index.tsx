@@ -283,7 +283,7 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
   useEffect(() => {
     void loadData()
 
-    return () => resetReviewState()
+    return () => resetReviewState({ preserveCompletedToday: true })
   }, [loadData])
 
   useEffect(() => {
@@ -659,11 +659,11 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
                       <DueItemCard
                         item={item}
                         key={item.path}
-                        onStartAgentReview={onStartAgentReview ? () => handleStartAgentItemReview(item) : undefined}
                         onSelect={() => {
                           setSessionComplete(false)
                           setRunnerItem(item)
                         }}
+                        onStartAgentReview={onStartAgentReview ? () => handleStartAgentItemReview(item) : undefined}
                         onToggleSelected={() => handleToggleSelected(item)}
                         selected={selectedPaths.has(item.path)}
                       />
@@ -707,8 +707,8 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
             <div className="space-y-6">
               <div className="grid gap-4 sm:grid-cols-3">
                 <div className="rounded-2xl border bg-card/60 p-4 text-center">
-                  <div className="text-3xl font-bold">{stats.progress}%</div>
-                  <div className="mt-1 text-xs text-muted-foreground">{t.study.masteryProgress}</div>
+                  <div className="text-3xl font-bold">{stats.spacing_coverage}%</div>
+                  <div className="mt-1 text-xs text-muted-foreground">{t.study.spacingCoverage}</div>
                 </div>
                 <div className="rounded-2xl border bg-card/60 p-4 text-center">
                   <div className="text-3xl font-bold">{stats.review_streak}</div>

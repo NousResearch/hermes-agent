@@ -120,7 +120,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(2)
+    reportBackendContract(3)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -128,7 +128,7 @@ describe('reportBackendContract', () => {
   it('warns when the backend is behind (or reports no contract)', () => {
     reportBackendContract(undefined)
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    reportBackendContract(1)
+    reportBackendContract(2)
     expect(notifySpy).toHaveBeenCalledTimes(2)
   })
 
@@ -160,7 +160,7 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(2) // backend updated → satisfied, snooze cleared
+    reportBackendContract(3) // backend updated → satisfied, snooze cleared
     reportBackendContract(1) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })

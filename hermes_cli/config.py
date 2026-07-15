@@ -907,6 +907,10 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # StudyOS is profile-scoped and opt-in. The desktop setup flow writes the
+    # selected Obsidian Vault here; OBSIDIAN_VAULT_PATH remains a compatibility
+    # fallback for existing users only.
+    "study_os": {"vault_path": ""},
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

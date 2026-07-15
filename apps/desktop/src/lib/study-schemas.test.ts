@@ -118,6 +118,31 @@ describe('StudyOS schema guards', () => {
     expect(scheduleResult.data).toBe(schedule)
   })
 
+  it('accepts aggregate phase effort but rejects non-positive values', () => {
+    const projectResult = validateStudyProject(validStudyProject())
+    if (!projectResult.ok) {
+      throw new Error(projectResult.errors.join('\n'))
+    }
+    const schedule = validStudySchedule()
+    Object.assign(schedule.phases[0], {
+      effort_minutes: 3600,
+      goals: ['上午完成专题', '下午完成概率'],
+      source_curricula: ['空间解析几何', '概率'],
+      status: 'planned'
+    })
+
+    expect(validateStudySchedule(schedule, projectResult.data).ok).toBe(true)
+
+    Object.assign(schedule.phases[0], { effort_minutes: 0 })
+    const result = validateStudySchedule(schedule, projectResult.data)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) {
+      throw new Error('Expected invalid schedule')
+    }
+    expect(result.errors).toContain('phases[0].effort_minutes must be a positive integer')
+  })
+
   it('accepts domain-neutral v2 projects without exam placeholders', () => {
     const project = validLearningProjectV2()
     const result = validateStudyProject(project)
@@ -166,5 +191,26 @@ describe('StudyOS schema guards', () => {
       throw new Error('Expected invalid schedule')
     }
     expect(result.errors).toContain('events[0].duration_minutes does not match start/end')
+  })
+
+  it('guides long-term date ranges to phases instead of session events', () => {
+    const projectResult = validateStudyProject(validStudyProject())
+    if (!projectResult.ok) {
+      throw new Error(projectResult.errors.join('\n'))
+    }
+    const schedule = validStudySchedule()
+    schedule.events[0].start = '2026-07-16T08:00:00+08:00'
+    schedule.events[0].end = '2026-07-21T20:00:00+08:00'
+    schedule.events[0].duration_minutes = 3600
+
+    const result = validateStudySchedule(schedule, projectResult.data)
+
+    expect(result.ok).toBe(false)
+    if (result.ok) {
+      throw new Error('Expected invalid schedule')
+    }
+    expect(result.errors).toContain(
+      'events[0] spans more than 720 minutes; use phases for long-term ranges and events only for concrete study sessions'
+    )
   })
 })

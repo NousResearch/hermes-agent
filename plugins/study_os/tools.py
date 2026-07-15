@@ -59,19 +59,9 @@ def _get_env_value(name: str) -> str | None:
 
 
 def resolve_vault_path(raw: str | None = None) -> Path:
-    candidate = (raw or "").strip() or _get_env_value("OBSIDIAN_VAULT_PATH")
-    if not candidate:
-        cwd = os.getcwd()
-        if (Path(cwd) / ".obsidian").exists() or (Path(cwd) / "Box").exists():
-            candidate = cwd
-    if not candidate:
-        candidate = "~/Documents/Obsidian Vault"
-    path = Path(candidate).expanduser().resolve()
-    if not path.exists() or not path.is_dir():
-        raise FileNotFoundError(
-            f"Obsidian vault not found: {path}\n"
-            "Set OBSIDIAN_VAULT_PATH env var or pass vault_path explicitly."
-        )
+    from plugins.study_os.workspace import resolve_vault
+
+    path, _source = resolve_vault(raw)
     return path
 
 
@@ -1057,7 +1047,7 @@ STUDY_EXPORT_ANKI_CANDIDATES_SCHEMA = {
 _EBBINGHAUS_BASE = [1, 2, 4, 7, 15, 30, 60, 120]
 
 # review_level → interval weight multiplier.
-# Lower mastery → review more frequently; higher mastery → longer intervals.
+# Lower review level → review more frequently; higher level → longer intervals.
 _REVIEW_LEVEL_WEIGHT = {0: 0.5, 1: 0.7, 2: 1.0, 3: 1.3, 4: 1.6, 5: 2.5}
 
 
@@ -1879,6 +1869,8 @@ def _build_review_stats(vault: Path) -> dict[str, Any]:
     concept_levels: dict[str, list[int]] = {}
     concept_due: dict[str, int] = {}
     last_reviewed_dates: list[date] = []
+    reviewed_count = 0
+    due_count = 0
 
     for path in _iter_markdown_notes(vault, folder="examples"):
         note, _warnings = parse_note(path, vault, include_body=False)
@@ -1888,6 +1880,8 @@ def _build_review_stats(vault: Path) -> dict[str, Any]:
         fm = note.get("frontmatter", {})
         rl = int(fm.get("review_level", 0))
         by_level[rl] += 1
+        if int(fm.get("review_count", 0) or 0) > 0:
+            reviewed_count += 1
 
         lr = fm.get("last_reviewed_at")
         if lr:
@@ -1901,12 +1895,12 @@ def _build_review_stats(vault: Path) -> dict[str, Any]:
             concept_levels.setdefault(c_name, []).append(rl)
 
         if _is_due(note, today):
+            due_count += 1
             for c in note.get("concepts", []):
                 c_name = _strip_wikilink(c)
                 concept_due[c_name] = concept_due.get(c_name, 0) + 1
 
-    mastered = by_level.get(5, 0)
-    progress = round(mastered / total * 100, 1) if total > 0 else 0.0
+    spacing_coverage = round(reviewed_count / total * 100, 1) if total > 0 else 0.0
 
     concept_stats = {}
     for c, levels in concept_levels.items():
@@ -1931,12 +1925,16 @@ def _build_review_stats(vault: Path) -> dict[str, Any]:
                 break
 
     return {
+        "semantics": "spacing_coverage.v1",
         "built_at": datetime.now().isoformat(),
         "total_examples": total,
         "by_review_level": {str(k): v for k, v in sorted(by_level.items())},
-        "mastered": mastered,
-        "progress_pct": progress,
-        "due_today": sum(concept_due.values()),
+        "reviewed_examples": reviewed_count,
+        "spacing_coverage_pct": spacing_coverage,
+        # Compatibility alias for pre-v1 clients. This is spacing coverage,
+        # never a claim that level-5 notes prove competency.
+        "progress_pct": spacing_coverage,
+        "due_today": due_count,
         "review_streak_days": review_streak,
         "concepts": concept_stats,
     }
@@ -1947,7 +1945,10 @@ def _load_review_stats(vault: Path) -> dict[str, Any] | None:
     if not cache.exists():
         return None
     try:
-        return json.loads(_read_text(cache))
+        value = json.loads(_read_text(cache))
+        if not isinstance(value, dict) or value.get("semantics") != "spacing_coverage.v1":
+            return None
+        return value
     except Exception:
         return None
 
@@ -1972,7 +1973,7 @@ def handle_study_review_stats(args: dict[str, Any], **_kwargs) -> str:
 
 
 STUDY_REVIEW_STATS_SCHEMA = {
-    "description": "Aggregated review statistics cached in .StudyOS/review_stats.json. Returns progress, review_level distribution, due count, review streak, and per-concept averages. Cache auto-invalidates after study_record_review.",
+    "description": "Aggregated spaced-repetition statistics cached in .StudyOS/review_stats.json. Returns spacing coverage, review_level distribution, due count, review streak, and per-concept level averages. These fields describe review scheduling, not competency mastery. Cache auto-invalidates after study_record_review.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -2644,8 +2645,11 @@ def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
             project_id = validated["project_id"]
             manifest_path = _project_manifest_path(vault, project_id)
             _write_text(manifest_path, _json(validated))
-            active_path = _active_project_path(vault)
-            _write_text(active_path, _json({"project_id": project_id}))
+            from plugins.study_os.workspace import StudyWorkspace
+
+            workspace = StudyWorkspace(vault=vault, source="explicit")
+            workspace.select_project(project_id)
+            active_path = workspace.active_project_path
             return _ok(
                 {
                     "project": validated,
@@ -2655,9 +2659,11 @@ def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
             )
         if action == "select":
             project_id = _validate_project_id(args.get("project_id"))
-            manifest = _read_project_manifest(vault, project_id)
-            active_path = _active_project_path(vault)
-            _write_text(active_path, _json({"project_id": project_id}))
+            from plugins.study_os.workspace import StudyWorkspace
+
+            workspace = StudyWorkspace(vault=vault, source="explicit")
+            manifest = workspace.select_project(project_id)
+            active_path = workspace.active_project_path
             return _ok({"project": manifest, "active_path": active_path.relative_to(vault).as_posix()})
         if action == "status":
             manifest = _read_project_manifest(vault, args.get("project_id"))
@@ -2772,30 +2778,48 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
                 return _err("VALIDATION_FAILED", "Schedule validator returned invalid data")
             path = _schedule_path(vault, project["project_id"], validated["schedule_id"])
             _write_text(path, _json(validated))
-            return _ok({"schedule": validated, "path": path.relative_to(vault).as_posix()})
+            return _ok(
+                {
+                    "schedule": validated,
+                    "path": path.relative_to(vault).as_posix(),
+                    "registered": True,
+                    "panel_discovery": "automatic_on_next_refresh",
+                    "registration_policy": (
+                        "schedule.save is the registration step; do not write or register the file separately."
+                    ),
+                }
+            )
         if action == "list":
-            project = _read_project_manifest(vault, args.get("project_id"))
+            from plugins.study_os.workspace import StudyWorkspace
+
+            catalog = StudyWorkspace(
+                vault=vault,
+                source="explicit",
+            ).discover_schedules(args.get("project_id"))
             schedules = []
-            for path in sorted(_schedule_dir(vault, project["project_id"]).glob("*.json")):
-                try:
-                    data = _read_json_file(path)
-                    ok, validated = validate_study_schedule(data, project=project)
-                    if not ok or not isinstance(validated, dict):
-                        continue
-                    schedules.append(
-                        {
-                            "schedule_id": validated["schedule_id"],
-                            "project_id": validated["project_id"],
-                            "title": validated["title"],
-                            "timezone": validated["timezone"],
-                            "range": validated["range"],
-                            "event_count": len(validated.get("events", [])),
-                            "path": path.relative_to(vault).as_posix(),
-                        }
-                    )
-                except Exception:
-                    continue
-            return _ok({"project_id": project["project_id"], "schedules": schedules})
+            for artifact in catalog.schedules:
+                schedule = artifact.schedule
+                schedules.append(
+                    {
+                        "schedule_id": schedule["schedule_id"],
+                        "project_id": schedule["project_id"],
+                        "title": schedule["title"],
+                        "timezone": schedule["timezone"],
+                        "range": schedule["range"],
+                        "phase_count": len(schedule.get("phases", [])),
+                        "event_count": len(schedule.get("events", [])),
+                        "path": artifact.path,
+                    }
+                )
+            return _ok(
+                {
+                    "project_id": catalog.project_id,
+                    "schedules": schedules,
+                    "invalid_schedules": [
+                        issue.as_dict() for issue in catalog.invalid_schedules
+                    ],
+                }
+            )
         if action == "read":
             project = _read_project_manifest(vault, args.get("project_id"))
             schedule_id = _validate_schedule_id(args.get("schedule_id"))
@@ -3290,7 +3314,7 @@ STUDY_LESSON_SCHEMA = {
 }
 
 STUDY_SCHEDULE_SCHEMA = {
-    "description": "Template, validate, save, list, or read validated StudyOS schedule artifacts.",
+    "description": "Template, validate, save, list, or read StudyOS schedules. Use phases and optional phase.effort_minutes for long-term plans; events are optional concrete sessions.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -3298,7 +3322,10 @@ STUDY_SCHEDULE_SCHEMA = {
             "action": {"type": "string", "enum": ["template", "validate", "save", "list", "read"]},
             "project_id": {"type": "string"},
             "schedule_id": {"type": "string"},
-            "data": {"type": "object", "description": "study_schedule.v1 artifact for validate/save."},
+            "data": {
+                "type": "object",
+                "description": "study_schedule.v1 artifact for validate/save; long-term plans may use phases with an empty events array.",
+            },
         },
         "required": ["action"],
     },

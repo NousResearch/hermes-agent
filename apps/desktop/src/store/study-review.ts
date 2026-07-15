@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import type { StudyReviewItem, StudyReviewStatsResponse, StudyProfile } from '@/types/hermes'
+import type { StudyProfile, StudyReviewItem, StudyReviewStatsResponse } from '@/types/hermes'
 
 export type ReviewLoadState = 'idle' | 'loading' | 'ready' | 'error'
 
@@ -40,29 +40,43 @@ export const $filteredDueItems = computed(
         const matchesSubject = item.subject?.toLowerCase() === s
         const matchesTag = item.tags?.some(t => t.toLowerCase() === s)
         const matchesConcept = item.concepts?.some(c => c.toLowerCase().includes(s))
-        if (!matchesSubject && !matchesTag && !matchesConcept) return false
+        if (!matchesSubject && !matchesTag && !matchesConcept) {
+          return false
+        }
       }
-      if (level !== null && item.review_level !== level) return false
+      if (level !== null && item.review_level !== level) {
+        return false
+      }
       return true
     })
 )
 
 export const $allTags = computed([$reviewDueItems, $reviewSubjects], (items, subjects) => {
   const tagSet = new Set<string>()
-  for (const subject of subjects) tagSet.add(subject)
+  for (const subject of subjects) {
+    tagSet.add(subject)
+  }
   for (const item of items) {
-    if (item.subject) tagSet.add(item.subject)
-    for (const tag of item.tags || []) tagSet.add(tag)
-    for (const concept of item.concepts || []) tagSet.add(concept)
+    if (item.subject) {
+      tagSet.add(item.subject)
+    }
+    for (const tag of item.tags || []) {
+      tagSet.add(tag)
+    }
+    for (const concept of item.concepts || []) {
+      tagSet.add(concept)
+    }
   }
   return [...tagSet].sort()
 })
 
-export function resetReviewState(): void {
+export function resetReviewState(options: { preserveCompletedToday?: boolean } = {}): void {
   $reviewDueItems.set([])
   $reviewSubjects.set([])
   $reviewStats.set(null)
   $reviewLoadState.set('idle')
   $reviewError.set(null)
-  $reviewCompletedToday.set(0)
+  if (!options.preserveCompletedToday) {
+    $reviewCompletedToday.set(0)
+  }
 }

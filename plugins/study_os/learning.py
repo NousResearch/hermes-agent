@@ -13,20 +13,29 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugins.study_os.activities import activity_adapter_for
 from plugins.study_os import tools as legacy
+from plugins.study_os.interventions import InterventionOrchestrator, parse_as_of
 from plugins.study_os.schemas import (
     ATTEMPT_SCHEMA_VERSION,
+    DIAGNOSIS_OBJECT_EXAMPLE,
+    DIAGNOSIS_REQUIRED_FIELDS,
     EVIDENCE_DIMENSIONS,
+    INTERVENTION_POLICY_VERSION,
     PATTERN_PROPOSAL_SCHEMA_VERSION,
+    PLAN_PROPOSAL_SCHEMA_VERSION,
+    PLAN_PROPOSAL_STATUSES,
+    PROJECT_SCHEMA_VERSION,
+    validate_plan_proposal,
     validate_pattern_proposal,
     validate_study_attempt,
 )
 from plugins.study_os.runtime import LearningRuntime, LearningRuntimeError
 
 
-MASTERY_DIMENSIONS = EVIDENCE_DIMENSIONS
+EVIDENCE_DIMENSION_ORDER = EVIDENCE_DIMENSIONS
 
 ANSWER_HEADING_RE = re.compile(
     r"^#{1,6}\s*(?:答案|解析|解答|参考答案|solution|answer)\s*$",
@@ -77,10 +86,55 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _all_attempts(vault: Path, project_id: str) -> list[dict[str, Any]]:
     attempts: list[dict[str, Any]] = []
-    for path in sorted(_activity_dir(vault, project_id).glob("attempts-*.jsonl")):
+    resolved_project_id = legacy._validate_project_id(project_id)
+    root = (
+        vault / ".StudyOS" / "projects" / resolved_project_id / "activity"
+    ).resolve()
+    try:
+        root.relative_to(vault)
+    except ValueError as exc:
+        raise ValueError("Activity path escapes Vault") from exc
+    if not root.exists():
+        return attempts
+    for path in sorted(root.glob("attempts-*.jsonl")):
         attempts.extend(_read_jsonl(path))
     attempts.sort(key=lambda item: (str(item.get("occurred_at", "")), str(item.get("attempt_id", ""))))
     return attempts
+
+
+def _completed_reviews_for_local_date(
+    attempts: list[dict[str, Any]],
+    *,
+    timezone_name: str,
+    occurred_at: str,
+) -> int:
+    try:
+        timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"project timezone is not a valid IANA timezone: {timezone_name}") from exc
+    try:
+        target = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("occurred_at must be a valid ISO datetime") from exc
+    if target.tzinfo is None or target.utcoffset() is None:
+        raise ValueError("occurred_at must include a timezone offset")
+    target_date = target.astimezone(timezone).date()
+    completed = 0
+    for attempt in attempts:
+        value = attempt.get("occurred_at")
+        if attempt.get("activity_kind") != "review" or not isinstance(value, str):
+            continue
+        try:
+            resolved = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if (
+            resolved.tzinfo is not None
+            and resolved.utcoffset() is not None
+            and resolved.astimezone(timezone).date() == target_date
+        ):
+            completed += 1
+    return completed
 
 
 def _filtered_attempts(vault: Path, project_id: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
@@ -292,11 +346,17 @@ def handle_study_review_submission(args: dict[str, Any], **_kwargs: Any) -> str:
             legacy._write_text(note_path, original_note)
             _remove_attempt(vault, attempt_path, attempt_id)
             return legacy._err("REVIEW_SUBMISSION_FAILED", review_result.get("error", {}).get("message", "Review update failed"))
+        completed_today = _completed_reviews_for_local_date(
+            _all_attempts(vault, project["project_id"]),
+            timezone_name=str(project["timezone"]),
+            occurred_at=occurred_at,
+        )
         return legacy._ok(
             {
                 "attempt": attempt,
                 "review": review_result["data"],
                 "completed_today_increment": 1,
+                "completed_today": completed_today,
             },
             warnings + review_result.get("warnings", []),
         )
@@ -373,9 +433,212 @@ def _proposal_activity(action: str, args: dict[str, Any]) -> str:
     return legacy._err("INVALID_ACTION", f"Unsupported pattern_proposal action: {action}")
 
 
+def _plan_proposal_dir(vault: Path, project_id: str) -> Path:
+    path = legacy._project_dir(vault, project_id) / "plan-proposals"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _validated_plan_proposal(path: Path) -> dict[str, Any]:
+    proposal = legacy._read_json_file(path)
+    ok, validated = validate_plan_proposal(proposal)
+    if not ok:
+        validation_errors = validated if isinstance(validated, list) else ["Invalid Plan Proposal"]
+        raise ValueError(f"Invalid Plan Proposal {path.name}: {'; '.join(validation_errors)}")
+    if not isinstance(validated, dict):
+        raise ValueError("Plan Proposal validator returned invalid data")
+    return validated
+
+
+def _plan_proposal_activity(action: str, args: dict[str, Any]) -> str:
+    vault = legacy.resolve_vault_path(args.get("vault_path"))
+    project = _project(vault, args.get("project_id"))
+    root = _plan_proposal_dir(vault, project["project_id"])
+
+    if action == "save":
+        proposal = dict(args.get("proposal") or {})
+        proposal.setdefault("schema_version", PLAN_PROPOSAL_SCHEMA_VERSION)
+        proposal.setdefault("policy_version", INTERVENTION_POLICY_VERSION)
+        proposal.setdefault("project_id", project["project_id"])
+        proposal.setdefault("status", "proposed")
+        if proposal.get("status") != "proposed":
+            return legacy._err(
+                "INVALID_PROPOSAL_TRANSITION",
+                "plan_proposal.save only creates proposed items; use accept or reject for decisions",
+            )
+        ok, validated = validate_plan_proposal(proposal)
+        if not ok:
+            validation_errors = validated if isinstance(validated, list) else ["Invalid Plan Proposal"]
+            return legacy._err(
+                "VALIDATION_FAILED",
+                "; ".join(validation_errors),
+                {"errors": validation_errors},
+            )
+        if not isinstance(validated, dict):
+            return legacy._err("VALIDATION_FAILED", "Plan Proposal validator returned invalid data")
+        if validated["project_id"] != project["project_id"]:
+            return legacy._err("VALIDATION_FAILED", "proposal project_id must match project manifest")
+        expected_fingerprint = InterventionOrchestrator.fingerprint(
+            project=project,
+            items=validated["items"],
+        )
+        expected_proposal_id = f"plan-{expected_fingerprint[:20]}"
+        if (
+            validated["generation_fingerprint"] != expected_fingerprint
+            or validated["proposal_id"] != expected_proposal_id
+        ):
+            return legacy._err(
+                "PROPOSAL_FINGERPRINT_MISMATCH",
+                "Plan Proposal id or fingerprint does not match its semantic content",
+            )
+
+        if project.get("schema_version") == PROJECT_SCHEMA_VERSION:
+            known_objectives = {
+                str(item.get("objective_id"))
+                for item in project.get("objectives", [])
+                if isinstance(item, dict)
+            }
+            unknown_objectives = sorted(
+                {
+                    str(item.get("objective_id"))
+                    for item in validated["items"]
+                    if item.get("objective_id") not in known_objectives
+                }
+            )
+            if unknown_objectives:
+                return legacy._err(
+                    "OBJECTIVE_NOT_FOUND",
+                    "Proposal references unknown Objectives",
+                    {"objective_ids": unknown_objectives},
+                )
+
+        known_attempt_ids = {
+            str(attempt.get("attempt_id"))
+            for attempt in _all_attempts(vault, project["project_id"])
+        }
+        missing_attempt_ids = [
+            attempt_id
+            for attempt_id in validated["evidence_attempt_ids"]
+            if attempt_id not in known_attempt_ids
+        ]
+        if missing_attempt_ids:
+            return legacy._err(
+                "EVIDENCE_NOT_FOUND",
+                "Proposal references unknown attempts",
+                {"attempt_ids": missing_attempt_ids},
+            )
+
+        proposal_id = legacy._validate_schedule_id(validated["proposal_id"])
+        path = root / f"{proposal_id}.json"
+        if path.exists():
+            existing = _validated_plan_proposal(path)
+            if existing.get("generation_fingerprint") != validated["generation_fingerprint"]:
+                return legacy._err(
+                    "PROPOSAL_CONFLICT",
+                    f"Plan Proposal id is already used by different content: {proposal_id}",
+                )
+            return legacy._ok(
+                {
+                    "proposal": existing,
+                    "path": path.relative_to(vault).as_posix(),
+                    "created": False,
+                }
+            )
+        legacy._write_text(path, json.dumps(validated, ensure_ascii=False, indent=2) + "\n")
+        return legacy._ok(
+            {
+                "proposal": validated,
+                "path": path.relative_to(vault).as_posix(),
+                "created": True,
+            }
+        )
+
+    if action == "list":
+        status = str(args.get("status") or "").strip()
+        if status and status not in PLAN_PROPOSAL_STATUSES:
+            return legacy._err(
+                "VALIDATION_FAILED",
+                "status must be proposed, accepted, or rejected",
+            )
+        proposals = [
+            _validated_plan_proposal(path)
+            for path in sorted(root.glob("*.json"))
+        ]
+        if status:
+            proposals = [proposal for proposal in proposals if proposal.get("status") == status]
+        return legacy._ok({"project_id": project["project_id"], "proposals": proposals})
+
+    if action not in {"read", "accept", "reject"}:
+        return legacy._err(
+            "INVALID_ACTION",
+            f"Unsupported plan_proposal action: {action}",
+        )
+    proposal_id = legacy._validate_schedule_id(args.get("proposal_id"))
+    path = root / f"{proposal_id}.json"
+    if not path.exists():
+        return legacy._err(
+            "PROPOSAL_NOT_FOUND",
+            f"Plan Proposal not found: {proposal_id}",
+        )
+    proposal = _validated_plan_proposal(path)
+    if action == "read":
+        return legacy._ok({"proposal": proposal})
+
+    target_status = "accepted" if action == "accept" else "rejected"
+    if proposal["status"] == target_status:
+        return legacy._ok(
+            {
+                "proposal": proposal,
+                "path": path.relative_to(vault).as_posix(),
+                "changed": False,
+                "schedule_mutated": False,
+            }
+        )
+    if proposal["status"] != "proposed":
+        return legacy._err(
+            "INVALID_PROPOSAL_TRANSITION",
+            f"Cannot {action} a Plan Proposal with status {proposal['status']}",
+        )
+
+    decided_at = str(
+        args.get("decided_at")
+        or datetime.now().astimezone().isoformat(timespec="seconds")
+    )
+    decision: dict[str, Any] = {
+        "outcome": target_status,
+        "decided_at": decided_at,
+    }
+    note = str(args.get("decision_note") or "").strip()
+    if note:
+        decision["note"] = note
+    updated = {**proposal, "status": target_status, "decision": decision}
+    ok, validated = validate_plan_proposal(updated)
+    if not ok:
+        validation_errors = validated if isinstance(validated, list) else ["Invalid intervention decision"]
+        return legacy._err(
+            "VALIDATION_FAILED",
+            "; ".join(validation_errors),
+            {"errors": validation_errors},
+        )
+    if not isinstance(validated, dict):
+        return legacy._err("VALIDATION_FAILED", "Plan Proposal validator returned invalid data")
+    legacy._write_text(path, json.dumps(validated, ensure_ascii=False, indent=2) + "\n")
+    return legacy._ok(
+        {
+            "proposal": validated,
+            "path": path.relative_to(vault).as_posix(),
+            "changed": True,
+            "schedule_mutated": False,
+            "schedule_policy": (
+                "Acceptance records the learner decision only. To apply it, read the target Schedule, "
+                "include source_plan_proposal_id, then call schedule.validate and schedule.save explicitly."
+            ),
+        }
+    )
+
+
 _RESOURCE_HANDLERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "project": legacy.handle_study_project,
-    "schedule": legacy.handle_study_schedule,
     "learning_record": legacy.handle_study_learning_record,
     "decision": legacy.handle_study_decision,
     "lesson": legacy.handle_study_lesson,
@@ -385,7 +648,37 @@ _RESOURCE_HANDLERS: dict[str, Callable[[dict[str, Any]], str]] = {
 }
 
 
+def _schedule_request(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Adapt the public single-data envelope to the legacy schedule handler."""
+
+    request = dict(payload)
+    request["action"] = action
+    if action not in {"validate", "save"}:
+        return request
+
+    nested_schedule = payload.get("schedule")
+    nested_data = payload.get("data")
+    if isinstance(nested_schedule, dict):
+        schedule = dict(nested_schedule)
+    elif isinstance(nested_data, dict):
+        schedule = dict(nested_data)
+    else:
+        schedule = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"action", "data", "schedule", "vault_path"}
+        }
+
+    request = {"action": action, "data": schedule}
+    for key in ("vault_path", "project_id"):
+        if payload.get(key) is not None:
+            request[key] = payload[key]
+    return request
+
+
 def _dispatch_resource(resource: str, action: str, data: dict[str, Any]) -> str:
+    if resource == "schedule":
+        return legacy.handle_study_schedule(_schedule_request(action, data))
     if resource in _RESOURCE_HANDLERS:
         if resource not in {"session", "memory"}:
             data.setdefault("action", action)
@@ -434,10 +727,24 @@ def handle_study_activity(args: dict[str, Any], **_kwargs: Any) -> str:
         resource = str(args.get("resource") or "").strip()
         action = str(args.get("action") or "").strip()
         data = _payload(args)
+        session_id = str(_kwargs.get("session_id") or "")
+        if session_id.startswith("cron_") and (
+            (resource == "schedule" and action == "save")
+            or (
+                resource == "plan_proposal"
+                and action in {"accept", "reject"}
+            )
+        ):
+            return legacy._err(
+                "CRON_PROPOSAL_ONLY",
+                "Scheduled StudyOS runs may create Plan Proposals but cannot decide them or save Schedules.",
+            )
         if resource == "attempt":
             return _attempt_activity(action, data)
         if resource == "pattern_proposal":
             return _proposal_activity(action, data)
+        if resource == "plan_proposal":
+            return _plan_proposal_activity(action, data)
         return _dispatch_resource(resource, action, data)
     except ValueError as exc:
         return legacy._err("VALIDATION_FAILED", str(exc))
@@ -518,7 +825,7 @@ def _diagnosis(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     clusters.sort(key=lambda item: (-item["count"], item["concept"], item["kind"]))
     dimensions: dict[str, dict[str, Any]] = {}
-    for dimension in MASTERY_DIMENSIONS:
+    for dimension in EVIDENCE_DIMENSION_ORDER:
         items = dimension_attempts.get(dimension, [])
         successful = [item for item in items if _attempt_score(item) >= 0.8]
         independently_verified = [item for item in items if _independently_verified(item)]
@@ -560,7 +867,7 @@ def _diagnosis(attempts: list[dict[str, Any]]) -> dict[str, Any]:
             "low_confidence_success_attempt_ids": low_confidence_successes,
         },
         "transfer_evidence": dict(transfer),
-        "mastery_dimensions": dimensions,
+        "evidence_dimensions": dimensions,
         "score_delta_earlier_to_later": score_delta,
     }
 
@@ -586,7 +893,7 @@ def _recommendations(diagnosis: dict[str, Any]) -> list[dict[str, Any]]:
         })
     supported_dimensions = [
         (dimension, result)
-        for dimension, result in diagnosis["mastery_dimensions"].items()
+        for dimension, result in diagnosis["evidence_dimensions"].items()
         if result.get("verification_status") == "supported"
     ]
     if supported_dimensions:
@@ -599,7 +906,7 @@ def _recommendations(diagnosis: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence_attempt_ids": result["evidence_attempt_ids"],
         })
     transfer_verified = any(
-        diagnosis["mastery_dimensions"][dimension].get("verification_status") == "independent"
+        diagnosis["evidence_dimensions"][dimension].get("verification_status") == "independent"
         for dimension in ("near_transfer", "far_transfer")
     )
     if diagnosis["attempt_count"] and not transfer_verified:
@@ -700,6 +1007,24 @@ def _learning_runtime(vault: Path, project: dict[str, Any]) -> LearningRuntime:
     )
 
 
+def _intervention_orchestration(
+    vault: Path,
+    project: dict[str, Any],
+    data: dict[str, Any],
+) -> dict[str, Any]:
+    max_items = data.get("max_items", 5)
+    as_of = parse_as_of(data.get("as_of"))
+    orchestrator = InterventionOrchestrator(
+        project=project,
+        diagnosis_builder=_diagnosis,
+    )
+    return orchestrator.build(
+        attempts=_all_attempts(vault, project["project_id"]),
+        as_of=as_of,
+        max_items=max_items,
+    )
+
+
 def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
     """Derive diagnoses and next actions from immutable attempt evidence."""
     try:
@@ -726,6 +1051,26 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
             else:
                 output = runtime.finish(session_id=session_id)
             return legacy._ok({"project_id": project["project_id"], **output})
+        if action in {"prioritize", "propose_plan"}:
+            if scope != "project":
+                return legacy._err(
+                    "INVALID_SCOPE",
+                    f"{action} requires project scope so evidence age and all Objectives stay comparable",
+                )
+            orchestration = _intervention_orchestration(vault, project, data)
+            if action == "prioritize":
+                output = {"intervention_queue": orchestration["queue"]}
+            else:
+                output = {
+                    "proposal": orchestration["proposal"],
+                    "intervention_queue": orchestration["queue"],
+                    "policy": (
+                        "This call is read-only. Persist with plan_proposal.save; only a non-cron "
+                        "explicit accept/reject may decide it, and Schedule changes still require "
+                        "schedule.validate then schedule.save."
+                    ),
+                }
+            return legacy._ok({"project_id": project["project_id"], **output})
         if scope == "week" and not data.get("start_date") and not data.get("end_date"):
             today = date.today()
             data["start_date"] = (today - timedelta(days=today.weekday())).isoformat()
@@ -743,7 +1088,7 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
             weakest = diagnosis["concepts"][:3]
             strongest = sorted(diagnosis["concepts"], key=lambda item: (-item["average_score"], -item["attempt_count"]))[:3]
             transfer_verified = any(
-                diagnosis["mastery_dimensions"][dimension].get("verification_status") == "independent"
+                diagnosis["evidence_dimensions"][dimension].get("verification_status") == "independent"
                 for dimension in ("near_transfer", "far_transfer")
             )
             output = {
@@ -756,7 +1101,7 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
                     "unverified": [] if transfer_verified else ["transfer"],
                     "unverified_dimensions": [
                         dimension
-                        for dimension, result in diagnosis["mastery_dimensions"].items()
+                        for dimension, result in diagnosis["evidence_dimensions"].items()
                         if result.get("verification_status") != "independent"
                     ],
                     "evidence_attempt_ids": evidence_ids,
@@ -790,19 +1135,58 @@ def handle_study_coach(args: dict[str, Any], **_kwargs: Any) -> str:
         return legacy._err("STUDY_COACH_FAILED", str(exc))
 
 
+def _diagnoses_tool_schema() -> dict[str, Any]:
+    """Return an independent model-facing schema for evidence diagnoses."""
+
+    return {
+        "type": "array",
+        "description": (
+            "Observed diagnoses. Use [] when no specific diagnosis is supported. "
+            "Every non-empty item must be an object, never a string. "
+            f"Example: [{DIAGNOSIS_OBJECT_EXAMPLE}]"
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Short, stable diagnosis category such as condition_missed or concept_confusion.",
+                },
+                "evidence": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Specific observed response or reasoning that supports this diagnosis.",
+                },
+                "concept": {
+                    "type": "string",
+                    "description": "Optional concept most directly implicated by the evidence.",
+                },
+            },
+            "required": list(DIAGNOSIS_REQUIRED_FIELDS),
+        },
+    }
+
+
 STUDY_ACTIVITY_SCHEMA = {
-    "description": "Single StudyOS persistence interface. Record/query immutable attempts and manage projects, notes, reviews, concepts, curricula, schedules, records, lessons, and evidence-backed pattern proposals. For review.due, data supports explicit notes, subjects, tags, concepts, difficulties, levels, review_state, match, sort, and limit selectors. For a graded interactive review, prefer review.submit: it atomically stores the immutable attempt and advances spaced repetition. Put operation parameters in data.",
+    "description": "Single StudyOS persistence interface. Record/query immutable attempts and manage projects, notes, reviews, concepts, curricula, schedules, records, lessons, evidence-backed pattern proposals, and proactive Plan Proposals. For schedule.validate/save, data is the complete study_schedule.v1 object itself. Long-term date ranges belong in phases; phase.effort_minutes may hold aggregate workload, while events are optional concrete sessions and may be empty. schedule.save validates and writes the canonical file discovered by the StudyOS panel, so do not write or register a Schedule separately. plan_proposal supports save/list/read/accept/reject; accept records a decision but never mutates a Schedule. Cron sessions may save proposals but cannot decide them or save Schedules. For review.due, data supports explicit notes, subjects, tags, concepts, difficulties, levels, review_state, match, sort, and limit selectors. For a graded interactive review, prefer review.submit: it atomically stores the immutable attempt and advances spaced repetition. Put operation parameters in data.",
     "parameters": {
         "type": "object",
         "properties": {
             "resource": {
                 "type": "string",
-                "enum": ["attempt", "pattern_proposal", "project", "schedule", "note", "review", "error", "concept", "curriculum", "learning_record", "decision", "lesson", "prompt_context", "session", "memory"],
+                "enum": ["attempt", "pattern_proposal", "plan_proposal", "project", "schedule", "note", "review", "error", "concept", "curriculum", "learning_record", "decision", "lesson", "prompt_context", "session", "memory"],
             },
-            "action": {"type": "string", "description": "Resource action, e.g. attempt.record/list/read, review.due/submit/stats, concept.graph/queue/update_state, or project.init/status."},
+            "action": {"type": "string", "description": "Resource action, e.g. attempt.record/list/read, schedule.template/validate/save/list/read, review.due/submit/stats, concept.graph/queue/update_state, or project.init/status."},
             "vault_path": {"type": "string"},
             "project_id": {"type": "string"},
-            "data": {"type": "object", "description": "Parameters for the selected resource action."},
+            "data": {
+                "type": "object",
+                "description": "Payload for the selected resource action. For schedule.validate/save, put the complete Schedule directly here: data={schema_version, schedule_id, project_id, ...}. Use phases (optionally phase.effort_minutes) for long-term ranges and events only for concrete sessions. Do not nest it under data.schedule or a second data.",
+                "properties": {
+                    "diagnoses": _diagnoses_tool_schema(),
+                },
+            },
         },
         "required": ["resource", "action"],
     },
@@ -810,15 +1194,27 @@ STUDY_ACTIVITY_SCHEMA = {
 
 
 STUDY_COACH_SCHEMA = {
-    "description": "Evidence-driven StudyOS learning runtime and coach. Start, advance, inspect, or finish an explicit learning Session; diagnose attempts; summarize demonstrated change; recommend an intervention; generate a diagnostic-probe blueprint; or propose a versioned problem-pattern improvement. Starting never creates evidence, and advancing requires evaluator provenance.",
+    "description": "Evidence-driven StudyOS learning runtime and coach. Start, advance, inspect, or finish an explicit learning Session; diagnose attempts; summarize demonstrated change; recommend an intervention; prioritize a project-wide Intervention Queue; produce a read-only plan proposal; generate a diagnostic-probe blueprint; or propose a versioned problem-pattern improvement. Starting never creates evidence, advancing requires evaluator provenance, and proactive actions never persist or mutate a Schedule.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["start", "advance", "snapshot", "finish", "diagnose", "summarize", "recommend", "generate_probe", "propose_pattern"]},
+            "action": {"type": "string", "enum": ["start", "advance", "snapshot", "finish", "diagnose", "summarize", "recommend", "prioritize", "propose_plan", "generate_probe", "propose_pattern"]},
             "scope": {"type": "string", "enum": ["session", "concept", "week", "project"]},
             "vault_path": {"type": "string"},
             "project_id": {"type": "string"},
-            "data": {"type": "object", "description": "For lifecycle actions: session_id plus contract (start) or evaluated observation (advance). For evidence analysis: concept, pattern, item_id, result, start_date, or end_date filters."},
+            "data": {
+                "type": "object",
+                "description": "For lifecycle actions: session_id plus contract (start) or evaluated observation (advance). For evidence analysis: concept, pattern, item_id, result, start_date, or end_date filters. For prioritize/propose_plan: optional timezone-aware as_of and max_items (1-20).",
+                "properties": {
+                    "observation": {
+                        "type": "object",
+                        "description": "Evaluated learner observation for advance.",
+                        "properties": {
+                            "diagnoses": _diagnoses_tool_schema(),
+                        },
+                    },
+                },
+            },
         },
         "required": ["action"],
     },

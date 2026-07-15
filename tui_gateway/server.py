@@ -3090,7 +3090,8 @@ def _current_profile_name() -> str:
 # checkout), surfacing a one-click "update to align" prompt instead of failing
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
-DESKTOP_BACKEND_CONTRACT = 2
+# v3: adds StudyOS settings, active-project, overview, and proposal-decision REST contracts.
+DESKTOP_BACKEND_CONTRACT = 3
 
 
 def _session_info(agent, session: dict | None = None) -> dict:

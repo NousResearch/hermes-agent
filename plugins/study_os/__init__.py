@@ -40,7 +40,7 @@ def register(ctx) -> None:
     skills_root = Path(__file__).resolve().parent / "skills"
     for name, description in (
         ("study-os", "Route StudyOS learning workflows."),
-        ("study-plan", "Plan StudyOS projects and schedules."),
+        ("study-plan", "Plan StudyOS projects, interventions, and schedules."),
         ("study-organize", "Organize problems into StudyOS notes."),
         ("study-review", "Run StudyOS spaced repetition reviews."),
         ("study-teach", "Teach through StudyOS learning records."),

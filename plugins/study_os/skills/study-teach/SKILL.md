@@ -21,9 +21,11 @@ source notes, and never mutate system prompts.
    a time when checking transfer; do not reveal the answer before a genuine
    attempt.
 4. Record the response with `study_activity(resource="attempt", action="record")`
-   including result, confidence, concepts, transfer level, and a specific diagnosis. Create a
-   `learning_record` only for demonstrated, durable progress and include the
-   concrete evidence and source links.
+   including result, confidence, concepts, transfer level, and a specific
+   diagnosis. Use `diagnoses:[]` when none is supported; otherwise each item is
+   an object with non-empty `kind` and observed `evidence`, never a string.
+   Create a `learning_record` only for demonstrated, durable progress and
+   include the concrete evidence and source links.
 5. Hand a reusable note to `study-organize`, a visual need to `study-lesson`,
    and a strategic tradeoff to `study-grill`. Report what remains unverified.
 

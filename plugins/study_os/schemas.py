@@ -13,6 +13,9 @@ SCHEDULE_SCHEMA_VERSION = "study_schedule.v1"
 ATTEMPT_SCHEMA_VERSION = "study_attempt.v1"
 PATTERN_PROPOSAL_SCHEMA_VERSION = "study_pattern_proposal.v1"
 LEARNING_CONTRACT_SCHEMA_VERSION = "learning_contract.v1"
+INTERVENTION_QUEUE_SCHEMA_VERSION = "study_intervention_queue.v1"
+PLAN_PROPOSAL_SCHEMA_VERSION = "study_plan_proposal.v1"
+INTERVENTION_POLICY_VERSION = "study_intervention_policy.v1"
 
 PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
 SCHEDULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
@@ -32,7 +35,25 @@ TRANSFER_LEVELS = set(EVIDENCE_DIMENSIONS)
 LEARNING_MODES = {"execute", "learn", "assess", "research"}
 ASSISTANCE_LEVELS = {"direct", "guided", "hints_only", "independent"}
 EVALUATOR_KINDS = {"self", "agent", "program", "human"}
+DIAGNOSIS_REQUIRED_FIELDS = ("kind", "evidence")
+DIAGNOSIS_OBJECT_EXAMPLE = (
+    '{"kind":"condition_missed","evidence":"The required condition was not checked."}'
+)
 SOURCE_ANCHOR_KINDS = {"file", "paper", "book", "web", "dataset", "command", "commit", "note", "other"}
+INTERVENTION_KINDS = {
+    "evidence_probe",
+    "guided_repair",
+    "independence_probe",
+    "misconception_probe",
+    "prerequisite_repair",
+    "near_transfer_probe",
+    "far_transfer_probe",
+    "retention_probe",
+}
+PLAN_PROPOSAL_STATUSES = {"proposed", "accepted", "rejected"}
+VERIFICATION_STATUSES = {"unobserved", "developing", "supported", "independent"}
+EVIDENCE_AGE_BANDS = {"unobserved", "fresh", "aging", "stale"}
+DEADLINE_BANDS = {"none", "distant", "approaching", "near", "critical", "overdue"}
 
 DEFAULT_PROMPT_POLICY: dict[str, Any] = {
     "base_max_chars": 2000,
@@ -442,9 +463,12 @@ def validate_study_attempt(data: Any) -> tuple[bool, dict[str, Any] | list[str]]
         for index, diagnosis in enumerate(diagnoses):
             path = f"diagnoses[{index}]"
             if not isinstance(diagnosis, dict):
-                errors.append(f"{path} must be an object")
+                errors.append(
+                    f'{path} must be an object with non-empty string fields "kind" and "evidence"; '
+                    f"example: {DIAGNOSIS_OBJECT_EXAMPLE}"
+                )
                 continue
-            for key in ("kind", "evidence"):
+            for key in DIAGNOSIS_REQUIRED_FIELDS:
                 if not isinstance(diagnosis.get(key), str) or not diagnosis[key].strip():
                     errors.append(f"{path}.{key} must be a non-empty string")
 
@@ -478,6 +502,182 @@ def validate_pattern_proposal(data: Any) -> tuple[bool, dict[str, Any] | list[st
     return (False, errors) if errors else (True, proposal)
 
 
+def validate_plan_proposal(data: Any) -> tuple[bool, dict[str, Any] | list[str]]:
+    """Validate a durable proposal derived from an Intervention Queue.
+
+    A proposal may cite no attempts when its reason is precisely that an
+    Objective has never produced evidence.  It never represents an applied
+    Schedule change; acceptance is a recorded decision, not a hidden write to
+    the Schedule aggregate.
+    """
+
+    errors: list[str] = []
+    proposal = _require_mapping(data, "proposal", errors)
+    if proposal is None:
+        return False, errors
+
+    if proposal.get("schema_version") != PLAN_PROPOSAL_SCHEMA_VERSION:
+        errors.append(f"schema_version must be {PLAN_PROPOSAL_SCHEMA_VERSION}")
+    if proposal.get("policy_version") != INTERVENTION_POLICY_VERSION:
+        errors.append(f"policy_version must be {INTERVENTION_POLICY_VERSION}")
+    for key in ("proposal_id", "project_id", "title", "status", "rationale", "generation_fingerprint"):
+        _require_string(proposal, key, errors)
+
+    proposal_id = proposal.get("proposal_id")
+    if isinstance(proposal_id, str) and not SCHEDULE_ID_RE.match(proposal_id):
+        errors.append("proposal_id must match ^[a-z0-9][a-z0-9-]{2,79}$")
+    project_id = proposal.get("project_id")
+    if isinstance(project_id, str) and not PROJECT_ID_RE.match(project_id):
+        errors.append("project_id must match ^[a-z0-9][a-z0-9-]{2,63}$")
+    fingerprint = proposal.get("generation_fingerprint")
+    if isinstance(fingerprint, str) and not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        errors.append("generation_fingerprint must be a 64-character lowercase hex digest")
+    elif (
+        isinstance(fingerprint, str)
+        and isinstance(proposal_id, str)
+        and proposal_id != f"plan-{fingerprint[:20]}"
+    ):
+        errors.append("proposal_id must be derived from generation_fingerprint")
+    status = proposal.get("status")
+    if status not in PLAN_PROPOSAL_STATUSES:
+        errors.append("status must be proposed, accepted, or rejected")
+
+    _parse_datetime(proposal.get("created_at"), "created_at", errors)
+    _parse_datetime(proposal.get("as_of"), "as_of", errors)
+    proposal_evidence = _validate_string_array(
+        proposal.get("evidence_attempt_ids"),
+        "evidence_attempt_ids",
+        errors,
+    )
+    if len(proposal_evidence) != len(set(proposal_evidence)):
+        errors.append("evidence_attempt_ids must not contain duplicates")
+
+    items = proposal.get("items")
+    item_evidence: list[str] = []
+    if not isinstance(items, list) or not items:
+        errors.append("items must be a non-empty array")
+    else:
+        seen_intervention_ids: set[str] = set()
+        for index, item in enumerate(items):
+            path = f"items[{index}]"
+            if not isinstance(item, dict):
+                errors.append(f"{path} must be an object")
+                continue
+            for key in ("intervention_id", "objective_id", "capability", "kind", "evidence_dimension", "priority_band"):
+                if not isinstance(item.get(key), str) or not item[key].strip():
+                    errors.append(f"{path}.{key} must be a non-empty string")
+            intervention_id = item.get("intervention_id")
+            if isinstance(intervention_id, str):
+                if not SCHEDULE_ID_RE.match(intervention_id):
+                    errors.append(f"{path}.intervention_id must match ^[a-z0-9][a-z0-9-]{{2,79}}$")
+                elif intervention_id in seen_intervention_ids:
+                    errors.append(f"{path}.intervention_id must be unique")
+                else:
+                    seen_intervention_ids.add(intervention_id)
+            objective_id = item.get("objective_id")
+            if isinstance(objective_id, str) and not SCHEDULE_ID_RE.match(objective_id):
+                errors.append(f"{path}.objective_id must match ^[a-z0-9][a-z0-9-]{{2,79}}$")
+            if item.get("kind") not in INTERVENTION_KINDS:
+                errors.append(f"{path}.kind must be a supported intervention kind")
+            if item.get("evidence_dimension") not in TRANSFER_LEVELS:
+                errors.append(f"{path}.evidence_dimension must be a supported evidence dimension")
+
+            score = item.get("priority_score")
+            if (
+                not isinstance(score, (int, float))
+                or isinstance(score, bool)
+                or not 0 <= score <= 100
+            ):
+                errors.append(f"{path}.priority_score must be a number from 0 to 100")
+            elif item.get("priority_band") != (
+                "high" if score >= 80 else "medium" if score >= 55 else "low"
+            ):
+                errors.append(f"{path}.priority_band must match priority_score")
+
+            _validate_string_array(item.get("reasons"), f"{path}.reasons", errors, non_empty=True)
+            evidence_ids = _validate_string_array(
+                item.get("evidence_attempt_ids"),
+                f"{path}.evidence_attempt_ids",
+                errors,
+            )
+            if len(evidence_ids) != len(set(evidence_ids)):
+                errors.append(f"{path}.evidence_attempt_ids must not contain duplicates")
+            item_evidence.extend(evidence_ids)
+
+            factors = _require_mapping(item.get("reason_factors"), f"{path}.reason_factors", errors)
+            if factors is not None:
+                if factors.get("verification_status") not in VERIFICATION_STATUSES:
+                    errors.append(f"{path}.reason_factors.verification_status is invalid")
+                age = factors.get("evidence_age_days")
+                if age is not None and (
+                    not isinstance(age, int) or isinstance(age, bool) or age < 0
+                ):
+                    errors.append(f"{path}.reason_factors.evidence_age_days must be null or a non-negative integer")
+                if factors.get("evidence_age_band") not in EVIDENCE_AGE_BANDS:
+                    errors.append(f"{path}.reason_factors.evidence_age_band is invalid")
+                freshness = factors.get("freshness_threshold_days")
+                if not isinstance(freshness, int) or isinstance(freshness, bool) or freshness <= 0:
+                    errors.append(f"{path}.reason_factors.freshness_threshold_days must be a positive integer")
+                days_to_deadline = factors.get("days_to_deadline")
+                if days_to_deadline is not None and (
+                    not isinstance(days_to_deadline, int) or isinstance(days_to_deadline, bool)
+                ):
+                    errors.append(f"{path}.reason_factors.days_to_deadline must be null or an integer")
+                if factors.get("deadline_band") not in DEADLINE_BANDS:
+                    errors.append(f"{path}.reason_factors.deadline_band is invalid")
+
+            activity = _require_mapping(item.get("recommended_activity"), f"{path}.recommended_activity", errors)
+            if activity is not None:
+                if not isinstance(activity.get("activity_kind"), str) or not activity["activity_kind"].strip():
+                    errors.append(f"{path}.recommended_activity.activity_kind must be a non-empty string")
+                if activity.get("evidence_target") not in TRANSFER_LEVELS:
+                    errors.append(f"{path}.recommended_activity.evidence_target is invalid")
+                if activity.get("assistance_level") not in ASSISTANCE_LEVELS:
+                    errors.append(f"{path}.recommended_activity.assistance_level is invalid")
+                duration = activity.get("duration_minutes")
+                if not isinstance(duration, int) or isinstance(duration, bool) or not 1 <= duration <= 720:
+                    errors.append(f"{path}.recommended_activity.duration_minutes must be an integer from 1 to 720")
+                _validate_string_array(
+                    activity.get("success_criteria"),
+                    f"{path}.recommended_activity.success_criteria",
+                    errors,
+                    non_empty=True,
+                )
+                if "source_anchors" in activity:
+                    _validate_source_anchors(
+                        activity["source_anchors"],
+                        f"{path}.recommended_activity.source_anchors",
+                        errors,
+                    )
+
+    if set(item_evidence) != set(proposal_evidence):
+        errors.append("evidence_attempt_ids must equal the union of item evidence_attempt_ids")
+
+    schedule_change = _require_mapping(proposal.get("schedule_change"), "schedule_change", errors)
+    if schedule_change is not None:
+        if schedule_change.get("state") != "not_applied":
+            errors.append("schedule_change.state must be not_applied")
+        if schedule_change.get("requires_explicit_save") is not True:
+            errors.append("schedule_change.requires_explicit_save must be true")
+
+    decision = proposal.get("decision")
+    if status == "proposed":
+        if decision is not None:
+            errors.append("decision must be absent while status is proposed")
+    elif status in {"accepted", "rejected"}:
+        decision_data = _require_mapping(decision, "decision", errors)
+        if decision_data is not None:
+            if decision_data.get("outcome") != status:
+                errors.append("decision.outcome must match status")
+            _parse_datetime(decision_data.get("decided_at"), "decision.decided_at", errors)
+            if decision_data.get("note") is not None and (
+                not isinstance(decision_data["note"], str) or not decision_data["note"].strip()
+            ):
+                errors.append("decision.note must be a non-empty string when provided")
+
+    return (False, errors) if errors else (True, proposal)
+
+
 def _validate_phases(value: Any, errors: list[str]) -> None:
     if not isinstance(value, list):
         errors.append("phases must be an array")
@@ -494,6 +694,32 @@ def _validate_phases(value: Any, errors: list[str]) -> None:
         end = _parse_date(phase.get("end"), f"{path}.end", errors)
         if start and end and end < start:
             errors.append(f"{path}.end must be on or after start")
+        effort = phase.get("effort_minutes")
+        if effort is not None and (
+            not isinstance(effort, int)
+            or isinstance(effort, bool)
+            or effort < 1
+        ):
+            errors.append(f"{path}.effort_minutes must be a positive integer")
+        if "goals" in phase:
+            _validate_string_array(
+                phase.get("goals"),
+                f"{path}.goals",
+                errors,
+                non_empty=True,
+            )
+        if "source_curricula" in phase:
+            _validate_string_array(
+                phase.get("source_curricula"),
+                f"{path}.source_curricula",
+                errors,
+                non_empty=True,
+            )
+        status = phase.get("status")
+        if status is not None and (
+            not isinstance(status, str) or not status.strip()
+        ):
+            errors.append(f"{path}.status must be a non-empty string")
 
 
 def _validate_events(
@@ -536,7 +762,12 @@ def _validate_events(
                 errors.append(f"{path}.end must be after start")
             if isinstance(duration, int):
                 actual_minutes = int((end - start).total_seconds() // 60)
-                if actual_minutes != duration:
+                if actual_minutes > 720:
+                    errors.append(
+                        f"{path} spans more than 720 minutes; use phases for long-term ranges "
+                        "and events only for concrete study sessions"
+                    )
+                elif actual_minutes != duration:
                     errors.append(f"{path}.duration_minutes does not match start/end")
             if range_start and range_end and not (range_start <= start.date() <= range_end and range_start <= end.date() <= range_end):
                 errors.append(f"{path} must fall inside range")

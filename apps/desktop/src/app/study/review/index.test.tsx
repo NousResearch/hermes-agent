@@ -12,6 +12,7 @@ const getStudyReviewDetail = vi.fn()
 const getStudyReviewDue = vi.fn()
 const getStudyReviewQueue = vi.fn()
 const getStudyReviewStats = vi.fn()
+const getStudyOverview = vi.fn()
 const submitStudyReviewAttempt = vi.fn()
 const updateStudyProfile = vi.fn()
 
@@ -21,6 +22,7 @@ vi.mock('@/hermes', () => ({
   getStudyReviewDue: (params: unknown) => getStudyReviewDue(params),
   getStudyReviewQueue: () => getStudyReviewQueue(),
   getStudyReviewStats: () => getStudyReviewStats(),
+  getStudyOverview: (projectId: string) => getStudyOverview(projectId),
   submitStudyReviewAttempt: (submission: unknown) => submitStudyReviewAttempt(submission),
   updateStudyProfile: (profile: unknown) => updateStudyProfile(profile)
 }))
@@ -71,6 +73,8 @@ beforeEach(() => {
   getStudyReviewStats.mockResolvedValue({
     total: 1,
     by_level: { 2: 1 },
+    spacing_coverage: 0,
+    reviewed_count: 0,
     progress: 0,
     concept_stats: {},
     review_streak: 0,
@@ -85,6 +89,7 @@ beforeEach(() => {
     answer_markdown: '## 解析\n\n先判断参数符号。',
     has_answer: true
   })
+  getStudyOverview.mockResolvedValue({ completed_today: 1 })
   submitStudyReviewAttempt.mockResolvedValue({
     attempt: { attempt_id: 'att-1', item_id: reviewItem.path, result: 'correct', score: 1 },
     review: {
@@ -94,7 +99,8 @@ beforeEach(() => {
       review_level: { old: 2, new: 3 },
       review_count: { old: 1, new: 2 }
     },
-    completed_today_increment: 1
+    completed_today_increment: 1,
+    completed_today: 1
   })
 })
 
@@ -127,7 +133,9 @@ describe('ReviewView', () => {
           note: reviewItem.path,
           response: '先求导，再讨论参数符号。',
           result: 'correct',
-          self_confidence: 4
+          self_confidence: 4,
+          evaluator: { kind: 'self', id: 'desktop-review' },
+          assistance: { level: 'independent', hints_used: 0 }
         })
       )
     })

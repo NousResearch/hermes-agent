@@ -17,7 +17,9 @@ data={"intent":"assessment"})` or use `"error_analysis"`; never mutate system pr
    summarize or recommend but does not prove unobserved dimensions.
 2. For a new answer, classify outcome, reasoning, missed conditions, concept,
    pattern, confidence, and next action. Record an immutable `attempt` first;
-   log an `error` only when a concrete failure needs durable remediation.
+   log an `error` only when a concrete failure needs durable remediation. Each
+   non-empty `diagnoses` item must be an object with non-empty `kind` and
+   observed `evidence`, never a string label.
 3. Use `study_activity(resource="review", action="weekly_report")` for a
    requested weekly artifact. Create `review.create_task` only for an accepted
    follow-up, not every recommendation.

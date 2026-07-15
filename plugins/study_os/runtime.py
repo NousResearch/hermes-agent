@@ -374,7 +374,7 @@ class LearningRuntime:
     def _competency_snapshot(self, session: dict[str, Any]) -> dict[str, Any]:
         attempts = self._relevant_attempts(session)
         diagnosis = self.snapshot_builder(attempts)
-        dimensions = diagnosis.get("mastery_dimensions", {})
+        dimensions = diagnosis.get("evidence_dimensions", {})
         provenance: Counter[str] = Counter()
         for attempt in attempts:
             evaluator = attempt.get("evaluator")

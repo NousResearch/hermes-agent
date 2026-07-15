@@ -403,6 +403,35 @@ def test_study_schedule_schema_accepts_kaoyan_schedule():
     assert data_or_errors["unknown_future_field"] == "kept"
 
 
+def test_study_schedule_phase_supports_aggregate_effort_and_details():
+    from plugins.study_os.schemas import validate_study_schedule
+
+    schedule = _valid_study_schedule()
+    phase = schedule["phases"][0]
+    phase.update(
+        {
+            "effort_minutes": 3600,
+            "goals": ["上午完成专题", "下午完成概率"],
+            "source_curricula": ["空间解析几何", "概率"],
+            "status": "planned",
+        }
+    )
+
+    ok, validated = validate_study_schedule(
+        schedule,
+        project=_valid_study_project(),
+    )
+
+    assert ok is True
+    assert validated is schedule
+
+    phase["effort_minutes"] = 0
+    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+
+    assert ok is False
+    assert "phases[0].effort_minutes must be a positive integer" in errors
+
+
 def test_study_schedule_schema_rejects_datetime_without_timezone():
     from plugins.study_os.schemas import validate_study_schedule
 
@@ -427,6 +456,27 @@ def test_study_schedule_schema_rejects_mismatched_cross_midnight_duration():
 
     assert ok is False
     assert "events[0].duration_minutes does not match start/end" in errors
+
+
+def test_study_schedule_schema_guides_long_ranges_to_phases():
+    from plugins.study_os.schemas import validate_study_schedule
+
+    schedule = _valid_study_schedule()
+    schedule["events"][0].update(
+        {
+            "start": "2026-07-16T08:00:00+08:00",
+            "end": "2026-07-21T20:00:00+08:00",
+            "duration_minutes": 3600,
+        }
+    )
+
+    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+
+    assert ok is False
+    assert (
+        "events[0] spans more than 720 minutes; use phases for long-term ranges "
+        "and events only for concrete study sessions"
+    ) in errors
 
 
 def test_study_schedule_schema_rejects_unknown_project_subject():
@@ -475,6 +525,141 @@ def test_study_project_init_and_schedule_save(vault: Path):
     assert (vault / ".StudyOS" / "projects" / "general-learning" / "manifest.json").exists()
     assert (vault / ".StudyOS" / "projects" / "active.json").exists()
     assert (vault / ".StudyOS" / "projects" / "general-learning" / "schedules" / "general-learning-master-plan.json").exists()
+
+
+def test_study_schedule_list_reports_invalid_long_term_events(vault: Path):
+    from plugins.study_os.tools import handle_study_project, handle_study_schedule
+
+    initialized = _loads(
+        handle_study_project(
+            {
+                "vault_path": str(vault),
+                "action": "init",
+                "domain_pack": "kaoyan.v1",
+            }
+        )
+    )
+    assert initialized["ok"] is True
+    schedule = _valid_study_schedule()
+    schedule["events"][0].update(
+        {
+            "start": "2026-07-16T08:00:00+08:00",
+            "end": "2026-07-21T20:00:00+08:00",
+            "duration_minutes": 3600,
+        }
+    )
+    path = (
+        vault
+        / ".StudyOS"
+        / "projects"
+        / "kaoyan-2027"
+        / "schedules"
+        / "kaoyan-2027-master-plan.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(schedule, ensure_ascii=False), encoding="utf-8")
+
+    listed = _loads(
+        handle_study_schedule(
+            {
+                "vault_path": str(vault),
+                "action": "list",
+                "project_id": "kaoyan-2027",
+            }
+        )
+    )
+
+    assert listed["ok"] is True
+    assert listed["data"]["schedules"] == []
+    assert listed["data"]["invalid_schedules"][0]["schedule_id"] == (
+        "kaoyan-2027-master-plan"
+    )
+    assert listed["data"]["invalid_schedules"][0]["errors"] == [
+        "events[0].duration_minutes must be an integer from 1 to 720",
+        "events[0] spans more than 720 minutes; use phases for long-term ranges "
+        "and events only for concrete study sessions",
+    ]
+
+
+def test_study_activity_saves_schedule_without_double_data_wrapper(vault: Path):
+    from plugins.study_os.learning import handle_study_activity
+
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {"domain_pack": "kaoyan.v1"},
+            }
+        )
+    )
+    schedule = _valid_study_schedule()
+
+    validated = _loads(
+        handle_study_activity(
+            {
+                "resource": "schedule",
+                "action": "validate",
+                "vault_path": str(vault),
+                "project_id": schedule["project_id"],
+                "data": schedule,
+            }
+        )
+    )
+    saved = _loads(
+        handle_study_activity(
+            {
+                "resource": "schedule",
+                "action": "save",
+                "vault_path": str(vault),
+                "project_id": schedule["project_id"],
+                "data": schedule,
+            }
+        )
+    )
+
+    assert initialized["ok"] is True
+    assert validated["ok"] is True, validated
+    assert saved["ok"] is True, saved
+    assert saved["data"]["schedule"] == schedule
+    assert saved["data"]["registered"] is True
+    assert saved["data"]["panel_discovery"] == "automatic_on_next_refresh"
+    assert saved["data"]["path"] == (
+        ".StudyOS/projects/kaoyan-2027/schedules/kaoyan-2027-master-plan.json"
+    )
+
+
+@pytest.mark.parametrize("wrapper", ["data", "schedule"])
+def test_study_activity_tolerates_wrapped_schedule_payloads(vault: Path, wrapper: str):
+    from plugins.study_os.learning import handle_study_activity
+
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {"domain_pack": "kaoyan.v1"},
+            }
+        )
+    )
+    schedule = _valid_study_schedule()
+    validated = _loads(
+        handle_study_activity(
+            {
+                "resource": "schedule",
+                "action": "validate",
+                "vault_path": str(vault),
+                "project_id": schedule["project_id"],
+                "data": {wrapper: schedule},
+            }
+        )
+    )
+
+    assert initialized["ok"] is True
+    assert validated["ok"] is True, validated
+    assert validated["data"]["schedule"] == schedule
 
 
 def test_study_project_init_keeps_kaoyan_explicit(vault: Path):
@@ -958,7 +1143,7 @@ def test_study_os_skill_descriptions_and_budgets(monkeypatch):
         study_os.register(ctx)
         expected = {
             "study-os": ("Route StudyOS learning workflows.", 6000),
-            "study-plan": ("Plan StudyOS projects and schedules.", 9000),
+            "study-plan": ("Plan StudyOS projects, interventions, and schedules.", 9000),
             "study-organize": ("Organize problems into StudyOS notes.", 9000),
             "study-review": ("Run StudyOS spaced repetition reviews.", 9000),
             "study-teach": ("Teach through StudyOS learning records.", 9000),
@@ -981,6 +1166,10 @@ def test_study_os_skill_descriptions_and_budgets(monkeypatch):
             assert len(body) <= max_chars, name
             assert "study_activity" in body
             assert "mutate system prompts" in body
+            if name == "study-plan":
+                assert "Long-term roadmaps belong in `phases`" in body
+                assert "`events` may be empty" in body
+                assert "effort_minutes" in body
         for term in ("艾宾浩斯", "整理", "错题", "weekly", "curriculum", "考研", "engineering", "research", "LearningDecisionRecord", "LearningRecord", "VisualLesson"):
             assert term in all_text
     finally:
@@ -989,13 +1178,96 @@ def test_study_os_skill_descriptions_and_budgets(monkeypatch):
 
 
 def test_study_toolset_is_opt_in():
+    from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
     from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
 
     expected_tools = ["study_activity", "study_coach"]
 
     assert TOOLSETS["study"]["tools"] == expected_tools
+    assert "study" in _DEFAULT_OFF_TOOLSETS
     for tool in expected_tools:
         assert tool not in _HERMES_CORE_TOOLS
+
+
+def test_study_tool_schemas_expose_the_runtime_diagnosis_contract():
+    from plugins.study_os.learning import STUDY_ACTIVITY_SCHEMA, STUDY_COACH_SCHEMA
+
+    activity_diagnoses = STUDY_ACTIVITY_SCHEMA["parameters"]["properties"]["data"]["properties"]["diagnoses"]
+    coach_diagnoses = (
+        STUDY_COACH_SCHEMA["parameters"]["properties"]["data"]["properties"]["observation"]["properties"][
+            "diagnoses"
+        ]
+    )
+
+    for diagnoses in (activity_diagnoses, coach_diagnoses):
+        assert diagnoses["type"] == "array"
+        assert diagnoses["items"]["type"] == "object"
+        assert set(diagnoses["items"]["required"]) == {"kind", "evidence"}
+        assert diagnoses["items"]["properties"]["kind"]["type"] == "string"
+        assert diagnoses["items"]["properties"]["kind"]["minLength"] == 1
+        assert diagnoses["items"]["properties"]["evidence"]["type"] == "string"
+        assert diagnoses["items"]["properties"]["evidence"]["minLength"] == 1
+
+    assert "Long-term date ranges belong in phases" in STUDY_ACTIVITY_SCHEMA["description"]
+
+
+def test_study_activity_diagnosis_error_explains_how_to_retry(vault: Path):
+    from plugins.study_os.learning import handle_study_activity
+
+    initialized = _loads(
+        handle_study_activity(
+            {
+                "resource": "project",
+                "action": "init",
+                "vault_path": str(vault),
+                "data": {"project_id": "calculus-2027"},
+            }
+        )
+    )
+    invalid_data = {
+        "item_id": "derivative-sign-01",
+        "response": "Divided without checking the sign.",
+        "result": "incorrect",
+        "diagnoses": ["condition_missed"],
+    }
+    rejected = _loads(
+        handle_study_activity(
+            {
+                "resource": "attempt",
+                "action": "record",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": invalid_data,
+            }
+        )
+    )
+
+    assert initialized["ok"] is True
+    assert rejected["error"]["code"] == "VALIDATION_FAILED"
+    assert "kind" in rejected["error"]["message"]
+    assert "evidence" in rejected["error"]["message"]
+
+    corrected = _loads(
+        handle_study_activity(
+            {
+                "resource": "attempt",
+                "action": "record",
+                "vault_path": str(vault),
+                "project_id": "calculus-2027",
+                "data": {
+                    **invalid_data,
+                    "diagnoses": [
+                        {
+                            "kind": "condition_missed",
+                            "evidence": "The divisor sign was not established.",
+                        }
+                    ],
+                },
+            }
+        )
+    )
+
+    assert corrected["ok"] is True
 
 
 def test_study_activity_records_and_queries_immutable_attempts(vault: Path):
@@ -1183,7 +1455,7 @@ def test_study_coach_uses_evidence_for_summary_recommendation_and_pattern_propos
     assert summary["data"]["summary"]["evidence_attempt_ids"] == ["att-condition-001", "att-condition-002"]
     assert "transfer" in summary["data"]["summary"]["unverified"]
     assert summary["data"]["summary"]["attempt_count"] == 2
-    assert recommendation["data"]["diagnosis"]["mastery_dimensions"]["execution"]["attempt_count"] == 2
+    assert recommendation["data"]["diagnosis"]["evidence_dimensions"]["execution"]["attempt_count"] == 2
     interventions = {item["intervention"] for item in recommendation["data"]["recommendations"]}
     assert {"misconception_probe", "calibration_check", "near_transfer_probe"} <= interventions
     proposal = proposed["data"]["proposals"][0]
@@ -1817,6 +2089,7 @@ def test_review_runner_reads_hidden_answer_and_submits_one_compound_result(vault
     assert submitted["data"]["attempt"]["self_confidence"] == 4
     assert submitted["data"]["review"]["review_level"] == {"old": 2, "new": 3}
     assert submitted["data"]["completed_today_increment"] == 1
+    assert submitted["data"]["completed_today"] == 1
     updated = note.read_text(encoding="utf-8")
     assert "review_level: 3" in updated
     assert "review_count: 2" in updated

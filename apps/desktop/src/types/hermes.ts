@@ -99,6 +99,10 @@ export interface StudySchedulePhase {
   start: string
   end: string
   goal: string
+  effort_minutes?: number
+  goals?: string[]
+  source_curricula?: string[]
+  status?: string
 }
 
 export interface StudyScheduleEvent {
@@ -139,19 +143,125 @@ export interface StudyScheduleSummary {
     start: string
     end: string
   }
+  phase_count?: number
   event_count: number
+}
+
+export interface InvalidStudySchedule {
+  schedule_id: string
+  path: string
+  errors: string[]
 }
 
 export interface StudyProjectsResponse {
   configured: boolean
+  active_project_id?: string | null
   message?: string
   projects: StudyProject[]
   vault_path?: string
 }
 
+export interface StudySettings {
+  configured: boolean
+  vault_path: string | null
+  active_project_id: string | null
+  source?: string
+  study_toolset_enabled?: boolean
+  requires_new_session?: boolean
+}
+
+export interface StudyEvidenceDimension {
+  status: 'observed' | 'unobserved'
+  verification_status: 'unobserved' | 'developing' | 'supported' | 'independent'
+  attempt_count: number
+  average_score: number | null
+  evidence_attempt_ids: string[]
+  independently_verified_attempt_ids: string[]
+  assistance_provenance: Record<string, number>
+  evaluator_provenance: Record<string, number>
+}
+
+export interface StudyIntervention {
+  intervention_id: string
+  objective_id: string
+  capability: string
+  kind: string
+  evidence_dimension: string
+  priority_score: number
+  priority_band: 'high' | 'medium' | 'low'
+  reasons: string[]
+  evidence_attempt_ids: string[]
+  recommended_activity: {
+    activity_kind: string
+    evidence_target: string
+    assistance_level: string
+    duration_minutes: number
+    requires_evaluator: boolean
+    success_criteria: string[]
+  }
+}
+
+export interface StudyInterventionQueue {
+  project_id: string
+  generated_at: string
+  as_of: string
+  items: StudyIntervention[]
+  warnings: string[]
+}
+
+export interface StudyPlanProposal {
+  proposal_id: string
+  project_id: string
+  title: string
+  status: 'proposed' | 'accepted' | 'rejected'
+  rationale: string
+  created_at: string
+  items: StudyIntervention[]
+  schedule_change: {
+    state: string
+    requires_explicit_save: boolean
+  }
+}
+
+export interface StudyOverviewResponse {
+  configured: boolean
+  vault_path: string
+  active_project_id: string | null
+  project: StudyProject
+  as_of: string
+  today: string
+  today_events: Array<StudyScheduleEvent & { schedule_id: string; schedule_title: string }>
+  due_reviews: {
+    scope: 'vault'
+    count: number
+    subjects: string[]
+    items: StudyReviewItem[]
+  }
+  completed_today: number
+  activity_today: number
+  evidence: {
+    attempt_count: number
+    independently_verified_count: number
+    latest_evidence_at: string | null
+    dimensions: Record<string, StudyEvidenceDimension>
+    evaluator_provenance: Record<string, number>
+    assistance_provenance: Record<string, number>
+  }
+  intervention_queue: StudyInterventionQueue
+  pending_plan_proposals: StudyPlanProposal[]
+}
+
+export interface StudyPlanProposalDecisionResponse {
+  proposal: StudyPlanProposal
+  changed: boolean
+  schedule_mutated: false
+  schedule_policy?: string
+}
+
 export interface StudySchedulesResponse {
   project_id: string
   schedules: StudyScheduleSummary[]
+  invalid_schedules?: InvalidStudySchedule[]
 }
 
 export interface StudyReviewItem {
@@ -197,6 +307,15 @@ export interface StudyReviewSubmission {
   self_confidence: number
   transfer_level?: string
   diagnoses?: Array<Record<string, unknown>>
+  evaluator?: {
+    kind: 'agent' | 'human' | 'program' | 'self'
+    id?: string
+    confidence?: number
+  }
+  assistance?: {
+    level: 'guided' | 'hints_only' | 'independent'
+    hints_used?: number
+  }
   detail?: string
   session_id?: string
 }
@@ -217,11 +336,15 @@ export interface StudyReviewSubmissionResponse {
     review_count: { old: number; new: number }
   }
   completed_today_increment: number
+  completed_today: number
 }
 
 export interface StudyReviewStatsResponse {
   total: number
   by_level: Record<string, number>
+  spacing_coverage: number
+  reviewed_count: number
+  /** Compatibility alias for spacing_coverage. */
   progress: number
   concept_stats: Record<string, { avg: number; min: number; max: number; count: number; due: number }>
   review_streak: number

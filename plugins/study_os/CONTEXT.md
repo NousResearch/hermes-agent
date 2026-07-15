@@ -48,6 +48,14 @@ _Avoid_: Difficulty, review level
 An evidence-backed recommendation for what should happen next and why.
 _Avoid_: Generic advice, automatic schedule mutation
 
+**Intervention Queue**:
+A time-sensitive, derived ordering of the most valuable current Interventions across a Learning Project. It is a read model, not durable learning truth or a Schedule.
+_Avoid_: To-do list, fixed curriculum, mastery queue
+
+**Plan Proposal**:
+A durable candidate that preserves selected Interventions and their evidence provenance for Learner review. Acceptance records a decision; applying it to a Schedule remains a separate explicit act.
+_Avoid_: Automatic plan, scheduled task, accepted Schedule
+
 **Source Anchor**:
 A version-aware reference to the exact source location supporting an Activity or claim.
 _Avoid_: Unqualified URL, free-form citation
@@ -59,4 +67,3 @@ _Avoid_: Separate learning backend, prompt-only persona
 **Activity Adapter**:
 A Domain Pack implementation that proposes Activities and validates domain-specific Evidence Events at the StudyOS seam.
 _Avoid_: Tool wrapper, domain database
-

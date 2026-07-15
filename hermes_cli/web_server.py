@@ -8433,9 +8433,18 @@ def _study_validation_error(message: str) -> HTTPException:
 
 def _study_resolve_vault():
     try:
-        from plugins.study_os.tools import resolve_vault_path
+        from plugins.study_os.workspace import StudyWorkspace
 
-        return resolve_vault_path(None)
+        return StudyWorkspace.open().vault
+    except FileNotFoundError:
+        return None
+
+
+def _study_workspace():
+    try:
+        from plugins.study_os.workspace import StudyWorkspace
+
+        return StudyWorkspace.open()
     except FileNotFoundError:
         return None
 
@@ -8507,25 +8516,152 @@ def _study_read_schedule(vault: Path, project: Dict[str, Any], schedule_id: str)
 
 @app.get("/api/study/projects")
 async def list_study_projects():
-    vault = _study_resolve_vault()
-    if vault is None:
+    workspace = _study_workspace()
+    if workspace is None:
         return {"projects": [], "configured": False, "message": "StudyOS vault not configured"}
+    return {
+        "projects": workspace.list_projects(),
+        "configured": True,
+        "vault_path": str(workspace.vault),
+        "active_project_id": workspace.active_project_id(),
+    }
 
-    projects_root = (vault / ".StudyOS" / "projects").resolve()
-    if not projects_root.exists():
-        return {"projects": [], "configured": True, "vault_path": str(vault)}
 
-    projects: List[Dict[str, Any]] = []
-    for manifest_path in sorted(projects_root.glob("*/manifest.json")):
-        try:
-            project_id = manifest_path.parent.name
-            project = _study_read_project(vault, project_id)
-            projects.append(project)
-        except HTTPException:
-            continue
-        except Exception:
-            _log.exception("Failed to read StudyOS project manifest %s", manifest_path)
-    return {"projects": projects, "configured": True, "vault_path": str(vault)}
+class StudySettingsUpdate(BaseModel):
+    vault_path: str
+
+
+@app.get("/api/study/settings")
+async def get_study_settings():
+    config = load_config()
+    study_config = config.get("study_os")
+    configured_value = (
+        str(study_config.get("vault_path") or "").strip()
+        if isinstance(study_config, dict)
+        else ""
+    )
+    workspace = _study_workspace()
+    if workspace is None:
+        return {
+            "configured": False,
+            "vault_path": configured_value or None,
+            "active_project_id": None,
+        }
+    return {
+        "configured": True,
+        "vault_path": str(workspace.vault),
+        "source": workspace.source,
+        "active_project_id": workspace.active_project_id(),
+    }
+
+
+@app.put("/api/study/settings")
+async def put_study_settings(body: StudySettingsUpdate):
+    from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
+    from plugins.study_os.workspace import StudyWorkspace
+
+    raw_path = body.vault_path.strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="vault_path must be a non-empty directory")
+    try:
+        workspace = StudyWorkspace.open(raw_path, config={})
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    config = load_config()
+    study_config = config.setdefault("study_os", {})
+    if not isinstance(study_config, dict):
+        study_config = {}
+        config["study_os"] = study_config
+    study_config["vault_path"] = str(workspace.vault)
+
+    enabled = _get_platform_tools(config, "cli")
+    was_enabled = "study" in enabled
+    enabled.add("study")
+    _save_platform_tools(config, "cli", enabled)
+    save_config(config)
+
+    return {
+        "configured": True,
+        "vault_path": str(workspace.vault),
+        "active_project_id": workspace.active_project_id(),
+        "study_toolset_enabled": True,
+        "requires_new_session": not was_enabled,
+    }
+
+
+@app.put("/api/study/projects/{project_id}/active")
+async def put_study_active_project(project_id: str):
+    workspace = _study_workspace()
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    try:
+        project = workspace.select_project(project_id)
+    except ValueError as exc:
+        raise _study_validation_error(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"active_project_id": project["project_id"], "project": project}
+
+
+@app.get("/api/study/overview")
+async def get_study_overview(
+    project_id: Optional[str] = None,
+    as_of: Optional[str] = None,
+    review_limit: int = 10,
+    intervention_limit: int = 5,
+):
+    workspace = _study_workspace()
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    from plugins.study_os.overview import build_study_overview
+
+    try:
+        return build_study_overview(
+            workspace,
+            project_id=project_id,
+            as_of=as_of,
+            review_limit=review_limit,
+            intervention_limit=intervention_limit,
+        )
+    except ValueError as exc:
+        raise _study_validation_error(str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class StudyPlanProposalDecision(BaseModel):
+    action: str
+    decision_note: Optional[str] = None
+
+
+@app.put("/api/study/projects/{project_id}/plan-proposals/{proposal_id}")
+async def put_study_plan_proposal_decision(
+    project_id: str,
+    proposal_id: str,
+    body: StudyPlanProposalDecision,
+):
+    if body.action not in {"accept", "reject"}:
+        raise _study_validation_error("action must be accept or reject")
+    workspace = _study_workspace()
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="StudyOS vault not configured")
+    from plugins.study_os.learning import handle_study_activity
+
+    return _study_review_envelope(
+        handle_study_activity(
+            {
+                "resource": "plan_proposal",
+                "action": body.action,
+                "vault_path": str(workspace.vault),
+                "project_id": project_id,
+                "data": {
+                    "proposal_id": proposal_id,
+                    "decision_note": body.decision_note,
+                },
+            }
+        )
+    )
 
 
 @app.get("/api/study/projects/{project_id}")
@@ -8541,29 +8677,31 @@ async def list_study_schedules(project_id: str):
     vault = _study_resolve_vault()
     if vault is None:
         raise HTTPException(status_code=404, detail="StudyOS vault not configured")
-    project = _study_read_project(vault, project_id)
-    schedules_root = (_study_project_manifest_path(vault, project_id).parent / "schedules").resolve()
+    _study_read_project(vault, project_id)
+    from plugins.study_os.workspace import StudyWorkspace
+
+    catalog = StudyWorkspace(vault=vault, source="resolved").discover_schedules(project_id)
     schedules: List[Dict[str, Any]] = []
-    if schedules_root.exists():
-        for schedule_path in sorted(schedules_root.glob("*.json")):
-            try:
-                schedule_id = schedule_path.stem
-                schedule = _study_read_schedule(vault, project, schedule_id)
-                schedules.append(
-                    {
-                        "schedule_id": schedule["schedule_id"],
-                        "project_id": schedule["project_id"],
-                        "title": schedule["title"],
-                        "timezone": schedule["timezone"],
-                        "range": schedule["range"],
-                        "event_count": len(schedule.get("events", [])),
-                    }
-                )
-            except HTTPException:
-                continue
-            except Exception:
-                _log.exception("Failed to read StudyOS schedule %s", schedule_path)
-    return {"project_id": project_id, "schedules": schedules}
+    for artifact in catalog.schedules:
+        schedule = artifact.schedule
+        schedules.append(
+            {
+                "schedule_id": schedule["schedule_id"],
+                "project_id": schedule["project_id"],
+                "title": schedule["title"],
+                "timezone": schedule["timezone"],
+                "range": schedule["range"],
+                "phase_count": len(schedule.get("phases", [])),
+                "event_count": len(schedule.get("events", [])),
+            }
+        )
+    return {
+        "project_id": project_id,
+        "schedules": schedules,
+        "invalid_schedules": [
+            issue.as_dict() for issue in catalog.invalid_schedules
+        ],
+    }
 
 
 @app.get("/api/study/projects/{project_id}/schedules/{schedule_id}")
@@ -8673,6 +8811,8 @@ class StudyReviewSubmissionRequest(BaseModel):
     self_confidence: int
     transfer_level: str = "execution"
     diagnoses: Optional[List[Dict[str, Any]]] = None
+    evaluator: Optional[Dict[str, Any]] = None
+    assistance: Optional[Dict[str, Any]] = None
     detail: Optional[str] = None
     session_id: Optional[str] = None
 
@@ -8726,8 +8866,9 @@ async def get_study_review_stats(rebuild: bool = False):
     """
     vault = _study_resolve_vault()
     if vault is None:
-        return {"vault_path": None, "configured": False, "total": 0, "by_level": {}, "progress": 0.0,
-                "concept_stats": {}, "review_streak": 0, "due_count": 0, "cached": False}
+        return {"vault_path": None, "configured": False, "total": 0, "by_level": {}, "spacing_coverage": 0.0,
+                "reviewed_count": 0, "progress": 0.0, "concept_stats": {}, "review_streak": 0,
+                "due_count": 0, "cached": False}
 
     from plugins.study_os.tools import (
         _build_review_stats,
@@ -8742,6 +8883,8 @@ async def get_study_review_stats(rebuild: bool = False):
             "configured": True,
             "total": cached.get("total_examples", 0),
             "by_level": {int(k): v for k, v in cached.get("by_review_level", {}).items()},
+            "spacing_coverage": cached.get("spacing_coverage_pct", 0.0),
+            "reviewed_count": cached.get("reviewed_examples", 0),
             "progress": cached.get("progress_pct", 0.0),
             "concept_stats": cached.get("concepts", {}),
             "review_streak": cached.get("review_streak_days", 0),
@@ -8756,6 +8899,8 @@ async def get_study_review_stats(rebuild: bool = False):
         "configured": True,
         "total": stats.get("total_examples", 0),
         "by_level": {int(k): v for k, v in stats.get("by_review_level", {}).items()},
+        "spacing_coverage": stats.get("spacing_coverage_pct", 0.0),
+        "reviewed_count": stats.get("reviewed_examples", 0),
         "progress": stats.get("progress_pct", 0.0),
         "concept_stats": stats.get("concepts", {}),
         "review_streak": stats.get("review_streak_days", 0),

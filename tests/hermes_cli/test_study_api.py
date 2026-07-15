@@ -4,35 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+import yaml
+import pytest
+from fastapi import HTTPException
 
 from hermes_cli import web_server
-
-
-def _client():
-    prev_auth = getattr(web_server.app.state, "auth_required", None)
-    prev_host = getattr(web_server.app.state, "bound_host", None)
-    web_server.app.state.auth_required = False
-    web_server.app.state.bound_host = None
-    client = TestClient(web_server.app)
-    return client, prev_auth, prev_host
-
-
-def _restore(prev_auth, prev_host) -> None:
-    if prev_auth is None:
-        if hasattr(web_server.app.state, "auth_required"):
-            delattr(web_server.app.state, "auth_required")
-    else:
-        web_server.app.state.auth_required = prev_auth
-    if prev_host is None:
-        if hasattr(web_server.app.state, "bound_host"):
-            delattr(web_server.app.state, "bound_host")
-    else:
-        web_server.app.state.bound_host = prev_host
-
-
-def _get(client: TestClient, path: str):
-    return client.get(path, headers={"X-Hermes-Session-Token": web_server._SESSION_TOKEN})
 
 
 def _project() -> dict:
@@ -107,6 +83,10 @@ def _write_fixture_vault(vault: Path) -> None:
         json.dumps(_schedule(), ensure_ascii=False),
         encoding="utf-8",
     )
+    (project_dir.parent / "active.json").write_text(
+        json.dumps({"project_id": "kaoyan-2027"}),
+        encoding="utf-8",
+    )
 
 
 def _write_due_example(path: Path, title: str) -> None:
@@ -128,18 +108,12 @@ def _write_due_example(path: Path, title: str) -> None:
 def test_study_projects_unconfigured_vault(monkeypatch, tmp_path: Path):
     missing = tmp_path / "missing"
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(missing))
-    client, pa, ph = _client()
-    try:
-        response = _get(client, "/api/study/projects")
-        assert response.status_code == 200
-        assert response.json() == {
-            "projects": [],
-            "configured": False,
-            "message": "StudyOS vault not configured",
-        }
-    finally:
-        _restore(pa, ph)
-        client.close()
+    response = asyncio.run(web_server.list_study_projects())
+    assert response == {
+        "projects": [],
+        "configured": False,
+        "message": "StudyOS vault not configured",
+    }
 
 
 def test_study_api_lists_and_reads_schedule(monkeypatch, tmp_path: Path):
@@ -147,30 +121,69 @@ def test_study_api_lists_and_reads_schedule(monkeypatch, tmp_path: Path):
     vault.mkdir()
     _write_fixture_vault(vault)
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
-    client, pa, ph = _client()
-    try:
-        projects = _get(client, "/api/study/projects")
-        schedules = _get(client, "/api/study/projects/kaoyan-2027/schedules")
-        schedule = _get(client, "/api/study/projects/kaoyan-2027/schedules/kaoyan-2027-master-plan")
+    projects = asyncio.run(web_server.list_study_projects())
+    schedules = asyncio.run(web_server.list_study_schedules("kaoyan-2027"))
+    schedule = asyncio.run(
+        web_server.get_study_schedule("kaoyan-2027", "kaoyan-2027-master-plan")
+    )
 
-        assert projects.status_code == 200
-        assert projects.json()["projects"][0]["project_id"] == "kaoyan-2027"
-        assert schedules.status_code == 200
-        assert schedules.json()["schedules"] == [
-            {
-                "schedule_id": "kaoyan-2027-master-plan",
-                "project_id": "kaoyan-2027",
-                "title": "2027 考研数学基础阶段计划",
-                "timezone": "Asia/Shanghai",
-                "range": {"start": "2026-07-01", "end": "2026-07-31"},
-                "event_count": 1,
-            }
-        ]
-        assert schedule.status_code == 200
-        assert schedule.json()["events"][0]["title"] == "数学：导数定义整理"
-    finally:
-        _restore(pa, ph)
-        client.close()
+    assert projects["projects"][0]["project_id"] == "kaoyan-2027"
+    assert projects["active_project_id"] == "kaoyan-2027"
+    assert schedules["schedules"] == [
+        {
+            "schedule_id": "kaoyan-2027-master-plan",
+            "project_id": "kaoyan-2027",
+            "title": "2027 考研数学基础阶段计划",
+            "timezone": "Asia/Shanghai",
+            "range": {"start": "2026-07-01", "end": "2026-07-31"},
+            "phase_count": 1,
+            "event_count": 1,
+        }
+    ]
+    assert schedules["invalid_schedules"] == []
+    assert schedule["events"][0]["title"] == "数学：导数定义整理"
+
+
+def test_study_api_reports_invalid_schedule_instead_of_hiding_it(
+    monkeypatch,
+    tmp_path: Path,
+):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_fixture_vault(vault)
+    schedule_path = (
+        vault
+        / ".StudyOS"
+        / "projects"
+        / "kaoyan-2027"
+        / "schedules"
+        / "kaoyan-2027-master-plan.json"
+    )
+    invalid = _schedule()
+    invalid["events"][0].update(
+        {
+            "start": "2026-07-16T08:00:00+08:00",
+            "end": "2026-07-21T20:00:00+08:00",
+            "duration_minutes": 3600,
+        }
+    )
+    schedule_path.write_text(json.dumps(invalid, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    response = asyncio.run(web_server.list_study_schedules("kaoyan-2027"))
+
+    assert response["schedules"] == []
+    assert response["invalid_schedules"] == [
+        {
+            "schedule_id": "kaoyan-2027-master-plan",
+            "path": ".StudyOS/projects/kaoyan-2027/schedules/kaoyan-2027-master-plan.json",
+            "errors": [
+                "events[0].duration_minutes must be an integer from 1 to 720",
+                "events[0] spans more than 720 minutes; use phases for long-term ranges "
+                "and events only for concrete study sessions",
+            ],
+        }
+    ]
 
 
 def test_study_review_due_discovers_examples_in_subject_folders(monkeypatch, tmp_path: Path):
@@ -179,21 +192,15 @@ def test_study_review_due_discovers_examples_in_subject_folders(monkeypatch, tmp
     _write_due_example(vault / "OS" / "examples" / "process.md", "进程")
     _write_due_example(vault / "计组" / "examples" / "cache.md", "Cache")
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
-    client, pa, ph = _client()
-    try:
-        response = _get(client, "/api/study/review/due")
+    response = asyncio.run(web_server.get_study_due_reviews())
 
-        assert response.status_code == 200
-        assert response.json()["count"] == 2
-        assert {item["path"] for item in response.json()["due"]} == {
-            "OS/examples/process.md",
-            "计组/examples/cache.md",
-        }
-        assert {item["subject"] for item in response.json()["due"]} == {"OS", "计组"}
-        assert response.json()["subjects"] == ["OS", "计组"]
-    finally:
-        _restore(pa, ph)
-        client.close()
+    assert response["count"] == 2
+    assert {item["path"] for item in response["due"]} == {
+        "OS/examples/process.md",
+        "计组/examples/cache.md",
+    }
+    assert {item["subject"] for item in response["due"]} == {"OS", "计组"}
+    assert response["subjects"] == ["OS", "计组"]
 
 
 def test_study_api_rejects_path_traversal(monkeypatch, tmp_path: Path):
@@ -201,14 +208,10 @@ def test_study_api_rejects_path_traversal(monkeypatch, tmp_path: Path):
     vault.mkdir()
     _write_fixture_vault(vault)
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
-    client, pa, ph = _client()
-    try:
-        response = _get(client, "/api/study/projects/..%2Fescape")
-        assert response.status_code in {400, 404}
-        assert not (tmp_path / "escape").exists()
-    finally:
-        _restore(pa, ph)
-        client.close()
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(web_server.get_study_project("../escape"))
+    assert raised.value.status_code in {400, 404}
+    assert not (tmp_path / "escape").exists()
 
 
 def test_study_api_missing_schedule_returns_404(monkeypatch, tmp_path: Path):
@@ -216,13 +219,13 @@ def test_study_api_missing_schedule_returns_404(monkeypatch, tmp_path: Path):
     vault.mkdir()
     _write_fixture_vault(vault)
     monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
-    client, pa, ph = _client()
-    try:
-        response = _get(client, "/api/study/projects/kaoyan-2027/schedules/kaoyan-2027-missing")
-        assert response.status_code == 404
-    finally:
-        _restore(pa, ph)
-        client.close()
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(
+            web_server.get_study_schedule(
+                "kaoyan-2027", "kaoyan-2027-missing"
+            )
+        )
+    assert raised.value.status_code == 404
 
 
 def test_study_review_runner_endpoints_share_one_submission_contract(monkeypatch, tmp_path: Path):
@@ -260,3 +263,101 @@ def test_study_review_runner_endpoints_share_one_submission_contract(monkeypatch
     assert detail["answer_markdown"].startswith("## 答案")
     assert submitted["attempt"]["response"] == "按定义求导"
     assert submitted["review"]["review_level"] == {"old": 1, "new": 2}
+
+
+def test_study_settings_persist_profile_vault_and_opt_in_toolset(monkeypatch, tmp_path: Path):
+    home = tmp_path / "hermes"
+    vault = tmp_path / "vault"
+    home.mkdir()
+    vault.mkdir()
+    _write_fixture_vault(vault)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+
+    response = asyncio.run(
+        web_server.put_study_settings(
+            web_server.StudySettingsUpdate(vault_path=str(vault))
+        )
+    )
+    loaded = asyncio.run(web_server.get_study_settings())
+
+    assert response["configured"] is True
+    assert response["study_toolset_enabled"] is True
+    assert response["requires_new_session"] is True
+    assert loaded["vault_path"] == str(vault.resolve())
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["study_os"]["vault_path"] == str(vault.resolve())
+    assert "study" in config["platform_toolsets"]["cli"]
+
+
+def test_study_overview_and_plan_proposal_decision_share_active_project(
+    monkeypatch,
+    tmp_path: Path,
+):
+    from plugins.study_os.learning import handle_study_activity, handle_study_coach
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _write_fixture_vault(vault)
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+    proposed = json.loads(
+        handle_study_coach(
+            {
+                "action": "propose_plan",
+                "scope": "project",
+                "vault_path": str(vault),
+                "project_id": "kaoyan-2027",
+                "data": {"as_of": "2026-07-13T12:00:00+08:00"},
+            }
+        )
+    )["data"]["proposal"]
+    saved = json.loads(
+        handle_study_activity(
+            {
+                "resource": "plan_proposal",
+                "action": "save",
+                "vault_path": str(vault),
+                "project_id": "kaoyan-2027",
+                "data": {"proposal": proposed},
+            }
+        )
+    )
+    assert saved["ok"] is True
+    schedule_before = (
+        vault
+        / ".StudyOS"
+        / "projects"
+        / "kaoyan-2027"
+        / "schedules"
+        / "kaoyan-2027-master-plan.json"
+    ).read_text(encoding="utf-8")
+
+    overview = asyncio.run(
+        web_server.get_study_overview(as_of="2026-07-13T12:00:00+08:00")
+    )
+    decided = asyncio.run(
+        web_server.put_study_plan_proposal_decision(
+            "kaoyan-2027",
+            proposed["proposal_id"],
+            web_server.StudyPlanProposalDecision(action="accept"),
+        )
+    )
+    after = asyncio.run(
+        web_server.get_study_overview(as_of="2026-07-13T12:00:00+08:00")
+    )
+
+    assert overview["active_project_id"] == "kaoyan-2027"
+    assert [item["proposal_id"] for item in overview["pending_plan_proposals"]] == [
+        proposed["proposal_id"]
+    ]
+    assert decided["proposal"]["status"] == "accepted"
+    assert decided["schedule_mutated"] is False
+    assert after["pending_plan_proposals"] == []
+    assert schedule_before == (
+        vault
+        / ".StudyOS"
+        / "projects"
+        / "kaoyan-2027"
+        / "schedules"
+        / "kaoyan-2027-master-plan.json"
+    ).read_text(encoding="utf-8")

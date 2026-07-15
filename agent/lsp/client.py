@@ -165,6 +165,10 @@ class LSPClient:
         self._stderr_task: Optional[asyncio.Task] = None
         self._reader_task: Optional[asyncio.Task] = None
 
+        # Fire-and-forget request handler tasks — stored to prevent GC
+        # (Python 3.12+ warns on un-referenced tasks) and to allow cleanup.
+        self._request_tasks: Set[asyncio.Task] = set()
+
         # Request/response correlation
         self._next_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
@@ -318,7 +322,9 @@ class LSPClient:
                 if kind == "response":
                     self._dispatch_response(key, msg)
                 elif kind == "request":
-                    asyncio.create_task(self._dispatch_request(key, msg))
+                    task = asyncio.create_task(self._dispatch_request(key, msg))
+                    task.add_done_callback(self._request_tasks.discard)
+                    self._request_tasks.add(task)
                 elif kind == "notification":
                     self._dispatch_notification(key, msg)
                 else:
@@ -432,6 +438,11 @@ class LSPClient:
             await self._cleanup_process()
 
     async def _cleanup_process(self) -> None:
+        # Cancel any in-flight fire-and-forget request handler tasks.
+        for t in self._request_tasks:
+            if not t.done():
+                t.cancel()
+        self._request_tasks.clear()
         if self._reader_task is not None and not self._reader_task.done():
             self._reader_task.cancel()
             try:

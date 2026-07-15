@@ -230,9 +230,11 @@ class _FakePickerAdapter:
 
     def __init__(self):
         self.captured_callback = None
+        self.captured_providers = None
 
     async def send_model_picker(self, *, on_model_selected, **kwargs):
         self.captured_callback = on_model_selected
+        self.captured_providers = kwargs.get("providers")
         return types.SimpleNamespace(success=True)
 
 
@@ -261,3 +263,118 @@ async def test_picker_callback_refuses_disallowed_model(tmp_path, monkeypatch):
     reply = await adapter.captured_callback("12345", "evil/model", "openrouter")
     assert "not in this bot's allowed model list" in reply
     assert runner._session_model_overrides == {}
+
+
+@pytest.mark.asyncio
+async def test_picker_payload_is_filtered_and_uncapped(tmp_path, monkeypatch):
+    """The providers actually SENT to send_model_picker are pre-filtered to
+    the allowlist, and the catalog fetch is uncapped (max_models=None) so an
+    allowed model ranked outside the default top-N still surfaces.
+
+    Mutation guard: deleting the _filter_providers_to_allowlist call on the
+    picker path would pass every other test in this file — the picker test
+    above only exercises the callback."""
+    _setup_home(tmp_path, monkeypatch, allowlist=["allowed/one"])
+    captured_kwargs = {}
+
+    def _fake_list(**kw):
+        captured_kwargs.update(kw)
+        return [
+            {"slug": "openrouter", "name": "OpenRouter",
+             "models": ["allowed/one", "evil/model"], "total_models": 2},
+            {"slug": "other", "name": "Other",
+             "models": ["evil/model2"], "total_models": 1},
+        ]
+
+    monkeypatch.setattr("hermes_cli.model_switch.list_picker_providers", _fake_list)
+    adapter = _FakePickerAdapter()
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    sent = await runner._handle_model_command(_make_event("/model"))
+
+    assert sent is None
+    assert captured_kwargs.get("max_models") is None, (
+        "an active allowlist must uncap the catalog fetch so allowed models "
+        "outside the default top-N aren't silently dropped"
+    )
+    provs = adapter.captured_providers
+    assert provs is not None
+    assert [p["slug"] for p in provs] == ["openrouter"]  # empty provider dropped
+    assert provs[0]["models"] == ["allowed/one"]
+    assert provs[0]["total_models"] == 1  # "+N more" hint stays truthful
+
+
+@pytest.mark.asyncio
+async def test_blocked_model_never_reaches_expensive_confirm(tmp_path, monkeypatch):
+    """Gate ordering pin: a blocked switch is refused OUTRIGHT — the
+    expensive-model confirm prompt must not fire first. Moving the gate below
+    the cost confirm would go undetected by every other test here (they all
+    stub the warning off)."""
+    _setup_home(tmp_path, monkeypatch, allowlist=["allowed/one"])
+    monkeypatch.setattr(
+        "hermes_cli.model_cost_guard.expensive_model_warning",
+        lambda *a, **kw: types.SimpleNamespace(message="!!! EXPENSIVE MODEL WARNING !!!"),
+    )
+    runner = _make_runner()
+    confirm_calls = []
+
+    async def _fake_confirm(**kwargs):
+        confirm_calls.append(kwargs)
+        return kwargs.get("message")
+
+    runner._request_slash_confirm = _fake_confirm
+
+    result = await runner._handle_model_command(_make_event("/model evil/model"))
+
+    assert "not in this bot's allowed model list" in result
+    assert confirm_calls == [], "blocked model must never see the cost prompt"
+    assert runner._session_model_overrides == {}
+
+
+@pytest.mark.asyncio
+async def test_allowed_expensive_model_still_prompts(tmp_path, monkeypatch):
+    """Companion to the ordering pin above (proves the empty confirm_calls
+    there isn't vacuous): an ALLOWED expensive model does route through the
+    confirm gate."""
+    _setup_home(tmp_path, monkeypatch, allowlist=["allowed/one"])
+    monkeypatch.setattr(
+        "hermes_cli.model_cost_guard.expensive_model_warning",
+        lambda *a, **kw: types.SimpleNamespace(message="!!! EXPENSIVE MODEL WARNING !!!"),
+    )
+    runner = _make_runner()
+    confirm_calls = []
+
+    async def _fake_confirm(**kwargs):
+        confirm_calls.append(kwargs)
+        return kwargs.get("message")
+
+    runner._request_slash_confirm = _fake_confirm
+
+    result = await runner._handle_model_command(_make_event("/model allowed/one"))
+
+    assert len(confirm_calls) == 1
+    assert "EXPENSIVE MODEL WARNING" in result
+    # Prompted, not yet applied
+    assert runner._session_model_overrides == {}
+
+
+@pytest.mark.asyncio
+async def test_text_list_fallback_is_filtered(tmp_path, monkeypatch):
+    """Without a picker-capable adapter, bare /model falls back to the text
+    list — which must be filtered to the allowlist just like the picker."""
+    _setup_home(tmp_path, monkeypatch, allowlist=["allowed/one"])
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        lambda **kw: [
+            {"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+             "models": ["allowed/one", "evil/model"], "total_models": 2},
+        ],
+    )
+    runner = _make_runner()  # no adapters → text fallback
+
+    result = await runner._handle_model_command(_make_event("/model"))
+
+    assert result is not None
+    assert "allowed/one" in result
+    assert "evil/model" not in result

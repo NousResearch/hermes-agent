@@ -91,15 +91,29 @@ def _normalize_model_allowlist(raw: Any) -> frozenset[str]:
     The allowlist restricts which models ``/model`` may switch to. Missing,
     empty, or malformed config yields an EMPTY set, which the callers treat as
     "no restriction" — so the feature is opt-in and the default behaviour is
-    unchanged.
+    unchanged. Malformed shapes are logged so an operator who hand-edited
+    config.yaml (e.g. ``allowlist: some-model`` — a scalar, not a list) isn't
+    left believing a restriction is active when it isn't.
     """
-    if not isinstance(raw, (list, tuple)):
+    if raw is None:
         return frozenset()
-    return frozenset(
+    if not isinstance(raw, (list, tuple)):
+        logger.warning(
+            "model.allowlist is %s, expected a list of model ids — "
+            "treating as unrestricted",
+            type(raw).__name__,
+        )
+        return frozenset()
+    normalized = frozenset(
         item.strip().lower()
         for item in raw
         if isinstance(item, str) and item.strip()
     )
+    if raw and not normalized:
+        logger.warning(
+            "model.allowlist has no usable entries — treating as unrestricted"
+        )
+    return normalized
 
 
 def _model_blocked_by_allowlist(model: str, allowlist: frozenset[str]) -> bool:

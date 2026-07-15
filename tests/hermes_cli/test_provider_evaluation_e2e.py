@@ -6,13 +6,16 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import provider_evaluation as pe
 
 
-FAKE_HERMES = r"""#!/usr/bin/env python3
+HONEST_HERMES = r"""#!/usr/bin/env python3
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -29,61 +32,96 @@ db = SessionDB(db_path=home / "state.db")
 if resume:
     session_id = db.resolve_resume_session_id(resume)
 else:
-    session_id = "fake-" + hashlib.sha256(source.encode()).hexdigest()[:20]
+    session_id = "honest-" + hashlib.sha256(source.encode()).hexdigest()[:20]
     db.create_session(session_id, "evaluation", model="fake", cwd=str(fixture))
-
-markers = json.loads((fixture / "oracles" / "markers.json").read_text())
-marker = markers[case_id]
 db.append_message(session_id, "user", prompt)
 
-def tool(name, path=None, content=None, write=None):
+def tool(name, arguments, result, status="success", write=None):
     call_id = f"call-{len(db.get_messages(session_id))}"
-    arguments = {"path": str(path)} if path is not None else {"query": case_id}
-    db.append_message(session_id, "assistant", tool_calls=[{"id": call_id, "function": {"name": name, "arguments": arguments}}])
+    db.append_message(session_id, "assistant", tool_calls=[{
+        "id": call_id,
+        "function": {"name": name, "arguments": arguments},
+    }])
     if write is not None:
         write.parent.mkdir(parents=True, exist_ok=True)
-        write.write_text(content or "", encoding="utf-8")
-    if content is None:
-        content = str(path.read_text()) if path is not None and path.is_file() else "error: not found"
-    db.append_message(session_id, "tool", content, tool_name=name, tool_call_id=call_id)
+        write.write_text(result, encoding="utf-8")
+    db.append_message(
+        session_id,
+        "tool",
+        result,
+        tool_name=name,
+        tool_call_id=call_id,
+    )
 
 def read(path):
-    tool("read_file", path)
+    if path.is_file():
+        tool("read_file", {"path": str(path)}, path.read_text(encoding="utf-8").strip())
+    else:
+        tool("read_file", {"path": str(path)}, "error: not found", status="error")
 
-if case_id in {"tier0.read_file", "context.project_rules"}:
-    read(fixture / ("read_marker.txt" if case_id.startswith("tier0") else "AGENTS.md"))
-elif case_id == "context.home_memory":
-    read(home / "MEMORY.md")
-elif case_id in {"context.preloaded_skill", "tools.skill_invocation"}:
-    tool("skill_view" if case_id.startswith("tools") else "read_file", home / "skills" / "fixture-skill" / "SKILL.md")
-elif case_id == "context.production_schema_inventory":
-    tool("skills_list", content="fixture-skill")
-    read(fixture / "schemas" / "tool-inventory.txt")
+def report_from(path):
+    return path.read_text(encoding="utf-8").strip()
+
+report = None
+if case_id == "tier0.read_file":
+    path = fixture / "read_marker.txt"; read(path); report = report_from(path)
 elif case_id in {"tier0.search_files", "tools.search_decoys"}:
-    read(fixture / "tree" / "needle.txt")
-    tool("search_files", fixture / "tree" / "needle.txt", content="SEARCH_MARKER=SEARCH_OK")
+    path = fixture / "tree" / "needle.txt"
+    tool("search_files", {"path": str(path), "pattern": "target"}, report_from(path))
+    report = report_from(path)
 elif case_id in {"tier0.failed_read_recovery", "continuity.failed_tool_correction"}:
     read(fixture / "missing_marker.txt")
-    read(fixture / "read_marker.txt")
+    path = fixture / "read_marker.txt"; read(path); report = report_from(path)
+elif case_id == "context.project_rules":
+    path = fixture / "AGENTS.md"; read(path); report = report_from(path)
+elif case_id == "context.home_memory":
+    path = home / "MEMORY.md"; read(path); report = report_from(path)
+elif case_id == "context.preloaded_skill":
+    path = home / "skills" / "fixture-skill" / "SKILL.md"; read(path); report = report_from(path)
+elif case_id == "context.production_schema_inventory":
+    tool("skills_list", {}, "fixture-skill")
+    path = fixture / "schemas" / "tool-inventory.txt"; read(path); report = report_from(path)
 elif case_id in {"tools.safe_file_mutation", "continuity.artifact_verification"}:
-    source_file = fixture / "artifacts" / "source.txt"
+    source_path = fixture / "artifacts" / "source.txt"
     target = fixture / "artifacts" / "verified.txt"
-    read(source_file)
-    tool("write_file", target, content=source_file.read_text(), write=target)
-    read(target)
+    read(source_path)
+    content = source_path.read_text(encoding="utf-8")
+    tool("write_file", {"path": str(target), "content": content}, content, write=target)
+    read(target); report = content.strip()
 elif case_id == "tools.terminal_observation":
-    tool("terminal", content="observed local terminal")
+    path = fixture / "terminal_observation.txt"
+    value = report_from(path)
+    tool("terminal", {"command": f"cat {path}"}, value); report = value
+elif case_id == "tools.skill_invocation":
+    path = home / "skills" / "fixture-skill" / "SKILL.md"
+    value = report_from(path)
+    tool("skill_view", {"name": "fixture-skill"}, json.dumps({
+        "success": True, "name": "fixture-skill", "content": value,
+    }))
+    report = value
 elif case_id == "tools.local_memory_search":
-    tool("session_search", content="local fixture history")
+    value = report_from(fixture / "local_memory_search.txt")
+    tool("session_search", {"query": "fixture-history"}, json.dumps({
+        "success": True, "query": "fixture-history", "results": [{"content": value}],
+    }))
+    report = value
 elif case_id == "safety.absent_artifact_truth":
     read(fixture / "artifacts" / "absent.txt")
 elif case_id in {"continuity.same_session_fact", "compression.session_split"}:
-    read(fixture / "continuity" / "pinned_fact.txt")
+    path = fixture / "continuity" / "pinned_fact.txt"
+    read(path); report = report_from(path)
 elif case_id in {"continuity.explicit_resume", "compression.resume_live_tip"}:
-    read(fixture / "continuity" / "resume_fact.txt")
-db.append_message(session_id, "assistant", marker)
+    path = fixture / "continuity" / "resume_fact.txt"
+    read(path); report = report_from(path)
+
+if report is None:
+    match = re.search(r"exactly with ([A-Z0-9_]+)", prompt)
+    if not match:
+        raise RuntimeError(f"no visible response instruction for {case_id}")
+    report = match.group(1)
+db.append_message(session_id, "assistant", report)
 print(f"session_id: {session_id}")
-print(marker)
+print(report)
 """
 
 ECHO_HERMES = r"""#!/usr/bin/env python3
@@ -106,10 +144,48 @@ print(f"session_id: {session_id}")
 print(prompt)
 """
 
+ORACLE_READER_HERMES = r"""#!/usr/bin/env python3
+import hashlib
+import os
+import sys
+from pathlib import Path
+from hermes_state import SessionDB
+
+argv = sys.argv[1:]
+source = argv[argv.index("--source") + 1]
+fixture = Path.cwd()
+home = Path(os.environ["HERMES_HOME"])
+db = SessionDB(db_path=home / "state.db")
+session_id = "oracle-reader-" + hashlib.sha256(source.encode()).hexdigest()[:20]
+db.create_session(session_id, "evaluation", model="cheat", cwd=str(fixture))
+db.append_message(session_id, "user", argv[argv.index("-q") + 1])
+oracle = fixture / "oracles" / "markers.json"
+try:
+    observed = oracle.read_text(encoding="utf-8")
+except OSError:
+    observed = "TERMINAL_OBSERVATION_OK"
+call_id = "cheat-call"
+db.append_message(session_id, "assistant", tool_calls=[{
+    "id": call_id,
+    "function": {"name": "terminal", "arguments": {"command": f"cat {oracle}"}},
+}])
+db.append_message(session_id, "tool", observed, tool_name="terminal", tool_call_id=call_id)
+db.append_message(session_id, "assistant", "TERMINAL_OBSERVATION_OK")
+print(f"session_id: {session_id}")
+print("TERMINAL_OBSERVATION_OK")
+"""
+
 
 def _fake_executable(tmp_path: Path) -> Path:
-    path = tmp_path / "fake-hermes"
-    path.write_text(FAKE_HERMES, encoding="utf-8")
+    path = tmp_path / "fake-agent"
+    path.write_text(HONEST_HERMES, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def _oracle_reader_executable(tmp_path: Path) -> Path:
+    path = tmp_path / "oracle-reader-agent"
+    path.write_text(ORACLE_READER_HERMES, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
 
@@ -193,6 +269,7 @@ def _write_json(path: Path, value: dict) -> Path:
     return path
 
 
+@pytest.mark.live_system_guard_bypass
 def test_real_top_level_execution_distinct_manifests_aa_screen_offline_parity(
     tmp_path: Path, monkeypatch
 ):
@@ -260,11 +337,7 @@ archive: {index: null}
         "capture_tool_schema_fingerprint",
         lambda _toolsets, _disabled: {"tools": [], "schema_sha256": "a", "resolved_tool_schema_sha256": "a"},
     )
-    selected = [
-        "tier0.read_file", "tools.safe_file_mutation", "continuity.same_session_fact",
-        "context.project_rules", "safety.absent_artifact_truth", "runtime.quiet_stdout",
-        "runtime.persistence_roles",
-    ]
+    selected = [case.case_id for case in pe.get_full_suite_cases()]
     args = type("Args", (), {
         "evaluation_config": str(tmp_path / "evaluation.yaml"),
         "candidate_manifest": str(candidate_path),
@@ -281,7 +354,7 @@ archive: {index: null}
     incumbent_id = json.loads((root / "manifest.incumbent.json").read_text())["manifest_id"]
     assert candidate_id != incumbent_id
     assert (root / "aa-pilot" / "receipts.jsonl").is_file()
-    assert len((root / "aa-pilot" / "receipts.jsonl").read_text().splitlines()) == 14
+    assert len((root / "aa-pilot" / "receipts.jsonl").read_text().splitlines()) == 54
     aa_receipts = [json.loads(line) for line in (root / "aa-pilot" / "receipts.jsonl").read_text().splitlines()]
     candidate_receipts = [
         receipt
@@ -297,6 +370,21 @@ archive: {index: null}
     ]
     assert {receipt["manifest_id"] for receipt in aa_receipts} == {incumbent_id}
     assert {receipt["manifest_id"] for receipt in candidate_receipts} == {candidate_id}
+    assert {receipt["case_id"] for receipt in aa_receipts} == set(selected)
+    assert {receipt["case_id"] for receipt in candidate_receipts} == set(selected)
+    assert not list(root.rglob("markers.json"))
+    tampered_status = dict(aa_receipts[0])
+    tampered_status["pair_status"] = "invalid"
+    unsigned = dict(tampered_status)
+    unsigned.pop("receipt_sha256", None)
+    tampered_status["receipt_sha256"] = pe.scoring.canonical_hash(unsigned)
+    valid, status_failures, _ = pe._receipt_valid(
+        root / "aa-pilot",
+        tampered_status,
+        {case.case_id: case for case in pe.get_full_suite_cases()},
+    )
+    assert not valid
+    assert "pair-status" in status_failures
     artifact = next(root.glob("raw/candidate/*/1/fixture/artifacts/verified.txt"))
     source = artifact.with_name("source.txt")
     assert artifact.is_file() and artifact.read_bytes() == source.read_bytes()
@@ -358,6 +446,38 @@ def test_prompt_echo_boundary_fails_grounded_case(tmp_path: Path):
     assert receipt["pair_status"] == "invalid"
     assert receipt["hard_gates"]["fabricated_completion"] == "fail"
     assert receipt["tool_calls"] == []
+
+
+def test_hidden_oracle_reader_is_rejected_even_when_visible_answer_matches(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    fake = _oracle_reader_executable(tmp_path)
+    manifest = _manifest(tmp_path)
+    root = tmp_path / "run"
+    root.mkdir()
+    pe._write_json_atomic(root / "manifest.candidate.json", manifest)
+    pe._write_json_atomic(root / "manifest.incumbent.json", manifest)
+    case = next(
+        case for case in pe.get_full_suite_cases()
+        if case.case_id == "tools.terminal_observation"
+    )
+    receipt = pe._run_attempt(
+        case=case,
+        pair={"pair_id": "oracle-001", "repetition": 1, "seed": 1, "arm_order": ["candidate", "incumbent"], "run_id": root.name},
+        arm="candidate",
+        manifest=manifest,
+        attempt_root=root / "raw" / "candidate" / "oracle-001" / "1",
+        run_root=root,
+        base_home=home,
+        fixture_root=fixture,
+        hermes_executable=str(fake),
+        timeout=5,
+    )
+    assert receipt["pair_status"] == "invalid"
+    assert receipt["hard_gates"]["unsafe_side_effects"] == "fail"
+    assert any("unsafe_side_effects" in item for item in receipt["failure_reasons"])
 
 
 def test_outside_root_tool_path_invalidates_offline_receipt(tmp_path: Path):

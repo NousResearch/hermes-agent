@@ -130,7 +130,7 @@ The executable policy is keyless local only: network/browser tools are
 disabled and checked in receipts, while external services are not evaluated.
 
 Supply complete, clean stack manifests and the standalone evaluation config
-shown in [`candidate-evaluation-cli-full-v1.yaml`](../examples/candidate-evaluation-cli-full-v1.yaml):
+shown in [`candidate-evaluation-cli-full-v1.yaml`](../../../docs/examples/candidate-evaluation-cli-full-v1.yaml):
 
 ```bash
 hermes providers evaluate \
@@ -150,6 +150,11 @@ Compression is explicitly deferred from PR-1. The lane measures grounded
 context/tool behavior and multi-turn continuity, but records no claim that a
 real compression event occurred. Wall time is measured per attempt for
 diagnostics; no usage or performance ranking is awarded.
+
+The checked-in evaluator E2E traverses `run_evaluation(execute=True)` across
+all 27 catalog cases with an evidence-derived fake provider; it does not read
+or create a hidden answer key. Production execution remains the configured
+27 cases at three repetitions.
 
 `hermes providers score --run-dir RUN_DIR` is offline. It recalculates the
 deterministic oracles from `receipts.jsonl`, SessionDB exports, raw hashes, and

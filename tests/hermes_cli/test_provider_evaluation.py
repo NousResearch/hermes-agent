@@ -291,6 +291,171 @@ def test_consecutive_tool_results_are_valid_session_structure():
     assert pe._tool_adjacency_valid(messages)
 
 
+@pytest.mark.parametrize(
+    ("case_id", "tool_name", "result"),
+    [
+        ("tools.terminal_observation", "terminal", "TERMINAL_OBSERVATION_OK"),
+        ("tools.local_memory_search", "session_search", "MEMORY_SEARCH_OK"),
+    ],
+)
+def test_tool_only_cases_ground_successful_observed_results(
+    tmp_path: Path, case_id: str, tool_name: str, result: str
+):
+    cases = {case.case_id: case for case in pe.get_full_suite_cases()}
+    fixture, home = tmp_path / "fixture", tmp_path / "home"
+    fixture.mkdir()
+    home.mkdir()
+    case = cases[case_id]
+    calls = [{
+        "index": 0,
+        "call_id": "call-1",
+        "name": tool_name,
+        "arguments": {"query": "fixture-history"},
+        "result": result,
+        "status": "success",
+    }]
+    assert pe._grounded_observation_valid(case, fixture, home, calls)
+    assert not pe._grounded_observation_valid(
+        case,
+        fixture,
+        home,
+        [{**calls[0], "result": "", "status": "success"}],
+    )
+
+
+def test_tool_only_grounding_requires_expected_value_in_result(tmp_path: Path):
+    case = next(
+        case for case in pe.get_full_suite_cases()
+        if case.case_id == "tools.terminal_observation"
+    )
+    fixture, home = tmp_path / "fixture", tmp_path / "home"
+    fixture.mkdir()
+    home.mkdir()
+    (fixture / "terminal_observation.txt").write_text(
+        "TERMINAL_OBSERVATION_OK\n", encoding="utf-8"
+    )
+    call = {
+        "index": 0,
+        "call_id": "call-1",
+        "name": "terminal",
+        "arguments": {"command": "cat terminal_observation.txt"},
+        "result": "different-observation",
+        "status": "success",
+    }
+    assert not pe._grounded_observation_valid(
+        case,
+        fixture,
+        home,
+        [call],
+        expected_text="TERMINAL_OBSERVATION_OK",
+    )
+
+
+def test_no_catalog_case_is_structurally_always_hard_gate_invalid(tmp_path: Path):
+    fixture, home = tmp_path / "fixture", tmp_path / "home"
+    fixture.mkdir()
+    home.mkdir()
+    pe._seed_evaluation_fixture(fixture, home)
+    for case in pe.get_full_suite_cases():
+        if case.expected_artifact and case.artifact_source:
+            artifact = fixture / case.expected_artifact
+            source = fixture / case.artifact_source
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_bytes(source.read_bytes())
+    for case in pe.get_full_suite_cases():
+        expected = pe._expected_text_for_case(case, fixture, home)
+        calls = []
+        for relative in case.grounded_absent_paths:
+            calls.append({
+                "name": case.required_tools[0] if case.required_tools else "read_file",
+                "arguments": {"path": str(fixture / relative)},
+                "result": "error: not found",
+                "status": "error",
+            })
+        for relative in case.grounded_paths:
+            if relative in case.grounded_absent_paths:
+                continue
+            if relative.startswith("skills/") or relative in {"MEMORY.md", "USER.md"}:
+                path = home / relative
+            else:
+                path = fixture / relative
+            name = "skill_view" if case.case_id == "tools.skill_invocation" else (
+                "read_file" if "read_file" in case.required_tools else (
+                    case.required_tools[0] if case.required_tools else "read_file"
+                )
+            )
+            arguments = (
+                {"name": "fixture-skill"}
+                if name == "skill_view"
+                else {"path": str(path)}
+            )
+            calls.append({
+                "name": name,
+                "arguments": arguments,
+                "result": path.read_text(encoding="utf-8"),
+                "status": "success",
+            })
+        if not case.grounded_paths and not case.grounded_absent_paths and case.required_tools:
+            calls = [{
+                "name": name,
+                "arguments": {"query": case.case_id},
+                "result": expected,
+                "status": "success",
+            } for name in case.required_tools]
+        assert pe._grounded_observation_valid(
+            case, fixture, home, calls, expected_text=expected
+        ), case.case_id
+
+
+def test_skill_view_name_call_grounds_home_skill_content(tmp_path: Path):
+    case = next(
+        case for case in pe.get_full_suite_cases()
+        if case.case_id == "tools.skill_invocation"
+    )
+    fixture, home = tmp_path / "fixture", tmp_path / "home"
+    skill = home / "skills" / "fixture-skill" / "SKILL.md"
+    fixture.mkdir()
+    skill.parent.mkdir(parents=True)
+    home.mkdir(exist_ok=True)
+    skill.write_text("SKILL_INVOCATION_OK\n", encoding="utf-8")
+    call = {
+        "index": 0,
+        "call_id": "call-1",
+        "name": "skill_view",
+        "arguments": {"name": "fixture-skill"},
+        "result": json.dumps({"success": True, "content": "SKILL_INVOCATION_OK"}),
+        "status": "success",
+    }
+    assert pe._grounded_observation_valid(
+        case,
+        fixture,
+        home,
+        [call],
+        expected_text="SKILL_INVOCATION_OK",
+    )
+
+
+def test_unanswered_tool_batch_from_earlier_turn_is_invalid():
+    messages = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "call-1", "function": {"name": "read_file"}}],
+        },
+        {"role": "user", "content": "continued"},
+        {"role": "assistant", "content": "done"},
+    ]
+    assert not pe._tool_adjacency_valid(messages)
+
+
+def test_local_tool_policy_failure_is_fail_closed(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("agent: [malformed]\n", encoding="utf-8")
+    with pytest.raises(pe.EvaluationError, match="local tool policy"):
+        pe._apply_local_tool_policy(home)
+
+
 def test_evaluate_dry_run_requires_readiness_but_never_runs_a_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

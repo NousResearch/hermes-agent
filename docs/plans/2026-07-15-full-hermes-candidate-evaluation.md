@@ -47,12 +47,10 @@ PROMOTE-CANDIDATE is reserved for a later preregistered promotion policy with
 at least 100 cases; it is not a valid first-PR or cli-screening-v1 status.
 
 The full frozen 27-case catalog is executable and deterministically scored in
-PR 1. CI's fake-provider temp-home integration runs at least one
-representative case from every layer, including one multi-turn case and one
-compression case. Unit tests and golden fixtures cover every catalog oracle.
-The remaining catalog cases are not stubs: they are executable through the
-same runner and offline scorer even when CI does not spend a full live-shaped
-matrix on each one.
+PR 1. The fake-provider temp-home integration traverses every catalog case,
+including multi-turn and compression cases, through the same runner and
+offline scorer. Its expected values come from prompted fixture/tool evidence;
+it neither creates nor reads a hidden answer key.
 
 ## 2. Evidence from the repository and old PR
 
@@ -304,8 +302,8 @@ case_id, fixture snapshot ID, prompt steps, one required primary dimension,
 optional secondary diagnostic tags, expected deterministic assertions, safety
 disposition, and whether it is a paired continuation of a prior step.
 Expected free-form wording is not the default oracle; prefer artifact hashes,
-tool names/arguments, session rows, effect dispositions, and stable markers.
-Secondary tags never contribute a case to HFS.
+tool names/arguments, session rows, effect dispositions, and values read from
+the named evidence source. Secondary tags never contribute a case to HFS.
 
 ## 5. Full pinned stack manifest
 

@@ -528,21 +528,25 @@ async def _get_upload_url(
     rawfilemd5: str,
     filesize: int,
     aeskey_hex: str,
+    context_token: Optional[str] = None,
 ) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "filekey": filekey,
+        "media_type": media_type,
+        "to_user_id": to_user_id,
+        "rawsize": rawsize,
+        "rawfilemd5": rawfilemd5,
+        "filesize": filesize,
+        "no_need_thumb": True,
+        "aeskey": aeskey_hex,
+    }
+    if context_token:
+        payload["context_token"] = context_token
     return await _api_post(
         session,
         base_url=base_url,
         endpoint=EP_GET_UPLOAD_URL,
-        payload={
-            "filekey": filekey,
-            "media_type": media_type,
-            "to_user_id": to_user_id,
-            "rawsize": rawsize,
-            "rawfilemd5": rawfilemd5,
-            "filesize": filesize,
-            "no_need_thumb": True,
-            "aeskey": aeskey_hex,
-        },
+        payload=payload,
         token=token,
         timeout_ms=API_TIMEOUT_MS,
     )
@@ -2115,6 +2119,7 @@ class WeixinAdapter(BasePlatformAdapter):
         aes_key = secrets.token_bytes(16)
         rawsize = len(plaintext)
         rawfilemd5 = hashlib.md5(plaintext).hexdigest()
+        context_token = self._token_store.get(self._account_id, chat_id)
         upload_response = await _get_upload_url(
             self._send_session,
             base_url=self._base_url,
@@ -2126,6 +2131,7 @@ class WeixinAdapter(BasePlatformAdapter):
             rawfilemd5=rawfilemd5,
             filesize=_aes_padded_size(rawsize),
             aeskey_hex=aes_key.hex(),
+            context_token=context_token,
         )
         upload_param = str(upload_response.get("upload_param") or "")
         upload_full_url = str(upload_response.get("upload_full_url") or "")
@@ -2146,7 +2152,6 @@ class WeixinAdapter(BasePlatformAdapter):
             ciphertext=ciphertext,
             upload_url=upload_url,
         )
-        context_token = self._token_store.get(self._account_id, chat_id)
         # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes).
         # Sending base64(raw_bytes) causes images to show as grey boxes on the
         # receiver side because the decryption key doesn't match.

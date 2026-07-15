@@ -2804,6 +2804,9 @@ def stream_tts_to_speaker(
             "elevenlabs",
             {**tts_config, "elevenlabs": {**el_config, "model_id": model_id}},
         )
+        language_code = None
+        voice_settings = None
+        convert_options: Dict[str, Any] = {}
 
         api_key = (get_env_value("ELEVENLABS_API_KEY") or "")
         if not api_key:
@@ -2814,6 +2817,19 @@ def stream_tts_to_speaker(
                 client = ElevenLabs(api_key=api_key)
             except ImportError:
                 logger.warning("elevenlabs package not installed; streaming TTS disabled")
+
+            # Resolve/validate the static ElevenLabs options once per
+            # invocation now that a real client exists, so per-sentence
+            # calls only vary text (plus the managed voice/model/output
+            # fields) instead of re-validating and re-warning every sentence.
+            if client is not None:
+                raw_language_code = el_config.get("language_code")
+                if isinstance(raw_language_code, str) and raw_language_code.strip():
+                    language_code = raw_language_code.strip()
+                voice_settings = _make_elevenlabs_voice_settings(el_config, tts_config)
+                convert_options = _elevenlabs_convert_options(
+                    el_config, client.text_to_speech.convert
+                )
 
             # Open a single sounddevice output stream for the lifetime of
             # this function.  ElevenLabs pcm_24000 produces signed 16-bit
@@ -2863,12 +2879,18 @@ def stream_tts_to_speaker(
             if len(cleaned) > stream_max_len:
                 cleaned = cleaned[:stream_max_len]
             try:
-                audio_iter = client.text_to_speech.convert(
+                convert_kwargs = dict(convert_options)
+                if language_code is not None:
+                    convert_kwargs["language_code"] = language_code
+                if voice_settings is not None:
+                    convert_kwargs["voice_settings"] = voice_settings
+                convert_kwargs.update(
                     text=cleaned,
                     voice_id=voice_id,
                     model_id=model_id,
                     output_format="pcm_24000",
                 )
+                audio_iter = client.text_to_speech.convert(**convert_kwargs)
                 if output_stream is not None:
                     for chunk in audio_iter:
                         if stop_event.is_set():

@@ -1,5 +1,7 @@
 """ElevenLabs TTS configuration passthrough tests."""
 
+import queue
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -227,6 +229,58 @@ class TestElevenLabsOptions:
 
         kwargs = mock_client.text_to_speech.convert.call_args.kwargs
         assert kwargs["voice_settings"] == {"stability": 0.5}
+
+
+class TestStreamingElevenLabsOptions:
+    """stream_tts_to_speaker must forward the same option surfaces as
+    _generate_elevenlabs, resolved once per invocation rather than per
+    sentence."""
+
+    def test_forwards_language_voice_settings_and_convert_options(self):
+        from tools import tts_tool
+
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = iter([b"\x00\x00"])
+
+        fake_sd = MagicMock()
+        fake_output_stream = MagicMock()
+        fake_sd.OutputStream.return_value = fake_output_stream
+
+        tts_config = {
+            "speed": 1.2,
+            "elevenlabs": {
+                "voice_id": "voice-123",
+                "model_id": "eleven_v3",
+                "streaming_model_id": "eleven_flash_v2_5",
+                "language_code": "en",
+                "voice_settings": {"stability": 0.5},
+                "convert_options": {"seed": 42},
+            },
+        }
+
+        text_q = queue.Queue()
+        stop_evt = threading.Event()
+        done_evt = threading.Event()
+
+        text_q.put("This is a long enough sentence to speak. ")
+        text_q.put(None)
+
+        with patch.object(tts_tool, "get_env_value", return_value="el-key"), \
+             patch.object(tts_tool, "_import_elevenlabs", return_value=MagicMock(return_value=mock_client)), \
+             patch.object(tts_tool, "_import_sounddevice", return_value=fake_sd), \
+             patch.object(tts_tool, "_load_tts_config", return_value=tts_config):
+            tts_tool.stream_tts_to_speaker(text_q, stop_evt, done_evt)
+
+        assert done_evt.is_set()
+        mock_client.text_to_speech.convert.assert_called_once()
+        kwargs = mock_client.text_to_speech.convert.call_args.kwargs
+        assert kwargs["voice_id"] == "voice-123"
+        assert kwargs["model_id"] == "eleven_flash_v2_5"
+        assert kwargs["output_format"] == "pcm_24000"
+        assert kwargs["language_code"] == "en"
+        assert kwargs["seed"] == 42
+        assert _voice_settings_value(kwargs["voice_settings"], "stability") == 0.5
+        assert _voice_settings_value(kwargs["voice_settings"], "speed") == 1.2
 
 
 def _voice_settings_value(voice_settings, key):

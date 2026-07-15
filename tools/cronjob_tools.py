@@ -956,6 +956,17 @@ def cronjob(
                     updates["enabled"] = True
             if not updates:
                 return tool_error("No updates provided.", success=False)
+
+            # Validate the job's final execution content, not only fields present
+            # in this partial update. Legacy/directly-written jobs may already
+            # contain a lifecycle command, while a replacement prompt or script
+            # may remediate one in the same request.
+            from cron.lifecycle_guard import check_gateway_lifecycle
+
+            effective_prompt = updates.get("prompt", job.get("prompt"))
+            effective_script = updates.get("script", job.get("script"))
+            check_gateway_lifecycle(effective_prompt, effective_script)
+
             updated = update_job(job_id, updates)
             _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)

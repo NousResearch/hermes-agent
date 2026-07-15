@@ -484,6 +484,130 @@ class TestCreateJobBlocksLifecycleCommands:
         assert "#30719" in result.get("error", "")
 
 
+class TestCronjobUpdateBlocksLifecycleCommands:
+    """The model tool must apply the shared lifecycle guard to updates too."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("cron.jobs.CRON_DIR", hermes_home / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", hermes_home / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", hermes_home / "cron" / "output")
+        (scripts_dir / "safe.sh").write_text("printf 'ok\\n'\n", encoding="utf-8")
+
+    @pytest.mark.parametrize(
+        ("script_name", "command"),
+        [
+            (
+                "restart-launchd.sh",
+                "launchctl kickstart -k gui/501/ai.hermes.gateway\n",
+            ),
+            (
+                "restart-systemd.sh",
+                "systemctl --user restart hermes-gateway.service\n",
+            ),
+        ],
+    )
+    def test_update_rejects_lifecycle_script(self, tmp_path, script_name, command):
+        from tools.cronjob_tools import cronjob
+
+        scripts_dir = tmp_path / ".hermes" / "scripts"
+        (scripts_dir / script_name).write_text(command, encoding="utf-8")
+        created = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            script="safe.sh",
+            no_agent=True,
+        ))
+        assert created["success"] is True
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=created["job_id"],
+            script=script_name,
+        ))
+
+        assert result["success"] is False
+        assert "#30719" in result["error"]
+
+    def test_update_rejects_lifecycle_prompt(self):
+        from tools.cronjob_tools import cronjob
+
+        created = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="summarize gateway health",
+        ))
+        assert created["success"] is True
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=created["job_id"],
+            prompt="run hermes gateway restart after the summary",
+        ))
+
+        assert result["success"] is False
+        assert "#30719" in result["error"]
+
+    def test_unrelated_update_rejects_stored_lifecycle_script(self, tmp_path):
+        from cron.jobs import update_job
+        from tools.cronjob_tools import cronjob
+
+        scripts_dir = tmp_path / ".hermes" / "scripts"
+        (scripts_dir / "legacy-restart.sh").write_text(
+            "systemctl --user restart hermes-gateway.service\n",
+            encoding="utf-8",
+        )
+        created = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            script="safe.sh",
+            no_agent=True,
+        ))
+        assert created["success"] is True
+        update_job(created["job_id"], {"script": "legacy-restart.sh"})
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=created["job_id"],
+            name="renamed",
+        ))
+
+        assert result["success"] is False
+        assert "#30719" in result["error"]
+
+    def test_update_can_clear_stored_lifecycle_script(self, tmp_path):
+        from cron.jobs import update_job
+        from tools.cronjob_tools import cronjob
+
+        scripts_dir = tmp_path / ".hermes" / "scripts"
+        (scripts_dir / "legacy-restart.sh").write_text(
+            "systemctl --user restart hermes-gateway.service\n",
+            encoding="utf-8",
+        )
+        created = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            script="safe.sh",
+            no_agent=True,
+        ))
+        assert created["success"] is True
+        update_job(created["job_id"], {"script": "legacy-restart.sh"})
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=created["job_id"],
+            script="",
+            no_agent=False,
+        ))
+
+        assert result["success"] is True
+        assert result["job"].get("script") is None
+
+
 # ---------------------------------------------------------------------------
 # Defense 3: auto-resume restart-loop breaker
 # ---------------------------------------------------------------------------

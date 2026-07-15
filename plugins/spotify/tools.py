@@ -97,12 +97,17 @@ def _describe_empty_playback(payload: Any, *, action: str) -> dict | None:
     return None
 
 
-def _is_device_available(client: SpotifyClient) -> bool:
-    try:
-        devices = client.get_devices() or {}
-        return bool(devices.get("devices"))
-    except Exception:
-        return False
+def _has_active_device(client: SpotifyClient) -> bool:
+    """Return True only when a device is currently *active* for playback.
+
+    Distinguishes the active device from merely-listed devices (Spotify's API
+    requires the currently active device when ``device_id`` is omitted). Lookup
+    failures are deliberately NOT swallowed here: the caller's top-level
+    ``except`` surfaces them via ``_spotify_tool_error`` instead of masking the
+    real cause behind a misleading "no active device" message.
+    """
+    devices = client.get_devices() or {}
+    return any(bool(d.get("is_active")) for d in devices.get("devices") or [])
 
 
 def _handle_spotify_playback(args: dict, **kw) -> str:
@@ -118,7 +123,7 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
             empty_result = _describe_empty_playback(payload, action=action)
             return tool_result(empty_result or payload)
         if action in {"play", "pause", "next", "previous", "seek", "set_repeat", "set_shuffle", "set_volume"}:
-            if not args.get("device_id") and not _is_device_available(client):
+            if not args.get("device_id") and not _has_active_device(client):
                 return tool_error(
                     "No active Spotify playback device is available. Use `spotify_devices` to list devices, "
                     "then transfer playback before retrying."
@@ -131,7 +136,7 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
                 payload_offset = None
             uris = None
             if args.get("uris"):
-                uris = [_coerce_spotify_uri(item, expected_type="track") for item in _as_list(args.get("uris"))]
+                uris = normalize_spotify_uris(_as_list(args.get("uris")), "track")
             context_uri = None
             if args.get("context_uri"):
                 raw_context = str(args.get("context_uri"))
@@ -218,16 +223,14 @@ def _handle_spotify_queue(args: dict, **kw) -> str:
         if action == "get":
             return tool_result(client.get_queue())
         if action == "add":
-            if not args.get("device_id") and not _is_device_available(client):
+            if not args.get("device_id") and not _has_active_device(client):
                 return tool_error(
                     "No active Spotify playback device is available. Use `spotify_devices` to list devices, "
                     "then transfer playback before retrying."
                 )
-            result = client.add_to_queue(
-                uri=_coerce_spotify_uri(str(args.get("uri") or ""), None),
-                device_id=args.get("device_id"),
-            )
-            return tool_result({"success": True, "action": action, "uri": _coerce_spotify_uri(str(args.get("uri") or ""), None), "result": result})
+            uri = _coerce_spotify_uri(str(args.get("uri") or ""), expected_type="track")
+            result = client.add_to_queue(uri=uri, device_id=args.get("device_id"))
+            return tool_result({"success": True, "action": action, "uri": uri, "result": result})
         return tool_error(f"Unknown spotify_queue action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)

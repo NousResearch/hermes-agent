@@ -176,7 +176,11 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
         ...state,
         messages: [
           ...state.messages,
-          { id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role: 'system', parts: [textPart(text)] }
+          {
+            id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'system',
+            parts: [textPart(text)]
+          }
         ]
       }))
     },
@@ -354,6 +358,15 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       steerPrompt,
       submitText
     }),
-    [cancelRun, dismissError, editMessage, handleThreadMessagesChange, reloadFromMessage, restoreToMessage, steerPrompt, submitText]
+    [
+      cancelRun,
+      dismissError,
+      editMessage,
+      handleThreadMessagesChange,
+      reloadFromMessage,
+      restoreToMessage,
+      steerPrompt,
+      submitText
+    ]
   )
 }

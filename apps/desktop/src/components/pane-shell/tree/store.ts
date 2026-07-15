@@ -379,17 +379,19 @@ function rootRow(): SplitNode | null {
 
   const hasMain = (node: LayoutNode): boolean => {
     if (node.type === 'group') {
-      return node.panes.some(id =>
-        (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+      return node.panes.some(
+        id => (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
       )
     }
 
     return node.children.some(hasMain)
   }
 
-  return tree.children.find(child => child.type === 'split' && child.orientation === 'row' && hasMain(child)) as
-    | SplitNode
-    | undefined ?? null
+  return (
+    (tree.children.find(child => child.type === 'split' && child.orientation === 'row' && hasMain(child)) as
+      | SplitNode
+      | undefined) ?? null
+  )
 }
 
 /** Which root-row side a pane currently lives in, or null when it's nested

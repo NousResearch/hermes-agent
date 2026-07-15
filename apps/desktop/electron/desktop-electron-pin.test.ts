@@ -39,6 +39,7 @@ const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 
 function desktopPkg(): Record<string, unknown> {
   assert.ok(fs.existsSync(DESKTOP_PKG), `missing ${DESKTOP_PKG}`)
+
   return JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8'))
 }
 
@@ -46,8 +47,12 @@ function electronSpec(pkg: Record<string, unknown>): string {
   for (const section of ['dependencies', 'devDependencies'] as const) {
     const deps = (pkg[section] ?? {}) as Record<string, string>
     const spec = deps['electron']
-    if (spec) return spec
+
+    if (spec) {
+      return spec
+    }
   }
+
   assert.fail('electron is not listed in apps/desktop dependencies')
 }
 
@@ -78,15 +83,20 @@ test('electron dependency matches build.electronVersion', () => {
 })
 
 test('lockfile resolves the pinned electron', () => {
-  if (!fs.existsSync(ROOT_LOCK)) return // skip if lockfile not present
+  if (!fs.existsSync(ROOT_LOCK)) {
+    return
+  } // skip if lockfile not present
   const spec = electronSpec(desktopPkg())
   const lock = JSON.parse(fs.readFileSync(ROOT_LOCK, 'utf-8'))
   const packages = (lock.packages ?? {}) as Record<string, { version?: string }>
+
   const resolved = Object.entries(packages)
     .filter(([key]) => key.endsWith('node_modules/electron'))
     .map(([, meta]) => meta.version)
     .filter((v): v is string => !!v)
+
   assert.ok(resolved.length > 0, 'no electron entry found in package-lock.json')
+
   for (const v of resolved) {
     assert.equal(
       v,

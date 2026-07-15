@@ -151,14 +151,11 @@ export const $activeSessionAwaitingInput = computed(
  *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
  *  active one). */
 export function sessionAwaitingInput(sessionId: string | null) {
-  return computed(
-    [$clarifyRequests, approval.$all, sudo.$all, secret.$all],
-    (clarify, approvals, sudos, secrets) => {
-      const key = keyFor(sessionId)
+  return computed([$clarifyRequests, approval.$all, sudo.$all, secret.$all], (clarify, approvals, sudos, secrets) => {
+    const key = keyFor(sessionId)
 
-      return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key])
-    }
-  )
+    return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key])
+  })
 }
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —

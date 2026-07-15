@@ -10,15 +10,16 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has seven layers:
+The security model has eight layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
-3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
-4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
-5. **Context file scanning** — prompt injection detection in project files
-6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
-7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
+3. **File write safety** — denylist and optional write sandbox for `write_file`/`patch`
+4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
+5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
+6. **Context file scanning** — prompt injection detection in project files
+7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
 
@@ -230,6 +231,48 @@ These patterns are loaded at startup and silently approved in all future session
 
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
+:::
+
+## File Write Safety {#file-write-safety}
+
+Before `write_file` or `patch` touches disk, Hermes checks the target path against a denylist and an optional sandbox. Blocked writes return an error to the agent immediately — **there is no approval prompt** and no way to override from the chat UI. The model may still claim the edit succeeded; when `display.file_mutation_verifier` is on (default), trust the [file-mutation verifier footer](./configuration.md#file-mutation-verifier) over the assistant's closing summary.
+
+### Protected paths (always blocked)
+
+These categories are always denied, even when `HERMES_WRITE_SAFE_ROOT` is unset:
+
+| Category | Examples |
+|----------|----------|
+| OS credential stores | `~/.ssh/`, `~/.aws/`, `~/.kube/`, `/etc/sudoers`, `~/.netrc` |
+| Hermes credential stores | `auth.json`, `.env`, `.anthropic_oauth.json`, `mcp-tokens/`, `pairing/` under HERMES_HOME (active profile and global root) |
+| Project secret files | `.env`, `.env.local`, `.env.production`, `.envrc` anywhere on disk |
+
+Sensitive paths inside the safe root are still blocked — pointing `HERMES_WRITE_SAFE_ROOT` at `$HOME` does not allow writing `~/.ssh/id_rsa`.
+
+Safe-root violations return `Write denied: '…' is outside HERMES_WRITE_SAFE_ROOT (…)`. Credential-path blocks use `Write denied: '…' is a protected system/credential file.`
+
+### HERMES_WRITE_SAFE_ROOT (optional sandbox)
+
+When set, `write_file` and `patch` may only target paths inside the listed directory prefix(es). Anything outside is **hard-blocked** — not routed through dangerous-command approval.
+
+- Set automatically in the [official Docker image](https://github.com/NousResearch/hermes-agent) (`HERMES_WRITE_SAFE_ROOT=/opt/data`)
+- Supports multiple roots separated by `:` on Unix or `;` on Windows
+- **Do not add to `~/.hermes/.env` casually.** If you set it to a project directory, the agent cannot write to `~/.hermes/cron/jobs.json`, profile skills, or other Hermes state outside that prefix
+
+To allow both a workspace and Hermes home:
+
+```bash
+export HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
+```
+
+Unset the variable to restore unrestricted writes (subject to the protected-path denylist). Full reference: [HERMES_WRITE_SAFE_ROOT](../reference/environment-variables.md#hermes_write_safe_root).
+
+### Cron and other Hermes state
+
+Do not ask the agent to `patch` `~/.hermes/cron/jobs.json` directly. Use the `cronjob` tool, [`hermes cron`](./features/cron.md), or `/cron` — they update the job store through the supported API. The same applies to other Hermes control files when write safety blocks direct edits.
+
+:::note Defense-in-depth, not a hard boundary
+Write guards apply to `write_file` and `patch` only. The `terminal` tool runs as the same OS user and can still `cat` or overwrite denied paths via shell commands. The denylist reduces accidental damage and gives models a clear stop signal; it does not sandbox a hostile or compromised agent.
 :::
 
 ## User Authorization (Gateway)

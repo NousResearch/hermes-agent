@@ -3341,6 +3341,119 @@ class SessionDB:
             for r in rows
         ]
 
+    @staticmethod
+    def _surfaced_session_clause(alias: str = "s") -> str:
+        """SQL predicate for rows shown by list_sessions_rich by default."""
+        return (
+            f"({alias}.parent_session_id IS NULL"
+            f" OR json_extract({alias}.model_config, '$._branched_from') IS NOT NULL"
+            " OR EXISTS (SELECT 1 FROM sessions p"
+            f"            WHERE p.id = {alias}.parent_session_id"
+            "            AND p.end_reason = 'branched'"
+            f"            AND {alias}.started_at >= p.ended_at))"
+        )
+
+    def _batch_compression_lineages(self, root_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Walk compression-continuation chains for multiple roots in one query.
+
+        Returns a dict mapping root_id -> {"tip_id": tip_id, "ids": [root..tip]}
+        for each requested root. Replaces the N+1 ``get_compression_tip()``
+        calls in ``list_sessions_rich`` and gives desktop enough aliases to
+        collapse stale pinned intermediate segments into the live row.
+        """
+        if not root_ids:
+            return {}
+
+        root_ids = list(dict.fromkeys(root_ids))
+        placeholders = ",".join("?" * len(root_ids))
+        # ``best_child`` mirrors the single-child selection in
+        # ``get_compression_tip``: for each compression-ended parent, pick the
+        # one continuation child (skipping branch/delegate/tool rows) preferring
+        # a further compression continuation, then a still-live child, then a
+        # stale closed sibling such as ``ws_orphan_reap``. The old
+        # ``child.started_at >= parent.ended_at`` discriminator was too brittle —
+        # a gateway/compression race can insert the real continuation before the
+        # parent's ``ended_at`` is written, so the walk would follow the stale
+        # websocket sibling and drop the live tip. Walking one best child per
+        # step keeps this batch walk consistent with ``get_compression_tip``.
+        query = f"""
+            WITH RECURSIVE best_child AS (
+                SELECT parent_id, child_id FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                COALESCE(
+                                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                                    child.started_at
+                                ) DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS rn
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
+                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
+                      AND COALESCE(child.source, '') != 'tool'
+                ) WHERE rn = 1
+            ),
+            chain(root_id, cur_id, depth, path) AS (
+                SELECT id, id, 0, ',' || id || ',' FROM sessions WHERE id IN ({placeholders})
+                UNION ALL
+                SELECT c.root_id, bc.child_id, c.depth + 1, c.path || bc.child_id || ','
+                FROM chain c
+                JOIN best_child bc ON bc.parent_id = c.cur_id
+                WHERE instr(c.path, ',' || bc.child_id || ',') = 0
+            )
+            SELECT root_id, cur_id, depth
+            FROM chain
+            ORDER BY root_id, depth
+        """
+        with self._lock:
+            cursor = self._conn.execute(query, root_ids)
+            rows = cursor.fetchall()
+
+        lineages: Dict[str, Dict[str, Any]] = {
+            rid: {"tip_id": rid, "ids": [rid], "_depth": 0} for rid in root_ids
+        }
+        for row in rows:
+            rid = row["root_id"]
+            cid = row["cur_id"]
+            depth = int(row["depth"] or 0)
+            entry = lineages.setdefault(rid, {"tip_id": rid, "ids": [rid], "_depth": 0})
+            if cid not in entry["ids"]:
+                entry["ids"].append(cid)
+            if depth >= int(entry.get("_depth") or 0):
+                entry["tip_id"] = cid
+                entry["_depth"] = depth
+
+        for entry in lineages.values():
+            entry.pop("_depth", None)
+        return lineages
+
+    def _batch_compression_tips(self, root_ids: List[str]) -> Dict[str, str]:
+        """Walk compression-continuation chains for multiple roots in one query.
+
+        Returns a dict mapping root_id -> tip_id for each root that has a
+        continuation chain. Roots with no continuation are omitted.
+        Replaces the N+1 ``get_compression_tip()`` calls in ``list_sessions_rich``.
+        """
+        lineages = self._batch_compression_lineages(root_ids)
+        tips = {}
+        for rid, lineage in lineages.items():
+            tid = lineage.get("tip_id")
+            if tid and tid != rid:
+                tips[rid] = tid
+        return tips
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -3604,12 +3717,23 @@ class SessionDB:
         # as the live conversation. Keep the root's started_at to preserve
         # chronological ordering by original conversation start.
         if project_compression_tips and not include_children:
+            # Batch project: collect compression roots, walk all chains in
+            # a single SQL query, then fetch tip rows individually.
+            compression_roots = [
+                s["id"] for s in sessions if s.get("end_reason") == "compression"
+            ]
+            if compression_roots:
+                lineages = self._batch_compression_lineages(compression_roots)
+            else:
+                lineages = {}
+
             projected = []
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                lineage = lineages.get(s["id"]) or {"tip_id": s["id"], "ids": [s["id"]]}
+                tip_id = lineage.get("tip_id", s["id"])
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
@@ -3628,6 +3752,7 @@ class SessionDB:
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                merged["_lineage_ids"] = lineage.get("ids") or [s["id"], tip_id]
                 projected.append(merged)
             sessions = projected
 
@@ -5215,6 +5340,7 @@ class SessionDB:
 
         def score(row: Dict[str, Any]) -> int:
             ids = [str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")]
+            ids.extend(str(value or "") for value in row.get("_lineage_ids") or [])
             normalized = [value.lower() for value in ids if value]
             if any(value == needle for value in normalized):
                 return 0

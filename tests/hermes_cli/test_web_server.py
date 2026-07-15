@@ -1592,6 +1592,7 @@ class TestWebServerEndpoints:
         # ...carrying the durable lineage root so the desktop can match pins.
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
+        assert tip.get("_lineage_ids") == ["root-old", "tip-new"]
 
     def test_search_dedupes_compression_lineage_to_tip(self):
         """A conversation that auto-compresses leaves the matched term in both

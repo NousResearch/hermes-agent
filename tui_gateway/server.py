@@ -4821,14 +4821,18 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
             r = _json.loads(
                 asyncio.run(vision_analyze_tool(image_url=str(p), user_prompt=prompt))
             )
-            desc = r.get("analysis", "") if r.get("success") else None
+            desc = str(r.get("analysis") or "").strip()
+            if not desc and not r.get("success"):
+                desc = str(r.get("error") or "").strip()
             parts.append(
                 f"[The user attached an image:\n{desc}]\n{hint}"
                 if desc
-                else f"[The user attached an image but analysis failed.]\n{hint}"
+                else f"[The user attached an image, but automatic analysis did not return a description.]\n{hint}"
             )
-        except Exception:
-            parts.append(f"[The user attached an image but analysis failed.]\n{hint}")
+        except Exception as exc:
+            parts.append(
+                f"[The user attached an image, but automatic analysis failed before returning a description: {exc}]\n{hint}"
+            )
 
     text = user_text or ""
     prefix = "\n\n".join(parts)

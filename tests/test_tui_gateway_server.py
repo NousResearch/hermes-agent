@@ -130,6 +130,25 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_enrich_with_attached_images_preserves_failure_analysis(monkeypatch, tmp_path):
+    image = tmp_path / "screenshot.png"
+    image.write_bytes(b"not-a-real-png-but-the-tool-is-mocked")
+
+    async def fake_vision_analyze_tool(*, image_url: str, user_prompt: str):
+        return json.dumps({
+            "success": False,
+            "analysis": "could not find suitable inference handler for deepseek-v4-flash-free",
+        })
+
+    monkeypatch.setattr("tools.vision_tools.vision_analyze_tool", fake_vision_analyze_tool)
+
+    enriched = server._enrich_with_attached_images("please inspect this", [str(image)])
+
+    assert "could not find suitable inference handler for deepseek-v4-flash-free" in enriched
+    assert "analysis failed" not in enriched
+    assert "please inspect this" in enriched
+
+
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back

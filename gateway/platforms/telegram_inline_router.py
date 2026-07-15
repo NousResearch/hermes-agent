@@ -82,15 +82,45 @@ class InlineToolRegistry:
         except Exception as exc:
             logger.error("[inline_router] registry load error: %s", exc)
 
-    def match(self, query: str) -> Optional[Dict[str, Any]]:
-        """Return the first enabled tool whose match patterns fit query, or None."""
-        enabled = [t for t in self._tools if t.get("enabled", False)]
+    def _handled_by_this_bot(self, tool: Dict[str, Any], bot_username: Optional[str]) -> bool:
+        """A tool with no ``handles`` list matches every bot; one that
+        declares ``handles`` only matches when this router's bot is named
+        in it (case-insensitive — Telegram usernames aren't case-sensitive)."""
+        handles = tool.get("handles")
+        if not handles:
+            return True
+        if not bot_username:
+            return False
+        wanted = {str(h).lstrip("@").lower() for h in handles}
+        return bot_username.lstrip("@").lower() in wanted
+
+    def _matchers(self, tool: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return the tool's effective match list, with ``prefix`` (a
+        shorthand for a single ``type: prefix`` matcher) folded in alongside
+        any explicit ``match`` entries."""
+        matchers = list(tool.get("match", []))
+        prefix = tool.get("prefix")
+        if prefix:
+            matchers.append({"type": "prefix", "pattern": re.escape(str(prefix))})
+        return matchers
+
+    def match(self, query: str, bot_username: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Return the first enabled tool whose match patterns fit query, or None.
+
+        ``bot_username``, when given, is checked against each tool's optional
+        ``handles`` allowlist (see ``_handled_by_this_bot``); omitted or tools
+        with no ``handles`` list match regardless.
+        """
+        enabled = [
+            t for t in self._tools
+            if t.get("enabled", False) and self._handled_by_this_bot(t, bot_username)
+        ]
 
         def _min_prio(tool: Dict[str, Any]) -> int:
-            return min((m.get("priority", 0) for m in tool.get("match", [])), default=0)
+            return min((m.get("priority", 0) for m in self._matchers(tool)), default=0)
 
         for tool in sorted(enabled, key=_min_prio):
-            for matcher in tool.get("match", []):
+            for matcher in self._matchers(tool):
                 mtype = matcher.get("type", "search")
                 pattern = matcher.get("pattern", "")
                 try:
@@ -218,7 +248,7 @@ class TelegramInlineRouter:
 
     async def dispatch(self, user_id: int, query: str) -> List[Any]:
         """Match query to a tool, call its executor, return InlineQueryResult list."""
-        tool = self._registry.match(query)
+        tool = self._registry.match(query, self.bot_username)
         if tool is None:
             logger.debug("[inline_router] no enabled tool matched %r", query[:60])
             return []

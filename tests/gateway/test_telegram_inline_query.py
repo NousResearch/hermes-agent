@@ -6,6 +6,7 @@ router's own behaviour (matching, discovery) is covered in
 test_telegram_inline_router.py.
 """
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -119,3 +120,34 @@ async def test_inline_dispatch_deadline_answers_empty(monkeypatch):
 
     iq.answer.assert_awaited_once()
     assert iq.answer.await_args.args[0] == []
+
+
+def test_check_telegram_requirements_rebinds_inline_query_handler(monkeypatch):
+    """Regression: check_telegram_requirements()'s lazy-install rebind path
+    left InlineQueryHandler pinned at the module's import-failure fallback
+    (``Any``), because it was missing from both the `global` declaration and
+    the re-import/rebind block. Any adapter constructed after a successful
+    lazy install (python-telegram-bot missing at first import, then
+    installed on demand) would call ``InlineQueryHandler(self._handle_inline_
+    query)`` in ``connect()`` and get ``Any(...)`` — not callable — silently
+    swallowed by that call site's broad ``except Exception`` and logged as
+    "inline-query dispatch not enabled" with no other symptom.
+
+    Exercises the real rebind mechanism rather than asserting on a canned
+    sentinel: whatever ``telegram.ext.InlineQueryHandler`` currently
+    resolves to in this process (the real PTB class, or another test's
+    session-wide mock, depending on import order) is what must come out
+    the other end — proving the rebind assignment itself fires, not just
+    that some hardcoded value matches."""
+    import plugins.platforms.telegram.adapter as adapter_mod
+    from telegram.ext import InlineQueryHandler as _RealInlineQueryHandler
+
+    monkeypatch.setattr(adapter_mod, "TELEGRAM_AVAILABLE", False)
+    # Simulate the state left behind by a failed first import.
+    monkeypatch.setattr(adapter_mod, "InlineQueryHandler", Any)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda feature, prompt=False: None)
+
+    result = adapter_mod.check_telegram_requirements()
+
+    assert result is True
+    assert adapter_mod.InlineQueryHandler is _RealInlineQueryHandler

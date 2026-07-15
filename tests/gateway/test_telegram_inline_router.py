@@ -58,6 +58,62 @@ def test_registry_disabled_tool_skipped(tmp_path):
     assert reg.match("x") is None
 
 
+def test_registry_prefix_shorthand_routes_without_explicit_match_entry(tmp_path):
+    """`prefix` is documented as shorthand for a type=prefix matcher — it
+    must work with no explicit `match` list at all, not just alongside one."""
+    tools = [{"id": "bang", "executor": "b", "enabled": True, "prefix": "!"}]
+    reg = InlineToolRegistry(_write_registry(tmp_path, tools))
+    assert reg.match("!go")["executor"] == "b"
+    assert reg.match("go") is None
+
+
+def test_registry_prefix_shorthand_combines_with_explicit_match(tmp_path):
+    """`prefix` folds in alongside explicit `match` entries rather than
+    replacing them — either one can route to the tool."""
+    tools = [{"id": "t", "executor": "e", "enabled": True, "prefix": "!",
+              "match": [{"type": "url", "pattern": r"https?://x\.com/"}]}]
+    reg = InlineToolRegistry(_write_registry(tmp_path, tools))
+    assert reg.match("!go")["executor"] == "e"
+    assert reg.match("see https://x.com/a")["executor"] == "e"
+    assert reg.match("neither") is None
+
+
+def test_registry_prefix_is_escaped_not_treated_as_regex(tmp_path):
+    """A literal prefix like "." must not act as a regex wildcard."""
+    tools = [{"id": "t", "executor": "e", "enabled": True, "prefix": "."}]
+    reg = InlineToolRegistry(_write_registry(tmp_path, tools))
+    assert reg.match(".go")["executor"] == "e"
+    assert reg.match("Xgo") is None
+
+
+def test_registry_handles_restricts_to_named_bots(tmp_path):
+    """A tool declaring `handles` only matches for those bot usernames."""
+    tools = [{"id": "t", "executor": "e", "enabled": True,
+              "handles": ["other_bot"], "match": [{"type": "search"}]}]
+    reg = InlineToolRegistry(_write_registry(tmp_path, tools))
+    assert reg.match("q", bot_username="other_bot") is not None
+    assert reg.match("q", bot_username="hermes_bot") is None
+    assert reg.match("q") is None  # no bot_username given at all
+
+
+def test_registry_handles_match_is_case_insensitive_and_ignores_at(tmp_path):
+    tools = [{"id": "t", "executor": "e", "enabled": True,
+              "handles": ["@Other_Bot"], "match": [{"type": "search"}]}]
+    reg = InlineToolRegistry(_write_registry(tmp_path, tools))
+    assert reg.match("q", bot_username="other_bot") is not None
+    assert reg.match("q", bot_username="@OTHER_BOT") is not None
+
+
+def test_registry_no_handles_matches_any_bot(tmp_path):
+    """Omitting `handles` entirely means the tool matches regardless of
+    which bot's router is asking."""
+    tools = [{"id": "t", "executor": "e", "enabled": True,
+              "match": [{"type": "search"}]}]
+    reg = InlineToolRegistry(_write_registry(tmp_path, tools))
+    assert reg.match("q", bot_username="any_bot_at_all") is not None
+    assert reg.match("q") is not None
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -74,6 +130,28 @@ async def test_dispatch_unregistered_executor_returns_empty(tmp_path):
               "match": [{"type": "search"}]}]
     r = TelegramInlineRouter(bot=None, registry_path=_write_registry(tmp_path, tools))
     assert await r.dispatch(1, "q") == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_threads_bot_username_to_registry_handles_filter(tmp_path):
+    """The router must pass its own bot_username into the registry's match()
+    so a tool's `handles` allowlist is actually enforced during dispatch,
+    not just when calling InlineToolRegistry.match() directly."""
+    tools = [{"id": "t", "executor": "e", "enabled": True,
+              "handles": ["hermes_bot"], "match": [{"type": "search"}]}]
+    r = TelegramInlineRouter(bot=None, registry_path=_write_registry(tmp_path, tools))
+    r.register_executor("e", lambda cfg, bot: _StubExecutor())
+
+    r.bot_username = "some_other_bot"
+    assert await r.dispatch(1, "q") == []
+
+    r.bot_username = "hermes_bot"
+    assert await r.dispatch(1, "q") == ["ok"]
+
+
+class _StubExecutor:
+    async def execute(self, user_id, query):
+        return ["ok"]
 
 
 # ---------------------------------------------------------------------------

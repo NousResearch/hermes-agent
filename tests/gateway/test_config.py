@@ -527,6 +527,54 @@ class TestLoadGatewayConfig:
         assert Platform.RELAY in config.platforms
         assert config.platforms[Platform.RELAY].enabled is True
 
+    def test_telegram_inline_enabled_requires_extra_nesting(self, tmp_path, monkeypatch):
+        """``inline`` is not one of the shared/bridged top-level platform
+        keys (unlike allow_from, require_mention, etc. — see the shared-key
+        loop in load_gateway_config()), so PlatformConfig.from_dict() only
+        ever sees it via the YAML ``extra:`` block. A top-level
+        ``telegram: inline: {...}`` (no ``extra:``) is silently dropped —
+        documented on TelegramAdapter._handle_inline_query."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  enabled: true\n"
+            "  token: 'test-token'\n"
+            "  extra:\n"
+            "    inline:\n"
+            "      enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram_cfg = config.platforms[Platform.TELEGRAM]
+        assert telegram_cfg.extra.get("inline") == {"enabled": False}
+
+    def test_telegram_inline_at_top_level_is_silently_dropped(self, tmp_path, monkeypatch):
+        """The nesting mistake this test guards against: `inline` written as
+        a sibling of `enabled`/`token` instead of under `extra:` never
+        reaches PlatformConfig.extra at all."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  enabled: true\n"
+            "  token: 'test-token'\n"
+            "  inline:\n"
+            "    enabled: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        telegram_cfg = config.platforms[Platform.TELEGRAM]
+        assert "inline" not in telegram_cfg.extra
+
     def test_bridges_group_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

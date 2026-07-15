@@ -307,7 +307,8 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler
+    global TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -326,6 +327,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -342,6 +344,7 @@ def check_telegram_requirements() -> bool:
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -5643,6 +5646,20 @@ class TelegramAdapter(BasePlatformAdapter):
         Thin wrapper: the router owns matching, executor lookup, result building
         and the response deadline.  ``inline.enabled: false`` in the platform's
         config.extra silences inline handling without unregistering the handler.
+
+        ``PlatformConfig.from_dict()`` only ever populates ``.extra`` from the
+        YAML ``extra:`` block (``inline`` is not one of the shared/bridged
+        top-level keys — see the shared-key loop in
+        ``gateway/config.py::load_gateway_config()``), so this must be
+        configured as::
+
+            telegram:
+              extra:
+                inline:
+                  enabled: false
+
+        A top-level ``telegram: inline: {enabled: false}`` (no ``extra:``)
+        is silently ignored.
         """
         iq = getattr(update, "inline_query", None)
         if not iq:

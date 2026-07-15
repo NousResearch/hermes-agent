@@ -69,6 +69,51 @@ def get_provider_stale_timeout(
     return _coerce_timeout(provider_config.get("stale_timeout_seconds"))
 
 
+def _coerce_nonnegative_int(raw: object) -> int | None:
+    try:
+        value = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def get_provider_stream_retries(
+    provider_id: str, model: str | None = None
+) -> int | None:
+    """Return configured in-stream retry count, if any.
+
+    ``0`` is valid and means a streaming transport failure is surfaced to the
+    outer agent retry/fallback loop immediately.  This is required for
+    pre-first-token failover setups where retrying the same broken primary
+    before fallback is worse than switching credentials/providers.
+    """
+    if not provider_id:
+        return None
+
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+    except Exception:
+        return None
+
+    providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    provider_config = (
+        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+    )
+    if not isinstance(provider_config, dict):
+        return None
+
+    model_config = _get_model_config(provider_config, model)
+    if model_config is not None:
+        retries = _coerce_nonnegative_int(model_config.get("stream_retries"))
+        if retries is not None:
+            return retries
+
+    return _coerce_nonnegative_int(provider_config.get("stream_retries"))
+
+
 def _get_model_config(
     provider_config: dict[str, object], model: str | None
 ) -> dict[str, object] | None:

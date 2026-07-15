@@ -306,3 +306,38 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
     )
 
     assert agent._compute_non_stream_stale_timeout([]) == 300.0
+
+
+def test_provider_stream_retries_allows_zero(monkeypatch, tmp_path):
+    from hermes_cli.timeouts import get_provider_stream_retries
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          umans_primary:
+            stream_retries: 2
+            models:
+              umans-glm-5.2:
+                stream_retries: 0
+        """,
+    )
+
+    assert get_provider_stream_retries("umans_primary", "umans-glm-5.2") == 0
+
+
+def test_provider_stream_retries_provider_fallback(monkeypatch, tmp_path):
+    from hermes_cli.timeouts import get_provider_stream_retries
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          umans_primary:
+            stream_retries: 1
+        """,
+    )
+
+    assert get_provider_stream_retries("umans_primary", "umans-glm-5.2") == 1

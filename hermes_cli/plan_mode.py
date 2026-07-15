@@ -308,40 +308,44 @@ def apply_session_toolset_policy(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def is_plan_path(path: Optional[str]) -> bool:
-    """True when ``path`` targets the plans dir (``.hermes/plans/``).
+def is_plan_path(path: Optional[str], task_id: str = "default") -> bool:
+    """True when ``path`` resolves inside the task's plans dir (``.hermes/plans/``).
 
-    Containment is checked on the RESOLVED path, not by a substring match:
-    ``file_tools`` resolves relative paths (and follows symlinks) before it
-    writes, so a substring test on the raw string lets a traversal like
-    ``.hermes/plans/../../src/app.py`` — or a symlink placed inside the plans
-    dir that points outside it — escape the guard. We instead derive the
-    intended plans-dir root from the literal ``.hermes/plans`` segment, resolve
-    both it and the candidate (collapsing ``..`` and following symlinks), and
-    require the candidate to sit inside that resolved root. The segment is
-    matched anywhere in the path so relative, backend-workspace, and absolute
-    forms all work.
+    Containment must be checked on the path resolved THE SAME WAY the write will
+    resolve it. ``file_tools`` anchors relative paths against the TASK's base
+    directory (its live terminal cwd / registered workspace override /
+    ``TERMINAL_CWD`` — e.g. a ``-w`` worktree), NOT the agent PROCESS cwd, and
+    follows symlinks before writing. If this guard resolved against its own
+    process cwd instead (the historical bug), it proved containment for a path
+    that is not the one written: the two bases — and their symlink resolution —
+    can diverge, so a ``.hermes/plans`` that is a real dir at the process cwd but
+    a symlink pointing outside at the task cwd would slip a mutating write out of
+    the plans dir while the guard reported it contained.
+
+    We therefore reuse ``file_tools``' own task-aware resolver for BOTH the
+    candidate and the plans-dir root, so the guard sees exactly the absolute
+    target (with the same ``..`` collapsing and symlink following) the write
+    will use, and require the resolved candidate to sit inside the task's real
+    ``<task_base>/.hermes/plans``. Fail closed on any resolution error.
     """
     if not path or not isinstance(path, str):
         return False
-    normalized = path.replace("\\", "/")
-    # The plans segment must appear literally somewhere; its position also
-    # fixes the plans-dir root every write must resolve inside of.
-    idx = normalized.find(PLANS_DIR_SEGMENT)
-    if idx < 0:
-        return False
-    root_str = normalized[: idx + len(PLANS_DIR_SEGMENT)]
     try:
-        from pathlib import Path
+        from tools.file_tools import _resolve_path_for_task
 
-        root = Path(root_str).resolve()
-        candidate = Path(normalized).resolve()
-    except (OSError, ValueError, RuntimeError) as exc:
+        # Resolve the candidate and the task's canonical plans-dir root through
+        # the identical write-path resolver so base + symlinks can't diverge.
+        candidate = _resolve_path_for_task(path, task_id)
+        root = _resolve_path_for_task(PLANS_DIR_SEGMENT, task_id)
+    except (OSError, ValueError, RuntimeError, ImportError) as exc:
         # Unresolvable path (e.g. a resolution loop): fail closed — not a
         # provably-contained plan path, so the guard blocks the write.
-        logger.debug("is_plan_path: could not resolve %r: %s", path, exc)
+        logger.debug("is_plan_path: could not resolve %r (task %r): %s", path, task_id, exc)
         return False
-    return candidate.is_relative_to(root)
+    try:
+        return candidate.is_relative_to(root)
+    except (ValueError, TypeError):
+        return False
 
 
 _BLOCK_MESSAGE = (
@@ -356,12 +360,17 @@ def tool_block_reason(
     session_id: str,
     tool_name: str,
     args: Optional[Mapping[str, Any]] = None,
+    task_id: str = "default",
 ) -> Optional[str]:
     """Return a block message if plan mode forbids this tool, else None.
 
     Fail-closed: if a plan row exists but cannot be read/parsed, a mutating
     tool is blocked. A clean absence (or an unavailable DB) is treated as "not
     in plan mode" so a momentary outage does not wedge every session.
+
+    ``task_id`` is threaded to ``is_plan_path`` so the plan-file carve-out
+    resolves the candidate against the SAME task base ``file_tools`` writes to
+    (a ``-w`` worktree / registered workspace cwd), not the agent process cwd.
     """
     from agent.tool_guardrails import MUTATING_TOOL_NAMES
 
@@ -382,7 +391,7 @@ def tool_block_reason(
         target = None
         if isinstance(args, Mapping):
             target = args.get("path")
-        if is_plan_path(target):
+        if is_plan_path(target, task_id):
             return None
         return (
             "Blocked: plan mode is active — file writes are only allowed for the "

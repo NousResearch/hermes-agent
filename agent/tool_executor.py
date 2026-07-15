@@ -77,7 +77,9 @@ def _is_mutating_tool(function_name: str) -> bool:
         return True
 
 
-def _plan_mode_block_reason(agent, function_name: str, function_args) -> Optional[str]:
+def _plan_mode_block_reason(
+    agent, function_name: str, function_args, task_id: str = "default"
+) -> Optional[str]:
     """Fail-closed wrapper around ``plan_mode.tool_block_reason``.
 
     Returns the block reason (a string) when the tool must be blocked, or
@@ -86,6 +88,11 @@ def _plan_mode_block_reason(agent, function_name: str, function_args) -> Optiona
     plan row readable) is treated as "not in plan mode" so a transient outage
     cannot wedge every session — and it distinguishes that DB-down sentinel
     from a plan row that exists but cannot be parsed (which it blocks).
+
+    ``task_id`` is the executor's ``effective_task_id`` — threaded through so
+    the plan-file carve-out resolves the write target against the SAME task
+    base ``file_tools`` will (a ``-w`` worktree / registered workspace cwd),
+    closing the guard/write base-divergence gap.
 
     This wrapper adds the outer guarantee the two executor call sites
     previously lacked: if the guard call ITSELF raises (import error,
@@ -96,7 +103,7 @@ def _plan_mode_block_reason(agent, function_name: str, function_args) -> Optiona
     try:
         from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
 
-        return _plan_block_reason(session_id, function_name, function_args)
+        return _plan_block_reason(session_id, function_name, function_args, task_id)
     except Exception as exc:
         logger.warning(
             "plan-mode guard raised for %s; failing closed: %s", function_name, exc
@@ -523,7 +530,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _plan_block = None
             if block_message is None:
                 _plan_block = _plan_mode_block_reason(
-                    agent, function_name, function_args
+                    agent, function_name, function_args, effective_task_id
                 )
 
             if block_message is not None:
@@ -1209,7 +1216,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # mutating tools. See hermes_cli/plan_mode.
             if _block_msg is None:
                 _plan_reason = _plan_mode_block_reason(
-                    agent, function_name, function_args
+                    agent, function_name, function_args, effective_task_id
                 )
                 if _plan_reason is not None:
                     _block_msg = _plan_reason

@@ -160,7 +160,8 @@ class TestToolBlockReason:
 
         PlanManager("g4").enter()
         assert tool_block_reason("g4", "write_file", {"path": ".hermes/plans/p.md"}) is None
-        assert tool_block_reason("g4", "patch", {"path": "work/.hermes/plans/p.md"}) is None
+        # Nested UNDER the task's plans dir is still allowed.
+        assert tool_block_reason("g4", "patch", {"path": ".hermes/plans/feature/p.md"}) is None
 
     def test_non_plan_file_write_blocked(self, hermes_home):
         from hermes_cli.plan_mode import PlanManager, tool_block_reason
@@ -196,10 +197,13 @@ class TestToolBlockReason:
 class TestIsPlanPath:
     """Resolved-path containment — traversal and symlink escapes must fail.
 
-    ``file_tools`` resolves relative paths (and follows symlinks) before
-    writing, so a raw substring test on ``.hermes/plans`` let escapes through.
-    ``is_plan_path`` now resolves both the candidate and the plans-dir root
-    and requires containment.
+    ``file_tools`` resolves relative paths against the TASK's base dir (its live
+    terminal cwd / registered workspace override / ``TERMINAL_CWD``) and follows
+    symlinks before writing. ``is_plan_path`` reuses that same task-aware
+    resolver for the candidate AND the plans-dir root, so the guard proves
+    containment for exactly the path the write will produce — the base and its
+    symlink resolution cannot diverge from the write's. Containment is required
+    against the task's real ``<task_base>/.hermes/plans``.
     """
 
     def test_legit_nested_plan_path_passes(self, tmp_path, monkeypatch):
@@ -209,7 +213,17 @@ class TestIsPlanPath:
         # Relative and nested forms that genuinely live under the plans dir.
         assert is_plan_path(".hermes/plans/p.md") is True
         assert is_plan_path(".hermes/plans/feature/step-1/plan.md") is True
-        assert is_plan_path("work/.hermes/plans/p.md") is True
+
+    def test_plans_segment_not_at_task_root_is_rejected(self, tmp_path, monkeypatch):
+        """A ``.hermes/plans`` nested under an arbitrary subdir is NOT the task's
+        plans dir. The guard now anchors to ``<task_base>/.hermes/plans``, so
+        writes into ``work/.hermes/plans`` (a bypass the old string-derived-root
+        matcher allowed) are blocked."""
+        from hermes_cli.plan_mode import is_plan_path
+
+        monkeypatch.chdir(tmp_path)
+        assert is_plan_path("work/.hermes/plans/p.md") is False
+        assert is_plan_path("src/module/.hermes/plans/payload.py") is False
 
     def test_dotdot_traversal_escapes_and_is_rejected(self, tmp_path, monkeypatch):
         from hermes_cli.plan_mode import is_plan_path
@@ -219,16 +233,20 @@ class TestIsPlanPath:
         assert is_plan_path(".hermes/plans/../../src/app.py") is False
         assert is_plan_path(".hermes/plans/../plans-evil/app.py") is False
 
-    def test_absolute_path_outside_is_rejected(self):
+    def test_absolute_path_outside_is_rejected(self, tmp_path, monkeypatch):
         from hermes_cli.plan_mode import is_plan_path
 
-        # No ".hermes/plans" segment at all → not a plan path.
+        monkeypatch.chdir(tmp_path)
+        # No ".hermes/plans" segment at all → not under the task's plans dir.
         assert is_plan_path("/etc/passwd") is False
         assert is_plan_path("/tmp/src/app.py") is False
 
-    def test_symlink_inside_plans_dir_pointing_outside_is_rejected(self, tmp_path):
+    def test_symlink_inside_plans_dir_pointing_outside_is_rejected(self, tmp_path, monkeypatch):
         from hermes_cli.plan_mode import is_plan_path
 
+        # Anchor the task base to tmp_path so the resolved root is tmp_path's
+        # plans dir (matching where the symlink structure is built).
+        monkeypatch.chdir(tmp_path)
         plans = tmp_path / ".hermes" / "plans"
         plans.mkdir(parents=True)
         outside = tmp_path / "outside"
@@ -246,6 +264,71 @@ class TestIsPlanPath:
         # A real (non-symlinked) sibling under the plans dir still passes.
         legit = plans / "real" / "plan.md"
         assert is_plan_path(str(legit)) is True
+
+    def test_guard_anchors_to_task_base_not_process_cwd(self, tmp_path, monkeypatch):
+        """Core base-divergence regression.
+
+        The write anchors relative paths to the TASK base (``TERMINAL_CWD`` /
+        worktree), not the agent PROCESS cwd. If the guard resolved against the
+        process cwd it would prove containment in the WRONG tree: here a
+        ``.hermes/plans/escape`` symlink exists only at the TASK base, so a guard
+        that anchored to the process cwd (where that path is a benign lexical
+        non-existent) would wrongly ALLOW a write that actually escapes at the
+        task base. The guard must anchor to the task base and block it.
+        """
+        from hermes_cli.plan_mode import is_plan_path
+
+        process_cwd = tmp_path / "proc"
+        task_cwd = tmp_path / "task"
+        # A real, benign plans dir at the PROCESS cwd.
+        (process_cwd / ".hermes" / "plans").mkdir(parents=True)
+        # At the TASK base: a plans dir whose `escape` entry symlinks OUT of it.
+        task_plans = task_cwd / ".hermes" / "plans"
+        task_plans.mkdir(parents=True)
+        (task_cwd / "outside").mkdir()
+        (task_plans / "escape").symlink_to(task_cwd / "outside", target_is_directory=True)
+
+        monkeypatch.chdir(process_cwd)
+        monkeypatch.setenv("TERMINAL_CWD", str(task_cwd))
+
+        # A genuine plan write resolves inside the TASK's plans dir → allowed.
+        assert is_plan_path(".hermes/plans/plan.md") is True
+        # The escape only exists at the task base; a process-cwd-anchored guard
+        # would MISS it. Anchored to the task base, it is correctly blocked.
+        assert is_plan_path(".hermes/plans/escape/app.py") is False
+
+    def test_symlinked_plans_dir_at_task_base_stays_consistent(self, tmp_path, monkeypatch):
+        """When the plans dir itself is a symlink at the task base, the guard and
+        the write resolve it identically: genuine plan writes are contained and
+        traversal out is still blocked."""
+        from hermes_cli.plan_mode import is_plan_path
+
+        task_cwd = tmp_path / "task"
+        (task_cwd / ".hermes").mkdir(parents=True)
+        real_plans = task_cwd / "real_plans_elsewhere"
+        real_plans.mkdir()
+        # `.hermes/plans` is a symlink to a dir elsewhere under the task base.
+        (task_cwd / ".hermes" / "plans").symlink_to(real_plans, target_is_directory=True)
+
+        monkeypatch.chdir(task_cwd)
+        monkeypatch.setenv("TERMINAL_CWD", str(task_cwd))
+
+        # Root and candidate both follow the symlink → contained → allowed.
+        assert is_plan_path(".hermes/plans/plan.md") is True
+        # Traversal out of the (symlinked) plans dir is still rejected.
+        assert is_plan_path(".hermes/plans/../secret.py") is False
+
+    def test_unresolvable_path_fails_closed(self, tmp_path, monkeypatch):
+        """A resolver failure must fail closed (block), never allow."""
+        import hermes_cli.plan_mode as plan_mode
+
+        def _boom(*_a, **_k):
+            raise OSError("symlink loop")
+
+        monkeypatch.setattr(
+            "tools.file_tools._resolve_path_for_task", _boom, raising=True
+        )
+        assert plan_mode.is_plan_path(".hermes/plans/p.md") is False
 
 
 # ──────────────────────────────────────────────────────────────────────

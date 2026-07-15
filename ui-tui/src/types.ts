@@ -120,6 +120,11 @@ export interface Msg {
   role: Role
   text: string
   thinking?: string
+  // MoA reference-model output stored in `thinking` (see turnController's
+  // recordMoaReference): unlike ordinary model reasoning, this is the
+  // user-facing mixture-of-agents process the user opted into, so it stays
+  // visible even when `display.sections.thinking` is hidden.
+  isMoaReference?: boolean
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]

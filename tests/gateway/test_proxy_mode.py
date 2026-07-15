@@ -168,18 +168,21 @@ class TestResolveProxyUrl:
 
 
 class TestBuildPlatformStreamConsumer:
-    def test_wecom_uses_native_consumer_even_when_platform_is_non_editable(self):
+    def test_wecom_uses_shared_draft_consumer_when_platform_is_non_editable(self):
         runner = _make_runner()
         source = _make_source(platform=Platform.WECOM)
         source.chat_id = "wecom-chat"
         adapter = MagicMock(
             SUPPORTS_MESSAGE_EDITING=False,
-            _current_reply_req_id="req-123",
-            _thinking_stream_id="stream-123",
         )
+        adapter.stream_metadata_for_reply_to.return_value = {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        adapter.supports_draft_streaming.return_value = True
         scfg = StreamingConfig()
 
-        with patch("gateway.wecom_stream_consumer.WeComStreamConsumer") as mock_consumer_cls:
+        with patch("gateway.stream_consumer.GatewayStreamConsumer") as mock_consumer_cls:
             mock_consumer = MagicMock()
             mock_consumer.on_delta = MagicMock()
             mock_consumer_cls.return_value = mock_consumer
@@ -194,21 +197,42 @@ class TestBuildPlatformStreamConsumer:
 
         mock_consumer_cls.assert_called_once()
         kwargs = mock_consumer_cls.call_args.kwargs
-        assert kwargs["reply_req_id"] == "req-123"
-        assert kwargs["stream_id"] == "stream-123"
+        assert kwargs["metadata"] == {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        assert kwargs["config"].transport == "auto"
         assert consumer is mock_consumer
         assert delta_cb == mock_consumer.on_delta
 
-    def test_resolve_reasoning_stream_callback_returns_wecom_callback_when_enabled(self):
-        from gateway.wecom_stream_consumer import WeComStreamConsumer
-
+    def test_wecom_skips_streaming_without_draft_metadata(self):
         runner = _make_runner()
         source = _make_source(platform=Platform.WECOM)
-        consumer = WeComStreamConsumer(
-            adapter=MagicMock(),
-            chat_id="wecom-chat",
-            reply_req_id="req-123",
-            stream_id="stream-123",
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=False)
+        adapter.stream_metadata_for_reply_to.return_value = None
+        scfg = StreamingConfig()
+
+        consumer, delta_cb = runner._build_platform_stream_consumer(
+            source=source,
+            adapter=adapter,
+            scfg=scfg,
+            metadata=None,
+            want_stream_deltas=True,
+        )
+
+        assert consumer is None
+        assert delta_cb is None
+
+    def test_resolve_reasoning_stream_callback_records_wecom_reasoning(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        adapter = MagicMock()
+        consumer = MagicMock(
+            adapter=adapter,
+            metadata={
+                "wecom_reply_req_id": "req-123",
+                "wecom_stream_id": "stream-123",
+            },
         )
 
         with patch("gateway.run._load_gateway_config", return_value={
@@ -219,69 +243,13 @@ class TestBuildPlatformStreamConsumer:
                 stream_consumer=consumer,
             )
 
-        assert callback == consumer.on_reasoning
-
-    def test_resolve_reasoning_stream_callback_returns_none_when_disabled(self):
-        from gateway.wecom_stream_consumer import WeComStreamConsumer
-
-        runner = _make_runner()
-        source = _make_source(platform=Platform.WECOM)
-        consumer = WeComStreamConsumer(
-            adapter=MagicMock(),
-            chat_id="wecom-chat",
-            reply_req_id="req-123",
-            stream_id="stream-123",
+        assert callable(callback)
+        callback("model reasoning")
+        adapter.record_stream_reasoning.assert_called_once_with(
+            "req-123",
+            "stream-123",
+            "model reasoning",
         )
-
-        with patch("gateway.run._load_gateway_config", return_value={
-            "display": {"platforms": {"wecom": {"show_reasoning": False}}}
-        }):
-            callback = runner._resolve_reasoning_stream_callback(
-                source=source,
-                stream_consumer=consumer,
-            )
-
-        assert callback is None
-
-    def test_resolve_reasoning_stream_callback_clears_stale_cached_agent_callback(self):
-        from gateway.wecom_stream_consumer import WeComStreamConsumer
-
-        runner = _make_runner()
-        source = _make_source(platform=Platform.WECOM)
-        first_consumer = WeComStreamConsumer(
-            adapter=MagicMock(),
-            chat_id="wecom-chat",
-            reply_req_id="req-123",
-            stream_id="stream-123",
-        )
-
-        with patch("gateway.run._load_gateway_config", return_value={
-            "display": {"platforms": {"wecom": {"show_reasoning": True}}}
-        }):
-            callback = runner._resolve_reasoning_stream_callback(
-                source=source,
-                stream_consumer=first_consumer,
-            )
-
-        cached_agent = MagicMock()
-        cached_agent.reasoning_callback = callback
-        assert cached_agent.reasoning_callback == first_consumer.on_reasoning
-
-        second_consumer = WeComStreamConsumer(
-            adapter=MagicMock(),
-            chat_id="wecom-chat",
-            reply_req_id="req-456",
-            stream_id="stream-456",
-        )
-        with patch("gateway.run._load_gateway_config", return_value={
-            "display": {"platforms": {"wecom": {"show_reasoning": False}}}
-        }):
-            cached_agent.reasoning_callback = runner._resolve_reasoning_stream_callback(
-                source=source,
-                stream_consumer=second_consumer,
-            )
-
-        assert cached_agent.reasoning_callback is None
 
     def test_non_editable_non_wecom_platform_skips_generic_streaming(self):
         runner = _make_runner()
@@ -653,18 +621,19 @@ class TestRunAgentViaProxy:
         assert "Authorization" not in session.captured_headers
 
     @pytest.mark.asyncio
-    async def test_wecom_proxy_uses_wecom_stream_consumer(self, monkeypatch):
+    async def test_wecom_proxy_uses_shared_draft_stream_consumer(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
         runner = _make_runner()
-        runner.adapters[Platform.WECOM] = MagicMock(
-            SUPPORTS_MESSAGE_EDITING=False,
-            _current_reply_req_id="req-123",
-            _thinking_stream_id="stream-123",
-            send_typing=AsyncMock(),
-        )
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=False, send_typing=AsyncMock())
+        adapter.stream_metadata_for_reply_to.return_value = {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
+        adapter.supports_draft_streaming.return_value = True
+        runner.adapters[Platform.WECOM] = adapter
         runner.config.streaming.enabled = True
-        runner.config.streaming.transport = "stream"
+        runner.config.streaming.transport = "auto"
         source = _make_source(platform=Platform.WECOM)
         source.chat_id = "wecom-chat"
 
@@ -677,7 +646,7 @@ class TestRunAgentViaProxy:
         with patch("gateway.run._load_gateway_config", return_value={}):
             with _patch_aiohttp(session):
                 with patch("aiohttp.ClientTimeout"):
-                    with patch("gateway.wecom_stream_consumer.WeComStreamConsumer") as mock_consumer_cls:
+                    with patch("gateway.stream_consumer.GatewayStreamConsumer") as mock_consumer_cls:
                         mock_consumer = MagicMock()
                         mock_consumer.run = AsyncMock()
                         mock_consumer.finish = MagicMock()
@@ -694,8 +663,10 @@ class TestRunAgentViaProxy:
 
         mock_consumer_cls.assert_called_once()
         kwargs = mock_consumer_cls.call_args.kwargs
-        assert kwargs["reply_req_id"] == "req-123"
-        assert kwargs["stream_id"] == "stream-123"
+        assert kwargs["metadata"] == {
+            "wecom_reply_req_id": "req-123",
+            "wecom_stream_id": "stream-123",
+        }
         assert result["final_response"] == "ok"
 
     @pytest.mark.asyncio

@@ -664,6 +664,59 @@ class GatewayStreamConsumer:
                         _len_fn(self._accumulated) > _safe_limit
                         and self._message_id is None
                     ):
+                        # Native drafts are replaceable previews, not durable
+                        # message chunks. While generation is still in
+                        # progress, keep the complete accumulated response for
+                        # finalization and update only a safe-size preview.
+                        # Sending non-final chunks through adapter.send() can
+                        # be rejected by non-editable transports such as
+                        # WeCom; clearing _accumulated afterward used to drop
+                        # every prefix that crossed the message limit.
+                        if (
+                            self._use_draft_streaming
+                            and not got_done
+                            and not got_segment_break
+                            and commentary_text is None
+                        ):
+                            preview_chunks = self.adapter.truncate_message(
+                                self._accumulated,
+                                _safe_limit,
+                                len_fn=_len_fn,
+                            )
+                            preview = preview_chunks[0] if preview_chunks else ""
+                            draft_ok = bool(
+                                preview and await self._send_draft_frame(preview)
+                            )
+                            self._last_edit_time = time.monotonic()
+                            if (
+                                draft_ok
+                                or getattr(
+                                    self.adapter,
+                                    "SUPPORTS_MESSAGE_EDITING",
+                                    True,
+                                ) is False
+                            ):
+                                await asyncio.sleep(0.05)
+                                continue
+
+                        # A non-editable adapter whose native draft transport
+                        # failed has no valid non-final delivery path. Keep
+                        # buffering until got_done instead of attempting
+                        # permanent preview chunks and then clearing the full
+                        # accumulated response.
+                        if (
+                            not got_done
+                            and not got_segment_break
+                            and getattr(
+                                self.adapter,
+                                "SUPPORTS_MESSAGE_EDITING",
+                                True,
+                            ) is False
+                        ):
+                            self._last_edit_time = time.monotonic()
+                            await asyncio.sleep(0.05)
+                            continue
+
                         # No existing message to edit (first message or after a
                         # segment break).  Use truncate_message — the same
                         # helper the non-streaming path uses — to split with

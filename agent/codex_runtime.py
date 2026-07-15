@@ -596,6 +596,25 @@ def _item_field(item: Any, name: str, default: Any = None) -> Any:
     return value if value is not None else default
 
 
+def _completed_reasoning_text(item: Any) -> str:
+    """Extract displayable text from a completed Responses reasoning item."""
+    if _item_field(item, "type", "") != "reasoning":
+        return ""
+
+    summary = _item_field(item, "summary")
+    if isinstance(summary, list):
+        parts = []
+        for part in summary:
+            text = _item_field(part, "text", "")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        if parts:
+            return "\n".join(parts).strip()
+
+    text = _item_field(item, "text", "")
+    return text.strip() if isinstance(text, str) else ""
+
+
 def _raise_stream_error(event: Any) -> None:
     """Raise a ``_StreamErrorEvent`` from a ``type=error`` SSE frame.
 
@@ -652,7 +671,9 @@ def _consume_codex_event_stream(
     * ``on_first_delta()`` — one-shot, fires on the first text delta only.
     * ``on_event(event)`` — fires for every event before any other processing.
       Used for watchdog activity, debug logging, anything wire-shape-agnostic.
-    * ``interrupt_check()`` — returns True to break the loop early.
+    * ``interrupt_check()`` — returns True to break the loop early, or raises
+      ``TimeoutError`` / ``InterruptedError`` for request-retirement control
+      flow that must not be converted into a partial final response.
     """
     collected_output_items: List[Any] = []
     collected_text_deltas: List[str] = []
@@ -665,6 +686,7 @@ def _consume_codex_event_stream(
     terminal_incomplete_details: Any = None
     terminal_error: Any = None
     saw_terminal = False
+    current_reasoning_deltas: list[str] = []
 
     for event in event_iter:
         if on_event is not None:
@@ -744,6 +766,7 @@ def _consume_codex_event_stream(
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
             if reasoning_text and on_reasoning_delta is not None:
+                current_reasoning_deltas.append(reasoning_text)
                 try:
                     on_reasoning_delta(reasoning_text)
                 except Exception:
@@ -754,6 +777,26 @@ def _consume_codex_event_stream(
             done_item = _event_field(event, "item")
             if done_item is not None:
                 collected_output_items.append(done_item)
+                completed_reasoning = _completed_reasoning_text(done_item)
+                if completed_reasoning and on_reasoning_delta is not None:
+                    streamed_reasoning = "".join(current_reasoning_deltas).strip()
+                    missing_reasoning = ""
+                    if not streamed_reasoning:
+                        missing_reasoning = completed_reasoning
+                    elif completed_reasoning.startswith(streamed_reasoning):
+                        missing_reasoning = completed_reasoning[len(streamed_reasoning):]
+                    elif completed_reasoning not in streamed_reasoning:
+                        missing_reasoning = completed_reasoning
+                    if missing_reasoning:
+                        try:
+                            on_reasoning_delta(missing_reasoning)
+                        except Exception:
+                            logger.debug(
+                                "Codex completed reasoning callback raised",
+                                exc_info=True,
+                            )
+                if _item_field(done_item, "type", "") == "reasoning":
+                    current_reasoning_deltas = []
             continue
 
         if event_type in _TERMINAL_EVENT_TYPES:
@@ -846,21 +889,39 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     max_stream_retries = 1
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
+    request_token = getattr(agent, "_active_codex_stream_request_token", None)
+
+    def _request_is_current() -> bool:
+        if request_token is None:
+            return True
+        return getattr(agent, "_active_codex_stream_request_token", None) is request_token
 
     def _on_text_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._codex_streamed_text_parts.append(text)
         agent._fire_stream_delta(text)
 
     def _on_reasoning_delta(text: str) -> None:
+        if not _request_is_current():
+            return
         agent._fire_reasoning_delta(text)
 
     def _on_event(event: Any) -> None:
+        if not _request_is_current():
+            return
         # TTFB watchdog and activity touch — runs once per SSE event.
         agent._codex_stream_last_event_ts = time.time()
         agent._touch_activity("receiving stream response")
 
     def _interrupt_check() -> bool:
-        return bool(agent._interrupt_requested)
+        if agent._interrupt_requested:
+            raise InterruptedError("Agent interrupted during Codex stream")
+        if not _request_is_current():
+            raise TimeoutError(
+                "Codex Responses stream request retired before terminal response"
+            )
+        return False
 
     for attempt in range(max_stream_retries + 1):
         if agent._interrupt_requested:

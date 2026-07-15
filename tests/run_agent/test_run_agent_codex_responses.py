@@ -675,6 +675,70 @@ def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkey
     assert response.output_text == ""
 
 
+def test_consume_codex_stream_routes_completed_reasoning_summary_without_deltas():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_1",
+        summary=[
+            SimpleNamespace(
+                type="summary_text",
+                text="Planning the architecture comparison",
+            ),
+        ],
+    )
+    reasoning_streamed = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="gpt-5.5",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == ["Planning the architecture comparison"]
+    assert response.output == [reasoning_item]
+
+
+def test_consume_codex_stream_does_not_repeat_completed_reasoning_after_deltas():
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        id="rs_1",
+        summary=[
+            SimpleNamespace(type="summary_text", text="Planning the comparison"),
+        ],
+    )
+    reasoning_streamed = []
+
+    _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.reasoning_summary_text.delta",
+                delta="Planning the comparison",
+            ),
+            SimpleNamespace(type="response.output_item.done", item=reasoning_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            ),
+        ]),
+        model="gpt-5.5",
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert reasoning_streamed == ["Planning the comparison"]
+
+
 def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
     from agent.codex_runtime import _consume_codex_event_stream
 
@@ -759,6 +823,100 @@ def test_run_codex_stream_parses_create_stream_events(monkeypatch):
     # For backward compatibility with the helper that builds _codex_message_response,
     # we just assert status is completed and id propagated.
     assert response.status == "completed"
+
+
+def test_run_codex_stream_suppresses_retired_request_events(monkeypatch):
+    """Late events from a timed-out Codex attempt must not update UI state.
+
+    The non-streaming watchdog can retire an attempt while its worker thread is
+    still unwinding. If the provider continues yielding SSE events after that,
+    they belong to the dead attempt and must not stream into the next retry's
+    draft or refresh the shared Codex watchdog timestamp.
+    """
+    agent = _build_agent(monkeypatch)
+    request_token = object()
+    agent._active_codex_stream_request_token = request_token
+    agent._codex_stream_last_event_ts = None
+    streamed: list[str] = []
+    reasoning_streamed: list[str] = []
+    activity: list[str] = []
+    agent.stream_delta_callback = streamed.append
+    agent.reasoning_callback = reasoning_streamed.append
+    agent._touch_activity = activity.append
+
+    class _RetiredCreateStream(_FakeCreateStream):
+        def __iter__(self):
+            agent._active_codex_stream_request_token = object()
+            return iter([
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(type="response.output_text.delta", delta="late text"),
+                SimpleNamespace(type="response.reasoning_summary_text.delta", delta="late reasoning"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed"),
+                ),
+            ])
+
+    create_stream = _RetiredCreateStream([])
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    with pytest.raises(TimeoutError, match="request retired before terminal response"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert streamed == []
+    assert reasoning_streamed == []
+    assert activity == []
+    assert agent._codex_stream_last_event_ts is None
+    assert create_stream.closed is True
+
+
+def test_run_codex_stream_rejects_retired_partial_text_response(monkeypatch):
+    """A retired Codex attempt must not normalize partial deltas as ``stop``.
+
+    The non-streaming stale watchdog retires the request token before closing
+    the worker's HTTP connection. If the worker has already collected text
+    deltas but has not seen response.completed/incomplete/failed, returning a
+    synthesized completed message would persist a half answer as final.
+    """
+    agent = _build_agent(monkeypatch)
+    request_token = object()
+    agent._active_codex_stream_request_token = request_token
+    streamed: list[str] = []
+    agent.stream_delta_callback = streamed.append
+
+    class _RetiresAfterTextStream(_FakeCreateStream):
+        def __iter__(self):
+            yield SimpleNamespace(type="response.created")
+            yield SimpleNamespace(type="response.output_text.delta", delta="partial answer")
+            agent._active_codex_stream_request_token = object()
+            yield SimpleNamespace(type="response.in_progress")
+            yield SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(status="completed"),
+            )
+
+    create_stream = _RetiresAfterTextStream([])
+
+    def _fake_create(**kwargs):
+        assert kwargs.get("stream") is True
+        return create_stream
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=_fake_create),
+    )
+
+    with pytest.raises(TimeoutError, match="request retired before terminal response"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    assert streamed == ["partial answer"]
+    assert create_stream.closed is True
 
 
 def test_run_codex_stream_ignores_completed_response_with_null_output(monkeypatch):

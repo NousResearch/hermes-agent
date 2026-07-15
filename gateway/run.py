@@ -3228,36 +3228,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         stream_consumer = None
         stream_delta_cb = None
 
-        # WeCom uses native stream API instead of edit-based streaming.
+        consumer_metadata = metadata
         if source.platform == Platform.WECOM:
-            _reply_req_id = getattr(adapter, '_current_reply_req_id', None)
-            _stream_id = getattr(adapter, '_thinking_stream_id', None)
-            if _reply_req_id and _stream_id:
-                from gateway.wecom_stream_consumer import WeComStreamConsumer
-                stream_consumer = WeComStreamConsumer(
-                    adapter=adapter,
-                    chat_id=source.chat_id,
-                    reply_req_id=_reply_req_id,
-                    stream_id=_stream_id,
-                    config=None,
-                    metadata=metadata,
-                )
-                if want_stream_deltas:
-                    stream_delta_cb = stream_consumer.on_delta
-                return stream_consumer, stream_delta_cb
-            return None, None
+            metadata_fn = getattr(adapter, "stream_metadata_for_reply_to", None)
+            if metadata_fn is None:
+                return None, None
+            consumer_metadata = metadata_fn(initial_reply_to_id, metadata)
+            if not consumer_metadata:
+                return None, None
 
-        # Other platforms use the generic edit-based consumer.
-        # WeCom is the only non-editable platform that bypasses this path via
-        # a dedicated native stream API consumer above. Other non-editable
-        # platforms should skip generic streaming entirely, otherwise they can
-        # emit a partial message that can never be updated and later send a
-        # separate final message.
         _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
-        if not _adapter_supports_edit:
+        _transport = (getattr(scfg, "transport", None) or "auto").lower()
+        _adapter_supports_draft = False
+        if _transport not in {"edit", "off"}:
+            try:
+                _adapter_supports_draft = adapter.supports_draft_streaming(
+                    chat_type=getattr(source, "chat_type", "") or "",
+                    metadata=consumer_metadata,
+                ) is True
+            except Exception:
+                logger.debug("supports_draft_streaming probe failed", exc_info=True)
+                _adapter_supports_draft = False
+        if not _adapter_supports_edit and not _adapter_supports_draft:
             return None, None
 
-        _effective_cursor = scfg.cursor
+        _effective_cursor = "" if not _adapter_supports_edit else scfg.cursor
         _buffer_only = False
         if source.platform == Platform.MATRIX:
             _effective_cursor = ""
@@ -3280,7 +3275,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter=adapter,
             chat_id=source.chat_id,
             config=_consumer_cfg,
-            metadata=metadata,
+            metadata=consumer_metadata,
             on_new_message=on_new_message,
             on_before_finalize=on_before_finalize,
             initial_reply_to_id=initial_reply_to_id,
@@ -3315,13 +3310,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
-        try:
-            from gateway.wecom_stream_consumer import WeComStreamConsumer as _WCS
-            if isinstance(stream_consumer, _WCS) and _want_show_reasoning:
-                return stream_consumer.on_reasoning
-        except ImportError:
-            pass
-        return None
+        if (
+            not _want_show_reasoning
+            or source.platform != Platform.WECOM
+            or stream_consumer is None
+        ):
+            return None
+
+        metadata = getattr(stream_consumer, "metadata", None)
+        adapter = getattr(stream_consumer, "adapter", None)
+        if not isinstance(metadata, dict) or adapter is None:
+            return None
+
+        reply_req_id = str(metadata.get("wecom_reply_req_id") or "").strip()
+        stream_id = str(metadata.get("wecom_stream_id") or "").strip()
+        record_reasoning = getattr(adapter, "record_stream_reasoning", None)
+        if not reply_req_id or not stream_id or not callable(record_reasoning):
+            return None
+
+        def _record_wecom_reasoning(text: str) -> None:
+            if text:
+                record_reasoning(reply_req_id, stream_id, text)
+
+        return _record_wecom_reasoning
 
 
 

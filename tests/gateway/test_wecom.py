@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -41,6 +42,15 @@ class TestWeComAdapterInit:
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_thinking_max_seconds_comes_from_config_extra(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"thinking_max_seconds": 42})
+        )
+
+        assert adapter._thinking_max_seconds == 42
 
     def test_reads_config_from_extra(self):
         from plugins.platforms.wecom.adapter import WeComAdapter
@@ -188,34 +198,145 @@ class TestWeComReplyMode:
         assert args[1]["markdown"]["content"] == "hello from reply"
 
     @pytest.mark.asyncio
-    async def test_send_uses_stream_only_for_current_native_stream_context(self):
-        from gateway.platforms.wecom import WeComAdapter
+    async def test_send_uses_stream_for_shared_consumer_final(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-1"] = "req-1"
-        adapter._current_reply_req_id = "req-1"
-        adapter._thinking_stream_id = "stream-1"
-        adapter._send_final_reply = AsyncMock(
+        adapter._send_reply_stream = AsyncMock(
             return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
         )
         adapter._send_reply_request = AsyncMock()
 
-        result = await adapter.send("chat-123", "hello from stream", reply_to="msg-1")
+        result = await adapter.send(
+            "chat-123",
+            "hello from stream",
+            reply_to="msg-1",
+            metadata={
+                "expect_edits": True,
+                "notify": True,
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+        )
 
         assert result.success is True
-        adapter._send_final_reply.assert_awaited_once_with("req-1", "hello from stream")
+        adapter._send_reply_stream.assert_awaited_once_with(
+            "req-1",
+            "hello from stream",
+            stream_id="stream-1",
+            finish=True,
+        )
         adapter._send_reply_request.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_send_final_reuses_thinking_stream_and_combines_content(self):
+        from plugins.platforms.wecom.adapter import WAITING_MODEL_TEXT, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._thinking_reply_req_id = "req-1"
+        adapter._thinking_stream_id = "stream-1"
+        adapter._thinking_accumulated_lines = [f"{WAITING_MODEL_TEXT} 0s"]
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "final answer",
+            metadata={
+                "expect_edits": True,
+                "notify": True,
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+        )
+
+        assert result.success is True
+        adapter._send_reply_request.assert_awaited_once()
+        final_payload = adapter._send_reply_request.await_args.args[1]
+        assert final_payload["stream"]["id"] == "stream-1"
+        assert final_payload["stream"]["finish"] is True
+        assert final_payload["stream"]["content"] == (
+            f"<think>{WAITING_MODEL_TEXT} 0s</think>\nfinal answer"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_final_prefers_model_reasoning_over_waiting_indicator(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._thinking_reply_req_id = "req-1"
+        adapter._thinking_stream_id = "stream-1"
+        adapter._thinking_accumulated_lines = ["等待模型响应 0s"]
+        adapter.record_stream_reasoning("req-1", "stream-1", "step one")
+        adapter.record_stream_reasoning("req-1", "stream-1", "\nstep two")
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "final answer",
+            metadata={
+                "expect_edits": True,
+                "notify": True,
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+        )
+
+        assert result.success is True
+        final_payload = adapter._send_reply_request.await_args.args[1]
+        assert final_payload["stream"]["id"] == "stream-1"
+        assert final_payload["stream"]["content"] == (
+            "<think>step one\nstep two</think>\nfinal answer"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_final_keeps_reasoning_after_intermediate_stream_close(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._closed_stream_ids.add("stream-1")
+        adapter.record_stream_reasoning(
+            "req-1",
+            "stream-1",
+            "reasoning preserved across approval",
+        )
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123",
+            "final answer",
+            metadata={
+                "expect_edits": True,
+                "notify": True,
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+        )
+
+        assert result.success is True
+        final_payload = adapter._send_reply_request.await_args.args[1]
+        assert final_payload["stream"]["id"] != "stream-1"
+        assert final_payload["stream"]["content"] == (
+            "<think>reasoning preserved across approval</think>\nfinal answer"
+        )
+        assert ("req-1", "stream-1") not in adapter._stream_reasoning
+
+    @pytest.mark.asyncio
     async def test_send_uses_markdown_when_only_stale_thinking_state_exists(self):
-        from gateway.platforms.wecom import WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._reply_req_ids["msg-1"] = "req-1"
-        adapter._current_reply_req_id = "different-req"
         adapter._thinking_stream_id = "stream-1"
         adapter._thinking_accumulated_lines = ["一些旧的 thinking"]
         adapter._send_final_reply = AsyncMock()
+        adapter._cancel_thinking_indicator = AsyncMock()
         adapter._send_reply_request = AsyncMock(
             return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
         )
@@ -224,11 +345,306 @@ class TestWeComReplyMode:
 
         assert result.success is True
         adapter._send_final_reply.assert_not_awaited()
+        adapter._cancel_thinking_indicator.assert_awaited_once()
         adapter._send_reply_request.assert_awaited_once()
         args = adapter._send_reply_request.await_args.args
         assert args[0] == "req-1"
         assert args[1]["msgtype"] == "markdown"
         assert args[1]["markdown"]["content"] == "hello from reply"
+
+    @pytest.mark.asyncio
+    async def test_send_rejects_non_final_edit_fallback_for_wecom_streaming(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        result = await adapter.send(
+            "chat-123",
+            "partial",
+            metadata={
+                "expect_edits": True,
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+        )
+
+        assert result.success is False
+        assert "non-final edit fallback" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_draft_uses_wecom_stream_api(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_stream = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send_draft(
+            "chat-123",
+            draft_id=1,
+            content="partial",
+            metadata={"wecom_reply_req_id": "req-1", "wecom_stream_id": "stream-1"},
+        )
+
+        assert result.success is True
+        adapter._send_reply_stream.assert_awaited_once_with(
+            "req-1",
+            "partial",
+            stream_id="stream-1",
+            finish=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_draft_keeps_recorded_reasoning_in_same_stream(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter.record_stream_reasoning(
+            "req-1",
+            "stream-1",
+            "Planning the response",
+        )
+        adapter._send_reply_stream = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send_draft(
+            "chat-123",
+            draft_id=1,
+            content="partial answer",
+            metadata={"wecom_reply_req_id": "req-1", "wecom_stream_id": "stream-1"},
+        )
+
+        assert result.success is True
+        adapter._send_reply_stream.assert_awaited_once_with(
+            "req-1",
+            "<think>Planning the response</think>\npartial answer",
+            stream_id="stream-1",
+            finish=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reply_stream_retries_wecom_version_conflict(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(side_effect=[
+            {
+                "headers": {"req_id": "req-1"},
+                "errcode": 6000,
+                "errmsg": "more than one callers at the same time, data version conflict",
+            },
+            {"headers": {"req_id": "req-1"}, "errcode": 0},
+        ])
+
+        with patch(
+            "plugins.platforms.wecom.adapter.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep_mock:
+            response = await adapter._send_reply_stream(
+                "req-1",
+                "partial answer",
+                stream_id="stream-1",
+                finish=False,
+            )
+
+        assert response["errcode"] == 0
+        assert adapter._send_reply_request.await_count == 2
+        sleep_mock.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reasoning_wakes_thinking_stream_without_waiting_for_next_tick(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_json = AsyncMock()
+        adapter._start_thinking_indicator("req-1", "stream-1")
+
+        try:
+            for _ in range(20):
+                if adapter._send_json.await_count:
+                    break
+                await asyncio.sleep(0.01)
+
+            adapter.record_stream_reasoning(
+                "req-1",
+                "stream-1",
+                "Planning the response",
+            )
+
+            for _ in range(30):
+                contents = [
+                    call.args[0]["body"]["stream"]["content"]
+                    for call in adapter._send_json.await_args_list
+                ]
+                if any("Planning the response" in content for content in contents):
+                    break
+                await asyncio.sleep(0.01)
+
+            assert any(
+                "Planning the response" in call.args[0]["body"]["stream"]["content"]
+                for call in adapter._send_json.await_args_list
+            )
+        finally:
+            await adapter._cancel_thinking_indicator(close_stream=False)
+
+    def test_supports_draft_streaming_requires_wecom_metadata(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        assert adapter.supports_draft_streaming(metadata=None) is False
+        assert adapter.supports_draft_streaming(metadata={"wecom_reply_req_id": "req-1"}) is False
+        assert adapter.supports_draft_streaming(
+            metadata={"wecom_reply_req_id": "req-1", "wecom_stream_id": "stream-1"}
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_shared_consumer_splits_long_unicode_final_without_truncation(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "sent"}, "errcode": 0}
+        )
+        text = "汉字🙂" * 1700
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat-123",
+            config=StreamConsumerConfig(
+                edit_interval=0.0,
+                buffer_threshold=1,
+                cursor="",
+                transport="auto",
+            ),
+            metadata={
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+            initial_reply_to_id="msg-1",
+        )
+
+        consumer.on_delta(text)
+        consumer.finish()
+        await consumer.run()
+
+        payloads = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        stream_payloads = [payload["stream"] for payload in payloads]
+        contents = [payload["content"] for payload in stream_payloads]
+
+        assert len(contents) >= 2
+        assert all(payload["finish"] is True for payload in stream_payloads)
+        assert all(len(content) <= adapter.MAX_MESSAGE_LENGTH for content in contents)
+        combined = "".join(re.sub(r" \(\d+/\d+\)$", "", content) for content in contents)
+        assert combined == text
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_shared_consumer_preserves_prefix_when_draft_overflows_before_finish(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "sent"}, "errcode": 0}
+        )
+        first = "前半段🙂" * 1000
+        second = "后半段🙂" * 1000
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat-123",
+            config=StreamConsumerConfig(
+                edit_interval=0.0,
+                buffer_threshold=1,
+                cursor="",
+                transport="auto",
+            ),
+            metadata={
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+            initial_reply_to_id="msg-1",
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(first)
+        for _ in range(20):
+            if consumer._queue.empty():
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.06)
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+        payloads = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        final_streams = [
+            payload["stream"]
+            for payload in payloads
+            if payload["stream"]["finish"] is True
+        ]
+        contents = [payload["content"] for payload in final_streams]
+        combined = "".join(re.sub(r" \(\d+/\d+\)$", "", content) for content in contents)
+
+        assert combined == first + second
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_shared_consumer_preserves_long_response_after_draft_failure(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=False, error="version conflict")
+        )
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "sent"}, "errcode": 0}
+        )
+        first = "前半段🙂" * 1000
+        second = "后半段🙂" * 1000
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat-123",
+            config=StreamConsumerConfig(
+                edit_interval=0.0,
+                buffer_threshold=1,
+                cursor="",
+                transport="auto",
+            ),
+            metadata={
+                "wecom_reply_req_id": "req-1",
+                "wecom_stream_id": "stream-1",
+            },
+            initial_reply_to_id="msg-1",
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta(first)
+        for _ in range(20):
+            if consumer._queue.empty():
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.06)
+        consumer.on_delta(second)
+        consumer.finish()
+        await task
+
+        payloads = [call.args[1] for call in adapter._send_reply_request.await_args_list]
+        final_streams = [
+            payload["stream"]
+            for payload in payloads
+            if payload["stream"]["finish"] is True
+        ]
+        combined = "".join(
+            re.sub(r" \(\d+/\d+\)$", "", payload["content"])
+            for payload in final_streams
+        )
+
+        assert combined == first + second
+        assert consumer.final_response_sent is True
 
     @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
@@ -656,6 +1072,7 @@ class TestInboundMessages:
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"]))
+        adapter._start_thinking_indicator = MagicMock()
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -672,6 +1089,7 @@ class TestInboundMessages:
 
         await adapter._on_message(payload)
 
+        adapter._start_thinking_indicator.assert_called_once()
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
         assert event.text == "hello"
@@ -693,6 +1111,7 @@ class TestInboundMessages:
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._start_thinking_indicator = MagicMock()
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -710,6 +1129,7 @@ class TestInboundMessages:
 
         await adapter._on_message(payload)
 
+        adapter._start_thinking_indicator.assert_called_once()
         event = adapter.handle_message.await_args.args[0]
         assert event.reply_to_text == "quoted message"
         assert event.reply_to_message_id == "quote:msg-1"
@@ -726,6 +1146,7 @@ class TestInboundMessages:
         )
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._start_thinking_indicator = MagicMock()
 
         payload = {
             "cmd": "aibot_callback",
@@ -742,6 +1163,60 @@ class TestInboundMessages:
 
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
+        adapter._start_thinking_indicator.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_message_does_not_start_thinking_for_empty_callback(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._start_thinking_indicator = MagicMock()
+
+        payload = {
+            "cmd": "aibot_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": ""},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        adapter.handle_message.assert_not_awaited()
+        adapter._start_thinking_indicator.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_message_does_not_start_thinking_for_slash_command(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+        adapter._text_batch_delay_seconds = 0
+        adapter.handle_message = AsyncMock()
+        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._start_thinking_indicator = MagicMock()
+
+        payload = {
+            "cmd": "aibot_callback",
+            "headers": {"req_id": "req-1"},
+            "body": {
+                "msgid": "msg-1",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "/model"},
+            },
+        }
+
+        await adapter._on_message(payload)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/model"
+        adapter._start_thinking_indicator.assert_not_called()
 
 
 class TestWeComZombieSessionFix:
@@ -826,6 +1301,7 @@ class TestWeComZombieSessionFix:
         adapter._text_batch_delay_seconds = 0
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._start_thinking_indicator = MagicMock()
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -841,6 +1317,7 @@ class TestWeComZombieSessionFix:
         }
 
         await adapter._on_message(payload)
+        adapter._start_thinking_indicator.assert_called_once()
         assert adapter._last_chat_req_ids["group-1"] == "req-abc"
 
     @pytest.mark.asyncio
@@ -856,6 +1333,7 @@ class TestWeComZombieSessionFix:
         )
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._start_thinking_indicator = MagicMock()
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -872,6 +1350,7 @@ class TestWeComZombieSessionFix:
 
         await adapter._on_message(payload)
         adapter.handle_message.assert_not_awaited()
+        adapter._start_thinking_indicator.assert_not_called()
         assert "group-blocked" not in adapter._last_chat_req_ids
 
     def test_remember_chat_req_id_is_bounded(self):

@@ -94,15 +94,14 @@ hermes gateway
 - **Markdown rendering** — rich text responses
 - **Reply-mode streaming** — correlates responses to inbound message context
 - **Thinking indicator** — shows a "waiting for model" countdown while the model is processing
-- **Native stream consumer** — real-time token streaming via WeCom's stream message API (not edit-based)
-- **Reasoning display** — optional real-time streaming of model reasoning tokens inside think tags
+- **Draft streaming** — real-time token streaming via WeCom's stream message API when gateway streaming is enabled
 - **Auto-reconnect** — exponential backoff on connection drops
 
 :::note Streaming and typing indicators
-The WeCom adapter delivers each response as a single complete message — it does
-**not** stream responses token-by-token, and it does **not** show a typing
-indicator. "Reply correlation" (below) only threads a response to its inbound
-request; it is not live streaming.
+By default, WeCom responses are delivered as complete messages. When gateway
+streaming is enabled, WeCom uses native stream frames through Hermes' shared
+draft-streaming path. WeCom still has no edit-message API, so edit transport is
+disabled for this platform.
 :::
 
 ## Configuration Options
@@ -119,6 +118,7 @@ Set these in `config.yaml` under `platforms.wecom.extra`:
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
 | `groups` | `{}` | Per-group configuration (see below) |
+| `thinking_max_seconds` | `1800` | Max seconds for the pre-stream thinking indicator loop |
 
 ## Access Policies
 
@@ -240,7 +240,7 @@ Files exceeding the absolute 20 MB limit are rejected with an informational mess
 
 When the bot receives a message via the WeCom callback, the adapter remembers the inbound request ID. If a response is sent while the request context is still active, the adapter uses WeCom's reply-mode (`aibot_respond_msg`) to correlate the response directly to the inbound message. This provides a more natural conversation experience in the WeCom client.
 
-The full response is delivered as a single message — the adapter does not stream tokens incrementally. If the inbound request context has expired or is unavailable, the adapter falls back to proactive message sending via `aibot_send_msg`.
+By default, the full response is delivered as a single message. When gateway streaming is enabled, WeCom uses Hermes' shared draft-streaming consumer and maps draft frames to WeCom's native stream message API. If the inbound request context has expired or is unavailable, the adapter falls back to proactive message sending via `aibot_send_msg`.
 
 Reply-mode also works for media: uploaded media can be sent as a reply to the originating message.
 
@@ -248,15 +248,15 @@ Reply-mode also works for media: uploaded media can be sent as a reply to the or
 
 While the model is processing a response, WeCom displays a thinking indicator that updates every second with a countdown (`Waiting for model Ns`). This gives users immediate feedback that the bot is working, even before any tokens arrive.
 
-- The indicator starts as soon as a message is received and begins processing.
-- It stops automatically when the first visible or reasoning token arrives from the model.
-- A safety timeout prevents infinite waiting — controlled by `HERMES_THINKING_MAX_SECONDS` (default: 1800 seconds / 30 minutes).
+- The indicator starts after the inbound callback passes access policy and empty-input validation.
+- It stops automatically when the first visible draft frame arrives from the model.
+- A safety timeout prevents infinite waiting — controlled by `thinking_max_seconds` in the WeCom platform config (default: 1800 seconds / 30 minutes).
 
 The thinking indicator uses WeCom's native stream message API, so it renders smoothly without message editing or duplication.
 
-## Streaming and Reasoning
+## Streaming
 
-WeCom uses a dedicated native stream consumer (`WeComStreamConsumer`) instead of the generic edit-based `GatewayStreamConsumer`. This is because WeCom does not support editing sent messages — the native stream API allows incremental updates within a single message bubble.
+WeCom does not support editing sent messages, so Hermes uses the shared draft-streaming contract for live updates. The gateway's `GatewayStreamConsumer` owns buffering, finalization, and long-message splitting; the WeCom adapter implements the draft transport by sending WeCom stream frames.
 
 ### Streaming Configuration
 
@@ -265,49 +265,14 @@ WeCom streaming follows the top-level `streaming` configuration. No per-platform
 ```yaml
 streaming:
   enabled: true
-  transport: stream   # recommended for WeCom
+  transport: auto
 ```
 
-If `streaming.transport` is `off`, streaming is disabled for WeCom.
-
-### Reasoning Display
-
-When the model produces reasoning tokens (content inside `<think>...</think>` blocks), you can optionally stream them to the user in real time.
-
-**Off by default** — the user sees only the thinking indicator and the final reply, with no intermediate reasoning visible.
-
-**On** — reasoning tokens stream in real time inside the think block, letting the user watch the model think.
-
-Global configuration:
-
-```yaml
-display:
-  show_reasoning: true
-```
-
-Per-platform override (WeCom only):
-
-```yaml
-display:
-  platforms:
-    wecom:
-      show_reasoning: true
-```
-
-Toggle at runtime via CLI commands:
-
-```
-/reasoning on
-/reasoning off
-```
-
-### Stream Rotation
-
-The native stream consumer rotates the active stream every 5 minutes to stay below WeCom's stream lifetime limit (~6 minutes). This is handled transparently — no configuration needed.
+If `streaming.transport` is `off` or `edit`, live WeCom streaming is disabled because WeCom has no edit-message API.
 
 ### Content Length Guard
 
-To prevent the WeCom SDK from silently splitting long messages across frames, the stream consumer rotates when accumulated content exceeds 3500 characters.
+To prevent the WeCom SDK from silently splitting long messages across frames, Hermes splits long final responses through the shared stream-consumer overflow path before sending WeCom stream frames.
 
 ## Connection and Reconnection
 
@@ -348,7 +313,6 @@ Inbound messages are deduplicated using message IDs with a 5-minute window and a
 | `WECOM_WEBSOCKET_URL` | — | `wss://openws.work.weixin.qq.com` | WebSocket gateway URL |
 | `WECOM_DM_POLICY` | — | `open` | DM access policy |
 | `WECOM_GROUP_POLICY` | — | `open` | Group access policy |
-| `HERMES_THINKING_MAX_SECONDS` | — | `1800` | Max seconds for the pre-stream thinking indicator loop |
 
 ## Troubleshooting
 

@@ -1287,6 +1287,11 @@ class DedupMiddleware(InboundMiddleware):
         if ctx.msg_id and ctx.adapter._dedup.is_duplicate(ctx.msg_id):
             logger.debug("[%s] Duplicate message ignored: msg_id=%s", ctx.adapter.name, ctx.msg_id)
             return  # Stop pipeline
+        # Drop echo of our own sent messages.
+        if ctx.msg_id and ctx.msg_id in ctx.adapter._sent_msg_ids:
+            ctx.adapter._sent_msg_ids.pop(ctx.msg_id, None)
+            logger.debug("[%s] Dropping bot echo (sent-msg tracking): msg_id=%s", ctx.adapter.name, ctx.msg_id)
+            return
         await next_fn()
 
 
@@ -4792,7 +4797,9 @@ class MessageSender:
                 result = await self.send_c2c_msg_body(to_account, msg_body, group_code=group_code)
 
         if result.get("success"):
-            return SendResult(success=True, message_id=result.get("msg_key"))
+            _msg_id = result.get("msg_key")
+            self._adapter._track_sent_msg(_msg_id)
+            return SendResult(success=True, message_id=_msg_id)
         return SendResult(success=False, error=result.get("error", "Unknown error"))
 
     async def send_text_chunk(
@@ -4816,7 +4823,9 @@ class MessageSender:
                     raw = await self.send_c2c_message(to_account, text, group_code=group_code)
 
                 if raw.get("success"):
-                    return SendResult(success=True, message_id=raw.get("msg_key"))
+                    _msg_id = raw.get("msg_key")
+                    adapter._track_sent_msg(_msg_id)
+                    return SendResult(success=True, message_id=_msg_id)
 
                 last_error = raw.get("error", "Unknown error")
                 logger.warning(
@@ -5141,6 +5150,8 @@ class YuanbaoAdapter(BasePlatformAdapter):
     splits_long_messages = True  # send() auto-chunks via truncate_message(MAX_TEXT_CHUNK)
     MEDIA_MAX_SIZE_MB: int = 50  # Max media file size in MB for upload validation
     REPLY_REF_MAX_ENTRIES: ClassVar[int] = 500  # Max capacity of reference dedup dict
+    # Maximum number of sent message IDs to retain for echo detection.
+    _SENT_MSG_IDS_MAX = 500
 
     # -- Active instance registry (class-level singleton) -------------------
 
@@ -5199,6 +5210,9 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         # Inbound message deduplication (WS reconnect / network jitter)
         self._dedup = MessageDeduplicator(ttl_seconds=300)
+
+        # Track sent message IDs to detect platform echoes.
+        self._sent_msg_ids: collections.OrderedDict = collections.OrderedDict()
 
         # Group chat sequential dispatch queue (session_key → asyncio.Queue).
         self._group_queues: Dict[str, asyncio.Queue] = {}
@@ -5272,6 +5286,15 @@ class YuanbaoAdapter(BasePlatformAdapter):
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task
+
+    def _track_sent_msg(self, msg_id: str) -> None:
+        """Record a sent message ID for echo detection.
+
+        Evicts the oldest entry when at capacity.
+        """
+        self._sent_msg_ids[msg_id] = None
+        while len(self._sent_msg_ids) > self._SENT_MSG_IDS_MAX:
+            self._sent_msg_ids.popitem(last=False)
 
     # ------------------------------------------------------------------
     # Abstract method implementations

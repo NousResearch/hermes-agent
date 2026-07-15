@@ -2254,3 +2254,109 @@ class TestReadEventsClosedWsGuard:
         adapter._ws = None
         with pytest.raises(RuntimeError):
             asyncio.run(adapter._read_events())
+
+
+class TestSelfEchoFiltering:
+    """Test that inbound messages matching sent msg_ids are dropped."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+
+        return QQAdapter(_make_config(app_id="a", client_secret="b", **extra))
+
+    def test_track_sent_msg_records_and_evicts(self):
+        """Verify _track_sent_msg records IDs and evicts oldest at capacity."""
+        adapter = self._make_adapter()
+        adapter._sent_msg_ids.clear()
+
+        # Record messages up to capacity
+        for i in range(adapter._SENT_MSG_IDS_MAX):
+            adapter._track_sent_msg(f"msg_{i}")
+        assert len(adapter._sent_msg_ids) == adapter._SENT_MSG_IDS_MAX
+        assert "msg_0" in adapter._sent_msg_ids
+
+        # One more should evict oldest
+        adapter._track_sent_msg("msg_new")
+        assert len(adapter._sent_msg_ids) == adapter._SENT_MSG_IDS_MAX
+        assert "msg_0" not in adapter._sent_msg_ids
+        assert "msg_new" in adapter._sent_msg_ids
+
+    def test_on_message_echo_is_dropped(self):
+        """Full-path test: mock _api_request, send text, verify echo dropped."""
+        adapter = self._make_adapter()
+        adapter._sent_msg_ids.clear()
+        sent_msg_id = "ROBOT_echo_12345"
+
+        # Mock the HTTP POST so the send returns a known msg_id
+        async def fake_api_request(method, path, body):
+            return {"id": sent_msg_id}
+
+        with mock.patch.object(adapter, "_api_request", fake_api_request):
+            with mock.patch.object(adapter, "_handle_c2c_message") as mock_handle:
+                # Act: send a C2C message
+                result = asyncio.run(
+                    adapter._send_c2c_text("user_openid", "Hello")
+                )
+                assert result.success is True
+                assert result.message_id == sent_msg_id
+                assert sent_msg_id in adapter._sent_msg_ids
+
+                # Simulate the platform echoing the sent message back
+                echo_d = {
+                    "id": sent_msg_id,
+                    "content": "Hello",
+                    "author": {"user_openid": "user_openid"},
+                    "timestamp": "1234567890",
+                }
+                asyncio.run(
+                    adapter._on_message("C2C_MESSAGE_CREATE", echo_d)
+                )
+
+                # Assert: _handle_c2c_message should NOT be called
+                mock_handle.assert_not_called()
+
+                # Assert: msg_id was removed from tracking
+                assert sent_msg_id not in adapter._sent_msg_ids
+
+    def test_normal_inbound_passthrough(self):
+        """Verify normal user messages are NOT dropped by echo filter."""
+        adapter = self._make_adapter()
+        adapter._sent_msg_ids.clear()
+        user_msg_id = "USER_normal_67890"
+
+        event_d = {
+            "id": user_msg_id,
+            "content": "Hello bot",
+            "author": {"user_openid": "user_openid"},
+            "timestamp": "1234567890",
+        }
+
+        with mock.patch.object(adapter, "_is_duplicate", return_value=False):
+            with mock.patch.object(adapter, "_handle_c2c_message") as mock_handle:
+                asyncio.run(
+                    adapter._on_message("C2C_MESSAGE_CREATE", event_d)
+                )
+                mock_handle.assert_called_once()
+
+    def test_echo_takes_precedence_after_dedup(self):
+        """Echo filter catches messages after dedup window expires."""
+        adapter = self._make_adapter()
+        adapter._sent_msg_ids.clear()
+        sent_msg_id = "ROBOT_late_echo"
+
+        adapter._track_sent_msg(sent_msg_id)
+
+        event_d = {
+            "id": sent_msg_id,
+            "content": "Old reply",
+            "author": {"user_openid": "user_openid"},
+            "timestamp": "1234567890",
+        }
+
+        with mock.patch.object(adapter, "_is_duplicate", return_value=False):
+            with mock.patch.object(adapter, "_handle_c2c_message") as mock_handle:
+                asyncio.run(
+                    adapter._on_message("C2C_MESSAGE_CREATE", event_d)
+                )
+                mock_handle.assert_not_called()
+                assert sent_msg_id not in adapter._sent_msg_ids

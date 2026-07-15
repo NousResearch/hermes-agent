@@ -17902,6 +17902,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config.yaml defaults so the switched model is actually used for
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
+
+        When the override changes provider but does not carry an explicit
+        ``max_tokens``, resolve the new provider's ``max_output_tokens`` so
+        the session cap tracks the provider rather than sticking at the old
+        provider's value or falling to the 65536 profile floor.  Global
+        ``model.max_tokens`` or ``HERMES_MAX_TOKENS`` still win (handled
+        inside ``_resolve_runtime_agent_kwargs_for_provider``).
         """
         override = self._session_model_overrides.get(session_key)
         if not override:
@@ -17926,6 +17933,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             runtime_kwargs["credential_pool"] = _credential_pool_for_provider(
                 override.get("provider")
             )
+        # If the override switched provider but didn't carry max_tokens,
+        # resolve the new provider's cap so we don't keep the old one.
+        if override.get("provider") and override.get("max_tokens") is None:
+            try:
+                provider_kwargs = _resolve_runtime_agent_kwargs_for_provider(
+                    override["provider"]
+                )
+                mt = provider_kwargs.get("max_tokens")
+                if mt is not None:
+                    runtime_kwargs["max_tokens"] = mt
+            except Exception:
+                logger.debug(
+                    "Failed to resolve max_tokens for override provider %s",
+                    override.get("provider"), exc_info=True,
+                )
         return model, runtime_kwargs
 
     def _snapshot_session_model_override(self, session_key: str) -> dict:

@@ -348,3 +348,92 @@ def test_turn_agent_config_carries_max_tokens(isolated_home):
 
     route = _StubCLI()._resolve_turn_agent_config("hi")
     assert route["runtime"]["max_tokens"] == 12000
+
+
+def test_apply_session_model_override_resolves_provider_cap(isolated_home):
+    """Fresh /model switch (no max_tokens in override) resolves provider cap when
+    the override changes provider but doesn't carry explicit max_tokens.
+    """
+    write_cfg, fresh_gateway = isolated_home
+    write_cfg(_MYLOCAL_CFG)
+    grun = fresh_gateway()
+
+    class _Stub:
+        _session_model_overrides = {
+            # Simulates a /model switch: has provider, no max_tokens
+            "sess-1": {
+                "model": "glm-5.1",
+                "provider": "mylocal",
+                "api_key": "sk-test",
+                "base_url": "http://localhost:11434/v1",
+                "api_mode": "chat_completions",
+            }
+        }
+
+    model, kwargs = grun.GatewayRunner._apply_session_model_override(
+        _Stub(), "sess-1", "old-model", {"max_tokens": None}
+    )
+    assert model == "glm-5.1"
+    assert kwargs["max_tokens"] == 12000
+
+
+def test_apply_session_model_override_global_cap_wins(isolated_home):
+    """When model.max_tokens is set, it beats the provider cap even on
+    a fresh /model switch that doesn't carry max_tokens.
+    """
+    write_cfg, fresh_gateway = isolated_home
+    write_cfg("""
+        model:
+          default: glm-5.1
+          provider: mylocal
+          max_tokens: 16384
+        providers:
+          mylocal:
+            api: http://localhost:11434/v1
+            api_key: sk-test
+            default_model: glm-5.1
+            max_output_tokens: 12000
+    """)
+    grun = fresh_gateway()
+
+    class _Stub:
+        _session_model_overrides = {
+            "sess-1": {
+                "model": "glm-5.1",
+                "provider": "mylocal",
+                "api_key": "sk-test",
+                "base_url": "http://localhost:11434/v1",
+                "api_mode": "chat_completions",
+            }
+        }
+
+    model, kwargs = grun.GatewayRunner._apply_session_model_override(
+        _Stub(), "sess-1", "old-model", {"max_tokens": None}
+    )
+    assert model == "glm-5.1"
+    # Global max_tokens (16384) wins over provider cap (12000)
+    assert kwargs["max_tokens"] == 16384
+
+
+def test_apply_session_model_override_no_provider_no_resolution(isolated_home):
+    """When override has no provider, don't attempt resolution — keep
+    the existing runtime_kwargs max_tokens as-is.
+    """
+    write_cfg, fresh_gateway = isolated_home
+    write_cfg(_MYLOCAL_CFG)
+    grun = fresh_gateway()
+
+    class _Stub:
+        _session_model_overrides = {
+            "sess-1": {
+                "model": "glm-5.1",
+                # No provider — just a model name change
+            }
+        }
+
+    model, kwargs = grun.GatewayRunner._apply_session_model_override(
+        _Stub(), "sess-1", "old-model", {"max_tokens": 5000}
+    )
+    assert model == "glm-5.1"
+    # No provider in override, so no resolution — keep existing value
+    assert kwargs["max_tokens"] == 5000

@@ -1,6 +1,6 @@
 import { useCallback, useRef } from 'react'
 
-import { getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
+import { autoArchiveOldSessions, getCronJobs, listAllProfileSessions, type SessionInfo } from '@/hermes'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -11,6 +11,7 @@ import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
+  $activeSessionId,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
@@ -159,6 +160,28 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
     try {
       const limit = $sessionsLimit.get()
+
+      const preserveIds = new Set<string>([
+        ...$workingSessionIds.get(),
+        ...$pinnedSessionIds.get()
+      ])
+
+      const selectedSessionId = $selectedStoredSessionId.get()
+      const activeSessionId = $activeSessionId.get()
+
+      if (selectedSessionId) {
+        preserveIds.add(selectedSessionId)
+      }
+
+      if (activeSessionId) {
+        preserveIds.add(activeSessionId)
+      }
+
+      try {
+        await autoArchiveOldSessions([...preserveIds])
+      } catch (error) {
+        console.warn('Hermes session auto-archive skipped', error)
+      }
 
       // Require at least one message so abandoned/empty "Untitled" drafts (one
       // was created per TUI/desktop launch before the lazy-create fix) don't

@@ -103,7 +103,7 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from agent.process_bootstrap import build_keepalive_http_client
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import get_env_value_prefer_dotenv, get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
@@ -1986,25 +1986,34 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+    # A deliberate Hermes .env key must win over stale shell exports and
+    # manually-added pool entries. get_env_value_prefer_dotenv() also applies
+    # the active profile's secret scope to the process-environment fallback.
+    or_key = str(explicit_api_key or "").strip()
+    if not or_key:
+        or_key = str(get_env_value_prefer_dotenv("OPENROUTER_API_KEY") or "").strip()
+    if or_key:
+        logger.debug("Auxiliary client: OpenRouter via explicit/env key")
+        return _create_openai_client(
+            api_key=or_key,
+            base_url=OPENROUTER_BASE_URL,
+            default_headers=build_or_headers(),
+        ), model or _OPENROUTER_MODEL
+
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
-        or_key = explicit_api_key or _pool_runtime_api_key(entry)
+        or_key = _pool_runtime_api_key(entry)
         if or_key:
             base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
             logger.debug("Auxiliary client: OpenRouter via pool")
             return _create_openai_client(api_key=or_key, base_url=base_url,
                            default_headers=build_or_headers()), model or _OPENROUTER_MODEL
-        # Pool exists but is exhausted (no usable runtime key) — fall through to
-        # the OPENROUTER_API_KEY env-var path rather than failing outright.
-        logger.debug("Auxiliary client: OpenRouter pool exhausted, trying OPENROUTER_API_KEY")
+        # Explicit and environment credentials were checked before the pool, so
+        # an exhausted pool entry is the final credential source to consider.
+        logger.debug("Auxiliary client: OpenRouter pool exhausted after explicit/env lookup")
 
-    or_key = explicit_api_key or os.getenv("OPENROUTER_API_KEY")
-    if not or_key:
-        _mark_provider_unhealthy("openrouter", ttl=60)
-        return None, None
-    logger.debug("Auxiliary client: OpenRouter")
-    return _create_openai_client(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=build_or_headers()), model or _OPENROUTER_MODEL
+    _mark_provider_unhealthy("openrouter", ttl=60)
+    return None, None
 
 
 def _describe_openrouter_unavailable() -> str:
@@ -2015,7 +2024,7 @@ def _describe_openrouter_unavailable() -> str:
             return "OpenRouter credential pool has no usable entries (credentials may be exhausted)"
         if not _pool_runtime_api_key(entry):
             return "OpenRouter credential pool entry is missing a runtime API key"
-    if not str(os.getenv("OPENROUTER_API_KEY") or "").strip():
+    if not str(get_env_value_prefer_dotenv("OPENROUTER_API_KEY") or "").strip():
         return "OPENROUTER_API_KEY not set"
     return "no usable OpenRouter credentials found"
 

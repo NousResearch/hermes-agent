@@ -10,6 +10,8 @@ is reused, these stale values survive:
 - _last_compress_aborted: can make callers think compression is aborted
 - _last_aux_model_failure_*: can surface stale error warnings
 - _last_summary_dropped_count / _last_summary_fallback_used: misleading warnings
+- _last_summary_auth_failure / _last_summary_network_failure: can abort
+  compression in a later, unrelated session with a stale error message
 - _context_probed / _context_probe_persistable: stale context probe state
 
 Fix: on_session_end() now clears all per-session state, matching
@@ -61,6 +63,8 @@ def _make_compressor():
     c._last_compression_savings_pct = 100.0
     c._ineffective_compression_count = 0
     c._last_summary_error = None
+    c._last_summary_auth_failure = False
+    c._last_summary_network_failure = False
     c._last_summary_dropped_count = 0
     c._last_summary_fallback_used = False
     c._last_aux_model_failure_error = None
@@ -77,6 +81,8 @@ def _simulate_cron_session_state(c):
     """Simulate per-session state that a cron compaction would leave behind."""
     c._previous_summary = "Cron session summary that must not leak"
     c._last_summary_error = "Cron session summary error"
+    c._last_summary_auth_failure = True
+    c._last_summary_network_failure = True
     c._last_summary_dropped_count = 5
     c._last_summary_fallback_used = True
     c._last_aux_model_failure_error = "Cron aux model error"
@@ -107,6 +113,14 @@ def test_on_session_end_clears_all_per_session_state():
     )
     assert c._last_summary_error is None, (
         f"_last_summary_error must be None after on_session_end, got {c._last_summary_error!r}"
+    )
+    assert c._last_summary_auth_failure is False, (
+        f"_last_summary_auth_failure must be False after on_session_end, "
+        f"got {c._last_summary_auth_failure!r}"
+    )
+    assert c._last_summary_network_failure is False, (
+        f"_last_summary_network_failure must be False after on_session_end, "
+        f"got {c._last_summary_network_failure!r}"
     )
     assert c._last_summary_dropped_count == 0, (
         f"_last_summary_dropped_count must be 0, got {c._last_summary_dropped_count}"
@@ -167,6 +181,8 @@ def test_on_session_end_matches_on_session_reset_surface():
     per_session_attrs = [
         "_previous_summary",
         "_last_summary_error",
+        "_last_summary_auth_failure",
+        "_last_summary_network_failure",
         "_last_summary_dropped_count",
         "_last_summary_fallback_used",
         "_last_aux_model_failure_error",
@@ -240,3 +256,44 @@ def test_aux_model_failure_does_not_leak_across_sessions():
 
     assert c._last_aux_model_failure_error is None
     assert c._last_aux_model_failure_model is None
+
+
+def test_summary_auth_and_network_failure_do_not_leak_across_sessions():
+    """A cron/gateway session where the summarizer hit an auth or network
+    error must not abort compression in a subsequent, unrelated session
+    with a stale "authentication error" message. Regression test: these
+    two flags were the only per-session fields on_session_end() /
+    on_session_reset() forgot to clear, even though the surrounding fix
+    (#38788, #40803-style) was specifically about this exact class of
+    cross-session contamination."""
+    c = _make_compressor()
+    c._last_summary_auth_failure = True
+    c._last_summary_network_failure = True
+
+    c.on_session_end("cron-session", [])
+    assert c._last_summary_auth_failure is False
+    assert c._last_summary_network_failure is False
+
+    c2 = _make_compressor()
+    c2._last_summary_auth_failure = True
+    c2._last_summary_network_failure = True
+
+    c2.on_session_reset()
+    assert c2._last_summary_auth_failure is False
+    assert c2._last_summary_network_failure is False
+
+
+def test_compress_force_retry_clears_stale_auth_and_network_failure():
+    """Manual /compress (force=True) must give the user a working recovery
+    path: a stale auth/network failure flag from a prior attempt must not
+    make the retry abort immediately for the wrong reason.
+    _clear_compression_failure_cooldown() is the function force=True calls
+    before retrying."""
+    c = _make_compressor()
+    c._last_summary_auth_failure = True
+    c._last_summary_network_failure = True
+
+    c._clear_compression_failure_cooldown()
+
+    assert c._last_summary_auth_failure is False
+    assert c._last_summary_network_failure is False

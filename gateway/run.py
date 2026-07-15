@@ -7443,12 +7443,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # of a restart cycle (see _is_stale_restart_redelivery).
         if _restart_notification_pending() or planned_restart_notification_pending:
             self._booted_from_restart = True
-        await self._send_restart_notification()
+        restart_notification_target = await self._send_restart_notification()
+        skip_home_startup_targets = (
+            {restart_notification_target} if restart_notification_target is not None else None
+        )
 
         # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
+        # channels after non-chat planned restarts and unclean recoveries.
+        # Chat-originated /restart already has a precise reply target in
+        # .restart_notify.json, so keep that lifecycle in the originating
         # chat/topic instead of also leaking it to the configured home channel.
         should_notify_home_startup = planned_restart_notification_pending or _previous_gateway_unclean
         if should_notify_home_startup:
@@ -7456,12 +7459,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 _previous_gateway_unclean
                 and not planned_restart_notification_pending
-                and self._home_channel_startup_notification_targets(skip_targets=None)
+                and self._home_channel_startup_notification_targets(
+                    skip_targets=skip_home_startup_targets
+                )
             ):
                 crash_notice = await self._restart_crash_notice(_previous_runtime_status)
             try:
                 await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
+                    skip_targets=skip_home_startup_targets,
                     extra_notice=crash_notice,
                 )
             finally:

@@ -1,6 +1,9 @@
+import json
+
 import pytest
 from unittest.mock import AsyncMock
 
+import gateway.run as gateway_run
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
@@ -162,6 +165,7 @@ async def test_runner_notifies_after_unclean_previous_gateway(
     expected_suffix,
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     write_runtime_status(gateway_state="running", exit_reason=None)
     config = GatewayConfig(
         platforms={
@@ -201,8 +205,114 @@ async def test_runner_notifies_after_unclean_previous_gateway(
 
 
 @pytest.mark.asyncio
+async def test_runner_does_not_duplicate_restart_notice_in_home_channel(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    (tmp_path / ".restart_notify.json").write_text(
+        json.dumps({"platform": "discord", "chat_id": "ops-home"}),
+        encoding="utf-8",
+    )
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    runner._restart_crash_notice = AsyncMock(
+        return_value="\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    runner._restart_crash_notice.assert_not_awaited()
+    assert adapter.sent == [
+        (
+            "ops-home",
+            "♻ Gateway restarted successfully. Your session continues.",
+            {"non_conversational": True},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_notifies_without_cause_when_previous_status_lacks_identity(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "gateway_state.json").write_text(
+        json.dumps(
+            {
+                "kind": "hermes-gateway",
+                "gateway_state": "running",
+                "updated_at": "2026-07-15T10:30:30+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+    crash_reader_calls = []
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    monkeypatch.setattr(
+        "gateway.crash_diagnostics.restart_notice",
+        lambda **_kwargs: crash_reader_calls.append(True),
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert crash_reader_calls == []
+    assert adapter.sent == [
+        (
+            "ops-home",
+            "♻️ Gateway online — Hermes is back and ready.",
+            {"non_conversational": True},
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runner_does_not_report_crash_notice_on_first_start(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     config = GatewayConfig(
         platforms={
             Platform.DISCORD: PlatformConfig(
@@ -321,6 +431,7 @@ async def test_runner_does_not_scan_crashes_when_restart_notifications_disabled(
     tmp_path,
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     write_runtime_status(gateway_state="running", exit_reason=None)
     config = GatewayConfig(
         platforms={

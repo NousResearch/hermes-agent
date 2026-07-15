@@ -1,6 +1,8 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 import gateway.crash_diagnostics as cd
 
 
@@ -179,6 +181,14 @@ def test_macos_reader_requires_matching_pid_after_exact_status_time(tmp_path, mo
         signal="SIGSEGV",
     )
     monkeypatch.setattr(cd.Path, "home", classmethod(lambda _cls: tmp_path))
+    original_glob = cd.Path.glob
+    monkeypatch.setattr(
+        cd.Path,
+        "glob",
+        lambda directory, pattern: original_glob(directory, pattern)
+        if directory == reports
+        else [],
+    )
 
     records = cd._macos_recent_crashes(
         "python",
@@ -190,6 +200,40 @@ def test_macos_reader_requires_matching_pid_after_exact_status_time(tmp_path, mo
     assert len(records) == 1
     assert records[0]["_pid"] == 4242
     assert records[0]["signal"] == "SIGSEGV"
+
+
+def test_macos_reader_ignores_reports_without_capture_time(tmp_path, monkeypatch):
+    reports = tmp_path / "Library" / "Logs" / "DiagnosticReports"
+    reports.mkdir(parents=True)
+    (reports / "Python-missing-time.ips").write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "procName": "Python",
+                "exception": {"signal": "SIGSEGV"},
+                "threads": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cd.Path, "home", classmethod(lambda _cls: tmp_path))
+    original_glob = cd.Path.glob
+    monkeypatch.setattr(
+        cd.Path,
+        "glob",
+        lambda directory, pattern: original_glob(directory, pattern)
+        if directory == reports
+        else [],
+    )
+
+    records = cd._macos_recent_crashes(
+        "python",
+        expected_pid=4242,
+        since=datetime.now(timezone.utc) - timedelta(minutes=1),
+        limit=5,
+    )
+
+    assert records == []
 
 
 def test_linux_journal_parser_filters_to_python_crashes():
@@ -206,6 +250,27 @@ def test_linux_journal_parser_filters_to_python_crashes():
     assert records[0]["process"] == "python"
     assert records[0]["signal"] == "SIGSEGV"
     assert records[0]["cause"] == "segmentation fault"
+
+
+def test_linux_journal_parser_keeps_oom_process_name():
+    since = datetime(2026, 6, 5, 9, 7, tzinfo=timezone.utc)
+    text = (
+        "2026-06-05T09:08:00.000000+0000 host kernel: "
+        "Out of memory: Killed process 4242 (python3.12) total-vm:1234kB"
+    )
+
+    records = cd._parse_journal_crashes(
+        text,
+        "python",
+        5,
+        expected_pid=4242,
+        since=since,
+    )
+
+    assert len(records) == 1
+    assert records[0]["_pid"] == 4242
+    assert records[0]["process"] == "python3.12"
+    assert records[0]["cause"] == "out of memory"
 
 
 def test_parse_coredumpctl_info_backtrace_extracts_stack_frames():
@@ -351,14 +416,15 @@ def test_signal_display_name_maps_numbers():
 
 def test_linux_journalctl_fallback_scans_kernel_log(monkeypatch):
     commands = []
-    since = datetime(2026, 6, 5, 9, 7, tzinfo=timezone.utc)
+    since = datetime(2026, 6, 5, 9, 8, 0, 500_000, tzinfo=timezone.utc)
 
     def _fake_run(cmd):
         commands.append(cmd)
         return "\n".join(
             [
-                "2026-06-05T09:09:00Z host kernel: python[999]: segfault at 0 ip 0 sp 0 error 4",
-                "2026-06-05T09:08:00Z host kernel: python[123]: segfault at 0 ip 0 sp 0 error 4",
+                "2026-06-05T09:08:00.750000+0000 host kernel: python[999]: segfault at 0 ip 0 sp 0 error 4",
+                "2026-06-05T09:08:00.499999+0000 host kernel: python[123]: segfault at 0 ip 0 sp 0 error 4",
+                "2026-06-05T09:08:00.750000+0000 host kernel: python[123]: segfault at 0 ip 0 sp 0 error 4",
             ]
         )
 
@@ -382,7 +448,9 @@ def test_linux_journalctl_fallback_scans_kernel_log(monkeypatch):
     assert commands and commands[0][0] == "journalctl"
     assert "-k" in commands[0]
     since_index = commands[0].index("--since") + 1
-    assert commands[0][since_index] == "2026-06-05T09:07:00+00:00"
+    assert commands[0][since_index] == "2026-06-05T09:08:00.500000+00:00"
+    format_index = commands[0].index("-o") + 1
+    assert commands[0][format_index] == "short-iso-precise"
 
 
 def test_windows_reader_requires_matching_pid_after_exact_status_time(monkeypatch):
@@ -395,7 +463,7 @@ def test_windows_reader_requires_matching_pid_after_exact_status_time(monkeypatc
             "ProviderName": "Application Error",
             "Message": (
                 "Faulting application name: python.exe, version: 3.12.0\n"
-                f"Faulting application process id: 0x{pid:x}\n"
+                f"Faulting process id: 0x{pid:x}\n"
                 f"Exception code: {exception_code}"
             ),
         }
@@ -403,7 +471,11 @@ def test_windows_reader_requires_matching_pid_after_exact_status_time(monkeypatc
     rows = [
         _event(9002, "2026-07-15T10:45:00Z", "0x80000003"),
         _event(4242, "2026-07-15T10:30:29Z", "0x80000003"),
-        _event(4242, "2026-07-15T10:31:00Z", "0xc0000005"),
+        _event(
+            4242,
+            f"/Date({int(datetime(2026, 7, 15, 10, 31, tzinfo=timezone.utc).timestamp() * 1_000)})/",
+            "0xc0000005",
+        ),
     ]
 
     monkeypatch.setattr(cd.sys, "platform", "win32")
@@ -424,9 +496,17 @@ def test_windows_reader_requires_matching_pid_after_exact_status_time(monkeypatc
 
     assert len(records) == 1
     assert records[0]["_pid"] == 4242
-    assert records[0]["when"] == "2026-07-15T10:31:00Z"
+    assert records[0]["when"].startswith("/Date(")
     assert "2026-07-15T10:30:30+00:00" in commands[0][-1]
     assert "-MaxEvents 100" in commands[0][-1]
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Faulting process id", "Faulting application process id"],
+)
+def test_extract_windows_faulting_pid_accepts_common_event_wording(label):
+    assert cd._extract_windows_faulting_pid(f"{label}: 0x1092") == 4242
 
 
 def test_parse_macos_ips_filters_on_header_bug_type(tmp_path):

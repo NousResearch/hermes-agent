@@ -385,7 +385,12 @@ async def test_restart_crash_notice_swallows_import_failures(monkeypatch):
 
     monkeypatch.setattr("builtins.__import__", _boom)
 
-    assert await runner._restart_crash_notice() == ""
+    assert (
+        await runner._restart_crash_notice(
+            {"pid": 4242, "updated_at": datetime.now(timezone.utc).isoformat()}
+        )
+        == ""
+    )
 
 
 @pytest.mark.asyncio

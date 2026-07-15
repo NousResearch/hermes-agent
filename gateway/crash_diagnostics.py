@@ -178,10 +178,7 @@ def _parse_macos_ips(path: Path) -> dict[str, Any] | None:
     signal = exception.get("signal") or exception.get("type")
     backtrace = _macos_triggered_backtrace(body)
     return {
-        "when": body.get("captureTime") or datetime.fromtimestamp(
-            _safe_mtime(path),
-            timezone.utc,
-        ).isoformat(),
+        "when": body.get("captureTime"),
         "_pid": body.get("pid"),
         "process": process,
         "signal": signal,
@@ -282,7 +279,7 @@ def _linux_recent_crashes(
                 "-n",
                 "200",
                 "-o",
-                "short-iso",
+                "short-iso-precise",
             ]
         )
         records.extend(
@@ -620,6 +617,7 @@ def _split_backtrace(value: Any) -> list[str]:
 def _extract_process_name(line: str) -> str:
     for pattern in (
         r"\bcomm=\"([^\"]+)\"",
+        r"\bKilled process\s+\d+\s+\(([^)]+)\)",
         r"\bProcess\s+(\S+)",
         r"\bpython[0-9.]*\b",
     ):
@@ -658,7 +656,7 @@ def _extract_windows_faulting_app(message: str) -> str:
 
 def _extract_windows_faulting_pid(message: str) -> int | None:
     match = re.search(
-        r"Faulting application process id:\s*(0x[0-9a-f]+|\d+)",
+        r"Faulting (?:application )?process id:\s*(0x[0-9a-f]+|\d+)",
         message,
         re.IGNORECASE,
     )

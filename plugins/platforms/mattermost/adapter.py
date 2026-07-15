@@ -883,6 +883,7 @@ class MattermostAdapter(BasePlatformAdapter):
                     channel_id=channel_id,
                     thread_id=_effective_thread_id,
                     channel_type_raw=channel_type_raw,
+                    sender_id=post.get("user_id", ""),
                 )
                 if not in_mentioned_thread and not has_session:
                     logger.debug(
@@ -1042,6 +1043,7 @@ class MattermostAdapter(BasePlatformAdapter):
         channel_id: str,
         thread_id: Optional[str],
         channel_type_raw: str,
+        sender_id: Optional[str] = None,
     ) -> bool:
         """Check if there's an active session for a Mattermost thread.
 
@@ -1050,6 +1052,14 @@ class MattermostAdapter(BasePlatformAdapter):
         real message flow produces in build_source().  Using a hardcoded
         chat_type (e.g. "group") would silently no-op for public "O" channels
         because the real key contains "channel" — never "group".
+
+        ``sender_id`` must be threaded through from the inbound post so the
+        recomputed key matches session creation when
+        ``thread_sessions_per_user=True`` (which appends the participant id
+        to the key). Passing ``user_id=None`` here would always produce the
+        shared-thread key and silently miss the per-user session that was
+        actually created, so the caller falls through to the "no session"
+        path even though one exists.
         """
         if not thread_id:
             return False
@@ -1067,7 +1077,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 platform=Platform.MATTERMOST,
                 chat_id=channel_id,
                 chat_type=chat_type,
-                user_id=None,
+                user_id=str(sender_id) if sender_id else None,
                 thread_id=thread_id,
             )
 
@@ -1083,10 +1093,22 @@ class MattermostAdapter(BasePlatformAdapter):
                 else False
             )
 
+            # Resolve the profile namespace exactly as SessionStore does, so
+            # a secondary-profile session (created under "agent:<profile>")
+            # is found instead of silently searching the default "agent:main"
+            # namespace.
+            profile: Optional[str] = None
+            resolve_profile = getattr(session_store, "_resolve_profile_for_key", None)
+            if callable(resolve_profile):
+                resolved = resolve_profile(source)
+                if isinstance(resolved, str):
+                    profile = resolved
+
             session_key = build_session_key(
                 source,
                 group_sessions_per_user=gspu,
                 thread_sessions_per_user=tspu,
+                profile=profile,
             )
 
             session_store._ensure_loaded()

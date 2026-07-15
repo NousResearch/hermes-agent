@@ -1320,3 +1320,124 @@ class TestMattermostThreadAutoResponse:
         )
         assert buggy_key not in fake_store._entries
 
+    # 6. thread_sessions_per_user=True: restart lookup key must include sender_id.
+    def test_session_key_includes_sender_id_when_thread_sessions_per_user(self):
+        """When thread_sessions_per_user=True, build_session_key appends the
+        participant id to the key. The restart lookup MUST thread the real
+        sender_id from the inbound post through to _has_active_session_for_thread,
+        or the recomputed key always omits it and misses every per-user thread
+        session created under this mode (the original bug: user_id=None)."""
+        from gateway.session import SessionSource, build_session_key
+        from gateway.config import Platform
+
+        channel_id = "public_chan_tspu"
+        thread_id = "thread_tspu_1"
+        channel_type_raw = "O"
+        sender_id = "user_123"
+
+        # Key produced at session CREATION time (real flow, sender_id present).
+        creation_source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id=channel_id,
+            chat_type="channel",
+            user_id=sender_id,
+            thread_id=thread_id,
+        )
+        creation_key = build_session_key(
+            creation_source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=True,
+        )
+
+        fake_store = MagicMock()
+        fake_store.config = MagicMock()
+        fake_store.config.group_sessions_per_user = True
+        fake_store.config.thread_sessions_per_user = True
+        fake_store._ensure_loaded = MagicMock()
+        fake_store._entries = {creation_key: object()}
+        fake_store._resolve_profile_for_key = MagicMock(return_value=None)
+
+        self.adapter._session_store = fake_store
+
+        # Lookup WITH sender_id threaded through must find the session.
+        assert self.adapter._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            channel_type_raw=channel_type_raw,
+            sender_id=sender_id,
+        ) is True
+
+        # Sanity: the key without sender_id (the old sender_id=None bug) must
+        # NOT match, proving sender_id is load-bearing for this mode.
+        no_sender_source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id=channel_id,
+            chat_type="channel",
+            user_id=None,
+            thread_id=thread_id,
+        )
+        no_sender_key = build_session_key(
+            no_sender_source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=True,
+        )
+        assert no_sender_key != creation_key
+        assert no_sender_key not in fake_store._entries
+
+    # 7. Secondary-profile routing: restart lookup key must include the
+    #    profile namespace used at session creation.
+    def test_session_key_includes_profile_namespace_for_secondary_adapter(self):
+        """A secondary-profile adapter creates sessions under 'agent:<profile>'
+        (see SessionStore._resolve_profile_for_key / build_session_key's
+        ``profile`` kwarg). The restart lookup must recompute the SAME
+        namespaced key, or it silently searches 'agent:main' and always misses
+        secondary-profile sessions (the original bug: profile was never
+        threaded into the recomputed key)."""
+        from gateway.session import SessionSource, build_session_key
+        from gateway.config import Platform
+
+        channel_id = "public_chan_profile"
+        thread_id = "thread_profile_1"
+        channel_type_raw = "O"
+        profile_name = "coder"
+
+        creation_source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id=channel_id,
+            chat_type="channel",
+            user_id=None,
+            thread_id=thread_id,
+        )
+        creation_key = build_session_key(
+            creation_source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+            profile=profile_name,
+        )
+
+        fake_store = MagicMock()
+        fake_store.config = MagicMock()
+        fake_store.config.group_sessions_per_user = True
+        fake_store.config.thread_sessions_per_user = False
+        fake_store._ensure_loaded = MagicMock()
+        fake_store._entries = {creation_key: object()}
+        fake_store._resolve_profile_for_key = MagicMock(return_value=profile_name)
+
+        self.adapter._session_store = fake_store
+
+        assert self.adapter._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            channel_type_raw=channel_type_raw,
+        ) is True
+
+        # Sanity: the unnamespaced ("agent:main") key must differ and must not
+        # be present — proving the profile namespace is load-bearing.
+        unnamespaced_key = build_session_key(
+            creation_source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+        )
+        assert unnamespaced_key != creation_key
+        assert unnamespaced_key not in fake_store._entries
+

@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { pathLabel, SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { normalize } from '@/lib/text'
@@ -477,7 +478,7 @@ export function usePromptActions({
 
   const submitText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
+      const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
@@ -597,7 +598,7 @@ export function usePromptActions({
   // window) so the caller can fall back to queueing the words for the next turn.
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
-      const text = rawText.trim()
+      const text = sanitizeComposerInput(rawText).trim()
       const sessionId = activeSessionId || activeSessionIdRef.current
 
       if (!text || !sessionId) {

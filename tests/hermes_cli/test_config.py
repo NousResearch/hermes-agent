@@ -1645,6 +1645,114 @@ class TestMigrationWriteInvariant:
         assert loaded["display"]["compact"] == DEFAULT_CONFIG["display"]["compact"]
 
 
+class TestSaveConfigPartialWritePreservation:
+    """Regression for #62723: partial migration writes must not drop unrelated sections."""
+
+    def test_merge_existing_preserves_platforms_on_partial_write(self, tmp_path):
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+agent:
+  max_turns: 60
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      app_id: cli_xxx
+      app_secret: xxx
+feishu:
+  require_mention: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(
+                {
+                    "_config_version": 30,
+                    "model": {"default": "deepseek-v4-pro", "provider": "deepseek"},
+                    "agent": {"max_turns": 60, "verify_on_stop": False},
+                },
+                merge_existing=True,
+            )
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
+        assert raw["feishu"]["require_mention"] is True
+        assert raw["agent"]["verify_on_stop"] is False
+
+    def test_partial_write_without_merge_drops_omitted_sections(self, tmp_path):
+        """Full-replacement callers (raw YAML editor) rely on merge_existing=False."""
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+platforms:
+  feishu:
+    enabled: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config({"model": {"default": "other-model", "provider": "openrouter"}})
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["model"]["default"] == "other-model"
+        assert "platforms" not in raw
+
+    def test_persist_migration_writes_full_read_raw_config(self, tmp_path):
+        from hermes_cli.config import _persist_migration, read_raw_config
+
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+agent:
+  max_turns: 60
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      app_id: cli_xxx
+      app_secret: xxx
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = read_raw_config()
+            config.setdefault("agent", {})["verify_on_stop"] = False
+            config["_config_version"] = 32
+            _persist_migration(config)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
+        assert raw["agent"]["verify_on_stop"] is False
+        assert raw["agent"]["max_turns"] == 60
+        assert raw["_config_version"] == 32
+
+    def test_v30_to_latest_migration_keeps_platforms(self, tmp_path):
+        """End-to-end: reporter's v30 feishu profile survives version bump."""
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+agent:
+  max_turns: 60
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      app_id: cli_xxx
+      app_secret: xxx
+feishu:
+  require_mention: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
+        assert raw["feishu"]["require_mention"] is True
+
+
 class TestVerifyOnStopMigration:
     """v30 → v31: switch verify_on_stop OFF once, preserving explicit choices."""
 

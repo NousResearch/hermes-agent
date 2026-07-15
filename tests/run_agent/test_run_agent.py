@@ -4149,6 +4149,66 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_codex_content_filter_incomplete_routes_to_policy_fallback(self, agent):
+        self._setup_agent(agent)
+        agent.api_mode = "codex_responses"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent._base_url_lower = agent.base_url.lower()
+        agent._base_url_hostname = "chatgpt.com"
+        agent.model = "gpt-5.5"
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        agent._fallback_index = 0
+
+        content_filter_response = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="content_filter"),
+            output=[],
+            output_text="",
+            model="gpt-5.5",
+            usage=None,
+        )
+        fallback_response = SimpleNamespace(
+            status="completed",
+            incomplete_details=None,
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    status="completed",
+                    content=[SimpleNamespace(type="output_text", text="Recovered on fallback")],
+                )
+            ],
+            model="fallback/model",
+            usage=None,
+        )
+        hook_events = []
+
+        def _fake_activate(reason=None):
+            agent._fallback_index = len(agent._fallback_chain)
+            return True
+
+        with (
+            patch.object(agent, "_create_request_openai_client", return_value=MagicMock()),
+            patch.object(agent, "_close_request_openai_client"),
+            patch.object(agent, "_run_codex_stream", side_effect=[content_filter_response, fallback_response]) as mock_run_codex_stream,
+            patch.object(agent, "_try_activate_fallback", side_effect=_fake_activate) as mock_try_activate_fallback,
+            patch.object(agent, "_invoke_api_request_error_hook", side_effect=lambda **kw: hook_events.append(kw)),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("summarize this large Slack thread")
+
+        assert result["final_response"] == "Recovered on fallback"
+        assert result["completed"] is True
+        mock_try_activate_fallback.assert_called_once_with()
+        assert mock_run_codex_stream.call_count == 2
+        assert hook_events[0]["error_type"] == "ContentPolicyBlocked"
+        assert hook_events[0]["retryable"] is False
+        assert hook_events[0]["reason"] == FailoverReason.content_policy_blocked.value
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

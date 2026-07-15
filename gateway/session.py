@@ -1993,6 +1993,7 @@ class SessionStore:
                     "chat_id": source.chat_id,
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
+                    "profile_name": source.profile,
                 }
 
         if _needs_save:
@@ -2273,6 +2274,7 @@ class SessionStore:
                 "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
+                "profile_name": old_entry.origin.profile if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:

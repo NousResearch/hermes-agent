@@ -2353,6 +2353,16 @@ class BasePlatformAdapter(ABC):
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
 
+    # Back-reference to the running ``GatewayRunner``, injected by
+    # ``gateway/run.py`` after the adapter is created. Adapters consume it via
+    # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and
+    # — critically — for inbound profile routing: ``build_source`` resolves the
+    # target profile through ``runner._profile_name_for_source(...)``. Declaring
+    # it on the base (rather than only on adapters that happen to pre-declare
+    # it) means EVERY platform adapter receives the injection, so profile
+    # routing is platform-generic instead of Discord-only.
+    gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -5507,10 +5517,47 @@ class BasePlatformAdapter(ABC):
         auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None,
     ) -> SessionSource:
-        """Helper to build a SessionSource for this platform."""
+        """Helper to build a SessionSource for this platform.
+
+        When ``gateway.profile_routes`` is configured, the routing engine
+        resolves the matching profile from guild/chat/thread and stamps it on
+        ``source.profile``. Downstream code (``_resolve_profile_home_for_source``
+        in run.py) reads that field to enter ``_profile_runtime_scope`` for
+        per-profile HERMES_HOME isolation.
+        """
         # Normalize empty topic to None
         if chat_topic is not None and not chat_topic.strip():
             chat_topic = None
+
+        # Resolve profile from configured routes (None when no match / no routes)
+        profile = None
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None:
+            try:
+                profile = runner._profile_name_for_source(
+                    SessionSource(
+                        platform=self.platform,
+                        chat_id=str(chat_id),
+                        chat_name=chat_name,
+                        chat_type=chat_type,
+                        user_id=str(user_id) if user_id else None,
+                        user_name=user_name,
+                        thread_id=str(thread_id) if thread_id else None,
+                        chat_topic=chat_topic.strip() if chat_topic else None,
+                        user_id_alt=user_id_alt,
+                        chat_id_alt=chat_id_alt,
+                        is_bot=is_bot,
+                        guild_id=str(guild_id) if guild_id else None,
+                        parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+                        message_id=str(message_id) if message_id else None,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Profile resolution failed for %s/%s, defaulting to active profile",
+                    self.platform, chat_id, exc_info=True,
+                )
+
         return SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
@@ -5527,6 +5574,7 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
+            profile=profile,
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,

@@ -3380,6 +3380,81 @@ class TestAuxiliaryTaskExtraBody:
         }
         mock_create.assert_called_once()
 
+    def _run_anthropic_adapter(self, *, call_extra_body=None, bak_result=None):
+        """Drive _AnthropicCompletionsAdapter.create() with mocked SDK layers;
+        return the api_kwargs handed to create_anthropic_message."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        adapter = _AnthropicCompletionsAdapter(MagicMock(), "claude-sonnet-4-6", is_oauth=False)
+        bak_result = bak_result or {
+            "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
+        }
+        with patch("agent.anthropic_adapter.build_anthropic_kwargs",
+                   return_value=dict(bak_result)), \
+             patch("agent.anthropic_adapter.create_anthropic_message") as mock_create, \
+             patch("agent.transports.get_transport") as mock_gt:
+            mock_gt.return_value.normalize_response.return_value = MagicMock(
+                content="ok", tool_calls=None, reasoning=None, finish_reason="stop",
+                usage=None, provider_data=None,
+            )
+            kwargs = {
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 64,
+            }
+            if call_extra_body is not None:
+                kwargs["extra_body"] = call_extra_body
+            adapter.create(**kwargs)
+        return mock_create.call_args.args[1]
+
+    def test_anthropic_aux_extra_body_passthrough(self):
+        """Bug B (#37217): vendor fields in extra_body reach the Anthropic SDK."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={"thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"}},
+        )
+        assert api_kwargs["extra_body"] == {
+            "thinking": {"type": "disabled"}, "metadata": {"user_id": "u1"},
+        }
+
+    def test_anthropic_aux_extra_body_excludes_reasoning_and_private_keys(self):
+        """The OpenAI-shaped reasoning dict is translated (not forwarded), and
+        private _-prefixed plumbing keys never reach the wire."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={
+                "reasoning": {"enabled": True, "effort": "low"},
+                "_internal": "plumbing",
+                "metadata": {"user_id": "u1"},
+            },
+        )
+        assert api_kwargs["extra_body"] == {"metadata": {"user_id": "u1"}}
+
+    def test_anthropic_aux_extra_body_merges_over_existing(self):
+        """Caller extra_body merges on top of what build_anthropic_kwargs
+        already emitted (fast-mode speed) instead of clobbering it."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={"metadata": {"user_id": "u1"}},
+            bak_result={
+                "model": "claude-sonnet-4-6", "messages": [], "max_tokens": 64,
+                "extra_body": {"speed": "fast"},
+            },
+        )
+        assert api_kwargs["extra_body"] == {
+            "speed": "fast", "metadata": {"user_id": "u1"},
+        }
+
+    def test_anthropic_aux_no_extra_body_unchanged(self):
+        """Regression guard: no caller extra_body -> kwargs identical to before."""
+        api_kwargs = self._run_anthropic_adapter(call_extra_body=None)
+        assert "extra_body" not in api_kwargs
+
+    def test_anthropic_aux_reasoning_only_extra_body_adds_nothing(self):
+        """extra_body containing ONLY the reasoning key must not create an
+        empty extra_body dict on the wire."""
+        api_kwargs = self._run_anthropic_adapter(
+            call_extra_body={"reasoning": {"enabled": False}},
+        )
+        assert "extra_body" not in api_kwargs
+
     def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
         """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
         import agent.auxiliary_client as mod

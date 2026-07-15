@@ -10282,3 +10282,119 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+BRANCH_REASONING = "the parent's chain of thought"
+BRANCH_REASONING_CONTENT = "the parent's reasoning content"
+BRANCH_REASONING_DETAILS = [
+    {"type": "reasoning.text", "text": "keep the parent's plan", "format": "unknown"}
+]
+BRANCH_CODEX_REASONING_ITEMS = [
+    {"id": "rs_1", "type": "reasoning", "encrypted_content": "opaque-blob"}
+]
+BRANCH_CODEX_MESSAGE_ITEMS = [
+    {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "done"}],
+    }
+]
+
+
+def _branch_history():
+    return [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "done",
+            "reasoning": BRANCH_REASONING,
+            "reasoning_content": BRANCH_REASONING_CONTENT,
+            "reasoning_details": BRANCH_REASONING_DETAILS,
+            "codex_reasoning_items": BRANCH_CODEX_REASONING_ITEMS,
+            "codex_message_items": BRANCH_CODEX_MESSAGE_ITEMS,
+        },
+    ]
+
+
+def _branched_assistant(db, session_key):
+    return next(
+        m
+        for m in db.get_messages_as_conversation(session_key)
+        if m["role"] == "assistant"
+    )
+
+
+def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
+    """The seed write must carry the parent's reasoning fields.
+
+    A branch is a draft until its first submit, so this is the only write that
+    ever persists the copied transcript. Persisting role/content alone left the
+    branch resuming without the parent's reasoning, preserved thinking blocks or
+    Codex encrypted-reasoning/message-item continuation state.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session = _session(
+        session_key="branch-key",
+        parent_session_id="parent-key",
+        history=_branch_history(),
+    )
+    try:
+        db.create_session("branch-key", source="tui")
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+
+        server._persist_branch_seed(session)
+
+        assistant = _branched_assistant(db, "branch-key")
+        assert assistant["reasoning"] == BRANCH_REASONING
+        assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
+        assert assistant["reasoning_details"] == BRANCH_REASONING_DETAILS
+        assert assistant["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
+        assert assistant["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
+        assert session["_branch_seed_persisted"] is True
+    finally:
+        db.close()
+
+
+def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
+    """session.branch copies the live transcript with its reasoning fields.
+
+    Same drop as the seed path: the copy loop wrote only role/content, so the
+    new session row replayed without the reasoning context the parent had.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    server._sessions["sid"] = _session(history=_branch_history())
+    try:
+        db.create_session("session-key", source="tui")
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_new_session_key", lambda: "branch-key")
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server, "_claim_active_session_slot", lambda *args, **kwargs: (None, None)
+        )
+        monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+        monkeypatch.setattr(server, "_session_cwd", lambda session: str(tmp_path))
+        monkeypatch.setattr(
+            server, "_make_agent", lambda *args, **kwargs: types.SimpleNamespace()
+        )
+        monkeypatch.setattr(server, "_init_session", lambda *args, **kwargs: None)
+
+        resp = server.handle_request(
+            {"id": "1", "method": "session.branch", "params": {"session_id": "sid"}}
+        )
+
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assistant = _branched_assistant(db, "branch-key")
+        assert assistant["reasoning"] == BRANCH_REASONING
+        assert assistant["reasoning_content"] == BRANCH_REASONING_CONTENT
+        assert assistant["reasoning_details"] == BRANCH_REASONING_DETAILS
+        assert assistant["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
+        assert assistant["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
+    finally:
+        server._sessions.pop("sid", None)
+        db.close()

@@ -14,6 +14,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -50,6 +51,20 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
     token = os.getenv("MATTERMOST_TOKEN", "")
@@ -66,6 +81,29 @@ def check_mattermost_requirements() -> bool:
     except ImportError:
         logger.warning("Mattermost: aiohttp not installed")
         return False
+
+
+_HTML_DETAILS_RE = re.compile(
+    r"<details>\s*<summary>(?P<summary>.*?)</summary>\s*(?P<body>.*?)\s*</details>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _format_mattermost_rich_markdown(content: str) -> str:
+    """Normalize generic rich content into documented Mattermost Markdown."""
+
+    def _replace_details(match: re.Match[str]) -> str:
+        summary = html.unescape(match.group("summary"))
+        summary = re.sub(r"\s+", " ", summary).strip() or "Details"
+        body = html.unescape(match.group("body")).strip()
+        if not body:
+            return f"**{summary}**"
+        quoted_body = "\n".join(
+            f"> {line}" if line else ">" for line in body.splitlines()
+        )
+        return f"**{summary}**\n{quoted_body}"
+
+    return _HTML_DETAILS_RE.sub(_replace_details, content)
 
 
 class MattermostAdapter(BasePlatformAdapter):
@@ -97,6 +135,7 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
+        self._rich_markdown: bool = _as_bool(config.extra.get("rich_markdown"))
 
         self._last_post_status: Optional[int] = None
         self._last_post_error: str = ""
@@ -474,13 +513,17 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
     def format_message(self, content: str) -> str:
-        """Mattermost uses standard Markdown — mostly pass through.
+        """Mattermost uses Markdown — pass through, with optional normalization.
 
         Strip image markdown into plain links (files are uploaded separately).
+        Mattermost-native mentions, task lists, emoji, math, and plugin code
+        fences already work without the option and remain untouched.
         """
         # Convert ![alt](url) to just the URL — Mattermost renders
         # image URLs as inline previews automatically.
         content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
+        if self._rich_markdown:
+            content = _format_mattermost_rich_markdown(content)
         return content
 
     # ------------------------------------------------------------------
@@ -1189,11 +1232,12 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     model and merely owns the YAML→env translation here, next to the
     adapter that consumes it.
 
-    Env vars take precedence over YAML — every assignment is guarded
+    Env vars take precedence over YAML — every env assignment is guarded
     by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    update.  ``rich_markdown`` is returned as ``PlatformConfig.extra`` because
+    it is adapter-local formatting behavior rather than an env-driven gate.
     """
+    seeded: dict[str, Any] = {}
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
@@ -1207,7 +1251,9 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
-    return None  # all settings flow through env; nothing to merge into extras
+    if "rich_markdown" in mattermost_cfg:
+        seeded["rich_markdown"] = _as_bool(mattermost_cfg.get("rich_markdown"))
+    return seeded or None
 
 
 # ---------------------------------------------------------------------------

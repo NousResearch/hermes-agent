@@ -445,6 +445,125 @@ class TestRunTurn:
         r = s.run_turn("x", turn_timeout=1.0)
         assert r.error and "model error" in r.error
 
+    def test_run_turn_records_native_compaction_item(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        r = make_session(client).run_turn("x", turn_timeout=1.0)
+
+        assert r.compacted is True
+        assert r.thread_id == "thread-fake-001"
+        assert r.turn_id == "turn-fake-001"
+
+    def test_run_turn_records_deprecated_thread_compacted_notification(self):
+        client = FakeClient()
+        client.queue_notification(
+            "thread/compacted",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        r = make_session(client).run_turn("x", turn_timeout=1.0)
+
+        assert r.compacted is True
+
+
+class TestCompactThread:
+    def test_compact_thread_sends_rpc_and_waits_for_completion(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "agentMessage", "id": "m1", "text": "compacted"},
+        )
+        client.queue_notification(
+            "thread/tokenUsage/updated",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            tokenUsage={
+                "last": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12},
+                "total": {"inputTokens": 100, "outputTokens": 20, "totalTokens": 120},
+                "modelContextWindow": 200000,
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        r = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert ("thread/compact/start", {"threadId": "thread-fake-001"}) in client.requests
+        assert r.error is None
+        assert r.thread_id == "thread-fake-001"
+        assert r.turn_id == "compact-turn-1"
+        assert r.compacted is True
+        assert r.final_text == "compacted"
+        assert r.token_usage_last["totalTokens"] == 12
+        assert r.model_context_window == 200000
+
+    def test_compact_thread_interrupted_returns_non_success(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.error == "compact turn interrupted"
+
+    def test_compact_thread_failure_returns_error(self):
+        client = FakeClient()
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        def boom(method, params):
+            if method == "thread/compact/start":
+                raise CodexAppServerError(code=-32603, message="compact unavailable")
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            return {}
+
+        client._request_handler = boom
+        r = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert r.error is not None
+        assert "compact unavailable" in r.error
+        assert r.should_retire is False
+
 
 # ---- approval bridge ----
 
@@ -727,6 +846,33 @@ class TestSessionRetirement:
         s = make_session(client)
         r = s.run_turn("hi", turn_timeout=1.0)
         assert r.should_retire is False
+
+    def test_final_agent_message_without_turn_completed_is_recovered(self):
+        """A completed assistant item is still a usable terminal response when
+        codex omits turn/completed and then goes quiet.
+        """
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "done"},
+            threadId="t",
+            turnId="tu1",
+        )
+        s = make_session(client)
+        r = s.run_turn(
+            "hi",
+            turn_timeout=0.05,
+            notification_poll_timeout=0.01,
+        )
+        assert r.final_text == "done"
+        assert r.interrupted is False
+        assert r.error is None
+        assert r.should_retire is False
+        assert any(
+            msg["role"] == "assistant" and msg.get("content") == "done"
+            for msg in r.projected_messages
+        )
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
 
     def test_post_tool_quiet_watchdog_trips_and_retires(self):
         client = FakeClient()

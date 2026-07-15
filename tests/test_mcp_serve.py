@@ -1232,18 +1232,19 @@ class TestEventBridgePollE2E:
         assert len(r2["events"]) == 1
         assert r2["events"][0]["content"] == "New reply!"
 
-    def test_poll_picks_up_new_conversation_when_only_sessions_json_changed(
+    def test_poll_picks_up_new_conversation_on_db_change(
         self, tmp_path, monkeypatch
     ):
-        """A conversation registered in sessions.json *after* its first message
-        already landed in state.db must still be picked up, even when state.db's
-        mtime did not move on this tick.
+        """A brand-new conversation must be picked up on the tick where
+        state.db changes.
 
-        Regression guard: the skip-when-unchanged check must compare against the
-        sessions.json mtime seen on the *previous* poll. If it instead compares
-        against the just-refreshed value, the sessions.json term is always true,
-        the guard collapses to a db-only check, and a sessions.json-only change
-        is silently dropped — the new chat's messages never reach MCP clients.
+        Since #9006 the routing index lives IN state.db (session rows carry
+        session_key/origin metadata), so a new conversation's registration and
+        its first message land in the same file — a single mtime check covers
+        both and the old dual-file (sessions.json + state.db) race (#8925) is
+        structurally impossible. This test asserts the index is refreshed on a
+        db-mtime bump, so a conversation the bridge has never seen before is
+        emitted on the same tick.
         """
         import mcp_serve
 
@@ -1257,14 +1258,20 @@ class TestEventBridgePollE2E:
         db_path.write_text("placeholder")
 
         session_id = "20260329_150000_late_register"
-        sessions_json = sessions_dir / "sessions.json"
-        sessions_json.write_text(json.dumps({
-            "agent:main:telegram:dm:late": {
-                "session_id": session_id,
-                "platform": "telegram",
-                "origin": {"platform": "telegram", "chat_id": "late"},
-            }
-        }))
+        # The routing index now comes from _load_sessions_index() (state.db
+        # primary, sessions.json fallback). Stub it to return the new
+        # conversation, simulating the gateway having just written the
+        # session row + first message in one state.db transaction.
+        monkeypatch.setattr(
+            mcp_serve, "_load_sessions_index",
+            lambda: {
+                "agent:main:telegram:dm:late": {
+                    "session_id": session_id,
+                    "platform": "telegram",
+                    "origin": {"platform": "telegram", "chat_id": "late"},
+                }
+            },
+        )
 
         class DB:
             def get_messages(self, sid):
@@ -1275,12 +1282,11 @@ class TestEventBridgePollE2E:
                 }]
 
         bridge = mcp_serve.EventBridge()
-        # Simulate the boundary state: state.db has NOT changed since the last
-        # poll (its message landed on an earlier tick), but sessions.json was
-        # only updated with this conversation now — the bridge has not yet seen
-        # the current sessions.json content.
-        bridge._state_db_mtime = db_path.stat().st_mtime
-        bridge._sessions_json_mtime = 0.0
+        # Bridge has never seen this db state (mtime differs) and has an
+        # empty cached index — exactly the state after a new conversation's
+        # first write.
+        bridge._state_db_mtime = 0.0
+        assert bridge._cached_sessions_index == {}
 
         bridge._poll_once(DB())
 

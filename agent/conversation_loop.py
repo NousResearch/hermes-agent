@@ -616,6 +616,11 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # Clear api_messages prefix cache from previous turns.
+    # The cache is rebuilt incrementally within a turn (see the
+    # prefix-caching block in the API-call section).
+    agent._api_msg_prefix_cache = None
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
@@ -803,8 +808,29 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
-        api_messages = []
-        for idx, msg in enumerate(messages):
+        # ── Build api_messages with prefix caching ────────────────────────
+        # Between API calls within a turn, only the tail of `messages`
+        # changes (new assistant + tool result messages are appended).
+        # The prefix is identical and can be reused instead of
+        # re-copying + re-processing every message on every call.
+        # For a 223k-token session with hundreds of messages, this
+        # skips hundreds of dict copies and field manipulations per
+        # API call, reducing GIL hold time significantly.
+        _cache = getattr(agent, "_api_msg_prefix_cache", None)
+        _cache_valid = (
+            _cache is not None
+            and _cache[0] is messages  # same list object (not a copy)
+            and _cache[1] <= len(messages)
+        )
+        if _cache_valid:
+            _cached_len = _cache[1]
+            api_messages = list(_cache[2])  # shallow copy of cached prefix
+        else:
+            _cached_len = 0
+            api_messages = []
+
+        for idx in range(_cached_len, len(messages)):
+            msg = messages[idx]
             api_msg = msg.copy()
 
             # Inject ephemeral context into the current turn's user message.
@@ -847,6 +873,20 @@ def run_conversation(
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
+
+        # Cache the prefix for the next API call within this turn.
+        # All operations above are idempotent (pop on missing key is no-op,
+        # _sanitize_tool_calls_for_strict_api creates new tool_call dicts),
+        # so reusing cached messages is safe.
+        agent._api_msg_prefix_cache = (messages, len(messages), api_messages)
+
+        # Yield the GIL after heavy message processing.  Between API
+        # calls, the message construction loop (dict copies, field
+        # manipulation, sanitization) can hold the GIL for hundreds of
+        # milliseconds on large sessions.  A zero-sleep lets other
+        # threads (WebSocket writes, other agent sessions) acquire the
+        # GIL and make progress, preventing event-loop stalls.
+        time.sleep(0)
 
         # Build the final system message: cached prompt + ephemeral system prompt.
         # Ephemeral additions are API-call-time only (not persisted to session DB).
@@ -4873,6 +4913,13 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # Yield the GIL after tool execution.  Tool calls can
+                # involve substantial processing (file I/O, subprocess
+                # management, JSON parsing of results) that holds the GIL.
+                # Yielding here lets other threads (WebSocket writes,
+                # concurrent agent sessions) make progress.
+                time.sleep(0)
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

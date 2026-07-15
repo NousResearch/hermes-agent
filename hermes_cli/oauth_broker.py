@@ -365,7 +365,13 @@ def _handle_uninstall(args) -> int:
 def _handle_auth_login(args) -> int:
     if not _require_darwin("auth login"):
         return 1
-    creds = _device_code_login()
+    from hermes_cli.auth import AuthError
+
+    try:
+        creds = _device_code_login()
+    except AuthError as exc:
+        print(f"oauth-broker: login for account {args.alias} failed: {exc}")
+        return 1
     tokens = (creds or {}).get("tokens") or {}
     access = str(tokens.get("access_token") or "").strip()
     refresh = str(tokens.get("refresh_token") or "").strip()

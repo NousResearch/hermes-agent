@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli.auth import AuthError
 import hermes_cli.oauth_broker as cli_mod
 from hermes_cli.subcommands.oauth_broker import build_oauth_broker_parser
 from agent.oauth_broker.models import GrantStoreError, OAuthGrant
@@ -203,6 +204,32 @@ def test_auth_login_fails_safely_off_macos(monkeypatch, capsys):
     assert rc == 1
     assert called == []
     assert "macos" in capsys.readouterr().out.lower()
+
+
+def test_auth_login_handles_auth_error_without_traceback(monkeypatch, capsys):
+    store = FakeStore()
+
+    def fail_login():
+        raise AuthError(
+            "OpenAI is rate-limiting Codex login requests (HTTP 429).",
+            provider="openai-codex",
+            code="codex_rate_limited",
+        )
+
+    monkeypatch.setattr(cli_mod, "_is_darwin", lambda: True)
+    monkeypatch.setattr(cli_mod, "_grant_store", lambda: store)
+    monkeypatch.setattr(cli_mod, "_device_code_login", fail_login)
+
+    rc = cli_mod.cmd_oauth_broker(
+        _args(oauth_broker_command="auth", oauth_broker_auth_command="login", alias="A")
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert store.replaced == []
+    assert "oauth-broker: login for account A failed" in captured.out
+    assert "HTTP 429" in captured.out
+    assert captured.err == ""
 
 
 def test_auth_status_prints_booleans_only(monkeypatch, capsys):

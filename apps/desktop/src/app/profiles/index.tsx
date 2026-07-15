@@ -19,7 +19,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   createProfile,
   deleteProfile,
-  getProfiles,
   getProfileSoul,
   type ProfileInfo,
   renameProfile,
@@ -32,7 +31,7 @@ import { slug } from '@/lib/sanitize'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors } from '@/store/profile'
+import { $profileColors, refreshProfiles } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -102,7 +101,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   }, [profiles, selectedName])
 
   const visibleProfiles = useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = normalize(query)
 
     if (!profiles || !q) {
       return profiles ?? []
@@ -204,7 +203,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                         profile.is_default
                           ? []
                           : [
-                              { icon: 'edit', label: p.rename, onSelect: () => setPendingRename(profile) },
+                              { icon: 'edit', label: p.renameMenu, onSelect: () => setPendingRename(profile) },
                               {
                                 icon: 'trash',
                                 label: t.common.delete,
@@ -446,12 +445,16 @@ function SoulEditor({ profileName }: { profileName: string }) {
       {loading ? (
         <PageLoader className="min-h-44" label={p.loadingSoul} />
       ) : (
-        <Textarea
-          className="min-h-48 font-mono text-xs leading-5"
-          onChange={event => setContent(event.target.value)}
-          placeholder={isEmpty ? p.emptySoul : undefined}
-          value={content}
-        />
+        <div className="min-h-48">
+          <CodeEditor
+            filePath="SOUL.md"
+            framed
+            initialValue={content}
+            key={profileName}
+            onChange={setContent}
+            onSave={() => void handleSave()}
+          />
+        </div>
       )}
 
       {error && (

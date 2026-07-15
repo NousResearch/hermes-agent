@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
@@ -8,6 +8,7 @@ import { getLogs } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { LayoutDashboard, RefreshCw } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
+import { cn } from '@/lib/utils'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { StatusResponse } from '@/types/hermes'
 
@@ -176,13 +177,13 @@ export function GatewayMenuPanel({
       </div>
 
       {inferenceStatus?.reason && (
-        <div className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
+        <Section className="text-xs text-muted-foreground">
           <div className="line-clamp-3">{inferenceStatus.reason}</div>
-        </div>
+        </Section>
       )}
 
       {recentLogs.length > 0 && (
-        <div className="px-3 py-2">
+        <Section>
           <div className="flex items-center justify-between gap-2">
             <SectionLabel>{copy.recentActivity}</SectionLabel>
             <Button
@@ -198,7 +199,7 @@ export function GatewayMenuPanel({
           <LogView className="mt-1.5 max-h-40 border-0 px-0" ref={logScrollRef}>
             {recentLogs.map(trimLogLine).join('\n')}
           </LogView>
-        </div>
+        </Section>
       )}
 
       {platforms.length > 0 && (

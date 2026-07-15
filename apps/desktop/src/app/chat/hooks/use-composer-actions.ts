@@ -30,7 +30,7 @@ const BLOB_MIME_EXTENSION: Record<string, string> = {
 }
 
 function blobExtension(blob: Blob): string {
-  const mime = normalize(blob.type.split(';')[0])
+  const mime = (blob.type.split(';')[0] ?? '').trim().toLowerCase()
 
   return BLOB_MIME_EXTENSION[mime] || '.png'
 }

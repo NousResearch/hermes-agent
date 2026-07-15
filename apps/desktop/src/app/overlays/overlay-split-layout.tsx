@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from 'react'
 
+import { TabDropdown } from '@/components/ui/tab-dropdown'
 import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -72,7 +73,10 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
       className={cn(
-        'flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)/2+1rem)]',
+        // Narrow: the OverlayNav dropdown bar already clears the titlebar, so
+        // drop the tall top pad to a normal gap below it.
+        'mx-auto flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-transparent pb-3 pt-[calc(var(--titlebar-height)/2+1rem)] max-[47.5rem]:pt-2',
+        PAGE_MAX_W,
         PAGE_INSET_X,
         className
       )}

@@ -218,6 +218,7 @@ def main():
         
         if missing:
             print(f'  ⚠️  {locale["json"]}: {len(missing)} keys missing (will fallback to en)')
+            issues += len(missing)
         
         # Skip if this locale already exists upstream (en/ja/zh/zh-hant are the full framework)
         if is_upstream:

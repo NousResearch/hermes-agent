@@ -15,9 +15,10 @@ import { cn } from '@/lib/utils'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { getSessionMessages, triggerCronJob } from '../hermes'
+import { getSessionMessages, type SessionMessage, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import { storedSessionIdForNotification } from '../lib/session-ids'
+import { isMessagingSource } from '../lib/session-source'
 import { latestSessionTodos } from '../lib/todos'
 import { setCronFocusJobId } from '../store/cron'
 import {
@@ -45,13 +46,8 @@ import {
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import {
-  $activeGatewayProfile,
-  $freshSessionRequest,
-  $profileScope,
-  refreshActiveProfile
-} from '../store/profile'
-import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '../store/projects'
+import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '../store/profile'
+import { $startWorkSessionRequest, followActiveSessionCwd } from '../store/projects'
 import { $reviewOpen, REVIEW_PANE_ID } from '../store/review'
 import {
   $activeSessionId,
@@ -60,6 +56,7 @@ import {
   $freshDraftReady,
   $gatewayState,
   $messages,
+  $messagingSessions,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
@@ -145,6 +142,39 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
+// Messaging-platform turns are written by the background gateway (WeChat,
+// Telegram, Discord, …), not the desktop websocket that drives local chats.
+// Poll the bounded messaging slice while visible so inbound platform traffic
+// appears without requiring a manual refresh or route change.
+const MESSAGING_POLL_INTERVAL_MS = 10_000
+const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+
+function sessionMatchesStoredId(session: { id: string; _lineage_root_id?: null | string }, id: string): boolean {
+  return session.id === id || session._lineage_root_id === id
+}
+
+function hashString(hash: number, value: string): number {
+  let next = hash
+
+  for (let i = 0; i < value.length; i++) {
+    next ^= value.charCodeAt(i)
+    next = Math.imul(next, 16777619)
+  }
+
+  return next >>> 0
+}
+
+function sessionMessagesSignature(messages: SessionMessage[]): string {
+  let hash = 2166136261
+
+  for (const m of messages) {
+    hash = hashString(hash, m.role)
+    hash = hashString(hash, String(m.timestamp ?? ''))
+    hash = hashString(hash, typeof m.content === 'string' ? m.content : (JSON.stringify(m.content) ?? ''))
+  }
+
+  return `${messages.length}:${hash}`
+}
 
 export function DesktopController() {
   const queryClient = useQueryClient()
@@ -153,6 +183,7 @@ export function DesktopController() {
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
+  const messagingTranscriptSignatureRef = useRef(new Map<string, string>())
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
@@ -365,7 +396,7 @@ export function DesktopController() {
     loadMoreSessions,
     loadMoreSessionsForProfile,
     refreshCronJobs,
-    refreshSessions
+    refreshSessions,
   } = useSessionListActions({ profileScope })
 
   // Another window mutated the shared session list (e.g. a chat started in the
@@ -862,58 +893,6 @@ export function DesktopController() {
       document.removeEventListener('visibilitychange', tick)
     }
   }, [gatewayState, refreshCronJobs])
-
-  // Keep messaging-platform session lists live: inbound Telegram/WeChat/Discord
-  // turns are written by the gateway, not the desktop websocket, so they won't
-  // appear without polling.
-  useEffect(() => {
-    if (gatewayState !== 'open') {
-      return
-    }
-
-    const tick = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshMessagingSessions()
-      }
-    }
-
-    const intervalId = window.setInterval(tick, MESSAGING_POLL_INTERVAL_MS)
-    document.addEventListener('visibilitychange', tick)
-
-    return () => {
-      window.clearInterval(intervalId)
-      document.removeEventListener('visibilitychange', tick)
-    }
-  }, [gatewayState, refreshMessagingSessions])
-
-  // Only the open messaging transcript needs a poll — local chats are already
-  // live over the websocket, so arming a timer for them would just no-op every
-  // tick. Gate on the active session actually being a messaging source.
-  const activeIsMessaging =
-    !!selectedStoredSessionId &&
-    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
-
-  // Keep the currently-viewed messaging transcript live.
-  useEffect(() => {
-    if (gatewayState !== 'open' || !activeIsMessaging) {
-      return
-    }
-
-    const tick = () => {
-      if (document.visibilityState === 'visible') {
-        void refreshActiveMessagingTranscript()
-      }
-    }
-
-    const intervalId = window.setInterval(tick, ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS)
-    document.addEventListener('visibilitychange', tick)
-    tick()
-
-    return () => {
-      window.clearInterval(intervalId)
-      document.removeEventListener('visibilitychange', tick)
-    }
-  }, [activeIsMessaging, gatewayState, refreshActiveMessagingTranscript])
 
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {

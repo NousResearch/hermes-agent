@@ -37,6 +37,7 @@ import {
   RefreshCw,
   Settings,
   Settings2,
+  SlidersHorizontal,
   Starmap,
   Sun,
   Terminal,

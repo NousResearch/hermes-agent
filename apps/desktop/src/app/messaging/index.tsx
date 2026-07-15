@@ -16,7 +16,8 @@ import {
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
-import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { ExternalLink, Save, Trash2 } from '@/lib/icons'
+import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -526,112 +527,12 @@ function PlatformActionBar({
         size="xs"
       />
 
-          {platform.error_message && (
-            <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-destructive">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-              <span>{platform.error_message}</span>
-            </div>
-          )}
-
-          <section>
-            <SectionTitle>{m.getCredentials}</SectionTitle>
-            <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {introCopy(platform, m)}
-            </p>
-            {platform.docs_url && (
-              <div className="mt-3">
-                <Button asChild size="sm" variant="textStrong">
-                  <a
-                    href={platform.docs_url}
-                    onClick={event => {
-                      // Route through the validated external opener instead of
-                      // letting Electron resolve the anchor. A packaged build's
-                      // empty/relative href resolves to the app's own
-                      // index.html file path, which shell.openPath then fails to
-                      // open ("file not found"). Plugin platforms (Teams, etc.)
-                      // ship no docs_url, so this guard + handler keeps the
-                      // button from ever pointing at a local bundle path.
-                      event.preventDefault()
-                      openExternalLink(platform.docs_url)
-                    }}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {m.openSetupGuide}
-                    <ExternalLink className="size-3.5" />
-                  </a>
-                </Button>
-              </div>
-            )}
-          </section>
-
-          <section>
-            <SectionTitle>{m.required}</SectionTitle>
-            <div className="mt-3 grid gap-1">
-              {requiredFields.length > 0 ? (
-                requiredFields.map(field => (
-                  <MessagingField
-                    edits={edits}
-                    field={field}
-                    key={field.key}
-                    onClear={onClear}
-                    onEdit={onEdit}
-                    saving={saving}
-                  />
-                ))
-              ) : (
-                <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  {m.noTokenNeeded}
-                </p>
-              )}
-            </div>
-          </section>
-
-          {optionalFields.length > 0 && (
-            <section>
-              <SectionTitle>{m.recommended}</SectionTitle>
-              <div className="mt-3 grid gap-1">
-                {optionalFields.map(field => (
-                  <MessagingField
-                    edits={edits}
-                    field={field}
-                    key={field.key}
-                    onClear={onClear}
-                    onEdit={onEdit}
-                    saving={saving}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
-          {hiddenCount > 0 && (
-            <section>
-              <button
-                className="flex w-full items-center justify-between gap-2 py-0.5 text-left text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground transition-colors hover:text-foreground"
-                onClick={() => setShowAdvanced(value => !value)}
-                type="button"
-              >
-                <span>{m.advanced(hiddenCount)}</span>
-                <DisclosureCaret open={showAdvanced} size="0.875rem" />
-              </button>
-              {showAdvanced && (
-                <div className="mt-3 grid gap-1">
-                  {advancedFields.map(field => (
-                    <MessagingField
-                      edits={edits}
-                      field={field}
-                      key={field.key}
-                      onClear={onClear}
-                      onEdit={onEdit}
-                      saving={saving}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-        </div>
+      <div className="ml-auto flex items-center gap-2">
+        {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
+        <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
+          <Save />
+          {isSavingEnv ? m.saving : m.saveChanges}
+        </Button>
       </div>
     </>
   )

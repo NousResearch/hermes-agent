@@ -10,6 +10,7 @@ import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { compactNumber } from '@/lib/format'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   Activity,
@@ -293,17 +294,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   return (
     <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
-        <OverlaySidebar>
-          {SECTIONS.map(value => (
-            <OverlayNavItem
-              active={section === value}
-              icon={value === 'sessions' ? MessageCircle : value === 'system' ? Activity : BarChart3}
-              key={value}
-              label={cc.sections[value]}
-              onClick={() => setSection(value)}
-            />
-          ))}
-        </OverlaySidebar>
+        <OverlayNav
+          groups={SECTIONS.map(value => ({
+            active: section === value,
+            icon: value === 'sessions' ? MessageCircle : value === 'system' ? Activity : BarChart3,
+            id: value,
+            label: cc.sections[value],
+            onSelect: () => setSection(value)
+          }))}
+        />
 
         <OverlayMain>
           <header className="mb-4 flex items-center justify-between gap-3 max-[47.5rem]:mb-2">
@@ -545,8 +544,8 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
       )}
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-4 py-2 sm:grid-cols-3">
-        <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
-        <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
+        <UsageStat label={cc.statSessions} value={compactNumber(totals.total_sessions)} />
+        <UsageStat label={cc.statApiCalls} value={compactNumber(totals.total_api_calls)} />
         <UsageStat
           label={cc.statTokens}
           value={`${compactNumber(totals.total_input)} / ${compactNumber(totals.total_output)}`}

@@ -90,6 +90,10 @@ def _make_resume_runner():
     runner._session_db = AsyncSessionDB(MagicMock())
     runner._session_db._db.resolve_session_by_title.return_value = "resumed-session"
     runner._session_db._db.get_session_title.return_value = "Resumed Work"
+    # The resumed session is live and shares the caller's origin, so the
+    # /resume IDOR guard authorizes it (this test covers the post-resume
+    # security-state clearing, not the ownership check).
+    runner._gateway_session_origin_for_id = lambda sid: source
     return runner, session_key
 
 

@@ -179,6 +179,9 @@ def _connect(board: Optional[str] = None):
     return kb, kb.connect(board=board)
 
 
+_GOAL_MODE_BLOCK_ALLOWED_KINDS = frozenset({"dependency", "needs_input"})
+
+
 def _goal_judge_available() -> bool:
     """True when an auxiliary client is configured for the goal judge.
 
@@ -627,6 +630,13 @@ def _handle_complete(args: dict, **kw) -> str:
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
                 )
+            except kb.ArtifactPreservationError as artifact_err:
+                return tool_error(
+                    f"kanban_complete could not preserve the declared artifacts: "
+                    f"{artifact_err}. Your task is still in-flight and its "
+                    f"scratch workspace was kept. Fix the artifact path or "
+                    f"storage error, then retry kanban_complete with the same handoff."
+                )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
                 # worker can retry with a corrected list or drop the
@@ -684,6 +694,30 @@ def _handle_block(args: dict, **kw) -> str:
             conn.close()
             return tool_error(
                 f"kind must be one of {sorted(kb.VALID_BLOCK_KINDS)} (or omit it)"
+            )
+        # Goal-mode block gate (Issue #38696, sibling of the kanban_complete
+        # judge gate in #38367). kanban_block is a second exit path out of
+        # the goal loop — run_kanban_goal_loop() treats ANY `blocked` status
+        # as terminal, identically to `done`, regardless of kind. Without
+        # this, a worker that learns kanban_complete is gated can just call
+        # kanban_block(reason="anything") to escape the loop instead.
+        # Restrict goal_mode tasks to the kinds that represent a genuine
+        # external blocker the worker cannot resolve itself; `capability`
+        # and `transient` (or an unset kind) route back through
+        # kanban_complete, which the judge now gates.
+        task = kb.get_task(conn, tid)
+        if (
+            task
+            and task.goal_mode
+            and kind not in _GOAL_MODE_BLOCK_ALLOWED_KINDS
+        ):
+            conn.close()
+            return tool_error(
+                f"goal_mode tasks can only block with kind in "
+                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). "
+                f"If the task is actually finished or cannot proceed for "
+                f"another reason, call kanban_complete instead — the "
+                f"completion judge will evaluate it."
             )
         try:
             ok = kb.block_task(
@@ -1000,7 +1034,10 @@ def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
             chat_id = session_key
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
         user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-        notifier_profile = os.environ.get("HERMES_PROFILE")
+        notifier_profile = (
+            get_session_env("HERMES_SESSION_PROFILE", "")
+            or os.environ.get("HERMES_PROFILE")
+        )
 
         # Lazy-import to keep the module-level dependency light
         from hermes_cli import kanban_db as _kb
@@ -1247,8 +1284,10 @@ KANBAN_COMPLETE_SCHEMA = {
                     "lands with the completion notification. Skip "
                     "intermediate scratch files and references that "
                     "are not the deliverable. The path must exist "
-                    "on disk when the notifier runs; missing files "
-                    "are silently skipped."
+                    "on disk at completion. Files inside a managed scratch "
+                    "workspace are copied to durable task attachments before "
+                    "cleanup; a missing declared scratch artifact keeps the "
+                    "task in-flight so you can fix the path and retry."
                 ),
             },
             "board": _board_schema_prop(),

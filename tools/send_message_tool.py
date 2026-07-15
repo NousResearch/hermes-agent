@@ -65,6 +65,62 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
+
+# Extensions that carry a native caption on the media bubble itself
+# (photo/video/document). Voice/audio notes are excluded: a caption on a
+# voice note reads as a separate label rather than a bubble caption, and the
+# established convention is to keep the accompanying text as its own message.
+_CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip",
+}
+
+# Per-platform native caption length limits (characters). Text longer than
+# the limit can't ride on the media bubble and stays a separate body message.
+# Telegram's photo/video caption cap is 1024; WhatsApp and Discord are far
+# more generous, so a conservative shared ceiling keeps behavior predictable.
+_TELEGRAM_CAPTION_LIMIT = 1024
+_DEFAULT_CAPTION_LIMIT = 4096
+
+
+def _media_caption_split(text, media_files, *, max_caption_len):
+    """Decide whether the accompanying text should ride on the media bubble.
+
+    Single enforced chokepoint for the ``MEDIA:<path> caption`` behavior
+    across every standalone sender. ``hermes send`` (and the send_message
+    tool / cron) strips the ``MEDIA:`` tag and leaves the remaining prose as
+    ``text``; historically each platform sent that ``text`` as a *separate*
+    message before an uncaptioned media bubble, splitting the reported case
+    ``hermes send --to whatsapp "MEDIA:/x.png This Caption"`` into two parts.
+
+    Returns ``(caption, body_text)``:
+
+    * ``(caption, "")`` — attach ``text`` to the media as its native caption
+      and send *no* separate body message. Only when there is exactly one
+      media file, it is a captionable kind (image/video/document, not a
+      voice/audio note), and ``text`` fits ``max_caption_len``.
+    * ``(None, text)`` — keep the historical behavior: ``text`` is a separate
+      body message and the media carries no caption. Applies to multi-file
+      sends (caption→file association is ambiguous), voice/audio notes, empty
+      text, or text longer than the caption limit.
+    """
+    stripped = (text or "").strip()
+    media = media_files or []
+    if not stripped or len(media) != 1:
+        return None, text
+    media_path, is_voice = media[0]
+    if is_voice:
+        return None, text
+    ext = os.path.splitext(media_path)[1].lower()
+    if ext not in _CAPTIONABLE_EXTS:
+        return None, text
+    # Measure the caption in Unicode codepoints — a portable upper bound that
+    # never under-counts vs Telegram's UTF-16 units for BMP text, so an
+    # over-count only fails safe (falls back to a separate message). The
+    # Telegram call site additionally re-checks the *formatted* caption in
+    # UTF-16 units, since MarkdownV2/HTML escaping can inflate the length.
+    if len(stripped) > max_caption_len:
+        return None, text
+    return stripped, ""
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
@@ -814,6 +870,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         entry = platform_registry.get("discord")
         if entry is None or entry.standalone_sender_fn is None:
             return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
+        # MEDIA:<path> caption: single captionable file + short text rides as
+        # the media message content instead of a separate message before the
+        # attachment (single enforced decision in _media_caption_split). Cap on
+        # the platform's own message limit so the caption is always deliverable.
+        _dc_caption, _ = _media_caption_split(
+            message, media_files,
+            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
+        )
+        if _dc_caption is not None:
+            result = await entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                "",
+                thread_id=thread_id,
+                media_files=media_files,
+                caption=_dc_caption,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            return result
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -829,8 +905,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Matrix: use the native adapter helper when media is present ---
-    if platform == Platform.MATRIX and media_files:
+    # --- Matrix: route ALL sends through the native adapter so text is
+    # encrypted in E2EE rooms too (issue: text-only sends arrived with a red
+    # padlock because they took the raw-HTTP standalone path). The adapter
+    # reuses the live gateway's E2EE session when available (#46310) and falls
+    # back to an encryption-aware ephemeral adapter for standalone/cron. ---
+    if platform == Platform.MATRIX:
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
@@ -912,7 +992,30 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _wa_entry = _pr_wa.get("whatsapp")
         if _wa_entry is None or _wa_entry.standalone_sender_fn is None:
             return {"error": "WhatsApp plugin not registered or missing standalone_sender_fn"}
+        # MEDIA:<path> caption: a single captionable file + short text rides
+        # as the media's native caption instead of a separate message before
+        # the bubble (single enforced decision in _media_caption_split). Cap on
+        # the platform's own message limit so the caption is always deliverable.
+        _wa_caption, _ = _media_caption_split(
+            message, media_files,
+            max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
+        )
         last_result = None
+        if _wa_caption is not None:
+            # Single-file captioned send: no separate text chunk, caption on
+            # the media itself.
+            result = await _wa_entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                "",
+                media_files=media_files,
+                thread_id=thread_id,
+                force_document=force_document,
+                caption=_wa_caption,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            return result
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _wa_entry.standalone_sender_fn(
@@ -965,8 +1068,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _registry_standalone_send("email", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.SMS:
             result = await _registry_standalone_send("sms", pconfig, chat_id, chunk, thread_id)
-        elif platform == Platform.MATRIX:
-            result = await _registry_standalone_send("matrix", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.DINGTALK:
             result = await _registry_standalone_send("dingtalk", pconfig, chat_id, chunk, thread_id)
         elif platform == Platform.FEISHU:
@@ -1107,6 +1208,23 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         last_msg = None
         warnings = []
 
+        # MEDIA:<path> caption: when a single captionable file is accompanied
+        # by short text, attach the text to the media bubble as its native
+        # caption instead of sending it as a separate message beforehand
+        # (single enforced decision in _media_caption_split). Caption with the
+        # *formatted* text so MarkdownV2/HTML styling is preserved, but guard
+        # the formatted length against Telegram's 1024 cap — formatting can
+        # inflate a raw-<1024 string past it, in which case fall back to a
+        # separate body message.
+        _tg_caption = None
+        from gateway.platforms.base import utf16_len as _utf16_len
+        _cap, _ = _media_caption_split(
+            message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT
+        )
+        if _cap is not None and _utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
+            _tg_caption = formatted
+            formatted = ""  # suppress the separate text send below
+
         if formatted.strip():
             # Chunk *after* formatting: MarkdownV2/HTML escaping inflates the
             # text (each escaped char like `!`/`.`/`-` becomes `\!`/`\.`/`\-`),
@@ -1168,12 +1286,34 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 warning = f"Media file not found, skipping: {media_path}"
                 logger.warning(warning)
                 warnings.append(warning)
+                # Caption mode suppressed the separate text send; if the file
+                # it was meant to caption is gone, deliver the caption text on
+                # its own so the words aren't silently lost.
+                if _tg_caption is not None and last_msg is None:
+                    try:
+                        last_msg = await _send_telegram_message_with_retry(
+                            bot, chat_id=int_chat_id, text=_tg_caption,
+                            parse_mode=send_parse_mode, **text_kwargs
+                        )
+                        _tg_caption = None  # delivered — don't re-caption a later file
+                    except Exception as _cap_err:
+                        logger.warning(
+                            "Telegram caption-fallback send failed for missing media: %s",
+                            _sanitize_error_text(_cap_err),
+                        )
                 continue
 
             ext = os.path.splitext(media_path)[1].lower()
             try:
                 with open(media_path, "rb") as f:
                     media_kwargs = dict(thread_kwargs)
+                    # Attach the MEDIA:<path> caption to the bubble itself for
+                    # captionable kinds (photo/video/document). _tg_caption is
+                    # only set for a single captionable file, so this never
+                    # double-captions a multi-file send or a voice note.
+                    if _tg_caption is not None and not (ext in _VOICE_EXTS and is_voice):
+                        media_kwargs["caption"] = _tg_caption
+                        media_kwargs["parse_mode"] = send_parse_mode
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(
@@ -1221,6 +1361,37 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                             elif ext in _TELEGRAM_SEND_AUDIO_EXTS:
                                 last_msg = await bot.send_audio(
                                     chat_id=int_chat_id, audio=f, **media_kwargs
+                                )
+                            else:
+                                last_msg = await bot.send_document(
+                                    chat_id=int_chat_id, document=f, **media_kwargs
+                                )
+                        elif media_kwargs.get("parse_mode") and (
+                            "parse" in str(media_err).lower()
+                            or "caption" in str(media_err).lower()
+                        ):
+                            # Caption failed to parse as MarkdownV2/HTML —
+                            # retry with a plain-text caption so the media
+                            # (and its caption) still deliver.
+                            logger.warning(
+                                "Caption parse failed for media send, retrying plain: %s",
+                                _sanitize_error_text(media_err),
+                            )
+                            f.seek(0)
+                            media_kwargs.pop("parse_mode", None)
+                            if not _has_html and media_kwargs.get("caption"):
+                                try:
+                                    from plugins.platforms.telegram.adapter import _strip_mdv2
+                                    media_kwargs["caption"] = _strip_mdv2(media_kwargs["caption"])
+                                except Exception:
+                                    pass
+                            if ext in _IMAGE_EXTS and not force_document:
+                                last_msg = await bot.send_photo(
+                                    chat_id=int_chat_id, photo=f, **media_kwargs
+                                )
+                            elif ext in _VIDEO_EXTS:
+                                last_msg = await bot.send_video(
+                                    chat_id=int_chat_id, video=f, **media_kwargs
                                 )
                             else:
                                 last_msg = await bot.send_document(
@@ -1708,7 +1879,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error("QQBot: no access_token in response")
 
             # Step 2: Send message via REST
             # QQ Bot API has separate endpoints for channels, C2C, and groups.

@@ -72,8 +72,11 @@ def test_normalize_moa_config_tolerates_non_numeric_values():
 
     preset = cfg["presets"]["broken"]
     assert preset["max_tokens"] == 4096
-    assert preset["reference_temperature"] == 0.6
-    assert preset["aggregator_temperature"] == 0.4
+    # Unparseable/blank temperatures degrade to None = "don't send the
+    # parameter; provider default applies" (matching single-model behavior),
+    # not to a hardcoded sampling value.
+    assert preset["reference_temperature"] is None
+    assert preset["aggregator_temperature"] is None
 
 
 def test_normalize_moa_config_tolerates_non_list_reference_models():
@@ -92,6 +95,29 @@ def test_normalize_moa_config_wraps_bare_dict_reference_models():
         {"presets": {"p": {"reference_models": {"provider": "openai", "model": "gpt-4o"}}}}
     )
     assert cfg["presets"]["p"]["reference_models"] == [{"provider": "openai", "model": "gpt-4o"}]
+
+
+def test_normalize_moa_config_preserves_slot_reasoning_effort():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "LOW"},
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": False},
+                        {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "nonsense"},
+                    ],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.6-sol", "reasoning_effort": "xhigh"},
+                }
+            }
+        }
+    )
+
+    preset = cfg["presets"]["p"]
+    assert preset["reference_models"][0]["reasoning_effort"] == "low"
+    assert preset["reference_models"][1]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in preset["reference_models"][2]
+    assert preset["aggregator"]["reasoning_effort"] == "xhigh"
 
 
 def test_normalize_moa_config_coerces_numeric_strings():
@@ -235,3 +261,46 @@ def test_moa_provider_rejected_case_insensitive():
 
     assert cfg["presets"]["p"]["aggregator"]["provider"] != "moa"
     assert cfg["presets"]["p"]["aggregator"] == DEFAULT_MOA_AGGREGATOR
+
+
+def _preset(**extra):
+    base = {
+        "reference_models": [{"provider": "openrouter", "model": "anthropic/claude-opus-4.8"}],
+        "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    }
+    base.update(extra)
+    return {"default_preset": "p", "presets": {"p": base}}
+
+
+def test_reference_max_tokens_defaults_to_none_uncapped():
+    """Unset reference_max_tokens resolves to None (no cap) so existing presets
+    keep their prior uncapped advisor behavior — no silent regression."""
+    p = resolve_moa_preset(_preset(), "p")
+    assert p["reference_max_tokens"] is None
+
+
+def test_reference_max_tokens_positive_value_preserved():
+    """A positive cap flows through resolve_moa_preset to the runtime path."""
+    p = resolve_moa_preset(_preset(reference_max_tokens=600), "p")
+    assert p["reference_max_tokens"] == 600
+
+
+def test_reference_max_tokens_invalid_falls_back_to_none():
+    """Non-positive / non-numeric caps degrade to None (uncapped) rather than
+    clamping advisors to a nonsense value or crashing."""
+    for bad in (0, -5, "abc", "", None):
+        p = resolve_moa_preset(_preset(reference_max_tokens=bad), "p")
+        assert p["reference_max_tokens"] is None, bad
+
+
+def test_reference_max_tokens_string_number_coerced():
+    """A hand-edited config.yaml string like '600' coerces to int."""
+    p = resolve_moa_preset(_preset(reference_max_tokens="600"), "p")
+    assert p["reference_max_tokens"] == 600
+
+
+def test_reference_max_tokens_in_flattened_view():
+    """The flattened compatibility view (dashboard/desktop callers) exposes the
+    active preset's reference_max_tokens."""
+    cfg = normalize_moa_config(_preset(reference_max_tokens=750))
+    assert cfg["reference_max_tokens"] == 750

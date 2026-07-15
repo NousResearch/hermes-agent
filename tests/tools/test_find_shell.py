@@ -116,6 +116,33 @@ class TestFindBashUnchanged:
         assert len(result) > 0
 
 
+class TestFindBashSkipsBrokenCustomPath:
+    """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
+
+    def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        local_mod._bash_starts_cache.clear()
+
+        broken = tmp_path / "broken" / "bash.exe"
+        broken.parent.mkdir()
+        broken.write_text("", encoding="utf-8")
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(broken))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        def fake_starts(path: str) -> bool:
+            return path == str(portable)
+
+        monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
+
+        assert _find_bash() == str(portable)
+
+
 @pytest.mark.skipif(
     not os.path.isfile("/bin/bash") or sys.platform != "darwin",
     reason="reproduces the macOS system-bash-3.2 login-shell swallow",

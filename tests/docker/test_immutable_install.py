@@ -101,8 +101,8 @@ def test_install_method_stamp_is_code_scoped(
         timeout=10,
     )
     assert r.stdout.strip() != "docker", (
-        f"$HERMES_HOME/.install_method is stamped 'docker' - stage2 must "
-        f"not stamp the data volume (shared with host installs)"
+        "$HERMES_HOME/.install_method is stamped 'docker' - stage2 must "
+        "not stamp the data volume (shared with host installs)"
     )
 
 

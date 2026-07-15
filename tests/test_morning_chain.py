@@ -377,3 +377,71 @@ class TestReadme:
         text = README.read_text()
         assert "launchctl unload" in text or "launchctl bootout" in text or "launchctl remove" in text, \
             "README must document uninstalling the plist with launchctl"
+
+
+# ---------------------------------------------------------------------------
+# .env loading — the chain runs outside Hermes's sandboxed cron-script
+# runner (which strips bot tokens/secrets by design), so step 5's Discord
+# delivery needs DISCORD_BOT_TOKEN from HERMES_HOME/.env directly, same as
+# any manually-invoked step.
+# ---------------------------------------------------------------------------
+
+class TestEnvLoading:
+    def test_script_sources_hermes_home_env_file(self):
+        text = CHAIN_SCRIPT.read_text()
+        assert ".env" in text and "source" in text, \
+            "script must source HERMES_HOME/.env so secrets reach un-sandboxed steps"
+
+    def test_env_vars_from_dotenv_reach_a_step(self, tmp_path):
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("PROBE_VAR=hello_from_dotenv\n")
+
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(hermes_home)
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "true"
+        env["MORNING_CHAIN_STEP2"] = "true"
+        env["MORNING_CHAIN_STEP3"] = "true"
+        env["MORNING_CHAIN_STEP4"] = "true"
+        env["MORNING_CHAIN_STEP5"] = 'sh -c "echo PROBE_IS:$PROBE_VAR"'
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT)],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        # Step output is redirected to the per-day log file, not captured
+        # stdout/stderr (only the chain's own log() lines are tee'd there).
+        log_files = list(tmp_path.glob("morning-chain-*.log"))
+        assert log_files, f"expected a morning-chain log file in {tmp_path}"
+        log_text = log_files[0].read_text()
+        assert "PROBE_IS:hello_from_dotenv" in log_text, log_text
+
+    def test_missing_dotenv_file_is_not_an_error(self, tmp_path):
+        hermes_home = tmp_path / "hermes_home_no_env"
+        hermes_home.mkdir()
+
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(hermes_home)
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "true"
+        env["MORNING_CHAIN_STEP2"] = "true"
+        env["MORNING_CHAIN_STEP3"] = "true"
+        env["MORNING_CHAIN_STEP4"] = "true"
+        env["MORNING_CHAIN_STEP5"] = "true"
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT)],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_step5_defaults_to_morning_brief_discord_script(self):
+        text = CHAIN_SCRIPT.read_text()
+        assert "morning_brief_discord.py" in text, \
+            "Step 5 default must run the compose+deliver script directly"

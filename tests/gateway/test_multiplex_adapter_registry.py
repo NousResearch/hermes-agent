@@ -1,4 +1,9 @@
 """Phase 3: secondary-profile adapter registry + same-token conflict detection."""
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
+
 import pytest
 
 from gateway.run import GatewayRunner
@@ -138,6 +143,78 @@ class TestPortBindingHardError:
 
         connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
         assert connected == 0  # nothing connected, but no MultiplexConfigError
+
+    @pytest.mark.asyncio
+    async def test_secondary_telegram_profile_reaches_active_topic_lookup(self, monkeypatch):
+        """Production startup stamps the profile used by Telegram's pre-dispatch gate."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.session import build_session_key
+        from plugins.platforms.telegram.adapter import TelegramAdapter
+
+        profile_name = "reviewer"
+        platform_config = PlatformConfig(enabled=True, token="secondary-token")
+        adapter = TelegramAdapter(platform_config)
+
+        class _SessionStore:
+            config = SimpleNamespace(
+                group_sessions_per_user=True,
+                thread_sessions_per_user=False,
+                multiplex_profiles=True,
+            )
+
+            def __init__(self):
+                self._entries = set()
+
+            def _ensure_loaded(self):
+                return None
+
+            def _generate_session_key(self, source):
+                return build_session_key(
+                    source,
+                    group_sessions_per_user=self.config.group_sessions_per_user,
+                    thread_sessions_per_user=self.config.thread_sessions_per_user,
+                    profile=source.profile,
+                )
+
+        store = _SessionStore()
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.session_store = cast(Any, store)
+        runner._busy_text_mode = "interrupt"
+        runner._connect_adapter_with_timeout = AsyncMock(return_value=True)
+        runner._is_user_authorized = lambda source: True
+
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {Platform.TELEGRAM: platform_config}
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+
+        connected = await runner._start_one_profile_adapters(profile_name, Path("/tmp/x"), {})
+
+        assert connected == 1
+        assert adapter._session_profile == profile_name
+        source = adapter.build_source(
+            chat_id="-1001234567890",
+            chat_type="group",
+            user_id="111",
+            thread_id="42",
+        )
+        assert source.profile == profile_name
+        store._entries.add(store._generate_session_key(source))
+
+        message = SimpleNamespace(
+            chat=SimpleNamespace(
+                id=-1001234567890,
+                type="supergroup",
+                title="Example Forum",
+                is_forum=True,
+            ),
+            from_user=SimpleNamespace(id=111),
+            message_thread_id=42,
+            is_topic_message=True,
+        )
+        assert adapter._forum_topic_has_active_session(message) is True
 
     @pytest.mark.asyncio
     async def test_secondary_same_config_token_is_refused(self, monkeypatch):

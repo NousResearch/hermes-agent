@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from agent.prompt_builder import KANBAN_GUIDANCE, resolve_kanban_guidance
+from hermes_cli.config import DEFAULT_CONFIG
 from run_agent import AIAgent
 
 
@@ -18,109 +19,100 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def test_kanban_guidance_default_unchanged():
-    assert (
-        resolve_kanban_guidance(profile_name="custom-orchestrator", config={})
-        == KANBAN_GUIDANCE
-    )
-
-
-def test_kanban_guidance_append_for_matching_profile():
-    custom_text = "Always create analyst then coder tasks."
-    config = {
+def _override_config(text: str, *, mode: str = "append") -> dict:
+    return {
         "kanban": {
             "guidance_override": {
-                "custom-orchestrator": {
-                    "mode": "append",
-                    "text": custom_text,
-                },
+                "mode": mode,
+                "text": text,
             },
         },
     }
 
-    guidance = resolve_kanban_guidance(
-        profile_name="custom-orchestrator",
-        config=config,
-    )
+
+def test_kanban_guidance_default_unchanged():
+    assert resolve_kanban_guidance(config={}) == KANBAN_GUIDANCE
+    assert DEFAULT_CONFIG["kanban"]["guidance_override"] == {
+        "mode": "append",
+        "text": "",
+    }
+
+
+def test_kanban_guidance_appends_profile_local_text():
+    custom_text = "Always create analyst then coder tasks."
+
+    guidance = resolve_kanban_guidance(config=_override_config(custom_text))
 
     assert KANBAN_GUIDANCE in guidance
     assert custom_text in guidance
 
 
-def test_kanban_guidance_replace_for_matching_profile():
+def test_kanban_guidance_replaces_for_profile_local_config():
     custom_text = "Use the exact deterministic decomposition pipeline."
-    config = {
-        "kanban": {
-            "guidance_override": {
-                "custom-orchestrator": {
-                    "mode": "replace",
-                    "text": custom_text,
-                },
-            },
-        },
-    }
 
     guidance = resolve_kanban_guidance(
-        profile_name="custom-orchestrator",
-        config=config,
+        config=_override_config(custom_text, mode="replace")
     )
 
     assert guidance == custom_text
     assert KANBAN_GUIDANCE not in guidance
 
 
-def test_kanban_guidance_non_matching_profile_falls_back():
+def test_kanban_guidance_old_profile_map_shape_falls_back():
     config = {
         "kanban": {
             "guidance_override": {
                 "custom-orchestrator": {
                     "mode": "replace",
-                    "text": "Only custom orchestrators should see this.",
+                    "text": "This map belongs to a different profile.",
                 },
             },
         },
     }
 
-    assert (
-        resolve_kanban_guidance(profile_name="coder", config=config)
-        == KANBAN_GUIDANCE
-    )
+    assert resolve_kanban_guidance(config=config) == KANBAN_GUIDANCE
 
 
 def test_kanban_guidance_invalid_mode_defaults_to_append():
     custom_text = "Invalid mode should still append this valid text."
-    config = {
-        "kanban": {
-            "guidance_override": {
-                "custom-orchestrator": {
-                    "mode": "sideways",
-                    "text": custom_text,
-                },
-            },
-        },
-    }
 
     guidance = resolve_kanban_guidance(
-        profile_name="custom-orchestrator",
-        config=config,
+        config=_override_config(custom_text, mode="sideways")
     )
 
     assert KANBAN_GUIDANCE in guidance
     assert custom_text in guidance
 
 
-def test_kanban_worker_agent_uses_profile_override():
+def test_kanban_guidance_loads_only_active_profile_home(monkeypatch, tmp_path):
+    root_home = tmp_path / ".hermes"
+    profile_home = root_home / "profiles" / "custom-orchestrator"
+    profile_home.mkdir(parents=True)
+    root_home.joinpath("config.yaml").write_text(
+        "kanban:\n"
+        "  guidance_override:\n"
+        "    mode: append\n"
+        "    text: Root guidance must not leak.\n",
+        encoding="utf-8",
+    )
+    profile_home.joinpath("config.yaml").write_text(
+        "kanban:\n"
+        "  guidance_override:\n"
+        "    mode: append\n"
+        "    text: Profile-local verification pipeline.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    guidance = resolve_kanban_guidance()
+
+    assert "Profile-local verification pipeline." in guidance
+    assert "Root guidance must not leak." not in guidance
+
+
+def test_kanban_worker_agent_uses_profile_local_override():
     custom_text = "Always create analyst then coder tasks."
-    config = {
-        "kanban": {
-            "guidance_override": {
-                "custom-orchestrator": {
-                    "mode": "append",
-                    "text": custom_text,
-                },
-            },
-        },
-    }
+    config = _override_config(custom_text)
 
     with (
         patch(
@@ -130,10 +122,6 @@ def test_kanban_worker_agent_uses_profile_override():
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
         patch("hermes_cli.config.load_config", return_value=config),
-        patch(
-            "hermes_cli.profiles.get_active_profile_name",
-            return_value="custom-orchestrator",
-        ),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",

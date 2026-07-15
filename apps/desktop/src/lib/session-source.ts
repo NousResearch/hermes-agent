@@ -12,6 +12,7 @@ const SOURCE_LABELS: Record<string, string> = {
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
+  photon: 'iMessage / Photon',
   qqbot: 'QQ',
   signal: 'Signal',
   slack: 'Slack',
@@ -29,6 +30,7 @@ const SOURCE_ALIASES: Record<string, string[]> = {
   cli: ['terminal'],
   desktop: ['app', 'gui'],
   local: ['machine'],
+  photon: ['apple messages', 'imessage', 'spectrum'],
   qqbot: ['qq'],
   telegram: ['tg'],
   tui: ['terminal'],
@@ -98,6 +100,31 @@ export function handoffOriginSource(
   const id = normalizeSessionSource(handoffPlatform)
 
   if (!id || LOCAL_SOURCE_IDS.has(id)) {
+    return null
+  }
+
+  return id
+}
+
+/**
+ * Platform badge shown on ordinary session rows. Completed handoffs keep using
+ * their preserved origin platform; direct non-local sources (Photon, etc.) get
+ * a lightweight row marker without being moved into their own sidebar section.
+ */
+export function sessionOriginBadgeSource(
+  source: null | string | undefined,
+  handoffState: null | string | undefined,
+  handoffPlatform: null | string | undefined
+): string | null {
+  const handoffSource = handoffOriginSource(handoffState, handoffPlatform)
+
+  if (handoffSource) {
+    return handoffSource
+  }
+
+  const id = normalizeSessionSource(source)
+
+  if (!id || LOCAL_SOURCE_IDS.has(id) || MESSAGING_SOURCE_IDS.has(id)) {
     return null
   }
 

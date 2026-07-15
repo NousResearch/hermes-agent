@@ -630,7 +630,7 @@ _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
 )
 
 
-def _merge_pre_dispatch_results(hook_results):
+def _merge_pre_dispatch_results(hook_results, original_text=None):
     """Merge pre_gateway_dispatch hook results into a single directive.
 
     Pure function (no I/O, no event mutation) so it is unit-testable in
@@ -640,9 +640,13 @@ def _merge_pre_dispatch_results(hook_results):
       * skip            -> terminal: caller drops the turn.
       * session_binding -> pin the session. >1 DISTINCT binding across hooks is
                            a conflict -> refuse ALL (fail-closed), never guess.
-      * rewrite text    -> first rewrite in registration order wins; later
-                           rewrites are reported in ``extra_rewrites``.
+      * rewrite text    -> replacement rewrites keep first-in-registration-order
+                           behavior; positioned rewrites compose around the
+                           original or replacement text.
       * allow / None     -> no-op; never suppresses the above.
+
+    A rewrite may set ``position`` to ``prepend`` or ``append`` when it adds
+    independent context. Unpositioned rewrites retain replacement semantics.
 
     A ``session_binding`` result value may be a SessionBinding instance OR a
     ``{"namespace","key"}`` dict; both normalize via SessionBinding.from_dict.
@@ -658,6 +662,8 @@ def _merge_pre_dispatch_results(hook_results):
     skip_reason = None
     rewrite_text = None
     rewrite_seen = False
+    prepend_texts = []
+    append_texts = []
     extra_rewrites = 0
     bindings = []
 
@@ -682,11 +688,22 @@ def _merge_pre_dispatch_results(hook_results):
         if action == "rewrite":
             new_text = result.get("text")
             if isinstance(new_text, str):
-                if not rewrite_seen:
+                position = result.get("position", "replace")
+                if position == "prepend":
+                    prepend_texts.append(new_text)
+                elif position == "append":
+                    append_texts.append(new_text)
+                elif not rewrite_seen:
                     rewrite_text = new_text
                     rewrite_seen = True
                 else:
                     extra_rewrites += 1
+
+    if prepend_texts or append_texts:
+        base_text = rewrite_text if rewrite_seen else original_text
+        if not isinstance(base_text, str):
+            base_text = ""
+        rewrite_text = "".join(prepend_texts) + base_text + "".join(append_texts)
 
     binding = None
     binding_conflict = None
@@ -9206,6 +9223,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
+        #      Optional position="prepend"/"append" composes context around the
+        #      original text instead of competing with another rewrite.
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
         # (e.g. customer handover ingest) without triggering the pairing flow.
@@ -9227,9 +9246,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (pure, unit-tested) decides the combined effect so independent
             # plugins each contribute: skip (terminal), session_binding (pin the
             # session; conflicting distinct bindings refuse fail-closed), and a
-            # single first-wins text rewrite. This lets the gh-review binding
             # hook and the topic-rename seed rewrite hook BOTH apply on one turn.
-            _merged = _merge_pre_dispatch_results(_hook_results)
+            _merged = _merge_pre_dispatch_results(_hook_results, original_text=event.text)
 
             if _merged["skip"]:
                 logger.info(

@@ -56,6 +56,33 @@ def test_first_rewrite_wins_extras_counted():
     assert m["extra_rewrites"] == 2
 
 
+def test_context_rewrites_compose_around_original_text():
+    m = _merge_pre_dispatch_results(
+        [
+            {"action": "rewrite", "position": "append", "text": "AUTOFLOW"},
+            {"action": "rewrite", "position": "prepend", "text": "SEED"},
+        ],
+        original_text="USER",
+    )
+
+    assert m["rewrite_text"] == "SEEDUSERAUTOFLOW"
+    assert m["extra_rewrites"] == 0
+
+
+def test_context_rewrites_compose_around_replacement_text():
+    m = _merge_pre_dispatch_results(
+        [
+            {"action": "rewrite", "position": "prepend", "text": "SEED"},
+            {"action": "rewrite", "text": "REPLACED"},
+            {"action": "rewrite", "position": "append", "text": "AUTOFLOW"},
+        ],
+        original_text="USER",
+    )
+
+    assert m["rewrite_text"] == "SEEDREPLACEDAUTOFLOW"
+    assert m["extra_rewrites"] == 0
+
+
 def test_conflicting_distinct_bindings_refused():
     m = _merge_pre_dispatch_results([
         {"action": "allow", "session_binding": {"namespace": "gh-review", "key": "k1"}},

@@ -19,7 +19,9 @@ vi.mock('@/store/notifications', () => ({
   notifyError: vi.fn()
 }))
 
-function field(overrides: Partial<MemoryProviderField> & Pick<MemoryProviderField, 'key' | 'kind'>): MemoryProviderField {
+function field(
+  overrides: Partial<MemoryProviderField> & Pick<MemoryProviderField, 'key' | 'kind'>
+): MemoryProviderField {
   return {
     label: overrides.key,
     value: '',
@@ -42,7 +44,13 @@ function schema(): MemoryProviderConfig {
       field({ key: 'workspace', kind: 'text', label: 'Workspace', value: 'myws', inline: true, group: 'Connection' }),
       field({ key: 'saveMessages', kind: 'bool', label: 'Save messages', value: 'true', group: 'Message writing' }),
       field({ key: 'dialecticMaxChars', kind: 'number', label: 'Max result chars', value: '1200', group: 'Dialectic' }),
-      field({ key: 'userPeerAliases', kind: 'json', label: 'User peer aliases', value: '{"t":"eri"}', group: 'Identity' })
+      field({
+        key: 'userPeerAliases',
+        kind: 'json',
+        label: 'User peer aliases',
+        value: '{"t":"eri"}',
+        group: 'Identity'
+      })
     ]
   }
 }

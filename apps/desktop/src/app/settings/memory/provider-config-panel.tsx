@@ -142,7 +142,6 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
               />
             </div>
           ))}
-
         </div>
       )}
 

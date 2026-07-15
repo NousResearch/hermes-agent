@@ -165,7 +165,7 @@ def test_fetch_api_models_sends_extra_headers_to_models_probe(monkeypatch):
         }
         return FakeResponse()
 
-    monkeypatch.setattr(models_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", fake_urlopen)
 
     models = models_mod.fetch_api_models(
         "proxy-key",

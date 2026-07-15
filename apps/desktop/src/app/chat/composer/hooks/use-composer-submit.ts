@@ -2,13 +2,14 @@ import { type RefObject, useEffect, useRef } from 'react'
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
-import { clearComposerAttachments, clearSessionDraft, type ComposerAttachment } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { composerPlainText } from '../rich-editor'
+import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface UseComposerSubmitArgs {
@@ -71,6 +72,8 @@ export function useComposerSubmit({
   setComposerText,
   stashAt
 }: UseComposerSubmitArgs) {
+  const scope = useComposerScope()
+
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
@@ -79,7 +82,11 @@ export function useComposerSubmit({
 
     const restore = () => {
       loadIntoComposer(text, submittedAttachments)
-      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+      // Use the scope captured at dispatch, not whatever session is focused
+      // now — the gateway can reject well after the user has switched away,
+      // and re-stashing into the currently-focused session would overwrite
+      // its draft with the rejected text from a different session (#54527).
+      stashAt(submittedScope, text, submittedAttachments)
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
@@ -159,7 +166,7 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      clearComposerAttachments()
+      scope.attachments.clear()
       dispatchSubmit(text, submittedAttachments)
     }
 

@@ -880,6 +880,8 @@ class TestWebServerEndpoints:
             "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
             "reference_temperature": 0.6,
             "aggregator_temperature": 0.4,
+            "reference_timeout": 44.5,
+            "degraded_reference_policy": "silent",
             "max_tokens": 4096,
             "enabled": True,
         }
@@ -897,6 +899,38 @@ class TestWebServerEndpoints:
         assert all(s.get("enabled", True) is True for s in saved_refs)
         agg = cfg["moa"]["aggregator"]
         assert {"provider": agg["provider"], "model": agg["model"]} == payload["aggregator"]
+        assert cfg["moa"]["reference_timeout"] == 44.5
+        assert cfg["moa"]["degraded_reference_policy"] == "silent"
+
+    def test_put_moa_models_persists_reference_failure_controls_per_preset(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "default_preset": "review",
+            "presets": {
+                "review": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"}
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                    "reference_timeout": 87.5,
+                    "degraded_reference_policy": "silent",
+                }
+            },
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+
+        assert resp.status_code == 200
+        saved = load_config()["moa"]["presets"]["review"]
+        assert saved["reference_timeout"] == 87.5
+        assert saved["degraded_reference_policy"] == "silent"
+        returned = self.client.get("/api/model/moa").json()["presets"]["review"]
+        assert returned["reference_timeout"] == 87.5
+        assert returned["degraded_reference_policy"] == "silent"
 
     def test_put_moa_models_rejects_half_filled_slot_with_422(self):
         """#64156: a mid-edit autosave (provider picked, model empty) used to be

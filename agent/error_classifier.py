@@ -741,6 +741,28 @@ def classify_api_error(
             should_fallback=True,
         )
 
+    # ── 1b. Streaming render/format errors (no status code) ────────
+    # OpenAI-compatible providers (LM Studio, llama.cpp) can raise a
+    # bare ``APIError`` with no ``status_code`` when a chat-template
+    # Jinja render fails during streaming.  These are deterministic —
+    # the provider cannot serve the request regardless of retries.
+    # Classify as ``format_error`` so the fallback chain fires instead
+    # of retrying on the same backend until max_retries.  See #62662.
+    if status_code is None and any(
+        p in error_msg
+        for p in (
+            "error rendering",
+            "rendering prompt",
+            "jinja template",
+            "jinja render",
+        )
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:

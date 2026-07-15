@@ -1953,3 +1953,46 @@ class TestOpenRouterUpstreamRateLimit:
         # Overload disambiguation runs first; the outer message is the overload
         # phrase, so this is an overload, not an upstream rate-limit.
         assert result.reason == FailoverReason.overloaded
+
+
+class TestStreamingRenderFormatError:
+    """Jinja template render failures during streaming are format_error, not retryable.
+
+    LM Studio / llama.cpp can raise a bare APIError with no status_code when
+    a chat-template Jinja render fails.  These are deterministic — retrying
+    on the same backend will always fail.  Classify as format_error so the
+    fallback chain fires immediately.  See #62662, #62673.
+    """
+
+    def test_error_rendering_no_status_is_format_error(self):
+        e = MockAPIError("Error rendering prompt with jinja template: ...")
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_rendering_prompt_no_status_is_format_error(self):
+        e = MockAPIError("rendering prompt failed: undefined variable 'foo'")
+        result = classify_api_error(e, provider="llamacpp", model="x")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_jinja_template_no_status_is_format_error(self):
+        e = MockAPIError("jinja template error at line 3")
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_jinja_render_no_status_is_format_error(self):
+        e = MockAPIError("jinja render failure: unexpected token")
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        assert result.reason == FailoverReason.format_error
+        assert result.should_fallback is True
+
+    def test_render_error_with_status_code_not_format_error(self):
+        """If status_code is present, let normal HTTP classification handle it."""
+        e = MockAPIError("Error rendering prompt", status_code=500)
+        result = classify_api_error(e, provider="lm-studio", model="x")
+        # With a 500 status, this should go through the HTTP classification path
+        assert result.reason != FailoverReason.format_error

@@ -7,6 +7,8 @@ from unittest import mock
 
 import pytest
 
+from agent import i18n
+
 from gateway.config import PlatformConfig
 
 
@@ -1857,6 +1859,32 @@ class TestSendUpdatePrompt:
         dd = captured["keyboard"].to_dict()
         datas = [b["action"]["data"] for b in dd["content"]["rows"][0]["buttons"]]
         assert datas == ["update_prompt:y", "update_prompt:n"]
+
+    @pytest.mark.asyncio
+    async def test_native_prompt_fields_use_active_language(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        adapter = self._make_adapter()
+        captured = {}
+
+        async def fake_swk(chat_id, content, keyboard, reply_to=None):
+            from gateway.platforms.base import SendResult
+
+            captured["content"] = content
+            captured["keyboard"] = keyboard
+            return SendResult(success=True)
+
+        adapter.send_with_keyboard = fake_swk  # type: ignore[assignment]
+        await adapter.send_update_prompt(
+            chat_id="u1", prompt="Restore local changes?", default="custom value",
+        )
+
+        assert "更新には入力が必要です" in captured["content"]
+        assert "Restore local changes?" in captured["content"]
+        assert "（デフォルト: custom value）" in captured["content"]
+        buttons = captured["keyboard"].content.rows[0].buttons
+        assert [b.render_data.label for b in buttons] == ["✓ はい", "✗ いいえ"]
+        assert [b.render_data.visited_label for b in buttons] == ["確認済み", "キャンセル済み"]
 
     @pytest.mark.asyncio
     async def test_empty_default_has_no_hint(self):

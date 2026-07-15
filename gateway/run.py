@@ -4442,6 +4442,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    def _localized_status_action_gerund(self) -> str:
+        action = self._status_action_gerund()
+        if action == "restarting":
+            return t("gateway.drain.action_restarting")
+        if action == "shutting down":
+            return t("gateway.drain.action_shutting_down")
+        return action
+
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
@@ -5413,9 +5421,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = t(
+                    "gateway.drain.queued",
+                    action=self._localized_status_action_gerund(),
+                )
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = t(
+                    "gateway.drain.rejecting",
+                    action=self._localized_status_action_gerund(),
+                )
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -9190,10 +9204,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     prompt_path.unlink(missing_ok=True)
                 except OSError as e:
                     logger.warning("Failed to write update response: %s", e)
-                    return f"✗ Failed to send response to update process: {e}"
+                    return t("gateway.update.response_failed", error=e)
                 _update_prompts.pop(_quick_key, None)
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
-                return f"✓ Sent `{label}` to the update process."
+                if response_text == "y":
+                    label = t("gateway.update.prompt_native_yes")
+                elif response_text == "n":
+                    label = t("gateway.update.prompt_native_no")
+                return t("gateway.update.response_sent", label=label)
             # Recognized slash command during a pending update prompt:
             # unblock the detached update subprocess by writing a blank
             # response so ``_gateway_prompt`` returns the prompt's default
@@ -9701,9 +9719,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
                 return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                    t(
+                        "gateway.drain.queued",
+                        action=self._localized_status_action_gerund(),
+                    )
                     if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                    else t(
+                        "gateway.drain.rejecting",
+                        action=self._localized_status_action_gerund(),
+                    )
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -10153,7 +10177,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            return t(
+                "gateway.drain.new_work",
+                action=self._localized_status_action_gerund(),
+            )
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:

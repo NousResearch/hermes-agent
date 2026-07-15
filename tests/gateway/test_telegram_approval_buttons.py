@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent import i18n
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -259,6 +261,41 @@ class TestTelegramExecApproval:
         assert "MARKDOWN_V2" in repr(sent["parse_mode"])
         assert "Fix \\[issue\\]\\_1" in sent["text"]
         assert "alpha\\_beta" in sent["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_update_prompt_uses_active_language_for_native_prompt(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        adapter = _make_adapter()
+        sent = {}
+        buttons = []
+
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
+            lambda rows: rows,
+        )
+
+        async def mock_send_message(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=55)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        result = await adapter.send_update_prompt(
+            chat_id="12345",
+            prompt="Restore local changes?",
+            default="custom value",
+        )
+
+        assert result.success is True
+        assert "更新には入力が必要です" in sent["text"]
+        assert "Restore local changes?" in sent["text"]
+        assert "（デフォルト: custom value）" in sent["text"]
+        assert [label for label, _ in buttons] == ["✓ はい", "✗ いいえ"]
 
     @pytest.mark.asyncio
     async def test_truncates_long_command(self):
@@ -631,3 +668,70 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_uses_active_language_after_click(
+        self, tmp_path, monkeypatch
+    ):
+        """Telegram's callback acknowledgement and edited answer are localized."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            adapter = _make_adapter()
+            query = AsyncMock()
+            query.data = "update_prompt:n"
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.from_user = MagicMock()
+            query.from_user.id = 111
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+
+            update = MagicMock()
+            update.callback_query = query
+            context = MagicMock()
+
+            with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                    await adapter._handle_callback_query(update, context)
+
+            assert query.answer.call_args.kwargs["text"] == "「いいえ」を更新プロセスに送信しました。"
+            edited = query.edit_message_text.call_args.kwargs["text"]
+            assert "更新プロンプトの回答" in edited
+            assert "いいえ" in edited
+            assert "Update prompt answered" not in edited
+            assert (tmp_path / ".update_response").read_text() == "n"
+        finally:
+            i18n.reset_language_cache()
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_unauthorized_message_uses_active_language(
+        self, tmp_path, monkeypatch
+    ):
+        """Telegram rejects unauthorized update clicks in the active language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            adapter = _make_adapter()
+            query = AsyncMock()
+            query.data = "update_prompt:y"
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.from_user = MagicMock()
+            query.from_user.id = 222
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+
+            update = MagicMock()
+            update.callback_query = query
+            context = MagicMock()
+
+            with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
+                    await adapter._handle_callback_query(update, context)
+
+            assert query.answer.call_args.kwargs["text"] == "⛔ 更新プロンプトに回答する権限がありません。"
+            query.edit_message_text.assert_not_called()
+            assert not (tmp_path / ".update_response").exists()
+        finally:
+            i18n.reset_language_cache()

@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent import i18n
+
 # ---------------------------------------------------------------------------
 # Ensure the repo root is importable
 # ---------------------------------------------------------------------------
@@ -249,6 +251,36 @@ class TestFeishuUpdatePrompt:
         assert "Default: `y`" in card["elements"][0]["content"]
         actions = card["elements"][1]["actions"]
         assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
+
+    @pytest.mark.asyncio
+    async def test_native_prompt_fields_use_active_language(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        adapter = _make_adapter()
+
+        mock_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="msg_up_ja"),
+        )
+        with patch.object(
+            adapter, "_feishu_send_with_retry", new_callable=AsyncMock,
+            return_value=mock_response,
+        ) as mock_send:
+            result = await adapter.send_update_prompt(
+                chat_id="oc_12345",
+                prompt="Restore local changes?",
+                default="custom value",
+                session_key="agent:main:feishu:group:oc_12345",
+            )
+
+        assert result.success is True
+        card = json.loads(mock_send.call_args.kwargs["payload"])
+        assert card["header"]["title"]["content"] == "⚕ 更新には入力が必要です"
+        assert "Restore local changes?" in card["elements"][0]["content"]
+        assert "デフォルト: `custom value`" in card["elements"][0]["content"]
+        assert [a["text"]["content"] for a in card["elements"][1]["actions"]] == [
+            "✓ はい", "✗ いいえ",
+        ]
 
     @pytest.mark.asyncio
     async def test_stores_prompt_state(self):
@@ -686,6 +718,37 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert card["header"]["template"] == "red"
         assert "answered: No" in card["header"]["title"]["content"]
+
+    def test_returns_localized_card_after_update_prompt_click(
+        self, _patch_callback_card_types, monkeypatch
+    ):
+        """Feishu's synchronous post-click card uses localized answer labels."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            adapter = _make_adapter()
+            adapter._loop = MagicMock()
+            adapter._loop.is_closed = MagicMock(return_value=False)
+            adapter._allowed_group_users = {"ou_bob"}
+            adapter._update_prompt_state[3] = {
+                "session_key": "sess-up-ja",
+                "message_id": "msg_up_ja",
+                "chat_id": "oc_12345",
+            }
+            adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+            data = _make_card_action_data(
+                {"hermes_update_prompt_action": "y", "update_prompt_id": 3},
+                open_id="ou_bob",
+            )
+
+            with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+                response = adapter._on_card_action_trigger(data)
+
+            card = response.card.data
+            assert card["header"]["title"]["content"] == "✅ 更新プロンプトに回答しました: はい"
+            assert card["elements"][0]["content"] == "回答者: **Bob**"
+        finally:
+            i18n.reset_language_cache()
 
     def test_ignores_missing_update_prompt_id(self, _patch_callback_card_types):
         adapter = _make_adapter()

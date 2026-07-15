@@ -11,6 +11,7 @@ import json
 import os
 import time
 import asyncio
+from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -716,6 +717,126 @@ class TestUpdatePromptInterception:
         assert not (hermes_home / ".update_prompt.json").exists()
         # Should clear the pending flag
         assert session_key not in runner._update_prompt_pending
+
+    @pytest.mark.asyncio
+    async def test_intercepts_response_uses_active_language_and_display_label(
+        self, tmp_path, monkeypatch
+    ):
+        """A post-prompt /approve reply is acknowledged in the active language."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            runner = _make_runner()
+            hermes_home = tmp_path / "hermes"
+            hermes_home.mkdir()
+
+            event = _make_event(text="/approve", chat_id="67890")
+            session_key = "agent:main:telegram:dm:67890"
+            runner._update_prompt_pending[session_key] = True
+            (hermes_home / ".update_prompt.json").write_text(json.dumps({"prompt": "test"}))
+            runner._is_user_authorized = MagicMock(return_value=True)
+            runner._session_key_for_source = MagicMock(return_value=session_key)
+
+            with patch("gateway.run._hermes_home", hermes_home):
+                result = await runner._handle_message(event)
+
+            assert result == "✓ 「はい」を更新プロセスに送信しました。"
+            assert (hermes_home / ".update_response").read_text() == "y"
+        finally:
+            i18n.reset_language_cache()
+
+    @pytest.mark.asyncio
+    async def test_intercepts_response_failure_uses_active_language(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed post-prompt response write returns a localized error."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            runner = _make_runner()
+            hermes_home = tmp_path / "hermes"
+            hermes_home.mkdir()
+
+            event = _make_event(text="n", chat_id="67890")
+            session_key = "agent:main:telegram:dm:67890"
+            runner._update_prompt_pending[session_key] = True
+            (hermes_home / ".update_prompt.json").write_text(json.dumps({"prompt": "test"}))
+            runner._is_user_authorized = MagicMock(return_value=True)
+            runner._session_key_for_source = MagicMock(return_value=session_key)
+
+            original_replace = Path.replace
+
+            def fail_update_response_replace(self, target):
+                if self.name == ".update_response.tmp":
+                    raise OSError("disk full")
+                return original_replace(self, target)
+
+            monkeypatch.setattr(Path, "replace", fail_update_response_replace)
+            with patch("gateway.run._hermes_home", hermes_home):
+                result = await runner._handle_message(event)
+
+            assert result == "✗ 更新プロセスへの回答送信に失敗しました: disk full"
+        finally:
+            i18n.reset_language_cache()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("running", "queue_enabled", "expected"),
+        [
+            (
+                True,
+                True,
+                "⏳ ゲートウェイは再起動中です — 復帰後の次のターンとしてキューに追加しました。",
+            ),
+            (
+                True,
+                False,
+                "⏳ ゲートウェイは再起動中のため、現在別のターンを受け付けていません。",
+            ),
+            (
+                False,
+                False,
+                "⏳ ゲートウェイは再起動中のため、現在新しい処理を受け付けていません。",
+            ),
+        ],
+    )
+    async def test_message_drain_status_uses_active_language(
+        self, tmp_path, monkeypatch, running, queue_enabled, expected
+    ):
+        """Priority and cold-path drain statuses stay localized after dispatch."""
+        monkeypatch.setenv("HERMES_LANGUAGE", "ja")
+        i18n.reset_language_cache()
+        try:
+            runner = _make_runner()
+            runner._draining = True
+            runner._status_action_gerund = lambda: "restarting"
+            runner._queue_during_drain_enabled = lambda: queue_enabled
+            runner._queue_or_replace_pending_event = MagicMock()
+            runner._scale_to_zero_note_real_inbound = lambda: None
+            runner._is_user_authorized = MagicMock(return_value=True)
+            session_key = "agent:main:telegram:dm:67890"
+            runner._session_key_for_source = MagicMock(return_value=session_key)
+            runner.session_store = None
+
+            if running:
+                agent = MagicMock()
+                agent.get_activity_summary.return_value = {
+                    "seconds_since_activity": 0.0,
+                    "last_activity_desc": "api_call",
+                    "api_call_count": 1,
+                    "max_iterations": 60,
+                }
+                runner._running_agents[session_key] = agent
+                # Stay outside Telegram's short follow-up grace window so the
+                # message reaches the priority drain branch under test.
+                runner._running_agents_ts[session_key] = time.time() - 120
+
+            with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+                result = await runner._handle_message(_make_event(text="follow up"))
+
+            assert result == expected
+        finally:
+            i18n.reset_language_cache()
 
     @pytest.mark.asyncio
     async def test_recognized_slash_command_bypasses_pending_update_prompt(self, tmp_path):

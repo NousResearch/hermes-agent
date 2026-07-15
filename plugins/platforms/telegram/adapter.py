@@ -2220,15 +2220,22 @@ class TelegramAdapter(BasePlatformAdapter):
         connection silently dies; without this handler the bot never recovers.
 
         Strategy: exponential back-off (5s, 10s, 20s, 40s, 60s cap) up to
-        MAX_NETWORK_RETRIES attempts, then mark the adapter retryable-fatal so
-        the supervisor restarts the gateway process.
+        MAX_NETWORK_RETRIES attempts (default 10, ~8 min of outage; override
+        via HERMES_TELEGRAM_MAX_NETWORK_RETRIES for hosts with longer
+        connectivity gaps such as laptop sleep or flaky DNS), then mark the
+        adapter retryable-fatal so the supervisor restarts the gateway process.
         """
         if getattr(self, "_polling_teardown_started", False):
             return
         if self.has_fatal_error:
             return
 
-        MAX_NETWORK_RETRIES = 10
+        try:
+            MAX_NETWORK_RETRIES = max(
+                1, int(os.getenv("HERMES_TELEGRAM_MAX_NETWORK_RETRIES", "10"))
+            )
+        except (TypeError, ValueError):
+            MAX_NETWORK_RETRIES = 10
         BASE_DELAY = 5
         MAX_DELAY = 60
 

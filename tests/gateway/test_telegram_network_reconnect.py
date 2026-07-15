@@ -224,6 +224,65 @@ async def test_reconnect_triggers_fatal_after_max_retries():
     fatal_handler.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_reconnect_retry_cap_env_override(monkeypatch):
+    """
+    HERMES_TELEGRAM_MAX_NETWORK_RETRIES raises the retry cap, so an attempt
+    count that would exhaust the default of 10 keeps retrying instead of
+    marking the adapter fatal (and restarting the gateway).
+    """
+    monkeypatch.setenv("HERMES_TELEGRAM_MAX_NETWORK_RETRIES", "30")
+
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 10  # would be fatal at the default cap
+
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    mock_updater = MagicMock()
+    mock_updater.running = True
+    mock_updater.stop = AsyncMock()
+    mock_updater.start_polling = AsyncMock()
+
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("still failing"))
+
+    assert not adapter.has_fatal_error
+    fatal_handler.assert_not_called()
+
+    # Clean up any self-scheduled retry/verifier tasks
+    for t in list(adapter._background_tasks):
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_reconnect_retry_cap_env_invalid_falls_back_to_default(monkeypatch):
+    """An unparseable override falls back to the default cap of 10."""
+    monkeypatch.setenv("HERMES_TELEGRAM_MAX_NETWORK_RETRIES", "not-a-number")
+
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 10
+
+    fatal_handler = AsyncMock()
+    adapter.set_fatal_error_handler(fatal_handler)
+
+    adapter._app = MagicMock()
+
+    await adapter._handle_polling_network_error(Exception("still failing"))
+
+    assert adapter.has_fatal_error
+    assert adapter.fatal_error_code == "telegram_network_error"
+    fatal_handler.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Connection pool drain tests (PR #16466 salvage)
 # ---------------------------------------------------------------------------

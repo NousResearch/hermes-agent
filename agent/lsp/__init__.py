@@ -47,6 +47,11 @@ def _accepting(svc: LSPService) -> bool:
     return bool(check()) if callable(check) else True
 
 
+def _closed(svc: LSPService) -> bool:
+    check = getattr(svc, "is_closed", None)
+    return bool(check()) if callable(check) else False
+
+
 def get_service() -> Optional[LSPService]:
     """Return the process-wide LSP service singleton, or None when disabled.
 
@@ -62,6 +67,10 @@ def get_service() -> Optional[LSPService]:
         current = _service
         if current is not None and _accepting(current):
             return current if current.is_active() else None
+        if current is not None and not _closed(current):
+            # Teardown is incomplete or failed. Keep the tombstoned singleton
+            # rather than exposing an overlapping replacement pool.
+            return None
         _service = LSPService.create_from_config()
         if not _atexit_registered:
             # ``atexit`` handlers run in LIFO order on normal Python
@@ -86,10 +95,10 @@ def shutdown_service() -> None:
         try:
             svc.shutdown()
         except Exception as exc:  # noqa: BLE001
-            logger.debug("LSP shutdown error: %s", exc)
-        finally:
-            if _service is svc:
-                _service = None
+            logger.warning("LSP shutdown incomplete; replacement remains blocked: %s", exc)
+            return
+        if _service is svc and _closed(svc):
+            _service = None
 
 
 def _atexit_shutdown() -> None:

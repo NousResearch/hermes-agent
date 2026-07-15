@@ -270,9 +270,11 @@ def test_concurrent_same_workspace_requests_share_one_spawn(mock_pyright):
     try:
         with ThreadPoolExecutor(max_workers=8) as pool:
             results = list(
-                pool.map(lambda _: svc.get_diagnostics_sync(str(f)), range(8))
+                pool.map(
+                    lambda _: svc.get_diagnostics_sync(str(f), delta=False), range(8)
+                )
             )
-        assert all(isinstance(result, list) for result in results)
+        assert all(len(result) == 1 for result in results)
         status = svc.get_status()
         assert len(status["clients"]) == 1
         assert status["clients"][0]["generation"] == 1

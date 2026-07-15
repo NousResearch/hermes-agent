@@ -15,8 +15,9 @@ Design choices:
   re-use it.
 
 - A **broken-set** records deterministic ``(server_id, workspace_root)``
-  failures such as an unavailable spawn command. Transient startup/request
-  failures use a short monotonic cooldown so the service can recover.
+  failures such as an unavailable spawn command. In opt-in lifecycle mode,
+  transient startup/request failures use a short monotonic cooldown so the
+  service can recover; process-lifetime mode preserves permanent marking.
 
 - A **delta baseline** map keeps "diagnostics-as-of-the-last-snapshot"
   per file.  ``snapshot_baseline()`` is called BEFORE a write; the
@@ -36,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 import math
 import os
@@ -66,6 +67,7 @@ DEFAULT_SWEEP_INTERVAL = 60.0
 MAX_IDLE_TIMEOUT = 365 * 24 * 60 * 60
 MAX_SWEEP_INTERVAL = 24 * 60 * 60
 MAX_CLIENTS_PER_PROCESS = 64
+SHUTDOWN_LEASE_DRAIN_TIMEOUT = 5.0
 
 
 @dataclass
@@ -79,6 +81,7 @@ class _ClientEntry:
     last_used: float
     client: Optional[LSPClient] = None
     leases: int = 0
+    lease_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
     spawn_task: Optional[asyncio.Task] = None
     retire_task: Optional[asyncio.Task] = None
     pending_eviction: Optional[str] = None
@@ -92,6 +95,7 @@ class _ClientLease:
     key: Tuple[str, str]
     generation: int
     client: LSPClient
+    owner: Optional[asyncio.Task[Any]] = None
     released: bool = False
 
     def release(self) -> None:
@@ -101,38 +105,59 @@ class _ClientLease:
         self.service._release_lease(self)
 
 
-def _lifecycle_config(lsp_cfg: Dict[str, Any]) -> Tuple[bool, float, float, int]:
-    """Parse opt-in bounded lifecycle settings without truthy coercion.
+def _lifecycle_config(
+    lsp_cfg: Dict[str, Any],
+) -> Tuple[bool, float, float, int, Optional[str]]:
+    """Parse bounded-lifecycle settings and surface invalid policy explicitly.
 
-    Invalid lifecycle configuration falls back to legacy process-lifetime
-    retention.  A malformed resource policy must never disable LSP itself.
+    If an explicitly enabled policy is malformed, safe bounded defaults remain
+    enabled rather than silently reverting to unbounded process-lifetime
+    retention. The validation error is exposed through status.
     """
 
     raw = lsp_cfg.get("lifecycle")
-    defaults = (False, DEFAULT_IDLE_TIMEOUT, DEFAULT_SWEEP_INTERVAL, 0)
+    defaults = (False, DEFAULT_IDLE_TIMEOUT, DEFAULT_SWEEP_INTERVAL, 0, None)
     if raw is None:
         return defaults
     if not isinstance(raw, dict):
-        logger.warning("lsp.lifecycle must be a mapping; lifecycle remains disabled")
-        return defaults
+        error = "lsp.lifecycle must be a mapping"
+        logger.warning(error)
+        return False, DEFAULT_IDLE_TIMEOUT, DEFAULT_SWEEP_INTERVAL, 0, error
 
     enabled = raw.get("enabled", False)
-    if not isinstance(enabled, bool):
-        logger.warning("lsp.lifecycle.enabled must be true or false; lifecycle remains disabled")
-        return defaults
-
-    def finite_number(name: str, default: float, *, positive: bool, maximum: float) -> float:
-        value = raw.get(name, default)
-        valid_type = isinstance(value, (int, float)) and not isinstance(value, bool)
-        if not valid_type or not math.isfinite(float(value)):
-            raise ValueError(f"{name} must be a finite number")
-        result = float(value)
-        if (positive and result <= 0) or (not positive and result < 0) or result > maximum:
-            comparator = "greater than zero" if positive else "non-negative"
-            raise ValueError(f"{name} must be {comparator} and at most {maximum:g}")
-        return result
-
+    enabled_valid = isinstance(enabled, bool)
     try:
+        if not enabled_valid:
+            raise ValueError("enabled must be true or false")
+        allowed = {
+            "enabled",
+            "idle_timeout_seconds",
+            "sweep_interval_seconds",
+            "max_clients_per_process",
+        }
+        unknown = sorted(set(raw) - allowed)
+        if unknown:
+            raise ValueError("unknown key(s): " + ", ".join(unknown))
+
+        def finite_number(
+            name: str, default: float, *, positive: bool, maximum: float
+        ) -> float:
+            value = raw.get(name, default)
+            valid_type = isinstance(value, (int, float)) and not isinstance(value, bool)
+            if not valid_type or not math.isfinite(float(value)):
+                raise ValueError(f"{name} must be a finite number")
+            result = float(value)
+            if (
+                (positive and result <= 0)
+                or (not positive and result < 0)
+                or result > maximum
+            ):
+                comparator = "greater than zero" if positive else "non-negative"
+                raise ValueError(
+                    f"{name} must be {comparator} and at most {maximum:g}"
+                )
+            return result
+
         idle_timeout = finite_number(
             "idle_timeout_seconds",
             DEFAULT_IDLE_TIMEOUT,
@@ -156,9 +181,16 @@ def _lifecycle_config(lsp_cfg: Dict[str, Any]) -> Tuple[bool, float, float, int]
                 f"0 and {MAX_CLIENTS_PER_PROCESS}"
             )
     except (TypeError, ValueError) as exc:
-        logger.warning("invalid lsp.lifecycle configuration (%s); lifecycle remains disabled", exc)
-        return defaults
-    return enabled, idle_timeout, sweep_interval, max_clients
+        error = str(exc)
+        logger.warning("invalid lsp.lifecycle configuration: %s", error)
+        return (
+            bool(enabled) if enabled_valid else False,
+            DEFAULT_IDLE_TIMEOUT,
+            DEFAULT_SWEEP_INTERVAL,
+            0,
+            error,
+        )
+    return enabled, idle_timeout, sweep_interval, max_clients, None
 
 
 class _BackgroundLoop:
@@ -171,6 +203,7 @@ class _BackgroundLoop:
     def __init__(self) -> None:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
+        self._thread_id: Optional[int] = None
         self._ready = threading.Event()
 
     def start(self) -> None:
@@ -187,15 +220,26 @@ class _BackgroundLoop:
     def _run_forever(self) -> None:
         loop = asyncio.new_event_loop()
         self._loop = loop
+        self._thread_id = threading.get_ident()
         asyncio.set_event_loop(loop)
         self._ready.set()
         try:
             loop.run_forever()
         finally:
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             try:
-                loop.close()
+                loop.run_until_complete(loop.shutdown_asyncgens())
             except Exception:  # noqa: BLE001
                 pass
+            self._thread_id = None
+            loop.close()
+
+    def is_owner_thread(self) -> bool:
+        return self._thread_id == threading.get_ident()
 
     def run(self, coro, *, timeout: Optional[float] = None) -> Any:
         """Submit a coroutine to the loop and block until done.
@@ -203,6 +247,10 @@ class _BackgroundLoop:
         Returns the coroutine's result, or raises its exception.
         """
         from agent.async_utils import safe_schedule_threadsafe
+        if self.is_owner_thread():
+            if asyncio.iscoroutine(coro):
+                coro.close()
+            raise RuntimeError("cannot synchronously wait on the LSP owner loop")
         if self._loop is None:
             if asyncio.iscoroutine(coro):
                 coro.close()
@@ -216,18 +264,24 @@ class _BackgroundLoop:
             fut.cancel()
             raise
 
-    def stop(self) -> None:
+    def stop(self, *, timeout: float = 5.0) -> bool:
         loop = self._loop
         if loop is None:
-            return
+            return True
+        if self.is_owner_thread():
+            raise RuntimeError("the LSP owner loop cannot join itself")
         try:
             loop.call_soon_threadsafe(loop.stop)
         except RuntimeError:
             pass
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                return False
         self._loop = None
         self._thread = None
+        return True
 
 
 class LSPService:
@@ -258,6 +312,7 @@ class LSPService:
         idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
         sweep_interval: float = DEFAULT_SWEEP_INTERVAL,
         max_clients: int = 0,
+        lifecycle_error: Optional[str] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._enabled = enabled
@@ -272,6 +327,7 @@ class LSPService:
         self._idle_timeout = idle_timeout
         self._sweep_interval = sweep_interval
         self._max_clients = max_clients
+        self._lifecycle_error = lifecycle_error
         self._clock = clock
 
         # All registry transitions are guarded by this lock. Async spawn and
@@ -343,7 +399,13 @@ class LSPService:
                 if isinstance(init, dict):
                     init_overrides[name] = init
 
-        lifecycle_enabled, idle_timeout, sweep_interval, max_clients = _lifecycle_config(lsp_cfg)
+        (
+            lifecycle_enabled,
+            idle_timeout,
+            sweep_interval,
+            max_clients,
+            lifecycle_error,
+        ) = _lifecycle_config(lsp_cfg)
 
         return cls(
             enabled=enabled,
@@ -358,6 +420,7 @@ class LSPService:
             idle_timeout=idle_timeout,
             sweep_interval=sweep_interval,
             max_clients=max_clients,
+            lifecycle_error=lifecycle_error,
         )
 
     # ------------------------------------------------------------------
@@ -431,23 +494,36 @@ class LSPService:
         """Completion-idempotent retirement for one concrete generation."""
         client = entry.client
         error: Optional[BaseException] = None
+        terminated = client is None
         try:
             if client is not None:
                 await client.shutdown()
+                terminated = not bool(
+                    getattr(client, "process_alive", client.is_running)
+                )
         except BaseException as exc:  # noqa: BLE001
             error = exc
+            terminated = client is None or not bool(
+                getattr(client, "process_alive", client.is_running)
+            )
             if isinstance(exc, asyncio.CancelledError):
                 raise
         finally:
             with self._state_lock:
                 current = self._entries.get(entry.key)
                 if current is entry:
-                    self._entries.pop(entry.key, None)
-                if reason == "idle":
+                    if terminated:
+                        self._entries.pop(entry.key, None)
+                    else:
+                        # Keep a tombstone that blocks replacement until a
+                        # later shutdown retry can confirm process exit.
+                        entry.retire_task = None
+                        entry.pending_eviction = f"{reason}-failed"
+                if terminated and reason == "idle":
                     self._reap_count += 1
-                elif reason == "capacity":
+                elif terminated and reason == "capacity":
                     self._capacity_eviction_count += 1
-            level = logging.WARNING if error is not None else logging.INFO
+            level = logging.WARNING if error is not None or not terminated else logging.INFO
             logger.log(
                 level,
                 "LSP lifecycle retired server=%s root=%s generation=%s "
@@ -456,7 +532,7 @@ class LSPService:
                 entry.workspace_root,
                 entry.generation,
                 reason,
-                "error" if error is not None else "clean",
+                "clean" if terminated and error is None else "incomplete",
             )
 
     async def _retire_key_async(self, key: Tuple[str, str], reason: str) -> bool:
@@ -494,6 +570,8 @@ class LSPService:
                 )
                 return
             entry.leases -= 1
+            if lease.owner is not None:
+                entry.lease_tasks.discard(lease.owner)
             entry.last_used = self._clock()
             if entry.leases == 0 and entry.pending_eviction:
                 retire_task = self._begin_retirement_locked(
@@ -587,6 +665,10 @@ class LSPService:
     def is_accepting_requests(self) -> bool:
         with self._state_lock:
             return self._service_state == "open"
+
+    def is_closed(self) -> bool:
+        with self._state_lock:
+            return self._service_state == "closed"
 
     def begin_shutdown(self) -> bool:
         """Publish CLOSING synchronously before shutdown enters the loop."""
@@ -720,18 +802,23 @@ class LSPService:
         return diags
 
     def _mark_broken_for_file(self, file_path: str, exc: BaseException) -> None:
-        """Retire a timed-out generation and apply a short retry cooldown.
+        """Retire a failed generation and preserve the configured retry policy.
 
-        Request and cold-index timeouts are transient. They must not poison a
-        healthy server/workspace pair for the remainder of the process.
+        Legacy process-lifetime mode keeps the historical permanent broken
+        mark. Opt-in lifecycle mode uses a short retry cooldown so an
+        intentionally bounded gateway can recover from transient cold starts.
         """
         target = self._resolve_target(file_path)
         if target is None:
             return
         srv, key, workspace_root = target
         with self._state_lock:
-            first_failure = key not in self._cooldowns
-            self._cooldowns[key] = self._clock() + 5.0
+            if self._lifecycle_enabled:
+                first_failure = key not in self._cooldowns
+                self._cooldowns[key] = self._clock() + 5.0
+            else:
+                first_failure = key not in self._broken
+                self._broken.add(key)
         try:
             self._loop.run(
                 self._retire_key_async(key, "request-failure"), timeout=3.0
@@ -742,21 +829,31 @@ class LSPService:
             eventlog.log_spawn_failed(srv.server_id, workspace_root, exc)
 
     def shutdown(self) -> None:
-        """Close admission, drain lifecycle work, and stop the loop."""
+        """Close admission, drain lifecycle work, and stop the owner loop."""
+        with self._state_lock:
+            if self._service_state == "closed":
+                return
+        if self._loop.is_owner_thread():
+            raise RuntimeError("use asynchronous teardown from the LSP owner loop")
         if not self._enabled:
             with self._state_lock:
                 self._service_state = "closed"
             return
         self.begin_shutdown()
         try:
-            self._loop.run(self._shutdown_async(), timeout=15.0)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("LSP shutdown did not complete cleanly: %s", exc)
-        finally:
-            self._loop.stop()
+            self._loop.run(self._shutdown_async(), timeout=30.0)
+        except Exception:
+            # Keep the singleton in CLOSING. Publishing a replacement while
+            # this loop or one of its process trees may still be alive would
+            # recreate the overlap this lifecycle manager exists to prevent.
             with self._state_lock:
-                self._service_state = "closed"
-            clear_cache()
+                self._service_state = "closing"
+            raise
+        if not self._loop.stop(timeout=5.0):
+            with self._state_lock:
+                self._service_state = "closing"
+            raise RuntimeError("LSP owner loop did not terminate")
+        clear_cache()
 
     # ------------------------------------------------------------------
     # async internals
@@ -833,11 +930,14 @@ class LSPService:
                 entry = self._entries.get(key)
                 if entry is not None and entry.state == "active":
                     if entry.client is not None and entry.client.is_running:
+                        owner = asyncio.current_task()
                         entry.leases += 1
+                        if owner is not None:
+                            entry.lease_tasks.add(owner)
                         entry.last_used = self._clock()
                         eventlog.log_active(srv.server_id, workspace_root)
                         return _ClientLease(
-                            self, key, entry.generation, entry.client
+                            self, key, entry.generation, entry.client, owner
                         )
                     wait_task = self._begin_retirement_locked(entry, "crashed")
                     if wait_task is None:
@@ -872,13 +972,13 @@ class LSPService:
     async def _reserve_spawn(
         self, srv: Any, key: Tuple[str, str], workspace_root: str
     ) -> Optional[_ClientLease]:
-        """Serialize capacity, retirement, spawn, and the first lease."""
+        """Atomically reserve a generation without serializing its cold start."""
         admission_lock = self._admission_lock
         if admission_lock is None:
             return None
-        async with admission_lock:
-            while True:
-                wait_task: Optional[asyncio.Task] = None
+        while True:
+            wait_task: Optional[asyncio.Task] = None
+            async with admission_lock:
                 with self._state_lock:
                     if self._service_state != "open" or key in self._broken:
                         return None
@@ -890,10 +990,17 @@ class LSPService:
                     existing = self._entries.get(key)
                     if existing is not None and existing.state == "active":
                         if existing.client is not None and existing.client.is_running:
+                            owner = asyncio.current_task()
                             existing.leases += 1
+                            if owner is not None:
+                                existing.lease_tasks.add(owner)
                             existing.last_used = self._clock()
                             return _ClientLease(
-                                self, key, existing.generation, existing.client
+                                self,
+                                key,
+                                existing.generation,
+                                existing.client,
+                                owner,
                             )
                         wait_task = self._begin_retirement_locked(
                             existing, "crashed"
@@ -903,6 +1010,10 @@ class LSPService:
                     elif existing is not None and existing.state == "spawning":
                         wait_task = existing.spawn_task
                     elif existing is not None and existing.state == "retiring":
+                        if existing.retire_task is None:
+                            # A failed retirement is a tombstone. Never overlap
+                            # it with a replacement whose predecessor may live.
+                            return None
                         wait_task = existing.retire_task
                     else:
                         if (
@@ -916,11 +1027,10 @@ class LSPService:
                                     victim, "capacity"
                                 )
                             else:
-                                # A cancelled caller may leave its shielded
-                                # spawn running. Count that reservation and
-                                # wait for it (or a retirement) before
-                                # admitting another distinct key. Only fully
-                                # active, fully leased pools may overflow.
+                                # Count in-flight reservations and await their
+                                # terminal transition before admitting another
+                                # key. Only a fully active, fully leased pool
+                                # may overflow temporarily.
                                 wait_task = next(
                                     (
                                         item.spawn_task or item.retire_task
@@ -952,11 +1062,12 @@ class LSPService:
                             )
                             entry.spawn_task = wait_task
                             self._entries[key] = entry
-                if wait_task is None:
-                    return None
-                await asyncio.gather(
-                    asyncio.shield(wait_task), return_exceptions=True
-                )
+            if wait_task is None:
+                return None
+            # Never hold global admission while binary discovery, install, or
+            # initialize runs. The published per-key entry remains the
+            # single-flight reservation for concurrent callers.
+            await asyncio.gather(asyncio.shield(wait_task), return_exceptions=True)
 
     async def _spawn_entry(self, entry: _ClientEntry, srv: Any) -> Optional[LSPClient]:
         client: Optional[LSPClient] = None
@@ -968,7 +1079,7 @@ class LSPService:
                 env_overrides=self._env_overrides,
                 init_overrides=self._init_overrides,
             )
-            spec = srv.build_spawn(entry.workspace_root, ctx)
+            spec = await asyncio.to_thread(srv.build_spawn, entry.workspace_root, ctx)
             if spec is None:
                 eventlog.log_server_unavailable(srv.server_id, srv.server_id)
                 with self._state_lock:
@@ -1013,10 +1124,13 @@ class LSPService:
             if client is not None:
                 await asyncio.shield(client.shutdown())
             raise
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             eventlog.log_spawn_failed(srv.server_id, entry.workspace_root, exc)
             with self._state_lock:
-                self._cooldowns[entry.key] = self._clock() + 5.0
+                if self._lifecycle_enabled:
+                    self._cooldowns[entry.key] = self._clock() + 5.0
+                else:
+                    self._broken.add(entry.key)
             if client is not None:
                 await client.shutdown()
             return None
@@ -1056,7 +1170,9 @@ class LSPService:
                 *(spawn_tasks + maintenance), return_exceptions=True
             )
 
-        deadline = asyncio.get_running_loop().time() + 5.0
+        deadline = (
+            asyncio.get_running_loop().time() + SHUTDOWN_LEASE_DRAIN_TIMEOUT
+        )
         while True:
             with self._state_lock:
                 leased = sum(entry.leases for entry in self._entries.values())
@@ -1064,21 +1180,45 @@ class LSPService:
                 break
             await asyncio.sleep(0.05)
         if leased:
+            with self._state_lock:
+                lease_tasks = {
+                    task
+                    for entry in self._entries.values()
+                    for task in entry.lease_tasks
+                    if not task.done()
+                }
+            current_task = asyncio.current_task()
+            lease_tasks.discard(current_task)
             logger.warning(
                 "LSP shutdown lease drain timed out with %s active lease(s); "
-                "forcing bounded cleanup",
+                "cancelling %s owning request task(s)",
                 leased,
+                len(lease_tasks),
             )
+            for task in lease_tasks:
+                task.cancel()
+            if lease_tasks:
+                await asyncio.gather(*lease_tasks, return_exceptions=True)
+            with self._state_lock:
+                leased = sum(entry.leases for entry in self._entries.values())
+            if leased:
+                raise RuntimeError(
+                    f"LSP shutdown could not drain {leased} active lease(s)"
+                )
 
         retire_tasks: List[asyncio.Task] = []
         with self._state_lock:
             for entry in list(self._entries.values()):
-                if entry.state == "retiring" and entry.retire_task is not None:
-                    retire_tasks.append(entry.retire_task)
-                    continue
+                if entry.state == "retiring":
+                    if entry.retire_task is not None:
+                        retire_tasks.append(entry.retire_task)
+                        continue
+                    # Retry an incomplete tombstone during whole-service
+                    # shutdown. The client's shared shutdown task guarantees
+                    # this joins any cleanup still in progress.
+                    entry.state = "active"
+                    entry.pending_eviction = None
                 if entry.state == "active":
-                    if entry.leases:
-                        entry.leases = 0
                     task = self._begin_retirement_locked(entry, "shutdown")
                     if task is not None:
                         retire_tasks.append(task)
@@ -1089,7 +1229,14 @@ class LSPService:
             )
 
         with self._state_lock:
-            self._entries.clear()
+            if self._entries:
+                raise RuntimeError(
+                    "LSP shutdown left non-terminated generations: "
+                    + ", ".join(
+                        f"{entry.key[0]}:{entry.generation}:{entry.state}"
+                        for entry in self._entries.values()
+                    )
+                )
             self._broken.clear()
             self._cooldowns.clear()
             self._maintenance_tasks.clear()
@@ -1107,7 +1254,10 @@ class LSPService:
                 {
                     "server_id": entry.key[0],
                     "workspace_root": entry.workspace_root,
-                    "state": entry.state,
+                    "state": (
+                        entry.client.state if entry.client is not None else entry.state
+                    ),
+                    "lifecycle_state": entry.state,
                     "running": bool(entry.client and entry.client.is_running),
                     "generation": entry.generation,
                     "leases": entry.leases,
@@ -1136,6 +1286,7 @@ class LSPService:
                 "idle_timeout_seconds": self._idle_timeout,
                 "sweep_interval_seconds": self._sweep_interval,
                 "max_clients_per_process": self._max_clients,
+                "config_error": self._lifecycle_error,
                 "reaper_running": bool(
                     self._reaper_task is not None and not self._reaper_task.done()
                 ),

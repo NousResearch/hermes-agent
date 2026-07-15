@@ -45,6 +45,7 @@ def test_mark_failed_file_adds_retryable_cooldown_key(tmp_path, monkeypatch):
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
         clock=lambda: now[0],
     )
     try:
@@ -56,6 +57,27 @@ def test_mark_failed_file_adds_retryable_cooldown_key(tmp_path, monkeypatch):
         now[0] = 106.0
         assert svc.enabled_for(str(src)) is True
         assert key not in svc._cooldowns
+    finally:
+        svc.shutdown()
+
+
+def test_process_lifetime_mode_preserves_permanent_broken_pair(tmp_path, monkeypatch):
+    repo = _make_git_workspace(tmp_path)
+    monkeypatch.chdir(str(repo))
+    src = repo / "x.py"
+    src.write_text("")
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+    )
+    try:
+        svc._mark_broken_for_file(str(src), RuntimeError("simulated"))
+        key = ("pyright", str(repo.resolve()))
+        assert key in svc._broken
+        assert key not in svc._cooldowns
+        assert svc.enabled_for(str(src)) is False
     finally:
         svc.shutdown()
 
@@ -74,6 +96,7 @@ def test_enabled_for_returns_false_during_cooldown(tmp_path, monkeypatch):
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
     )
     try:
         # Initially enabled.
@@ -102,6 +125,7 @@ def test_enabled_for_other_file_in_same_project_also_skipped(tmp_path, monkeypat
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
     )
     try:
         svc._mark_broken_for_file(str(a), RuntimeError("simulated"))
@@ -130,6 +154,7 @@ def test_unrelated_project_not_affected_by_cooldown(tmp_path, monkeypatch):
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
     )
     try:
         svc._mark_broken_for_file(str(a_src), RuntimeError("simulated"))
@@ -150,6 +175,7 @@ def test_mark_broken_handles_missing_server_silently(tmp_path):
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
     )
     try:
         # No registered server for .xyz; must not raise.
@@ -169,6 +195,7 @@ def test_mark_broken_handles_no_workspace_silently(tmp_path):
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
     )
     try:
         svc._mark_broken_for_file(str(src), RuntimeError("x"))
@@ -191,6 +218,7 @@ def test_snapshot_failure_enters_retryable_cooldown(tmp_path, monkeypatch):
         wait_mode="document",
         wait_timeout=2.0,
         install_strategy="manual",
+        lifecycle_enabled=True,
         clock=lambda: now[0],
     )
     try:

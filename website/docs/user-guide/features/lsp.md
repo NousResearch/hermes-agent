@@ -180,6 +180,14 @@ lsp:
       disabled: true       # skip TS even when its extensions match
 ```
 
+Lifecycle validation is strict: `idle_timeout_seconds` must be between `0`
+and `31536000`, `sweep_interval_seconds` must be greater than `0` and at most
+`86400`, and `max_clients_per_process` must be an integer from `0` through
+`64`. Unknown keys and invalid values are reported by `hermes lsp status`. If
+an explicitly enabled policy is malformed, Hermes keeps lifecycle management
+enabled with the safe `7200s / 60s / unlimited-count` defaults rather than
+silently falling back to unbounded process-lifetime retention.
+
 ### Per-server keys
 
 * `disabled: true` — skip this server entirely even when its

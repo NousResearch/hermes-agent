@@ -129,6 +129,9 @@ def _cmd_status(emit_json: bool) -> int:
             f"  lifecycle:       "
             f"{'bounded' if lifecycle_info.get('enabled') else 'process-lifetime'}"
         )
+        config_error = lifecycle_info.get("config_error")
+        if config_error:
+            out.append(f"  lifecycle error: {config_error}")
         if lifecycle_info.get("enabled"):
             out.append(
                 "  lifecycle limits:"
@@ -149,7 +152,9 @@ def _cmd_status(emit_json: bool) -> int:
             out.append(f"  active clients:  {len(clients)}")
             for c in clients:
                 out.append(
-                    f"    - {c['server_id']:20s} state={c['state']:10s} root={c['workspace_root']}"
+                    f"    - {c['server_id']:20s} state={c['state']:10s} "
+                    f"lifecycle={c.get('lifecycle_state', c['state']):10s} "
+                    f"root={c['workspace_root']}"
                 )
         else:
             out.append("  active clients:  none")

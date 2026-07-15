@@ -153,12 +153,16 @@ def test_restart_barrier_never_exposes_overlapping_singletons(monkeypatch):
     class OldService:
         def __init__(self):
             self.accepting = True
+            self.closed = False
 
         def is_active(self):
             return self.accepting
 
         def is_accepting_requests(self):
             return self.accepting
+
+        def is_closed(self):
+            return self.closed
 
         def begin_shutdown(self):
             self.accepting = False
@@ -167,6 +171,7 @@ def test_restart_barrier_never_exposes_overlapping_singletons(monkeypatch):
         def shutdown(self):
             closing.set()
             assert release_shutdown.wait(timeout=2.0)
+            self.closed = True
 
     replacement = MagicMock()
     replacement.is_active.return_value = True
@@ -196,3 +201,40 @@ def test_restart_barrier_never_exposes_overlapping_singletons(monkeypatch):
     get_thread.join(timeout=2.0)
 
     assert result == [replacement]
+
+
+def test_failed_shutdown_keeps_singleton_tombstone_and_blocks_replacement(monkeypatch):
+    class FailedService:
+        def __init__(self):
+            self.accepting = True
+
+        def is_active(self):
+            return self.accepting
+
+        def is_accepting_requests(self):
+            return self.accepting
+
+        def is_closed(self):
+            return False
+
+        def begin_shutdown(self):
+            self.accepting = False
+            return True
+
+        def shutdown(self):
+            raise RuntimeError("owner loop still alive")
+
+    failed = FailedService()
+    lsp_module._service = failed
+    created = []
+    monkeypatch.setattr(
+        lsp_module.LSPService,
+        "create_from_config",
+        classmethod(lambda cls: created.append(True)),
+    )
+
+    lsp_module.shutdown_service()
+
+    assert lsp_module._service is failed
+    assert lsp_module.get_service() is None
+    assert created == []

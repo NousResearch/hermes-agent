@@ -448,8 +448,8 @@ def test_api_calendar_create_verifies_inserted_event(api_module, capsys):
             return {
                 "id": "evt-123",
                 "summary": "Team Standup",
-                "start": {"dateTime": "2026-04-01T10:00:00Z"},
-                "end": {"dateTime": "2026-04-01T10:30:00Z"},
+                "start": {"dateTime": "2026-04-01T12:00:00+02:00"},
+                "end": {"dateTime": "2026-04-01T12:30:00+02:00"},
                 "htmlLink": "https://calendar.google.com/event?eid=evt-123",
             }
         raise AssertionError(parts)
@@ -476,6 +476,44 @@ def test_api_calendar_create_verifies_inserted_event(api_module, capsys):
         ["calendar", "events", "insert"],
         ["calendar", "events", "get"],
     ]
+
+
+def test_api_calendar_create_verifies_python_client_event(api_module, capsys):
+    """The Python-client fallback must re-read the inserted event before success."""
+    api_module._gws_binary = lambda: None
+
+    events = MagicMock()
+    events.insert.return_value.execute.return_value = {"id": "evt-123"}
+    events.get.return_value.execute.return_value = {
+        "id": "evt-123",
+        "summary": "Team Standup",
+        "start": {"dateTime": "2026-04-01T12:00:00+02:00"},
+        "end": {"dateTime": "2026-04-01T12:30:00+02:00"},
+        "htmlLink": "https://calendar.google.com/event?eid=evt-123",
+    }
+    service = MagicMock()
+    service.events.return_value = events
+    api_module.build_service = lambda api, version: service
+
+    args = api_module.argparse.Namespace(
+        summary="Team Standup",
+        start="2026-04-01T10:00:00Z",
+        end="2026-04-01T10:30:00Z",
+        location="",
+        description="",
+        attendees="",
+        calendar="primary",
+        func=api_module.calendar_create,
+    )
+
+    api_module.calendar_create(args)
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "created"
+    assert output["id"] == "evt-123"
+    assert output["verified"] is True
+    events.insert.assert_called_once()
+    events.get.assert_called_once_with(calendarId="primary", eventId="evt-123")
 
 
 def test_api_calendar_create_exits_when_verification_mismatches(api_module, capsys):

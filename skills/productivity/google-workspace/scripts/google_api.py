@@ -608,11 +608,35 @@ def _calendar_event_matches(found: dict, expected: dict) -> bool:
 
     found_start = found.get("start", {}).get("dateTime", found.get("start", {}).get("date", ""))
     found_end = found.get("end", {}).get("dateTime", found.get("end", {}).get("date", ""))
-    if found_start != expected.get("start", {}).get("dateTime", ""):
+    if not _calendar_time_matches(found_start, expected.get("start", {}).get("dateTime", "")):
         return False
-    if found_end != expected.get("end", {}).get("dateTime", ""):
+    if not _calendar_time_matches(found_end, expected.get("end", {}).get("dateTime", "")):
         return False
     return True
+
+
+def _calendar_time_matches(found_value: str, expected_value: str) -> bool:
+    if found_value == expected_value:
+        return True
+    if not found_value or not expected_value:
+        return False
+    if "T" not in found_value or "T" not in expected_value:
+        return False
+
+    try:
+        found_dt = _parse_rfc3339_datetime(found_value)
+        expected_dt = _parse_rfc3339_datetime(expected_value)
+    except ValueError:
+        return False
+    return found_dt.astimezone(timezone.utc) == expected_dt.astimezone(timezone.utc)
+
+
+def _parse_rfc3339_datetime(value: str) -> datetime:
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 

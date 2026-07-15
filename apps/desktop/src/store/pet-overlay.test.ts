@@ -6,6 +6,7 @@ import { clearClarifyRequest } from './clarify'
 import {
   $petOverlayActive,
   anchoredOverlayBounds,
+  computeExpansionDirection,
   initPetOverlayBridge,
   overlayWindowSize,
   overlayWindowTargetSize,
@@ -248,5 +249,106 @@ describe('pet overlay window geometry', () => {
           (targetSize.height - 24)
       )
     })
+  })
+})
+
+describe('expansion direction (issue #2)', () => {
+  const workArea = { x: 0, y: 0, width: 1920, height: 1040 }
+
+  it('expands downward when the pet is near the top edge', () => {
+    // Pet window at top of screen: y=0, height=300 → pet feet at y=300
+    // Space above: 0px. Space below: 1040 - 300 = 740px.
+    // Should expand downward.
+    const dir = computeExpansionDirection({ x: 100, y: 0, width: 240, height: 300 }, workArea)
+
+    expect(dir.vertical).toBe('down')
+  })
+
+  it('expands upward when the pet is near the bottom edge', () => {
+    // Pet window at bottom: y=740, height=300 → pet feet at y=1040
+    // Space above: 740px. Space below: 0px.
+    // Should expand upward (current behavior).
+    const dir = computeExpansionDirection({ x: 100, y: 740, width: 240, height: 300 }, workArea)
+
+    expect(dir.vertical).toBe('up')
+  })
+
+  it('expands upward when there is more space above than below', () => {
+    // Pet in the lower third: y=700, height=300 → feet at y=1000
+    // Space above: 700px. Space below: 40px.
+    const dir = computeExpansionDirection({ x: 100, y: 700, width: 240, height: 300 }, workArea)
+
+    expect(dir.vertical).toBe('up')
+  })
+
+  it('expands downward when there is more space below than above', () => {
+    // Pet in the upper third: y=100, height=300 → feet at y=400
+    // Space above: 100px. Space below: 640px.
+    const dir = computeExpansionDirection({ x: 100, y: 100, width: 240, height: 300 }, workArea)
+
+    expect(dir.vertical).toBe('down')
+  })
+
+  it('expands rightward when the pet is near the left edge', () => {
+    // Pet at left: x=0, width=240 → center at x=120
+    // Space left: 0. Space right: 1920 - 240 = 1680.
+    const dir = computeExpansionDirection({ x: 0, y: 400, width: 240, height: 300 }, workArea)
+
+    expect(dir.horizontal).toBe('right')
+  })
+
+  it('expands leftward when the pet is near the right edge', () => {
+    // Pet at right: x=1680, width=240 → center at x=1800
+    // Space right: 0. Space left: 1680.
+    const dir = computeExpansionDirection({ x: 1680, y: 400, width: 240, height: 300 }, workArea)
+
+    expect(dir.horizontal).toBe('left')
+  })
+
+  it('expands symmetrically (center) when horizontally centered', () => {
+    // Pet centered: x=840, width=240 → center at x=960 (screen center)
+    const dir = computeExpansionDirection({ x: 840, y: 400, width: 240, height: 300 }, workArea)
+
+    expect(dir.horizontal).toBe('center')
+  })
+
+  it('preserves the pet anchor when expanding downward instead of upward', () => {
+    // Pet at top: y=0, height=300. Target size: height=500 (action center opens).
+    // Expanding downward: the pet's TOP edge should stay at y=0.
+    const dir = computeExpansionDirection({ x: 100, y: 0, width: 240, height: 300 }, workArea)
+
+    const targetSize = { width: 340, height: 500 }
+    const result = anchoredOverlayBounds({
+      currentBounds: { x: 100, y: 0, width: 240, height: 300 },
+      paddingBottom: 24,
+      targetSize,
+      expansionDirection: dir
+    })
+
+    // Top edge preserved: y stays at 0
+    expect(result.y).toBe(0)
+    // Bottom edge grows downward
+    expect(result.y + result.height).toBe(500)
+    // Horizontal: pet is near left, so expands rightward — left edge preserved
+    expect(result.x).toBe(100)
+  })
+
+  it('preserves the pet anchor when expanding rightward instead of symmetrically', () => {
+    // Pet at left: x=0, width=240. Target size: width=340 (action center opens).
+    // Expanding rightward: the pet's LEFT edge should stay at x=0.
+    const dir = computeExpansionDirection({ x: 0, y: 400, width: 240, height: 300 }, workArea)
+
+    const targetSize = { width: 340, height: 500 }
+    const result = anchoredOverlayBounds({
+      currentBounds: { x: 0, y: 400, width: 240, height: 300 },
+      paddingBottom: 24,
+      targetSize,
+      expansionDirection: dir
+    })
+
+    // Left edge preserved: x stays at 0
+    expect(result.x).toBe(0)
+    // Bottom-center anchor preserved vertically (expanding up since pet is mid-screen)
+    expect(result.y + result.height).toBe(400 + 300)
   })
 })

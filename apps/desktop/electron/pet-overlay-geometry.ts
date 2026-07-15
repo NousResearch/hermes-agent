@@ -13,6 +13,16 @@ export interface PetOverlayDisplay {
 
 const MIN_SIZE = 80
 
+/**
+ * Safe overlap margins for the pet overlay window. The transparent window has
+ * padding around the sprite (see pet-overlay.ts): the sprite sits at
+ * bottom-center with ~50px padding on each side horizontally and ~176px above
+ * + ~24px below vertically. These margins let the window overlap the screen
+ * edge by the padding amount so the sprite can reach the edge.
+ */
+export const PET_OVERLAY_SAFE_MARGIN_X = 50
+export const PET_OVERLAY_SAFE_MARGIN_Y = 176
+
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 const rounded = (value: unknown, fallback: number): number => (finite(value) ? Math.round(value) : fallback)
 
@@ -94,13 +104,34 @@ function selectDisplay(bounds: PetOverlayRectangle, displays: PetOverlayDisplay[
   return selected
 }
 
+export interface ClampPetOverlayBoundsOptions {
+  /**
+   * How far the window may extend past the left/right work-area edge before
+   * clamping kicks in. The pet sprite sits at bottom-center with generous
+   * padding, so the window can safely overlap the screen edge by the padding
+   * amount without the sprite leaving the visible area. Default: 0 (fully
+   * in work-area).
+   */
+  spriteSafeMarginX?: number
+  /**
+   * How far the window may extend past the top/bottom work-area edge before
+   * clamping kicks in. Default: 0 (fully in work-area).
+   */
+  spriteSafeMarginY?: number
+}
+
 /**
  * Sanitize and fit requested screen bounds into the best current display work
  * area. Empty/invalid display input returns the sanitized request unchanged.
+ *
+ * When `spriteSafeMarginX`/`spriteSafeMarginY` are provided, the window is
+ * allowed to overlap the work-area edge by that much — the transparent padding
+ * around the sprite can bleed offscreen so the sprite itself reaches the edge.
  */
 export function clampPetOverlayBounds(
   requested: Partial<PetOverlayRectangle> | null | undefined,
-  displays: readonly PetOverlayDisplay[] | null | undefined
+  displays: readonly PetOverlayDisplay[] | null | undefined,
+  options?: ClampPetOverlayBoundsOptions | null
 ): PetOverlayRectangle {
   const bounds = sanitizeBounds(requested)
   const usableDisplays = validDisplays(displays)
@@ -109,13 +140,16 @@ export function clampPetOverlayBounds(
     return bounds
   }
 
+  const safeX = finite(options?.spriteSafeMarginX) ? Math.max(0, Math.round(options!.spriteSafeMarginX!)) : 0
+  const safeY = finite(options?.spriteSafeMarginY) ? Math.max(0, Math.round(options!.spriteSafeMarginY!)) : 0
+
   const area = selectDisplay(bounds, usableDisplays).workArea
   const width = Math.min(bounds.width, Math.round(area.width))
   const height = Math.min(bounds.height, Math.round(area.height))
-  const minX = Math.round(area.x)
-  const minY = Math.round(area.y)
-  const maxX = Math.round(area.x + area.width - width)
-  const maxY = Math.round(area.y + area.height - height)
+  const minX = Math.round(area.x) - safeX
+  const minY = Math.round(area.y) - safeY
+  const maxX = Math.round(area.x + area.width - width) + safeX
+  const maxY = Math.round(area.y + area.height - height) + safeY
 
   return {
     x: clamp(bounds.x, minX, maxX),

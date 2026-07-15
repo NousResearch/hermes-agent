@@ -81,3 +81,55 @@ test('reclamps stale bounds after a display is removed or its work area shrinks'
     y: 28
   })
 })
+
+// --- Edge-tolerant clamping (issue #2) ---
+// The pet sprite sits at bottom-center of the transparent window with generous
+// padding. The window should be allowed to overlap the screen edge so the
+// sprite itself can touch the edge, rather than being held back by padding.
+test('allows the window left edge to go negative so the sprite can reach x=0', () => {
+  const result = clampPetOverlayBounds(
+    { height: 300, width: 240, x: -50, y: 100 },
+    [PRIMARY],
+    { spriteSafeMarginX: 50 }
+  )
+
+  assert.equal(result.x, -50)
+})
+
+test('allows the window top edge to go negative so the sprite can reach y=0', () => {
+  const result = clampPetOverlayBounds(
+    { height: 300, width: 240, x: 100, y: -213 },
+    [PRIMARY],
+    { spriteSafeMarginY: 213 }
+  )
+
+  assert.equal(result.y, -213)
+})
+
+test('still clamps so the sprite never goes fully offscreen on the right', () => {
+  const result = clampPetOverlayBounds(
+    { height: 300, width: 240, x: 1900, y: 100 },
+    [PRIMARY],
+    { spriteSafeMarginX: 50 }
+  )
+
+  // maxX = workArea.x + workArea.width - width + safeMargin = 0+1920-240+50 = 1730
+  assert.equal(result.x, 1730)
+})
+
+test('defaults to fully-in-work-area clamping when no safe margins are given', () => {
+  const result = clampPetOverlayBounds({ height: 300, width: 240, x: -50, y: 100 }, [PRIMARY])
+
+  assert.equal(result.x, 0)
+})
+
+test('edge-tolerant clamp works with negative-coordinate displays', () => {
+  const result = clampPetOverlayBounds(
+    { height: 300, width: 240, x: -1490, y: 100 },
+    [LEFT, PRIMARY],
+    { spriteSafeMarginX: 50 }
+  )
+
+  // LEFT workArea starts at x=-1440. minX = -1440 - 50 = -1490.
+  assert.equal(result.x, -1490)
+})

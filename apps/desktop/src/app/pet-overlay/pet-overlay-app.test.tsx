@@ -212,6 +212,13 @@ beforeEach(() => {
     screenX: { configurable: true, get: () => windowBounds.x },
     screenY: { configurable: true, get: () => windowBounds.y }
   })
+  // Mock screen work-area for expansion-direction computation
+  Object.defineProperties(globalThis.screen ?? (globalThis as Record<string, unknown>).screen ?? {}, {
+    availHeight: { configurable: true, get: () => 1040 },
+    availWidth: { configurable: true, get: () => 1920 },
+    availLeft: { configurable: true, get: () => 0 },
+    availTop: { configurable: true, get: () => 0 }
+  })
 })
 
 afterEach(() => {
@@ -368,12 +375,15 @@ describe('PetOverlayApp action-center integration', () => {
     expect(setFocusableMock.mock.calls.some(([focusable]) => focusable === false)).toBe(false)
   })
 
-  it('measures the expanded action center, grows without cropping, then collapses at the same feet anchor', async () => {
+  it('measures the expanded action center, grows without cropping, then collapses at the same anchor', async () => {
     render(<PetOverlayApp />)
     pushState()
     const observer = FakeResizeObserver.instances[0]!
-    const originalCenter = windowBounds.x + windowBounds.width / 2
-    const originalBottom = windowBounds.y + windowBounds.height
+    // Pet at x=100, y=200 on a 1920×1040 work area:
+    // spaceBelow (540) > spaceAbove (200) → expands down (top edge stays)
+    // spaceRight (1580) > spaceLeft (100) → expands right (left edge stays)
+    const originalLeft = windowBounds.x
+    const originalTop = windowBounds.y
 
     act(() => observer.emit(180, 200))
     expect(setBoundsMock).not.toHaveBeenCalled()
@@ -386,8 +396,9 @@ describe('PetOverlayApp action-center integration', () => {
     const expanded = setBoundsMock.mock.calls.at(-1)?.[0]
     expect(expanded.width).toBeGreaterThan(340)
     expect(expanded.height).toBeGreaterThan(500)
-    expect(expanded.x + expanded.width / 2).toBe(originalCenter)
-    expect(expanded.y + expanded.height).toBe(originalBottom)
+    // Expanding down+right: top-left edge stays
+    expect(expanded.x).toBe(originalLeft)
+    expect(expanded.y).toBe(originalTop)
 
     act(() => fireEvent.click(screen.getByRole('button', { name: ac.close })))
     await act(async () => observer.emit(180, 200))
@@ -396,8 +407,9 @@ describe('PetOverlayApp action-center integration', () => {
 
     const collapsed = setBoundsMock.mock.calls.at(-1)?.[0]
     expect(collapsed).toEqual({ height: 300, width: 240, x: 100, y: 200 })
-    expect(collapsed.x + collapsed.width / 2).toBe(originalCenter)
-    expect(collapsed.y + collapsed.height).toBe(originalBottom)
+    // Collapsing back: still top-left anchored
+    expect(collapsed.x).toBe(originalLeft)
+    expect(collapsed.y).toBe(originalTop)
   })
 
   it('corrects an in-flight expansion when the panel collapses before the main process confirms it', async () => {

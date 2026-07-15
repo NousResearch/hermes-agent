@@ -303,11 +303,57 @@ export interface PetOverlayWheelAnchor {
   ratio: number
 }
 
+/**
+ * Which direction the overlay window should grow when content expands, based
+ * on where the pet currently sits on screen. The pet sprite stays put while the
+ * transparent padding absorbs the growth.
+ */
+export interface ExpansionDirection {
+  vertical: 'up' | 'down'
+  horizontal: 'left' | 'right' | 'center'
+}
+
+/**
+ * Compute the expansion direction from the pet's current screen position and
+ * the work area. The window grows toward whichever side has more room.
+ *
+ * - Vertical: if the pet's top edge is closer to the top than its bottom is to
+ *   the bottom, expand downward (and vice versa).
+ * - Horizontal: if the pet's left edge is closer to the left than its right is
+ *   to the right, expand rightward. If centered, expand symmetrically.
+ */
+export function computeExpansionDirection(
+  bounds: PetOverlayBounds,
+  workArea: PetOverlayBounds
+): ExpansionDirection {
+  const petCenterX = bounds.x + bounds.width / 2
+  const screenCenterX = workArea.x + workArea.width / 2
+  const petBottom = bounds.y + bounds.height
+
+  const spaceAbove = bounds.y - workArea.y
+  const spaceBelow = workArea.y + workArea.height - petBottom
+  const spaceLeft = bounds.x - workArea.x
+  const spaceRight = workArea.x + workArea.width - (bounds.x + bounds.width)
+
+  const vertical: ExpansionDirection['vertical'] = spaceBelow >= spaceAbove ? 'down' : 'up'
+
+  // Use a small tolerance so a near-centered pet doesn't oscillate.
+  const horizontal: ExpansionDirection['horizontal'] =
+    Math.abs(petCenterX - screenCenterX) <= bounds.width / 2
+      ? 'center'
+      : spaceRight >= spaceLeft
+        ? 'right'
+        : 'left'
+
+  return { horizontal, vertical }
+}
+
 interface AnchoredOverlayBoundsInput {
   currentBounds: PetOverlayBounds
   targetSize: PetOverlaySize
   paddingBottom: number
   wheelAnchor?: PetOverlayWheelAnchor | null
+  expansionDirection?: ExpansionDirection | null
 }
 
 const finiteNonNegative = (value: number): number => (Number.isFinite(value) && value > 0 ? value : 0)
@@ -366,14 +412,20 @@ export function overlayWindowTargetSize(
  * Resize about a stable screen-space anchor. Ordinary content/scale changes pin
  * the window's bottom-center (the pet's feet). Alt+wheel supplies the historical
  * cursor/ratio anchor formula verbatim so the pixel under the cursor stays put.
+ *
+ * When `expansionDirection` is provided, the anchor adapts: the pet sprite stays
+ * at its screen position while the window grows toward the direction with more
+ * space. For example, a pet at the top edge expands downward (top edge stays),
+ * and a pet at the left edge expands rightward (left edge stays).
  */
 export function anchoredOverlayBounds({
   currentBounds,
   targetSize,
   paddingBottom,
-  wheelAnchor
+  wheelAnchor,
+  expansionDirection
 }: AnchoredOverlayBoundsInput): PetOverlayBounds {
-  if (!wheelAnchor) {
+  if (!wheelAnchor && !expansionDirection) {
     return {
       height: targetSize.height,
       width: targetSize.width,
@@ -382,15 +434,52 @@ export function anchoredOverlayBounds({
     }
   }
 
-  const { clientX: ax, clientY: ay, ratio } = wheelAnchor
+  if (wheelAnchor) {
+    const { clientX: ax, clientY: ay, ratio } = wheelAnchor
+
+    return {
+      height: targetSize.height,
+      width: targetSize.width,
+      x: Math.round(currentBounds.x + ax - (ax - currentBounds.width / 2) * ratio - targetSize.width / 2),
+      y: Math.round(
+        currentBounds.y + ay - (ay - (currentBounds.height - paddingBottom)) * ratio - (targetSize.height - paddingBottom)
+      )
+    }
+  }
+
+  // expansionDirection is non-null here. Anchor the pet sprite in screen space
+  // and grow the window toward the open side.
+  const dir = expansionDirection!
+  const petCenterX = currentBounds.x + currentBounds.width / 2
+
+  let x: number
+
+  if (dir.horizontal === 'right') {
+    // Keep the left edge, grow rightward
+    x = currentBounds.x
+  } else if (dir.horizontal === 'left') {
+    // Keep the right edge, grow leftward
+    x = Math.round(currentBounds.x + currentBounds.width - targetSize.width)
+  } else {
+    // center: preserve the center
+    x = Math.round(petCenterX - targetSize.width / 2)
+  }
+
+  let y: number
+
+  if (dir.vertical === 'down') {
+    // Keep the top edge, grow downward
+    y = currentBounds.y
+  } else {
+    // up: keep the bottom edge (pet's feet), grow upward
+    y = Math.round(currentBounds.y + currentBounds.height - targetSize.height)
+  }
 
   return {
     height: targetSize.height,
     width: targetSize.width,
-    x: Math.round(currentBounds.x + ax - (ax - currentBounds.width / 2) * ratio - targetSize.width / 2),
-    y: Math.round(
-      currentBounds.y + ay - (ay - (currentBounds.height - paddingBottom)) * ratio - (targetSize.height - paddingBottom)
-    )
+    x,
+    y
   }
 }
 

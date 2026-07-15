@@ -11,6 +11,7 @@ import { $petActivity, $petInfo, setPetInfo } from '@/store/pet'
 import type { PetActionCenterState } from '@/store/pet-action-center'
 import {
   anchoredOverlayBounds,
+  computeExpansionDirection,
   overlayWindowTargetSize,
   type PetOverlayBounds,
   type PetOverlayMeasuredContent
@@ -605,10 +606,26 @@ export function PetOverlayApp() {
           return
         }
 
+        // Compute expansion direction from the pet's current screen position
+        // so the action center grows toward whichever side has more space,
+        // keeping the pet sprite at its screen position.
+        const screen = globalThis.screen as Screen & {
+          availLeft?: number
+          availTop?: number
+        }
+        const workArea: PetOverlayBounds = {
+          height: screen?.availHeight ?? globalThis.innerHeight ?? 1040,
+          width: screen?.availWidth ?? globalThis.innerWidth ?? 1920,
+          x: screen?.availLeft ?? 0,
+          y: screen?.availTop ?? 0
+        }
+        const expansionDir = computeExpansionDirection(currentBounds, workArea)
+
         bounds = anchoredOverlayBounds({
           currentBounds,
           paddingBottom: PET_PADDING_BOTTOM,
-          targetSize
+          targetSize,
+          expansionDirection: expansionDir
         })
       }
 

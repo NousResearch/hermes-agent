@@ -95,7 +95,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
-import { clampPetOverlayBounds } from './pet-overlay-geometry'
+import { clampPetOverlayBounds, PET_OVERLAY_SAFE_MARGIN_X, PET_OVERLAY_SAFE_MARGIN_Y } from './pet-overlay-geometry'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
   buildSessionWindowUrl,
@@ -7047,7 +7047,10 @@ function applyPetOverlayBounds(bounds, { persist = false } = {}) {
   }
 
   const win = petOverlayWindow
-  const actual = clampPetOverlayBounds(bounds, screen.getAllDisplays())
+  const actual = clampPetOverlayBounds(bounds, screen.getAllDisplays(), {
+    spriteSafeMarginX: PET_OVERLAY_SAFE_MARGIN_X,
+    spriteSafeMarginY: PET_OVERLAY_SAFE_MARGIN_Y
+  })
   const current = win.getBounds()
   const changed = !petOverlayBoundsEqual(current, actual)
 
@@ -7190,7 +7193,10 @@ function spawnPetOverlayWindow(bounds) {
 }
 
 function openPetOverlay(bounds) {
-  const clampedBounds = clampPetOverlayBounds(bounds, screen.getAllDisplays())
+  const clampedBounds = clampPetOverlayBounds(bounds, screen.getAllDisplays(), {
+    spriteSafeMarginX: PET_OVERLAY_SAFE_MARGIN_X,
+    spriteSafeMarginY: PET_OVERLAY_SAFE_MARGIN_Y
+  })
 
   if (petOverlayWindow && !petOverlayWindow.isDestroyed()) {
     const actualBounds = applyPetOverlayBounds(clampedBounds) ?? clampedBounds

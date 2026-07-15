@@ -10581,7 +10581,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _ensure_user_systemd_env,
                 find_gateway_pids,
                 find_profile_gateway_processes,
-                launch_detached_profile_gateway_restart,
+                _prepare_profile_gateway_update_restart,
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
                 _wait_for_gateway_exit,
@@ -10763,6 +10763,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             restarted_services = []
             killed_pids = set()
             relaunched_profiles = []
+            externally_supervised_profiles = []
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -11094,7 +11095,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if proc.pid in manual_pids
             }
             for pid, proc in profile_processes.items():
-                if not launch_detached_profile_gateway_restart(proc.profile, pid):
+                restart_mode = _prepare_profile_gateway_update_restart(
+                    proc.profile, pid
+                )
+                if restart_mode is None:
                     continue
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
@@ -11134,7 +11138,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # live when the new gateway polls.
                 _wait_for_gateway_exit(timeout=5.0, force_after=None)
                 killed_pids.add(pid)
-                relaunched_profiles.append(proc.profile)
+                if restart_mode == "external-supervisor":
+                    externally_supervised_profiles.append(proc.profile)
+                else:
+                    relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
                 if pid in profile_processes:
@@ -11152,7 +11159,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if relaunched_profiles:
                     names = ", ".join(relaunched_profiles)
                     print(f"  ✓ Restarting manual gateway profile(s): {names}")
-                unmapped_count = len(killed_pids) - len(relaunched_profiles)
+                if externally_supervised_profiles:
+                    names = ", ".join(externally_supervised_profiles)
+                    print(
+                        "  ✓ Handed gateway profile(s) back to their external "
+                        f"supervisor: {names}"
+                    )
+                unmapped_count = (
+                    len(killed_pids)
+                    - len(relaunched_profiles)
+                    - len(externally_supervised_profiles)
+                )
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")

@@ -26,9 +26,13 @@ import socket
 import subprocess
 import sys
 import textwrap
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 
 import pytest
+
+import hermes_bootstrap
 
 
 # Import the module under test via an import-time side-effect check path.
@@ -106,6 +110,101 @@ class TestWindowsBehavior:
         assert "\u2014" in decoded
         assert "\u2192" in decoded
         assert "\U0001f680" in decoded
+
+
+class TestWindowsAnsiConsoleMode:
+    """Windows console hosts must be switched into ANSI rendering mode."""
+
+    class _FakeFunction:
+        def __init__(self, callback):
+            self.callback = callback
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class _FakeStream:
+        def __init__(self, fd):
+            self._fd = fd
+
+        def fileno(self):
+            return self._fd
+
+    def _install(self, monkeypatch, hb, *, modes, handles=None, non_console=()):
+        """Route ``enable_windows_vt`` at fake kernel32/msvcrt; return the fake kernel32."""
+        import ctypes
+        import sys
+        import types
+
+        handles = dict(handles or {1: 0x1000, 2: 0x2000})
+
+        class _FakeKernel32:
+            def __init__(self):
+                self.set_modes = []
+                self.seen_handles = []
+                self.GetConsoleMode = TestWindowsAnsiConsoleMode._FakeFunction(self._get_console_mode)
+                self.SetConsoleMode = TestWindowsAnsiConsoleMode._FakeFunction(self._set_console_mode)
+
+            def _get_console_mode(self, handle, mode_ptr):
+                self.seen_handles.append(handle)
+                if handle in non_console:
+                    return 0
+                mode_ptr._obj.value = modes.get(handle, 0x0001)
+                return 1
+
+            def _set_console_mode(self, handle, mode):
+                self.set_modes.append((handle, mode))
+                return 1
+
+        fake_kernel32 = _FakeKernel32()
+        monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: fake_kernel32, raising=False)
+
+        fake_msvcrt = types.ModuleType("msvcrt")
+        fake_msvcrt.get_osfhandle = lambda fd: handles[fd]
+        monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+        return fake_kernel32
+
+    def test_virtual_terminal_processing_enabled(self, monkeypatch):
+        hb = hermes_bootstrap  # collection-time import: re-importing under the home-io guard trips it
+        monkeypatch.setattr(hb, "_IS_WINDOWS", True)
+        fake_kernel32 = self._install(monkeypatch, hb, modes={0x1000: 0x0001, 0x2000: 0x0001})
+
+        streams = [self._FakeStream(1), self._FakeStream(2)]
+        assert hb.enable_windows_vt(streams) is True
+        assert fake_kernel32.set_modes == [
+            (0x1000, 0x0005),
+            (0x2000, 0x0005),
+        ]
+
+    def test_kernel32_functions_use_pointer_safe_signatures(self, monkeypatch):
+        hb = hermes_bootstrap  # collection-time import: re-importing under the home-io guard trips it
+        monkeypatch.setattr(hb, "_IS_WINDOWS", True)
+        large_handle = 0x1_0000_0001
+        fake_kernel32 = self._install(
+            monkeypatch, hb, modes={large_handle: 0x0001},
+            handles={1: large_handle, 2: 0x2000},
+        )
+
+        assert hb.enable_windows_vt([self._FakeStream(1)]) is True
+        assert fake_kernel32.GetConsoleMode.argtypes == [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+        assert fake_kernel32.GetConsoleMode.restype is ctypes.c_int
+        assert fake_kernel32.SetConsoleMode.argtypes == [ctypes.c_void_p, wintypes.DWORD]
+        assert fake_kernel32.SetConsoleMode.restype is ctypes.c_int
+        assert large_handle in fake_kernel32.seen_handles
+
+    def test_redirected_console_handle_is_ignored(self, monkeypatch):
+        hb = hermes_bootstrap  # collection-time import: re-importing under the home-io guard trips it
+        monkeypatch.setattr(hb, "_IS_WINDOWS", True)
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        fake_kernel32 = self._install(
+            monkeypatch, hb, modes={0x1000: 0x0001, 0x2000: 0x0001}, non_console={0x2000},
+        )
+
+        streams = [self._FakeStream(1), self._FakeStream(2)]
+        assert hb.enable_windows_vt(streams) is True
+        assert fake_kernel32.set_modes == [(0x1000, 0x0005)]
+        assert "NO_COLOR" not in os.environ
 
 
 class TestUserOptOut:

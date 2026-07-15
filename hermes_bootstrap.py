@@ -276,6 +276,14 @@ def enable_windows_vt(streams=None) -> bool:
     from ctypes import wintypes
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # ctypes assumes C ``int`` arguments and return values when signatures are
+    # omitted.  A Windows HANDLE is pointer-sized, so that default truncates
+    # valid console handles in 64-bit processes before GetConsoleMode sees them.
+    handle_type = ctypes.c_void_p
+    kernel32.GetConsoleMode.argtypes = [handle_type, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetConsoleMode.restype = ctypes.c_int
+    kernel32.SetConsoleMode.argtypes = [handle_type, wintypes.DWORD]
+    kernel32.SetConsoleMode.restype = ctypes.c_int
     enabled = True
     for stream in (sys.stdout, sys.stderr) if streams is None else streams:
         try:

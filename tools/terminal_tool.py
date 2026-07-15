@@ -1069,6 +1069,58 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
+# ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
+#
+# The durable source of truth for "which directory is THIS session working
+# in". Keyed by the raw session/task key (NOT the collapsed container id):
+# the terminal env is shared across sessions, so any cwd state stored on the
+# env is a global mutable timeshared between sessions — the root cause of the
+# wrong-worktree bug class (env.cwd_owner stamping, _last_known_cwd, and the
+# ownership ladder in file_tools are all patches over that misplacement).
+#
+# Step 1 (this change): dual-write only. Every site that learns a session's
+# live cwd (post-command tracking, cwd-override registration) also records it
+# here. Readers still use the legacy env.cwd ladder. Later steps flip
+# file_tools and _resolve_command_cwd to read this store, then delete the
+# env-side tracking + ownership guards. See .hermes/plans/cwd-rearch-audit.md.
+_session_cwd: Dict[str, str] = {}
+_session_cwd_lock = threading.Lock()
+
+
+def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
+    """Record *cwd* as the working directory of *session_key*.
+
+    Called wherever a session's live cwd becomes known: after a terminal
+    command completes (the env's post-command tracking has just parsed the
+    resulting cwd) and when a surface registers a workspace cwd override.
+    Empty/None session keys collapse to ``"default"`` (single-session CLI).
+    Non-string / empty cwds are ignored.
+    """
+    if not isinstance(cwd, str) or not cwd.strip():
+        return
+    key = str(session_key or "default")
+    with _session_cwd_lock:
+        if _session_cwd.get(key) != cwd:
+            _session_cwd[key] = cwd
+
+
+def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
+    """Return the recorded working directory for *session_key*, if any.
+
+    No fallback chain here on purpose: callers decide what an absent record
+    means (config default, TERMINAL_CWD seed, process cwd). ``None``/empty
+    keys read the ``"default"`` record.
+    """
+    key = str(session_key or "default")
+    with _session_cwd_lock:
+        return _session_cwd.get(key)
+
+
+def clear_session_cwd(session_key: str) -> None:
+    """Drop a session's cwd record (session teardown)."""
+    with _session_cwd_lock:
+        _session_cwd.pop(session_key, None)
+
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
@@ -1099,6 +1151,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     # while letting an explicit ACP cwd change win, as the client expects.
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
+        # Dual-write (cwd rearch step 1): a registered workspace cwd IS the
+        # session's working directory until a `cd` changes it.
+        record_session_cwd(task_id, new_cwd)
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
         # isolation-keyed rollouts. Try the raw id first, then the container id,
@@ -1118,6 +1173,7 @@ def clear_task_env_overrides(task_id: str):
     Called during cleanup to avoid stale entries accumulating.
     """
     _task_env_overrides.pop(task_id, None)
+    clear_session_cwd(task_id)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -2164,6 +2220,7 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
+        env = None
         with _env_lock:
             # Prefer the collapsed container id, but fall back to an env cached
             # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
@@ -2264,6 +2321,16 @@ def terminal_tool(
                         _last_activity[effective_task_id] = time.time()
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+
+        if env is None:
+            # Unreachable in practice (either the cached branch or the creation
+            # branch assigned env above); guard for type-safety and so a future
+            # refactor of the branches can't fall through to an AttributeError.
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": "Terminal environment unavailable (creation raced cleanup)",
+            }, ensure_ascii=False)
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the
@@ -2693,7 +2760,15 @@ def terminal_tool(
                 
                 # Got a result
                 break
-            
+
+            # Dual-write (cwd rearch step 1): the env's post-command tracking
+            # (marker parse / local sync) has just updated env.cwd with the
+            # directory this command finished in. That cwd belongs to THIS
+            # session — record it under the session key so the durable record
+            # never depends on the shared env surviving or on who drives the
+            # env next.
+            record_session_cwd(session_key, getattr(env, "cwd", None))
+
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)

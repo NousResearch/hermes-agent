@@ -19,6 +19,7 @@ import contextlib
 import json
 import os
 import shlex
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -983,6 +984,20 @@ def kanban_command(args: argparse.Namespace) -> int:
             return int(handler(args) or 0)
         except (ValueError, RuntimeError) as exc:
             print(f"kanban: {exc}", file=sys.stderr)
+            # A verb that raises "unknown task <id>" almost always means the
+            # id is real but on a different board (#65101). Attach the owning
+            # board + switch command rather than leaving the operator to guess.
+            message = str(exc)
+            if "unknown task" in message:
+                ids = _task_ids_from_unknown_task_message(message)
+                if ids:
+                    conn = kb.connect()
+                    try:
+                        hint = _cross_board_hint(conn, ids)
+                    finally:
+                        conn.close()
+                    if hint:
+                        print(hint, file=sys.stderr)
             return 1
 
 
@@ -1863,6 +1878,93 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _locate_task_on_other_board(
+    conn: sqlite3.Connection,
+    task_ids: list[str],
+    *,
+    current_board: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
+    """Find the first task id in ``task_ids`` that lives on another board.
+
+    Returns ``(task_id, owning_board_slug)`` for the first match, or ``None``
+    when every id is either on the current board (a state problem, not a
+    wrong-board problem) or absent from all boards.
+
+    The active board is taken from ``current_board`` when given, otherwise
+    resolved via :func:`kb.get_current_board`. ``conn`` is the connection to
+    that active board — used for a cheap "is it actually here?" check before
+    scanning other boards.
+    """
+    active = current_board if current_board is not None else kb.get_current_board()
+    for tid in task_ids:
+        # On the active board already → not a wrong-board miss; skip it so we
+        # don't send the operator off to switch boards for a task that's here.
+        if kb.get_task(conn, tid) is not None:
+            continue
+        for meta in kb.list_boards(include_archived=False):
+            other = meta.get("slug")
+            if not other or other == active:
+                continue
+            other_conn = kb.connect(board=other)
+            try:
+                if kb.get_task(other_conn, tid) is not None:
+                    return (tid, other)
+            finally:
+                other_conn.close()
+    return None
+
+
+def _cross_board_hint(
+    conn: sqlite3.Connection,
+    task_ids: list[str],
+    *,
+    current_board: Optional[str] = None,
+) -> Optional[str]:
+    """Actionable "wrong board" hint for a failed kanban verb (#65101).
+
+    Kanban verbs fail opaquely when the task id is real but lives on a
+    different board — the operator sees ``unknown task {id}`` or
+    ``cannot <verb> {id}`` with no hint that a ``boards switch`` would fix it,
+    and has been observed retrying the same command many times.
+
+    Returns a one-line hint naming the owning board and the exact switch
+    command, or ``None`` when no id in ``task_ids`` is on another board.
+    """
+    found = _locate_task_on_other_board(conn, task_ids, current_board=current_board)
+    if not found:
+        return None
+    tid, other = found
+    active = current_board if current_board is not None else kb.get_current_board()
+    return (
+        f"  → '{tid}' is on board '{other}', not on the active board "
+        f"'{active}'. Switch with: hermes kanban boards switch {other}"
+    )
+
+
+# Task ids in kanban look like ``t_<hex>``. Used to recover ids from the
+# ``unknown task <id>`` / ``unknown task(s): <id>, <id>`` error strings raised
+# by kanban_db so a cross-board hint can be attached in the dispatch handler.
+_UNKNOWN_TASK_ID_CHARS = set(
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-"
+)
+
+
+def _task_ids_from_unknown_task_message(message: str) -> list[str]:
+    """Extract task ids from a ``unknown task …`` ValueError message.
+
+    Handles both singular (``unknown task t_abc``) and plural
+    (``unknown task(s): t_abc, t_def``) forms. Returns ids in order, deduped.
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+    for token in message.replace(",", " ").split():
+        if token.startswith("t_") and all(c in _UNKNOWN_TASK_ID_CHARS for c in token):
+            if token not in seen:
+                seen.add(token)
+                ids.append(token)
+    return ids
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -1903,6 +2005,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             ):
                 failed.append(tid)
                 print(f"cannot complete {tid} (unknown id or terminal state)", file=sys.stderr)
+                hint = _cross_board_hint(conn, [tid])
+                if hint:
+                    print(hint, file=sys.stderr)
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
@@ -1954,7 +2059,10 @@ def _cmd_block(args: argparse.Namespace) -> int:
                 expected_run_id=_worker_run_id_for(tid),
             ):
                 failed.append(tid)
-                print(f"cannot block {tid}", file=sys.stderr)
+                print(f"cannot block {tid} (unknown id or not in running/ready)", file=sys.stderr)
+                hint = _cross_board_hint(conn, [tid])
+                if hint:
+                    print(hint, file=sys.stderr)
             else:
                 # Report where the task actually landed — dependency blocks go
                 # to todo, and a tripped unblock-loop breaker routes to triage.
@@ -2090,7 +2198,10 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         for tid in ids:
             if not kb.archive_task(conn, tid):
                 failed.append(tid)
-                print(f"cannot archive {tid}", file=sys.stderr)
+                print(f"cannot archive {tid} (unknown id or already archived)", file=sys.stderr)
+                hint = _cross_board_hint(conn, [tid])
+                if hint:
+                    print(hint, file=sys.stderr)
             else:
                 print(f"Archived {tid}")
     return 0 if not failed else 1

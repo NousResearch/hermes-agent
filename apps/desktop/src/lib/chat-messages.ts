@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
@@ -45,11 +46,13 @@ export type GatewayEventPayload = {
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
+  approval_mode?: string
   yolo?: boolean
   running?: boolean
   cwd?: string
   branch?: string
   credential_warning?: string
+  install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
   // agent.terminal.output — live chunk for a read-only agent terminal tab
@@ -64,6 +67,7 @@ export type GatewayEventPayload = {
   description?: string
   // False when a tirith content-security warning forbids a permanent allow.
   allow_permanent?: boolean
+  smart_denied?: boolean
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
@@ -285,7 +289,7 @@ function firstStringField(record: Record<string, unknown>, keys: readonly string
 }
 
 function normalizeToolMatchValue(value: string): string {
-  return value.trim().toLowerCase()
+  return normalize(value)
 }
 
 function collectToolMatchValues(query: string, context: string, preview: string): string[] {

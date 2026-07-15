@@ -58,6 +58,12 @@ class CapabilityDescriptor:
     emoji: str = "\U0001f50c"  # 🔌 default (matches PlatformEntry default)
     platform_hint: str = ""
     pii_safe: bool = False
+    # Whether the connector can supply surrounding channel/group CONTEXT for an
+    # addressed turn (Model A pull / Model B buffer, per platform). Optional +
+    # defaults False so an older connector that never sends it is treated as
+    # "no context" — additive within contract_version 1. from_json filters
+    # unknown keys, so a connector sending this to an older gateway is safe too.
+    supports_context: bool = False
 
     def to_json(self) -> str:
         """Serialize to a compact, stable JSON string for the handshake frame."""

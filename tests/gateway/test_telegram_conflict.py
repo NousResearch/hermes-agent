@@ -137,19 +137,66 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     # First conflict: should retry, NOT be fatal
     captured["error_callback"](conflict("Conflict: terminated by other getUpdates request"))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    # Give the scheduled task a chance to run
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await adapter._polling_error_task
 
     assert adapter.has_fatal_error is False, "First conflict should not be fatal"
-    assert adapter._polling_conflict_count == 0, "Count should reset after successful retry"
+    assert adapter._polling_conflict_count == 1, (
+        "Count must remain until the retried generation makes getUpdates progress"
+    )
+    assert adapter._send_path_degraded is True
 
     # connect() now starts a lifetime _polling_heartbeat_loop task. With
     # asyncio.sleep mocked to instant above, it must not be left running or it
     # busy-spins on the event loop and starves the test. Cancel it explicitly.
     await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
+async def test_current_generation_conflicts_accumulate_after_start_returns(monkeypatch):
+    """A later async 409 must advance the retry ladder after PTB start returns."""
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    callbacks = []
+    conflict_tasks = []
+
+    async def capture_start(**kwargs):
+        callbacks.append(kwargs["error_callback"])
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=capture_start),
+        stop=AsyncMock(),
+        running=False,
+    )
+    app = SimpleNamespace(updater=updater)
+    adapter._app = app
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    def dispatch_conflict(error):
+        conflict_tasks.append(
+            asyncio.create_task(adapter._handle_polling_conflict(error))
+        )
+
+    adapter._polling_error_callback_ref = dispatch_conflict
+    await adapter._start_polling_once(
+        app,
+        drop_pending_updates=False,
+        error_callback=dispatch_conflict,
+    )
+    conflict = type("Conflict", (Exception,), {})
+
+    try:
+        callbacks[0](conflict("first async conflict"))
+        await conflict_tasks[-1]
+        assert adapter._polling_conflict_count == 1
+
+        callbacks[1](conflict("second async conflict"))
+        await conflict_tasks[-1]
+        assert adapter._polling_conflict_count == 2
+    finally:
+        verifier = adapter._polling_progress_verifier_task
+        if verifier is not None and not verifier.done():
+            verifier.cancel()
+            await asyncio.gather(verifier, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -219,6 +266,20 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         await adapter._handle_polling_conflict(
             conflict("Conflict: terminated by other getUpdates request")
         )
+
+    # Retries 1-4 each schedule a background recovery task via
+    # loop.create_task(self._handle_polling_conflict(...)) that this test
+    # never awaits.  Cancel the last one so a leaked task can't get a
+    # scheduler turn under load and re-drive the counter into the fatal
+    # branch a second time — which would fire _notify_fatal_error twice and
+    # break assert_awaited_once() non-deterministically.
+    leaked = adapter._polling_error_task
+    if leaked is not None and not leaked.done():
+        leaked.cancel()
+        try:
+            await leaked
+        except (asyncio.CancelledError, Exception):
+            pass
 
     # After 5 failed retries (count 1-5 each enter the retry branch but
     # start_polling raises), the 6th conflict pushes count to 6 which
@@ -310,6 +371,77 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
 
     assert ok is True
     bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+    await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
+    """Regression for #46298.
+
+    Command-menu registration and DM-topic setup make Bot API calls that can
+    stall for certain tokens. If they run inside connect() (which the gateway
+    wraps in a connect timeout), one slow call blows the whole connect and the
+    adapter never comes up. connect() must return as soon as polling/webhook is
+    live and defer that housekeeping to a cancellable background task.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    async def _hang_forever(*args, **kwargs):
+        await asyncio.Future()
+
+    # Make the entire housekeeping coroutine hang. connect() must still return
+    # promptly and expose the still-running task; disconnect() must cancel it.
+    monkeypatch.setattr(adapter, "_run_post_connect_housekeeping", _hang_forever)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+        running=True,
+        stop=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    # A tight timeout: if connect() awaited the hanging set_my_commands this
+    # would raise TimeoutError instead of returning.
+    ok = await asyncio.wait_for(adapter.connect(), timeout=0.5)
+
+    assert ok is True
+    assert adapter._post_connect_task is not None
+    assert not adapter._post_connect_task.done()
+
+    # disconnect() must cancel the still-hanging housekeeping task cleanly.
+    await adapter.disconnect()
+    assert adapter._post_connect_task is None
     await _cancel_heartbeat(adapter)
 
 

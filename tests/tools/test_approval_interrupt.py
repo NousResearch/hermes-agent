@@ -73,7 +73,7 @@ class TestApprovalInterrupt:
 
         # Force a long timeout so a *passing* test can only happen via the
         # interrupt path, never by the deadline elapsing.
-        mod._get_approval_config = lambda: {"gateway_timeout": 300}
+        mod._get_approval_config = lambda: {"timeout": 300}
 
         approval_data = {
             "command": "rm -rf /tmp/whatever",
@@ -113,7 +113,7 @@ class TestApprovalInterrupt:
         elapsed = time.monotonic() - start
 
         assert not t.is_alive(), "approval wait did not return after interrupt"
-        assert result_holder["result"] == {"resolved": True, "choice": "deny"}
+        assert result_holder["result"] == {"resolved": True, "choice": "deny", "reason": None}
         # Must be far below the 300s timeout — the interrupt, not the deadline,
         # is what released the wait.
         assert elapsed < 10, f"interrupt path too slow ({elapsed:.1f}s)"
@@ -128,7 +128,7 @@ class TestApprovalInterrupt:
 
         # Short timeout so the test finishes fast via the deadline, proving the
         # foreign interrupt did not short-circuit the wait.
-        mod._get_approval_config = lambda: {"gateway_timeout": 1}
+        mod._get_approval_config = lambda: {"timeout": 1}
 
         approval_data = {
             "command": "rm -rf /tmp/whatever",
@@ -157,4 +157,4 @@ class TestApprovalInterrupt:
         t.join(timeout=10)
         assert not t.is_alive()
         # Timed out (no resolution) because the foreign interrupt was ignored.
-        assert result_holder["result"] == {"resolved": False, "choice": None}
+        assert result_holder["result"] == {"resolved": False, "choice": None, "reason": None}

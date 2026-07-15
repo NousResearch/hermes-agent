@@ -4524,6 +4524,16 @@ def run_conversation(
                             })
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
+                    # Surface the continuation on the live spinner/status line
+                    # (CLI/TUI/Desktop) and gateway heartbeat: each of these
+                    # retries can spend minutes waiting on the provider, and
+                    # without a distinct notice the user only sees a generic
+                    # thinking spinner ("infinite thinking", #64434).
+                    agent._emit_wait_notice(
+                        f"↻ model returned reasoning with no final answer — "
+                        f"asking it to continue "
+                        f"({agent._codex_incomplete_retries}/3)"
+                    )
                     agent._session_messages = messages
                     continue
 

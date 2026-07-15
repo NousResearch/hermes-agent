@@ -409,7 +409,13 @@ def finalize_turn(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
-                context_compressor=getattr(agent, "context_compressor", None),
+                # Hooks get a safe engine identifier, not the live compressor
+                # object: compressor instances can carry provider credentials
+                # and observer plugins may serialize hook kwargs wholesale.
+                context_engine=str(
+                    getattr(getattr(agent, "context_compressor", None), "name", "")
+                    or ""
+                ),
                 conversation_id=getattr(agent, "_gateway_session_key", None) or "",
                 gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
                 sender_id=getattr(agent, "_user_id", None) or "",

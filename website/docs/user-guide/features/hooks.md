@@ -609,6 +609,16 @@ def my_callback(session_id: str, user_message: str, assistant_response: str,
 | `conversation_history` | `list` | Copy of the full message list after the turn completed |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
+| `context_engine` | `str` | Name of the active context engine/compressor; empty when unavailable |
+| `conversation_id` | `str` | Gateway conversation key; empty outside gateway sessions |
+| `gateway_session_key` | `str` | Alias of `conversation_id` for explicit gateway integrations; empty outside gateway sessions |
+| `sender_id` | `str` | Gateway sender/user identifier; empty when unavailable |
+| `chat_id` | `str` | Gateway chat/channel identifier; empty when unavailable |
+| `chat_name` | `str` | Gateway chat/channel display name; empty when unavailable |
+| `chat_type` | `str` | Gateway chat type, such as `private`, `group`, or `thread`; empty when unavailable |
+| `thread_id` | `str` | Gateway thread/topic identifier; empty when unavailable or not applicable |
+
+The context-engine and gateway lane fields are optional extension metadata and should be accepted through `**kwargs`. Hermes exposes only the context engine's name, not the live compressor object, because engine instances may contain provider credentials or other private runtime state. CLI and other non-gateway sessions normally receive empty strings for gateway-specific values. Plugins must not assume that a chat or thread identifier is present.
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
 

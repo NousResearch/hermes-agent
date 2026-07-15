@@ -10,6 +10,7 @@ class _Budget:
 class _Compressor:
     name = "lcm"
     last_prompt_tokens = 123
+    api_key = "provider-secret-must-not-reach-hooks"
 
 
 class _Agent:
@@ -121,7 +122,9 @@ def test_post_llm_call_hook_receives_active_context_engine_and_gateway_lane(monk
 
     assert result["final_response"] == "reply"
     post_call = next(kwargs for name, kwargs in calls if name == "post_llm_call")
-    assert post_call["context_compressor"] is _Agent.context_compressor
+    assert post_call["context_engine"] == "lcm"
+    assert "context_compressor" not in post_call
+    assert _Compressor.api_key not in repr(post_call)
     assert post_call["conversation_id"] == "agent:main:discord:thread:thread-456:thread-456"
     assert post_call["gateway_session_key"] == post_call["conversation_id"]
     assert post_call["sender_id"] == "user-789"
@@ -171,7 +174,8 @@ def test_post_llm_call_hook_metadata_is_backward_compatible_for_telegram(monkeyp
     assert result["final_response"] == "telegram reply"
     post_call = next(kwargs for name, kwargs in calls if name == "post_llm_call")
     assert post_call["platform"] == "telegram"
-    assert post_call["context_compressor"] is _TelegramAgent.context_compressor
+    assert post_call["context_engine"] == "lcm"
+    assert "context_compressor" not in post_call
     assert post_call["conversation_id"] == "agent:main:telegram:private:1782862480"
     assert post_call["gateway_session_key"] == post_call["conversation_id"]
     assert post_call["sender_id"] == "1782862480"

@@ -701,6 +701,17 @@ class LineAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             self.slow_response_threshold = DEFAULT_SLOW_RESPONSE_THRESHOLD
 
+        # @mention gate for groups
+        raw = os.getenv("LINE_REQUIRE_MENTION") or extra.get("require_mention", "")
+        self.require_mention = raw if isinstance(raw, bool) else raw.lower() in ("true", "1", "yes") if isinstance(raw, str) else bool(raw)
+
+        # Recently-mentioned cache: {(chat_id, user_id): timestamp}
+        # Lets users follow up with images right after @mentioning the bot
+        self._recently_mentioned: Dict[Tuple[str, str], float] = {}
+        self._mention_ttl = float(
+            os.getenv("LINE_MENTION_TTL") or extra.get("mention_ttl", "30")
+        )
+
         # User-overridable copy
         self.pending_text = (
             os.getenv("LINE_PENDING_TEXT")
@@ -971,6 +982,37 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        # Group @mention gate: skip messages that don't @mention the bot
+        if chat_type != "dm" and self.require_mention:
+            if msg_type == "text":
+                mention = msg.get("mention") or {}
+                mentionees = mention.get("mentionees") or []
+                bot_mentioned = any(
+                    m.get("type") == "bot" or m.get("userId") == self._bot_user_id
+                    for m in mentionees
+                )
+                if bot_mentioned:
+                    # Cache this user as recently-mentioned for follow-up media
+                    self._recently_mentioned[(chat_id, user_id)] = time.time()
+                else:
+                    logger.debug(
+                        "LINE: ignoring non-mentioned text in group %s", chat_id
+                    )
+                    return
+            else:
+                # Non-text (stickers, images, files, etc.) — allow only when the
+                # same user just @mentioned the bot within the TTL window.
+                now = time.time()
+                last_mention = self._recently_mentioned.get((chat_id, user_id))
+                if last_mention is None or (now - last_mention) > self._mention_ttl:
+                    logger.debug(
+                        "LINE: ignoring non-text %s in group (no recent @mention)",
+                        msg_type,
+                    )
+                    return
+                # Stale entry cleanup
+                self._recently_mentioned.pop((chat_id, user_id), None)
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:

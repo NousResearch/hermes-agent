@@ -1,28 +1,51 @@
+import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import {
-  getElevenLabsVoices,
-  getHermesConfigDefaults,
-  getHermesConfigRecord,
-  getHermesConfigSchema,
-  saveHermesConfig
-} from '@/hermes'
+import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
+import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+import { PanelEmpty } from '../overlays/panel'
+
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
-import { ModelSettings } from './model-settings'
+import { MemoryConnect } from './memory/connect'
+import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+import { ProviderConfigPanel } from './provider-config-panel'
+
+// On the Voice page, only surface the sub-fields of the *selected* TTS/STT
+// provider — otherwise every provider's options render at once (the "totally
+// crazy" wall of ~30 fields). Top-level keys (tts.provider, stt.enabled,
+// voice.*) always show; STT provider fields hide entirely when STT is off.
+export function voiceFieldVisible(key: string, config: HermesConfigRecord): boolean {
+  const match = /^(tts|stt)\.([^.]+)\./.exec(key)
+
+  if (!match) {
+    return true
+  }
+
+  const [, domain, provider] = match
+
+  if (domain === 'stt' && !getNested(config, 'stt.enabled')) {
+    return false
+  }
+
+  return provider === String(getNested(config, `${domain}.provider`) ?? '')
+}
 
 function ConfigField({
   schemaKey,
@@ -30,7 +53,8 @@ function ConfigField({
   value,
   enumOptions,
   optionLabels,
-  onChange
+  onChange,
+  descriptionExtra
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -38,6 +62,7 @@ function ConfigField({
   enumOptions?: string[]
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
+  descriptionExtra?: ReactNode
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -63,9 +88,25 @@ function ConfigField({
       ? rawDescription
       : undefined
 
-  const row = (action: ReactNode, wide = false) => (
-    <ListRow action={action} description={description} title={label} wide={wide} />
+  const descriptionNode: ReactNode = descriptionExtra ? (
+    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+      {description}
+      {descriptionExtra}
+    </span>
+  ) : (
+    description
   )
+
+  const row = (action: ReactNode, wide = false) => (
+    <ListRow action={action} description={descriptionNode} title={label} wide={wide} />
+  )
+
+  // `fallback_providers` is a list of {provider, model} objects; the generic
+  // `list` branch below would stringify them to "[object Object]". Render the
+  // dedicated structured editor instead.
+  if (schemaKey === 'fallback_providers') {
+    return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+  }
 
   if (schema.type === 'boolean') {
     return row(
@@ -192,30 +233,49 @@ export function ConfigSettings({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
+  // The editable draft is local (debounced autosave watches it), but it's seeded
+  // from — and saved back through — the shared config cache, so edits are visible
+  // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
-  const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
+  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord()
+
+  const {
+    data: schemaResponse,
+    isError: schemaFailed,
+    refetch: refetchSchema
+  } = useQuery({
+    queryKey: ['hermes-config-schema'],
+    queryFn: getHermesConfigSchema,
+    staleTime: 5 * 60 * 1000
+  })
+
+  const schema = schemaResponse?.fields ?? null
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
 
+  // Seed the local draft once, the first time the shared record lands.
+  // Background refetches thereafter must not clobber in-progress edits.
+  const configSeeded = useRef(false)
+
   useEffect(() => {
-    let cancelled = false
-    Promise.all([getHermesConfigRecord(), getHermesConfigDefaults(), getHermesConfigSchema()])
-      .then(([c, d, s]) => {
-        if (cancelled) {
-          return
-        }
+    if (loadedConfig && !configSeeded.current) {
+      configSeeded.current = true
+      setConfig(loadedConfig)
+    }
+  }, [loadedConfig])
 
-        setConfig(c)
-        setDefaults(d)
-        setSchema(s.fields)
-      })
-      .catch(err => notifyError(err, c.failedLoad))
-
-    return () => void (cancelled = true)
-  }, [])
+  // A profile switch invalidates (but doesn't clear) the shared config query, so
+  // the local draft would otherwise keep profile A's data and autosave it into
+  // B. Drop the seed + draft (re-seeds from B's refetch) and zero saveVersion so
+  // the pending debounced autosave is cancelled by its effect cleanup.
+  useOnProfileSwitch(() => {
+    configSeeded.current = false
+    setConfig(null)
+    saveVersionRef.current = 0
+    setSaveVersion(0)
+  })
 
   useEffect(() => {
     let cancelled = false
@@ -250,6 +310,9 @@ export function ConfigSettings({
       void (async () => {
         try {
           await saveHermesConfig(config)
+          // Mirror the saved record into the shared cache so MCP/model surfaces
+          // reflect the edit without their own refetch.
+          setHermesConfigCache(config)
 
           if (saveVersionRef.current === v) {
             onConfigSaved?.()
@@ -263,6 +326,7 @@ export function ConfigSettings({
     }, 550)
 
     return () => window.clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
   }, [config, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
@@ -340,8 +404,45 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
+    // A failed config/schema fetch must surface a retry, not spin forever.
+    if ((configLoadFailed && !config) || (schemaFailed && !schema)) {
+      return (
+        <div className="flex h-full min-h-0 flex-1">
+          <PanelEmpty
+            action={
+              <Button
+                onClick={() => {
+                  void refetchConfig()
+                  void refetchSchema()
+                }}
+                size="sm"
+              >
+                {t.skills.refresh}
+              </Button>
+            }
+            icon="error"
+            title={c.failedLoad}
+          />
+        </div>
+      )
+    }
+
+    // Model keeps its shape via a skeleton (its catalog fetch is the slow part);
+    // other sections are quick config/schema reads, so a light loader is fine.
+    if (activeSectionId === 'model') {
+      return (
+        <SettingsContent>
+          <div className="mb-6">
+            <ModelSettingsSkeleton />
+          </div>
+        </SettingsContent>
+      )
+    }
+
     return <LoadingState label={c.loading} />
   }
+
+  const visibleFields = activeSectionId === 'voice' ? fields.filter(([key]) => voiceFieldVisible(key, config)) : fields
 
   return (
     <SettingsContent>
@@ -350,13 +451,18 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
-      {fields.length === 0 ? (
+      {visibleFields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
         <div className="grid gap-1">
-          {fields.map(([key, field]) => (
+          {visibleFields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
+                descriptionExtra={
+                  key === 'memory.provider' && Boolean(getNested(config, key)) ? (
+                    <MemoryConnect provider={String(getNested(config, key))} />
+                  ) : undefined
+                }
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'
                     ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
@@ -368,6 +474,9 @@ export function ConfigSettings({
                 schemaKey={key}
                 value={getNested(config, key)}
               />
+              {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
+                <ProviderConfigPanel provider={String(getNested(config, key))} />
+              ) : null}
             </div>
           ))}
         </div>

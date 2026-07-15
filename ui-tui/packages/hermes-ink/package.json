@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist"
+    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
+    "check": "npm run typecheck",
+    "typecheck": "tsc -b . --noEmit"
   },
   "sideEffects": true,
   "main": "./index.js",
@@ -49,6 +51,7 @@
     "wrap-ansi": "^9.0.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
   }
 }

@@ -43,14 +43,20 @@ EXCLUDED_SKILL_DIRS = frozenset(
     )
 )
 
+# Supporting files live inside a skill package and are loaded explicitly via
+# skill_view(skill, file_path=...). They are not standalone skills and must not
+# be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
+# archive workflow preserves a complete old skill package under references/.
+SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
+
 
 def is_excluded_skill_path(path) -> bool:
-    """True if any component of *path* is in EXCLUDED_SKILL_DIRS.
+    """True if *path* should be skipped by active skill scanners.
 
-    Use this on every SKILL.md path produced by ``rglob`` to prune
-    dependency, virtualenv, VCS, and cache directories. Centralising the
-    check here keeps every skill-scanning site in sync with the shared
-    exclusion set.
+    Use this on every ``SKILL.md`` path produced by direct ``rglob`` scans to
+    prune dependency, virtualenv, VCS, cache, and progressive-disclosure
+    support-package paths. Centralising the check here keeps every
+    skill-scanning site in sync with the shared exclusion set.
 
     Accepts a Path or string.
     """
@@ -59,7 +65,36 @@ def is_excluded_skill_path(path) -> bool:
     except AttributeError:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
-    return any(part in EXCLUDED_SKILL_DIRS for part in parts)
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
+        path
+    )
+
+
+def is_skill_support_path(path) -> bool:
+    """True if *path* is under a support dir of an actual skill root.
+
+    ``references/``, ``templates/``, ``assets/``, and ``scripts/`` are
+    progressive-disclosure support areas when they sit directly inside a skill
+    directory containing ``SKILL.md``. They are not active discovery roots for
+    standalone skills. A preserved package such as
+    ``some-skill/references/old-skill-package/SKILL.md`` is documentation data
+    unless the caller explicitly loads it via ``file_path``.
+
+    Legitimate categories or skill names such as ``skills/scripts/foo`` remain
+    discoverable because their ``scripts`` component is not directly under a
+    directory that contains ``SKILL.md``.
+    """
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    parts = path_obj.parts
+    # Last component may be a file or candidate skill directory name. Only
+    # components before the leaf can be containing support directories.
+    for idx, part in enumerate(parts[:-1]):
+        if part not in SKILL_SUPPORT_DIRS or idx == 0:
+            continue
+        skill_root = Path(*parts[:idx])
+        if (skill_root / "SKILL.md").exists():
+            return True
+    return False
 
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
@@ -125,27 +160,8 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
 # ── Platform matching ─────────────────────────────────────────────────────
 
 
-def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
-    """Return True when the skill is compatible with the current OS.
-
-    Skills declare platform requirements via a top-level ``platforms`` list
-    in their YAML frontmatter::
-
-        platforms: [macos]          # macOS only
-        platforms: [macos, linux]   # macOS and Linux
-
-    If the field is absent or empty the skill is compatible with **all**
-    platforms (backward-compatible default).
-
-    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
-    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
-    Linux userland riding on the Android kernel, so skills tagged
-    ``linux`` are treated as compatible in Termux regardless of which
-    ``sys.platform`` value Python reports. Individual Linux commands
-    inside a skill may still misbehave (no systemd, BusyBox utils, no
-    apt/dnf, etc.) but that is on the skill, not on platform gating.
-    """
-    platforms = frontmatter.get("platforms")
+def skill_matches_platform_list(platforms: Any) -> bool:
+    """Return True when *platforms* is compatible with the current OS."""
     if not platforms:
         return True
     if not isinstance(platforms, list):
@@ -167,6 +183,29 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
         if running_in_termux and mapped in ("termux", "android"):
             return True
     return False
+
+
+def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
+    """Return True when the skill is compatible with the current OS.
+
+    Skills declare platform requirements via a top-level ``platforms`` list
+    in their YAML frontmatter::
+
+        platforms: [macos]          # macOS only
+        platforms: [macos, linux]   # macOS and Linux
+
+    If the field is absent or empty the skill is compatible with **all**
+    platforms (backward-compatible default).
+
+    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
+    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
+    Linux userland riding on the Android kernel, so skills tagged
+    ``linux`` are treated as compatible in Termux regardless of which
+    ``sys.platform`` value Python reports. Individual Linux commands
+    inside a skill may still misbehave (no systemd, BusyBox utils, no
+    apt/dnf, etc.) but that is on the skill, not on platform gating.
+    """
+    return skill_matches_platform_list(frontmatter.get("platforms"))
 
 
 # ── Environment matching ──────────────────────────────────────────────────
@@ -245,9 +284,9 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     This is an OFFER-time filter: it controls whether a skill shows up in the
     skills index / autocomplete / slash-command list. It is intentionally NOT
     enforced by ``skill_view`` or ``--skills`` preloading — an explicit load is
-    explicit consent, and load-bearing force-loads (e.g. the kanban dispatcher
-    injecting ``--skills kanban-worker``) must always succeed regardless of how
-    the offer surfaces filter the skill.
+    explicit consent, and load-bearing force-loads (e.g. a dispatcher pinning
+    a task to a specialist skill via ``--skills``) must always succeed
+    regardless of how the offer surfaces filter the skill.
 
     A skill matches when ANY of its declared environments is currently active
     (OR semantics, mirroring ``platforms``). Unknown env tags fail open.
@@ -272,27 +311,65 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+
+
+def _raw_config_cache_clear() -> None:
+    """Test hook — drop the shared raw config cache."""
+    _RAW_CONFIG_CACHE.clear()
+
+
+def _load_raw_config() -> Dict[str, Any]:
+    """Read config.yaml with a shared mtime+size keyed cache.
+
+    This module intentionally avoids importing ``hermes_cli.config`` on the
+    skill prompt/build path. A tiny local cache gives the same repeated-read
+    win without pulling the heavier CLI config stack into startup.
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return {}
+    try:
+        stat = config_path.stat()
+        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        cache_key = None
+
+    if cache_key is not None:
+        cached = _RAW_CONFIG_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    if cache_key is not None:
+        _RAW_CONFIG_CACHE.clear()
+        _RAW_CONFIG_CACHE[cache_key] = parsed
+    return parsed
+
+
 def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     """Read disabled skill names from config.yaml.
 
     Args:
         platform: Explicit platform name (e.g. ``"telegram"``).  When
             *None*, resolves from ``HERMES_PLATFORM`` or
-            ``HERMES_SESSION_PLATFORM`` env vars.  Falls back to the
-            global disabled list when no platform is determined.
+            ``HERMES_SESSION_PLATFORM`` env vars.  Returns the global
+            disabled list, unioned with the platform-specific list when a
+            platform is resolved (a globally-disabled skill stays disabled
+            on every platform).
 
     Reads the config file directly (no CLI config imports) to stay
     lightweight.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return set()
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return set()
-    if not isinstance(parsed, dict):
+    parsed = _load_raw_config()
+    if not parsed:
         return set()
 
     skills_cfg = parsed.get("skills")
@@ -305,13 +382,14 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         or os.getenv("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
     )
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform
         )
         if platform_disabled is not None:
-            return _normalize_string_set(platform_disabled)
-    return _normalize_string_set(skills_cfg.get("disabled"))
+            return global_disabled | _normalize_string_set(platform_disabled)
+    return global_disabled
 
 
 def _normalize_string_set(values) -> Set[str]:
@@ -336,6 +414,7 @@ _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
 def _external_dirs_cache_clear() -> None:
     """Test hook — drop the in-process cache."""
     _EXTERNAL_DIRS_CACHE.clear()
+    _raw_config_cache_clear()
 
 
 def get_external_skills_dirs() -> List[Path]:
@@ -368,11 +447,8 @@ def get_external_skills_dirs() -> List[Path]:
             # Return a copy so callers can't mutate the cached list.
             return list(cached)
 
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
+    parsed = _load_raw_config()
+    if not parsed:
         return []
 
     skills_cfg = parsed.get("skills")
@@ -433,6 +509,91 @@ def get_all_skills_dirs() -> List[Path]:
     dirs = [get_skills_dir()]
     dirs.extend(get_external_skills_dirs())
     return dirs
+
+
+def normalize_skill_lookup_name(identifier: str) -> str:
+    """Normalize a skill identifier to a ``skill_view()``-safe relative path.
+
+    Slash commands and cron jobs may store absolute paths to skills that live
+    under ``~/.hermes/skills/`` (including via symlinks) or configured
+    ``skills.external_dirs``. ``skill_view()`` rejects absolute names for
+    security, so callers must translate trusted absolute paths to their
+    relative form first.
+    """
+    raw_identifier = (identifier or "").strip()
+    if not raw_identifier:
+        return raw_identifier
+
+    identifier_path = Path(raw_identifier).expanduser()
+    if not identifier_path.is_absolute():
+        return raw_identifier.lstrip("/")
+
+    # Look the primary skills root up on tools.skills_tool at CALL time
+    # (not via get_skills_dir()): callers and tests patch
+    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
+    # against that module attribute, so normalization must agree with the
+    # exact root skill_view() will enforce.  Import deferred to avoid a
+    # module cycle (tools.skills_tool imports agent.skill_utils).
+    try:
+        from tools import skills_tool as _skills_tool
+        primary_root = Path(_skills_tool.SKILLS_DIR)
+    except Exception:
+        primary_root = get_skills_dir()
+
+    trusted_roots = [primary_root]
+    try:
+        trusted_roots.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+
+    # Prefer the lexical path under a trusted skill root before resolving
+    # symlinks. Slash-command discovery can legitimately find a skill via
+    # ~/.hermes/skills/<name> where <name> is a symlink to a checked-out
+    # skill elsewhere. Resolving first turns that trusted visible path into
+    # an arbitrary absolute path that skill_view() refuses to load.
+    for root in trusted_roots:
+        try:
+            return str(identifier_path.relative_to(root))
+        except ValueError:
+            continue
+
+    try:
+        return str(identifier_path.resolve().relative_to(primary_root.resolve()))
+    except Exception:
+        logger.debug(
+            "Skill identifier %r is an absolute path outside trusted skills "
+            "roots — passing through unchanged (skill_view will reject it)",
+            raw_identifier,
+        )
+        return raw_identifier
+
+
+def _resolve_for_skill_ownership(path) -> Path:
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    try:
+        return path_obj.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return path_obj.expanduser().absolute()
+
+
+def is_external_skill_path(path) -> bool:
+    """Return True when ``path`` lives under a configured external skills dir.
+
+    ``skills.external_dirs`` are externally owned: Hermes can discover and view
+    their skills, and foreground user-directed tool calls may still edit them,
+    but autonomous lifecycle maintenance must treat them as read-only. This
+    helper centralizes the ownership boundary so curator/reporting/tool paths do
+    not each need to re-interpret the config.
+    """
+    candidate = _resolve_for_skill_ownership(path)
+    for root in get_external_skills_dirs():
+        resolved_root = _resolve_for_skill_ownership(root)
+        try:
+            candidate.relative_to(resolved_root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 # ── Condition extraction ──────────────────────────────────────────────────
@@ -584,15 +745,7 @@ def resolve_skill_config_values(
     current values (or the declared default if the key isn't set).
     Path values are expanded via ``os.path.expanduser``.
     """
-    config_path = get_config_path()
-    config: Dict[str, Any] = {}
-    if config_path.exists():
-        try:
-            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                config = parsed
-        except Exception:
-            pass
+    config = _load_raw_config()
 
     resolved: Dict[str, Any] = {}
     for var in config_vars:
@@ -632,16 +785,26 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes Hermes metadata, VCS, virtualenv/dependency, and cache
-    directories so dependencies cannot register nested skills.
+    Excludes Hermes metadata, VCS, virtualenv/dependency, cache, and skill
+    support directories. Support directories (references/templates/assets/
+    scripts) can contain arbitrary markdown and even archived package
+    ``SKILL.md`` files, but they are progressive-disclosure data loaded through
+    ``skill_view(..., file_path=...)`` rather than active skill roots.
     """
-    matches = []
-    for root, dirs, files in os.walk(skills_dir, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+    skills_dir_str = str(skills_dir)
+    matches: list[str] = []
+    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+        has_skill_md = "SKILL.md" in files
+        dirs[:] = [
+            d
+            for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS
+            and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
+        ]
         if filename in files:
-            matches.append(Path(root) / filename)
-    for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
-        yield path
+            matches.append(os.path.join(root, filename))
+    for path in sorted(matches):
+        yield Path(path)
 
 
 # ── Namespace helpers for plugin-provided skills ───────────────────────────

@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -44,6 +45,12 @@ export interface FileAttachResponse {
 export interface SlashExecResponse {
   output?: string
   warning?: string
+}
+
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+  messages?: string[]
 }
 
 export interface SessionSteerResponse {
@@ -100,6 +107,13 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
+  notice?: string
+}
+
+export interface PrefillCommandDispatchResponse {
+  type: 'prefill'
+  message: string
+  notice?: string
 }
 
 export type CommandDispatchResponse =
@@ -107,11 +121,13 @@ export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
+  | PrefillCommandDispatchResponse
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
-  id: SidebarNavId
+  /** Built-in view id, or a contributed row's namespaced contribution id. */
+  id: SidebarNavId | (string & {})
   label: string
   icon: React.ComponentType<{ className?: string }>
   route?: string
@@ -129,6 +145,7 @@ export interface ClientSessionState {
   serviceTier: string
   fast: boolean
   yolo: boolean
+  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null
@@ -143,4 +160,8 @@ export interface ClientSessionState {
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** Cumulative token usage, updated per completed turn. Per-session twin of
+   *  the primary-only $currentUsage — the statusbar reads it for a focused
+   *  tile's context count. Null until the first turn reports. */
+  usage: null | UsageStats
 }

@@ -1,16 +1,20 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
 import {
   $activeSessionId,
   $attentionSessionIds,
+  $connection,
   $currentCwd,
+  $unreadFinishedSessionIds,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setCurrentCwd,
+  setSelectedStoredSessionId,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -80,7 +84,9 @@ describe('mergeSessionPage', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
 
-    expect(mergeSessionPage(previous, incoming, [])).toBe(incoming)
+    // Content, not identity: the title-carry map rebuilds the array even when
+    // nothing is carried, and `incoming` is a fresh server page every fetch.
+    expect(mergeSessionPage(previous, incoming, [])).toEqual(incoming)
   })
 
   it('keeps a still-working session the server omitted', () => {
@@ -146,13 +152,9 @@ describe('mergeSessionPage', () => {
     // the sidebar showed both the old tip and the new tip as separate rows.
     // The old tip must be evicted because its lineage key matches the incoming
     // new tip's lineage key.
-    const previous = [
-      session({ id: 'tip-4', _lineage_root_id: 'root' }),
-      session({ id: 'other' }),
-    ] as SessionInfo[]
-    const incoming = [
-      session({ id: 'tip-5', _lineage_root_id: 'root' }),
-    ] as SessionInfo[]
+    const previous = [session({ id: 'tip-4', _lineage_root_id: 'root' }), session({ id: 'other' })] as SessionInfo[]
+
+    const incoming = [session({ id: 'tip-5', _lineage_root_id: 'root' })] as SessionInfo[]
 
     // 'tip-4' is in the keep set (e.g. it was the active/working session),
     // but should still be evicted because the incoming page carries the same
@@ -169,11 +171,10 @@ describe('mergeSessionPage', () => {
     // from a different lineage that happen to be in the keep set.
     const previous = [
       session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
-      session({ id: 'b', _lineage_root_id: 'lineage-b' }),
+      session({ id: 'b', _lineage_root_id: 'lineage-b' })
     ] as SessionInfo[]
-    const incoming = [
-      session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
-    ] as SessionInfo[]
+
+    const incoming = [session({ id: 'a-new', _lineage_root_id: 'lineage-a' })] as SessionInfo[]
 
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
@@ -184,9 +185,12 @@ describe('mergeSessionPage', () => {
 describe('workspaceCwdForNewSession', () => {
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
+    $connection.set(null)
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
@@ -196,16 +200,14 @@ describe('workspaceCwdForNewSession', () => {
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
   })
 
-  it('falls back to the remembered workspace when no configured default is set', () => {
+  it('starts detached (no inherited cwd) when no default project dir is configured', () => {
+    // A bare new chat must NOT inherit the sticky/remembered or live workspace —
+    // that's the "why is my new session already on a branch" bug. Only an
+    // explicit configured default pre-attaches.
     window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
-
-    expect(workspaceCwdForNewSession()).toBe('/home/user/sticky')
-  })
-
-  it('falls back to the live cwd when neither configured nor remembered values exist', () => {
     $currentCwd.set('/home/user/live')
 
-    expect(workspaceCwdForNewSession()).toBe('/home/user/live')
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 
   it('does not rewrite the live cwd while a session is active', () => {
@@ -215,6 +217,28 @@ describe('workspaceCwdForNewSession', () => {
 
     expect($currentCwd.get()).toBe('/live/session/path')
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('keeps remote workspace memory separate from local and other remotes', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/local/project')
+    $currentCwd.set('/live/session/path')
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/backend/project-a')
+    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
+
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+
+    // Back on local with no configured default: a bare new chat is detached and
+    // never reads the remote keys (nor inherits the sticky local workspace).
+    $connection.set(null)
+    expect(workspaceCwdForNewSession()).toBe('')
   })
 })
 
@@ -273,5 +297,50 @@ describe('getRecentlySettledSessionIds', () => {
     // settled set so it's tracked as working, not recently-finished.
     setSessionWorking('s2', true)
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('unread finished sessions', () => {
+  beforeEach(() => {
+    $unreadFinishedSessionIds.set([])
+    $workingSessionIds.set([])
+    setSelectedStoredSessionId(() => null)
+  })
+
+  afterEach(() => {
+    $workingSessionIds.set([])
+    $unreadFinishedSessionIds.set([])
+    setSelectedStoredSessionId(() => null)
+  })
+
+  it('marks a session unread when its turn finishes in the background', () => {
+    setSelectedStoredSessionId(() => 'other-session')
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('does NOT mark unread when the finishing session is the active one', () => {
+    setSelectedStoredSessionId(() => 's1')
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
+    setSelectedStoredSessionId(() => 'other-session')
+    setSessionWorking('s1', false)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('clears unread when the user opens the session', () => {
+    setSelectedStoredSessionId(() => 'other')
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    setSelectedStoredSessionId(() => 's1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

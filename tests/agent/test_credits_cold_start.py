@@ -49,7 +49,13 @@ def test_cold_start_opens_already_at_90pct_warns():
     assert "credits.usage" in _cold_start_notices(s)
 
 
-def test_cold_start_grant_exhausted_warns_and_grant_spent():
+def test_cold_start_grant_exhausted_grant_spent_only():
+    """Cap reached but top-up funds remain → grant_spent info notice ONLY.
+
+    The usage band is suppressed whenever purchased (top-up) credits exist:
+    the sub-cap gauge is the wrong denominator for an account that can keep
+    spending, and previously the 90/100% warn banner stuck permanently
+    alongside grant_spent."""
     s = _state(
         remaining_micros=12_340_000, subscription_micros=0,
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
@@ -57,7 +63,7 @@ def test_cold_start_grant_exhausted_warns_and_grant_spent():
     )
     assert s.used_fraction == 1.0
     keys = _cold_start_notices(s)
-    assert "credits.usage" in keys
+    assert "credits.usage" not in keys
     assert "credits.grant_spent" in keys
 
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalAction } from '../components/prompts.js'
+import { approvalAction, approvalOptions } from '../components/prompts.js'
 
 describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   it('maps Esc to deny — parity with global Ctrl+C cancellation', () => {
@@ -46,5 +46,35 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
   it('returns noop for unrelated keystrokes (printable letters etc.)', () => {
     expect(approvalAction('a', {}, 0)).toEqual({ kind: 'noop' })
     expect(approvalAction(' ', {}, 0)).toEqual({ kind: 'noop' })
+  })
+
+  it('respects a reduced option set when permanent allow is disabled', () => {
+    // tirith content-security warning present → no "always"; the 3-item set is
+    // once/session/deny, so 3 maps to deny and 4 is out of range.
+    const opts = ['once', 'session', 'deny'] as const
+
+    expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('4', {}, 0, opts)).toEqual({ kind: 'noop' })
+    expect(approvalAction('', { downArrow: true }, 2, opts)).toEqual({ kind: 'noop' })
+    expect(approvalAction('', { return: true }, 2, opts)).toEqual({ kind: 'choose', choice: 'deny' })
+  })
+
+  it('offers only once and deny for Smart DENY owner override', () => {
+    const opts = approvalOptions({ allowPermanent: true, command: 'rm -rf /', description: 'blocked', smartDenied: true })
+
+    expect(opts).toEqual(['once', 'deny'])
+    expect(approvalAction('2', {}, 0, opts)).toEqual({ kind: 'choose', choice: 'deny' })
+    expect(approvalAction('3', {}, 0, opts)).toEqual({ kind: 'noop' })
+  })
+
+  it('uses explicit gateway choices as the prompt contract', () => {
+    expect(
+      approvalOptions({
+        allowPermanent: true,
+        choices: ['once', 'deny'],
+        command: 'rm -rf /',
+        description: 'blocked'
+      })
+    ).toEqual(['once', 'deny'])
   })
 })

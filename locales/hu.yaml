@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
   prompt_long:     "      Választás [o/s/a/D]: "
   prompt_short:    "      Választás [o/s/D]: "
+  choose_smart_deny: "      [o]egyszer  |  [d]elutasít"
+  prompt_smart_deny: "      Választás [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Időtúllépés - parancs elutasítva"
   allowed_once:    "      ✓ Egyszer engedélyezve"
   allowed_session: "      ✓ Engedélyezve ehhez a munkamenethez"
@@ -88,6 +92,7 @@ gateway:
     not_enough:            "Nincs elég beszélgetés a tömörítéshez (legalább 4 üzenet kell)."
     no_provider:           "Nincs konfigurált szolgáltató — nem lehet tömöríteni."
     nothing_to_do:         "Még nincs mit tömöríteni (a teljes átirat még védett kontextus)."
+    aggressive_unsupported: "A --aggressive nem támogatott; használd a '/compress here [N]' parancsot, hogy csak a legutóbbi váltásokat tartsd meg, vagy a /undo parancsot körök törléséhez."
     focus_line:            "Fókusz: \"{topic}\""
     summary_failed:        "⚠️ Az összefoglaló generálása sikertelen ({error}). {count} korábbi üzenet eltávolítva és helykitöltővel helyettesítve; a korábbi kontextus már nem helyreállítható. Érdemes ellenőrizni az auxiliary.compression modell konfigurációját."
     aborted:               "⚠️ Tömörítés megszakítva ({error}). Egyetlen üzenet sem lett eldobva — a beszélgetés változatlan. Futtass /compress parancsot az újrapróbálkozáshoz, /reset egy új munkamenethez, vagy ellenőrizd az auxiliary.compression modell konfigurációt."
@@ -106,6 +111,8 @@ gateway:
     no_pending:            "Nincs elutasítható függőben lévő parancs."
     denied_singular:       "❌ Parancs elutasítva."
     denied_plural:         "❌ Parancsok elutasítva ({count} parancs)."
+    denied_reason_singular: "❌ Parancs elutasítva. Indok továbbítva az ügynöknek: \"{reason}\""
+    denied_reason_plural:  "❌ Parancsok elutasítva ({count} parancs). Indok továbbítva az ügynöknek: \"{reason}\""
 
   fast:
     not_supported:         "⚡ A /fast csak olyan OpenAI modelleknél érhető el, amelyek támogatják a Priority Processinget."
@@ -149,6 +156,15 @@ gateway:
     subscribed_suffix:     "(feliratkozva — értesítést kapsz, ha a {task_id} befejeződik vagy elakad)"
     truncated_suffix:      "… (csonkítva; használd a `hermes kanban …` parancsot a terminálban a teljes kimenethez)"
     no_output:             "(nincs kimenet)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Nincs személyiség beállítva itt: `{path}/config.yaml`"
@@ -219,6 +235,15 @@ gateway:
 
   resume:
     db_unavailable:        "A munkamenet-adatbázis nem érhető el."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Nem található elnevezett munkamenet.\nHasználd a `/title Saját munkamenet` parancsot a jelenlegi munkamenet elnevezéséhez, majd a `/resume Saját munkamenet` paranccsal térhetsz vissza hozzá."
     list_header:           "📋 **Elnevezett munkamenetek**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,10 +276,20 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway állapot**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Munkamenet-azonosító:** `{session_id}`"
     title:                 "**Cím:** {title}"
     created:               "**Létrehozva:** {timestamp}"
     last_activity:         "**Utolsó tevékenység:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Tokenek:** {tokens}"
     agent_running:         "**Ügynök fut:** {state}"
     state_yes:             "Igen ⚡"
@@ -314,11 +349,26 @@ gateway:
     label_cost_included:      "Költség: belefoglalva"
     label_context:            "Kontextus: {used} / {total} ({pct}%)"
     label_compressions:       "Tömörítések: {count}"
+    breakdown_header: "🧩 **Kontextus-bontás** _(becsült)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Rendszerüzenet"
+    breakdown_cat_tool_definitions: "Eszközdefiníciók"
+    breakdown_cat_rules: "Szabályok"
+    breakdown_cat_skills: "Készségek"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Alügynök-definíciók"
+    breakdown_cat_memory: "Memória"
+    breakdown_cat_conversation: "Beszélgetés"
     header_session_info:      "📊 **Munkamenet-információ**"
     label_messages:           "Üzenetek: {count}"
     label_estimated_context:  "Becsült kontextus: ~{count} token"
     detailed_after_first:     "_(A részletes használat az első ügynökválasz után érhető el)_"
     no_data:                  "Ehhez a munkamenethez nincsenek elérhető használati adatok."
+    unknown_subcommand:       "Ismeretlen /usage alparancs: `{args}`. Próbáld: `/usage` vagy `/usage reset [--force]`."
+    reset_wrong_provider:     "A félretett limit-visszaállítások csak az openai-codex szolgáltatónál érhetők el. Válts először a `/model` paranccsal."
+
+  credits:
+    not_logged_in:            "Nincs bejelentkezve a Nous Portalra. Jelentkezz be a kreditegyenleg megtekintéséhez és feltöltéséhez."
 
   verbose:
     not_enabled:           "A `/verbose` parancs nincs engedélyezve az üzenetküldő platformokon.\n\nEngedélyezd a `config.yaml` fájlban:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -326,6 +376,7 @@ gateway:
     mode_new:              "⚙️ Eszközfolyamat: **NEW** — eszközváltáskor jelenik meg (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
     mode_all:              "⚙️ Eszközfolyamat: **ALL** — minden eszközhívás megjelenik (előnézet hossza: `display.tool_preview_length`, alapértelmezetten 40)."
     mode_verbose:          "⚙️ Eszközfolyamat: **VERBOSE** — minden eszközhívás teljes argumentumokkal."
+    mode_log:              "⚙️ Eszközfolyamat: **LOG** — csendes a csevegésben; az eszközhívások a ~/.hermes/logs/tool_calls.log fájlba íródnak."
     saved_suffix:          "_(elmentve ehhez: **{platform}** — a következő üzenettől lép életbe)_"
     save_failed:           "_(nem sikerült menteni a konfigurációba: {error})_"
 

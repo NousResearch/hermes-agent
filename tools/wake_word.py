@@ -31,6 +31,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,11 @@ SAMPLE_RATE = 16000
 # Minimum gap between two consecutive wake fires, so one "hey hermes" can't
 # retrigger across several frames while the caller is still reacting.
 _FIRE_COOLDOWN_SECONDS = 2.0
+_START_TIMEOUT_SECONDS = 5.0
+
+
+class WakeWordInUse(RuntimeError):
+    """Raised when another surface or process owns the wake-word listener."""
 
 
 # ---------------------------------------------------------------------------
@@ -96,8 +102,8 @@ def wake_surface_enabled(surface: str, cfg: Optional[Dict[str, Any]] = None) -> 
     """Should ``surface`` (``cli`` / ``tui`` / ``gui``) host the listener?
 
     True when the wake word is enabled and the configured ``surface`` is either
-    ``auto`` or this exact surface — the single gate every surface consults so
-    only one place owns the wake word and the new session it opens.
+    ``auto`` or this exact surface.  ``auto`` makes a surface eligible; the
+    process/machine ownership lock still permits only the first claimant.
     """
     cfg = cfg if cfg is not None else load_wake_word_config()
     if not cfg.get("enabled"):
@@ -299,12 +305,15 @@ class WakeWordDetector:
     """
 
     def __init__(self, engine: _Engine, on_wake: Callable[[], None],
-                 cooldown: float = _FIRE_COOLDOWN_SECONDS):
+                 cooldown: float = _FIRE_COOLDOWN_SECONDS,
+                 on_failure: Optional[Callable[["WakeWordDetector"], None]] = None):
         self.engine = engine
         self.on_wake = on_wake
         self.cooldown = cooldown
+        self.on_failure = on_failure
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._callback_inflight = threading.Event()
         self._last_fire = 0.0
         self._lock = threading.Lock()
 
@@ -319,10 +328,21 @@ class WakeWordDetector:
             if self._thread is not None and self._thread.is_alive():
                 return
             self._stop.clear()
+            ready = threading.Event()
+            startup_errors: list[BaseException] = []
             self._thread = threading.Thread(
-                target=self._run, daemon=True, name="wake-word"
+                target=self._run,
+                args=(ready, startup_errors),
+                daemon=True,
+                name="wake-word",
             )
             self._thread.start()
+        if not ready.wait(_START_TIMEOUT_SECONDS):
+            self._halt_thread()
+            raise TimeoutError("Timed out while opening the wake-word microphone.")
+        if startup_errors:
+            self._halt_thread()
+            raise RuntimeError("Failed to open the wake-word microphone.") from startup_errors[0]
 
     # pause/resume keep the engine; stop tears it down.
     def pause(self) -> None:
@@ -337,16 +357,29 @@ class WakeWordDetector:
 
     def _halt_thread(self) -> None:
         with self._lock:
-            t, self._thread = self._thread, None
-        if t is not None and t is not threading.current_thread():
             self._stop.set()
-            t.join(timeout=2.0)
+            t = self._thread
+            if t is not None and t is not threading.current_thread():
+                t.join(timeout=2.0)
+            if self._thread is t:
+                self._thread = None
 
-    def _run(self) -> None:
+    def _dispatch_wake(self) -> None:
+        try:
+            self.on_wake()
+        except Exception as e:
+            logger.warning("wake word callback failed: %s", e)
+        finally:
+            self._callback_inflight.clear()
+
+    def _run(self, ready: threading.Event,
+             startup_errors: list[BaseException]) -> None:
         try:
             sd, _ = _import_audio()
         except (ImportError, OSError) as e:
             logger.error("wake word: audio libraries unavailable: %s", e)
+            startup_errors.append(e)
+            ready.set()
             return
 
         frame_length = self.engine.frame_length
@@ -360,6 +393,8 @@ class WakeWordDetector:
             stream.start()
         except Exception as e:
             logger.error("wake word: failed to open microphone: %s", e)
+            startup_errors.append(e)
+            ready.set()
             return
 
         # Drop any buffered audio/feature state so a resume right after a voice
@@ -371,12 +406,15 @@ class WakeWordDetector:
             pass
 
         logger.info("wake word: listening (frame=%d, rate=%d)", frame_length, SAMPLE_RATE)
+        ready.set()
+        failed = False
         try:
             while not self._stop.is_set():
                 try:
                     data, _overflow = stream.read(frame_length)
                 except Exception as e:
                     logger.warning("wake word: stream read error: %s", e)
+                    failed = not self._stop.is_set()
                     break
                 frame = data[:, 0] if getattr(data, "ndim", 1) == 2 else data
                 try:
@@ -389,10 +427,13 @@ class WakeWordDetector:
                     if now - self._last_fire >= self.cooldown:
                         self._last_fire = now
                         logger.info("wake word: phrase detected — firing callback")
-                        try:
-                            self.on_wake()
-                        except Exception as e:
-                            logger.warning("wake word callback failed: %s", e)
+                        if not self._callback_inflight.is_set():
+                            self._callback_inflight.set()
+                            threading.Thread(
+                                target=self._dispatch_wake,
+                                daemon=True,
+                                name="wake-word-callback",
+                            ).start()
                     else:
                         logger.debug("wake word: detection within cooldown — ignored")
         finally:
@@ -402,6 +443,8 @@ class WakeWordDetector:
             except Exception:
                 pass
             logger.info("wake word: stream closed")
+            if failed and self.on_failure is not None:
+                self.on_failure(self)
 
 
 # ---------------------------------------------------------------------------
@@ -409,55 +452,162 @@ class WakeWordDetector:
 # ---------------------------------------------------------------------------
 
 _detector: Optional[WakeWordDetector] = None
+_detector_owner: object | None = None
+_detector_file_lock = None
 _detector_lock = threading.Lock()
+
+
+def _lock_path() -> Path:
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "runtime" / "wake-word.lock"
+
+
+def _acquire_machine_lock(path: Optional[Path] = None):
+    """Acquire the cross-process microphone lease, or raise WakeWordInUse."""
+    lock_path = path or _lock_path()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError) as e:
+        handle.close()
+        raise WakeWordInUse("Wake-word microphone is already owned.") from e
+    return handle
+
+
+def _release_machine_lock(handle) -> None:
+    if handle is None:
+        return
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    finally:
+        handle.close()
+
+
+def _detector_failed(detector: WakeWordDetector) -> None:
+    """Release ownership if the active microphone stream dies unexpectedly."""
+    global _detector, _detector_owner, _detector_file_lock
+    with _detector_lock:
+        if _detector is not detector:
+            return
+        lock_handle = _detector_file_lock
+        _detector = None
+        _detector_owner = None
+        _detector_file_lock = None
+        try:
+            detector.engine.close()
+        finally:
+            _release_machine_lock(lock_handle)
 
 
 def start_listening(
     on_wake: Callable[[], None],
     *,
+    owner: object,
     config: Optional[Dict[str, Any]] = None,
 ) -> WakeWordDetector:
-    """Build (once) and start the wake-word detector. Idempotent.
+    """Claim, build, and start the detector. Idempotent for the same owner.
 
     Raises if engine construction fails (missing deps / access key / model);
-    callers should probe :func:`check_wake_word_requirements` first.
+    callers should probe :func:`check_wake_word_requirements` first. A different
+    owner, including another process, receives :class:`WakeWordInUse`.
     """
-    global _detector
+    if owner is None:
+        raise ValueError("wake-word owner must not be None")
+
+    global _detector, _detector_owner, _detector_file_lock
     with _detector_lock:
         if _detector is not None:
+            if _detector_owner is not owner:
+                raise WakeWordInUse("Wake-word microphone is already owned.")
             _detector.on_wake = on_wake
             _detector.resume()
             return _detector
-        cfg = config if config is not None else load_wake_word_config()
-        engine = _build_engine(cfg)
-        _detector = WakeWordDetector(engine, on_wake)
-    _detector.start()
-    return _detector
+        lock_handle = _acquire_machine_lock()
+        try:
+            cfg = config if config is not None else load_wake_word_config()
+            engine = _build_engine(cfg)
+            detector = WakeWordDetector(engine, on_wake, on_failure=_detector_failed)
+            _detector = detector
+            _detector_owner = owner
+            _detector_file_lock = lock_handle
+            detector.start()
+            return detector
+        except Exception:
+            if _detector is not None:
+                try:
+                    _detector.stop()
+                except Exception:
+                    pass
+            _detector = None
+            _detector_owner = None
+            _detector_file_lock = None
+            _release_machine_lock(lock_handle)
+            raise
 
 
-def pause_listening() -> None:
-    """Release the microphone without tearing down the engine."""
+def owns_listener(owner: object) -> bool:
     with _detector_lock:
+        return _detector is not None and _detector_owner is owner
+
+
+def pause_listening(*, owner: object) -> bool:
+    """Release the microphone only when ``owner`` holds the lease."""
+    with _detector_lock:
+        if _detector is None or _detector_owner is not owner:
+            return False
+        _detector.pause()
+        return True
+
+
+def resume_listening(*, owner: object) -> bool:
+    """Re-open the microphone only when ``owner`` holds the lease."""
+    with _detector_lock:
+        if _detector is None or _detector_owner is not owner:
+            return False
+        _detector.resume()
+        return True
+
+
+def stop_listening(*, owner: object) -> bool:
+    """Fully stop the detector only when ``owner`` holds the lease."""
+    global _detector, _detector_owner, _detector_file_lock
+    with _detector_lock:
+        if _detector is None or _detector_owner is not owner:
+            return False
         det = _detector
-    if det is not None:
-        det.pause()
-
-
-def resume_listening() -> None:
-    """Re-open the microphone after a pause. No-op if not initialised."""
-    with _detector_lock:
-        det = _detector
-    if det is not None:
-        det.resume()
-
-
-def stop_listening() -> None:
-    """Fully stop and discard the detector (closes the engine)."""
-    global _detector
-    with _detector_lock:
-        det, _detector = _detector, None
-    if det is not None:
-        det.stop()
+        lock_handle = _detector_file_lock
+        _detector = None
+        _detector_owner = None
+        _detector_file_lock = None
+        try:
+            det.stop()
+        finally:
+            _release_machine_lock(lock_handle)
+        return True
 
 
 def is_listening() -> bool:

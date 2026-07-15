@@ -3628,6 +3628,17 @@ def save_config_value(key_path: str, value: any) -> bool:
     config_path = user_config_path if user_config_path.exists() else project_config_path
     
     try:
+        # Guard: if config.yaml had a parse error, the gateway sets
+        # HERMES_CONFIG_PARSE_FAILED.  Writing back now would overwrite the
+        # user's real settings with defaults — refuse until config is fixed.
+        if os.environ.get("HERMES_CONFIG_PARSE_FAILED"):
+            logger.warning(
+                "Refusing to save config value — HERMES_CONFIG_PARSE_FAILED is set "
+                "(config.yaml had a parse error on load). Fix config.yaml "
+                "syntax first, then retry."
+            )
+            return False
+
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         

@@ -7220,7 +7220,7 @@ def save_config(
     preserve_keys: Optional[Set[Tuple[str, ...]]] = None,
     merge_existing: bool = False,
 ):
-    """Save configuration to ~/.hermes/config.yaml.\n
+    """Save configuration to ~/.hermes/config.yaml.
 
     Default values from ``DEFAULT_CONFIG`` are not written to disk unless
     the user explicitly set them (i.e. the path exists in the raw config
@@ -7235,6 +7235,16 @@ def save_config(
     already deep-merge) must leave this False so intentional deletions survive.
     """
     with _CONFIG_LOCK:
+        # Guard: if config.yaml had a parse error, the gateway sets
+        # HERMES_CONFIG_PARSE_FAILED.  Writing back now would overwrite the
+        # user's real settings with defaults — refuse until config is fixed.
+        if os.environ.get("HERMES_CONFIG_PARSE_FAILED"):
+            logger.warning(
+                "Refusing to save config — HERMES_CONFIG_PARSE_FAILED is set "
+                "(config.yaml had a parse error on load). Fix config.yaml "
+                "syntax first, then retry."
+            )
+            return
         if is_managed():
             managed_error("save configuration")
             return
@@ -7259,6 +7269,28 @@ def save_config(
         ensure_hermes_home()
         config_path = get_config_path()
         require_readable_config_before_write(config_path)
+        # Fail-closed guard: if config.yaml exists and is non-empty on disk
+        # but read_raw_config() returned {}, the file failed to parse.
+        # Proceeding would overwrite the user's real settings with defaults
+        # — refuse until the YAML is fixed.
+        # (The gateway-local HERMES_CONFIG_PARSE_FAILED flag above only covers
+        # processes that went through load_gateway_config(). A fresh TUI or
+        # dashboard process reaches save_config() without that flag ever
+        # being set — this shared-boundary check closes that gap.)
+        try:
+            _existing_size = config_path.stat().st_size
+        except OSError:
+            _existing_size = 0
+        if _existing_size > 0 and not read_raw_config():
+            logger.warning(
+                "Refusing to save config: %s is non-empty (%d bytes) but "
+                "read_raw_config() returned empty — the file likely failed "
+                "to parse. Writing now would overwrite all custom settings "
+                "with defaults. Fix the YAML syntax, then retry.",
+                config_path,
+                _existing_size,
+            )
+            return
         # Compute explicit user paths BEFORE any normalisation --------
         # _normalize_max_turns_config may inject agent.max_turns from
         # DEFAULT_CONFIG; using the raw dict preserves which paths the
@@ -7350,6 +7382,126 @@ def _parse_env_value(raw_value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] == "'":
         return value[1:-1]
     return value
+
+
+def write_raw_config(content: str) -> bool:
+    """Write raw text directly to config.yaml, bypassing the parse-failure guard.
+
+    This is the escape hatch for the recovery flow: the agent has repaired
+    a broken config.yaml and needs to write the fixed version back.  Calling
+    save_config() here would be blocked by HERMES_CONFIG_PARSE_FAILED, and
+    that guard should stay active until the gateway restarts and confirms the
+    config loads cleanly.
+
+    Returns True on success.
+    """
+    ensure_hermes_home()
+    config_path = get_config_path()
+    from utils import atomic_yaml_write
+    try:
+        atomic_yaml_write(config_path, content, raw_text=True)
+        _secure_file(config_path)
+        _LAST_EXPANDED_CONFIG_BY_PATH.pop(str(config_path), None)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Reversible secret redaction for the LLM config-recovery flow.
+#
+# config.yaml can contain inline API keys (provider api_key fields, MCP
+# server env vars, database URLs with passwords).  Sending the raw broken
+# YAML to an external LLM for syntax repair would disclose those credentials.
+# These functions replace sensitive values with numbered placeholders before
+# the LLM sees them, then restore the originals after the repair comes back.
+#
+# IMPORTANT: redaction operates on raw text, NOT on parsed YAML.  The Hermes
+# venv ships a security-hardened PyYAML C extension that masks known token
+# patterns (sk-*, ghp_*, etc.) at the scanner level before Python code sees
+# them.  A parse-then-walk approach stores masked values in the mapping and
+# corrupts credentials on restore.
+# ---------------------------------------------------------------------------
+
+# YAML keys whose values are credentials.  Matched case-insensitively.
+_SECRET_KEY_NAMES = frozenset({
+    "api_key", "apikey", "key", "token", "secret", "password",
+    "client_secret", "private_key", "authorization", "access_token",
+    "refresh_token", "id_token",
+})
+
+# Matches  key: value  or  key: "value"  or  key: 'value'  lines where
+# the key is one of _SECRET_KEY_NAMES.  Captures the quoted or unquoted
+# value.  Operates on raw YAML text so the C scanner never runs.
+_SECRET_KEY_VALUE_RE = re.compile(
+    r'^(\s*(?:\w+\.)*)*('
+    + '|'.join(re.escape(k) for k in _SECRET_KEY_NAMES)
+    + r')\s*:\s*["\']?(?!__REDACTED)(.+?)["\']?\s*$',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _redact_yaml_secrets(yaml_text: str) -> tuple[str, dict[str, str]]:
+    """Replace credential values in YAML text with numbered placeholders.
+
+    Returns ``(redacted_text, mapping)`` where *mapping* is
+    ``{placeholder: original_value}``.  Call :func:`_restore_yaml_secrets`
+    with the LLM's repaired output and the mapping to put real values back.
+
+    Two layers, both operating on raw text before any YAML parsing:
+
+    1. **Key-name layer** — matches ``key: value`` lines where *key* is in
+       :data:`_SECRET_KEY_NAMES` (``api_key``, ``token``, ``password``, etc.).
+       Captures the value regardless of quoting style.
+
+    2. **Prefix-token layer** — runs the existing :data:`agent.redact._PREFIX_RE`
+       patterns (``sk-``, ``ghp_``, ``xox-``, ``AIza``, etc.) to catch inline
+       tokens in arbitrary values like MCP ``env`` blocks.
+
+    Neither layer invokes ``yaml.safe_load()``, so the security-hardened
+    C scanner that masks tokens at the parser level does not interfere.
+    """
+    from agent.redact import _PREFIX_RE
+
+    mapping: dict[str, str] = {}
+
+    def _next_ph() -> str:
+        return f"__REDACTED_{len(mapping) + 1}__"
+
+    # --- Layer 1: key-name matching on raw text ---
+    def _key_name_repl(m):
+        full = m.group(0)
+        prefix = full[:m.start(3) - m.start(0)]
+        value = m.group(3)
+        if not value.strip():
+            return full
+        ph = _next_ph()
+        mapping[ph] = value
+        return f"{prefix}__REDACTED_{len(mapping)}__"
+
+    redacted = _SECRET_KEY_VALUE_RE.sub(_key_name_repl, yaml_text)
+
+    # --- Layer 2: inline prefix-token patterns on raw text ---
+    def _prefix_repl(m):
+        ph = _next_ph()
+        mapping[ph] = m.group(1)
+        return ph
+
+    redacted = _PREFIX_RE.sub(_prefix_repl, redacted)
+
+    return redacted, mapping
+
+
+def _restore_yaml_secrets(yaml_text: str, mapping: dict[str, str]) -> str:
+    """Restore redacted placeholder values in repaired YAML.
+
+    Replaces each ``__REDACTED_N__`` placeholder with the original secret
+    value from *mapping*.  Works on raw text so it handles YAML the LLM
+    may have reformatted.
+    """
+    for placeholder, original in mapping.items():
+        yaml_text = yaml_text.replace(placeholder, original)
+    return yaml_text
 
 
 def load_env() -> Dict[str, str]:
@@ -8267,6 +8419,23 @@ def set_config_value(key: str, value: str):
                 user_config = fast_safe_load(f) or {}
         except Exception:
             user_config = {}
+
+    # Fail-closed guard: if config.yaml exists and is non-empty but we
+    # parsed an empty dict, the file has a syntax error.  Writing now
+    # would lose everything except the single key being set.
+    try:
+        _existing_size = config_path.stat().st_size
+    except OSError:
+        _existing_size = 0
+    if _existing_size > 0 and not user_config:
+        logger.warning(
+            "Refusing to set config value: %s is non-empty (%d bytes) "
+            "but parsed empty — likely a YAML syntax error. Writing now "
+            "would wipe all existing settings.",
+            config_path,
+            _existing_size,
+        )
+        return
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to
@@ -8325,6 +8494,155 @@ def set_config_value(key: str, value: str):
 # =============================================================================
 # Command handler
 # =============================================================================
+
+
+def _config_recover(args):
+    """Start a one-shot LLM call to repair a broken config.yaml.
+
+    Reads config.yaml.broken and config.yaml.error (written by the gateway
+    when config.yaml fails to parse), passes them to an LLM as context,
+    and writes the repaired YAML directly to config.yaml via
+    write_raw_config() (which bypasses the parse-failure guard).
+    """
+    home = get_hermes_home()
+    broken_path = home / "config.yaml.broken"
+    error_path = home / "config.yaml.error"
+
+    if not broken_path.exists():
+        print("No broken config found.  config.yaml parses fine.")
+        print("If the gateway is running, restart it to clear any stale error state.")
+        return
+
+    raw_yaml = broken_path.read_text(encoding="utf-8")
+    error_msg = ""
+    if error_path.exists():
+        error_msg = error_path.read_text(encoding="utf-8")
+
+    # Redact secrets before sending to an external LLM.  config.yaml can
+    # contain inline api_key fields, MCP server tokens, database passwords,
+    # and other credentials.  The LLM only needs to fix YAML syntax — it
+    # does not need real secret values.
+    redacted_yaml, secret_mapping = _redact_yaml_secrets(raw_yaml)
+    if secret_mapping:
+        print(f"Redacted {len(secret_mapping)} secret(s) from the config before sending to the LLM.")
+
+    print()
+    print("config.yaml has a parse error:")
+    print(f"  {error_msg}")
+    print()
+    print(f"Broken YAML saved at: {broken_path}")
+    print(f"Config will be written to: {home / 'config.yaml'}")
+    print()
+
+    # Resolve model and credentials
+    requested_model = getattr(args, "model", None)
+    if not requested_model:
+        # Try the current config's model as default
+        requested_model = input("Model to use for repair (e.g. openai/gpt-4o): ").strip()
+        if not requested_model:
+            print("Cancelled.")
+            return
+
+    # Resolve provider credentials
+    try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
+        from hermes_cli.model_switch import normalize_model_spec
+
+        provider_id, model_id = normalize_model_spec(requested_model)
+        creds = resolve_api_key_provider_credentials(provider_id)
+        api_key = creds.get("api_key", "")
+        base_url = creds.get("base_url", "")
+    except Exception:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        base_url = os.environ.get("OPENAI_BASE_URL", "")
+        model_id = requested_model
+        provider_id = ""
+
+    if not api_key:
+        print(f"No API key found for {provider_id}.  Set one first.")
+        sys.exit(1)
+
+    # Build the repair prompt using redacted YAML
+    placeholder_note = ""
+    if secret_mapping:
+        placeholder_note = (
+            "\n\nNote: Secret values (API keys, tokens, passwords) have been\n"
+            "replaced with __REDACTED_N__ placeholders.  Preserve them\n"
+            "exactly as-is in your output.  Do NOT try to fill them in.\n"
+        )
+    repair_prompt = (
+        "The user's Hermes Agent config.yaml has a YAML parse error and "
+        "cannot be loaded.  Here is the broken config:\n\n"
+        f"```yaml\n{redacted_yaml}\n```\n\n"
+        f"Parse error: {error_msg}{placeholder_note}\n\n"
+        "Fix the YAML syntax error while preserving ALL existing settings, "
+        "comments, env-var templates (${VAR}), placeholders (__REDACTED_N__), "
+        "and structure.  Output ONLY the corrected YAML — no explanation, "
+        "no markdown fences, no extra text."
+    )
+
+    print(f"Calling {model_id}...")
+    print()
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=base_url or None)
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[{"role": "user", "content": repair_prompt}],
+            temperature=0.0,
+            max_tokens=16384,
+        )
+        fixed_yaml = response.choices[0].message.content.strip()
+    except ImportError:
+        print("openai package not installed.  Install it or fix config.yaml manually.")
+        return
+    except Exception as e:
+        print(f"LLM call failed: {e}")
+        print("Fix config.yaml manually or try a different model.")
+        return
+
+    # Strip markdown fences if present
+    if fixed_yaml.startswith("```"):
+        lines = fixed_yaml.split("\n")
+        lines = [l for l in lines if not l.strip().startswith("```")]
+        fixed_yaml = "\n".join(lines)
+
+    if not fixed_yaml.strip():
+        print("LLM returned empty output.  Config not modified.")
+        return
+
+    # Restore redacted secrets into the repaired YAML
+    if secret_mapping:
+        fixed_yaml = _restore_yaml_secrets(fixed_yaml, secret_mapping)
+
+    # Validate the fix parses as YAML
+    import yaml
+    try:
+        parsed = yaml.safe_load(fixed_yaml)
+        if not isinstance(parsed, dict):
+            print(f"LLM returned a {type(parsed).__name__}, not a YAML mapping.")
+            print("Config not modified.  Try a more capable model.")
+            return
+    except yaml.YAMLError as e:
+        print(f"LLM's output still has YAML errors: {e}")
+        print("Config not modified.  Try a different model.")
+        return
+
+    # Write directly, bypassing the guard
+    ok = write_raw_config(fixed_yaml)
+    if ok:
+        print(f"Config repaired and written to {home / 'config.yaml'}")
+        print("Restart the gateway to confirm the fix loads cleanly.")
+        try:
+            broken_path.unlink(missing_ok=True)
+            error_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    else:
+        print("Failed to write the repaired config.")
+
 
 def config_command(args):
     """Handle config subcommands."""
@@ -8449,6 +8767,9 @@ def config_command(args):
         
         print()
     
+    elif subcmd == "recover":
+        _config_recover(args)
+
     else:
         print(f"Unknown config command: {subcmd}")
         print()

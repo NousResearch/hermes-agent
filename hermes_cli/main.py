@@ -13255,6 +13255,29 @@ def main():
     # =========================================================================
     build_config_parser(subparsers, cmd_config=cmd_config)
 
+    # config recover (added by feat/config-parse-guard — not yet in subcommands/config.py)
+    _cfg_parser = subparsers.choices.get("config")
+    if _cfg_parser is not None:
+        _cfg_subparsers = _cfg_parser._subparsers._group_actions[0] if _cfg_parser._subparsers else None
+        if _cfg_subparsers is not None:
+            config_recover = _cfg_subparsers.add_parser(
+                "recover",
+                help="Repair a broken config.yaml via LLM",
+                description=(
+                    "Start a one-shot LLM call to repair config.yaml when it "
+                    "has a parse error.  Reads config.yaml.broken and "
+                    "config.yaml.error, sends the broken YAML (with secrets "
+                    "redacted) to an LLM, and writes the repaired version "
+                    "directly.  Afterward, restart the gateway to confirm "
+                    "the fix loads cleanly."
+                ),
+            )
+            config_recover.add_argument(
+                "--model",
+                default=None,
+                help="Model/provider to use for the repair (default: prompt)",
+            )
+
     # =========================================================================
     # console command  (parser built in hermes_cli/subcommands/console.py)
     # =========================================================================

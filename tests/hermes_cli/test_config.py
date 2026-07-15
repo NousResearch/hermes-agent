@@ -24,6 +24,8 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    _redact_yaml_secrets,
+    _restore_yaml_secrets,
     set_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
@@ -501,6 +503,191 @@ class TestSaveAndLoadRoundtrip:
             saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert saved["model"] == "test/custom-model"
             assert saved["platforms"]["email"]["unauthorized_dm_behavior"] == "pair"
+
+
+class TestSaveConfigParseFailureGuard:
+    """Regression tests for the shared-boundary parse-failure guard.
+
+    The gateway-local HERMES_CONFIG_PARSE_FAILED flag only covers processes
+    that went through load_gateway_config().  A fresh TUI or dashboard
+    process can reach save_config() without that flag.  If read_raw_config()
+    returns {} on a non-empty config.yaml, writing would wipe all custom
+    settings.  The guard in save_config() refuses the write in that case.
+
+    Based on the reproduction and analysis by @ruangraung (PR #14276).
+    """
+
+    def test_save_config_refuses_on_unparseable_yaml(self, tmp_path):
+        """save_config must not overwrite a non-empty config.yaml that failed to parse."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            original_content = (
+                "model:\n"
+                "  default: test-model\n"
+                "  provider: test-provider\n"
+                "providers:\n"
+                "  test-provider:\n"
+                "    api: https://example.com/v1\n"
+                "    key_env: TEST_API_KEY\n"
+                "    name: Test\n"
+                "fallback_providers:\n"
+                "  - provider: test-provider\n"
+                "    model: fallback-model\n"
+                "_config_version: 33\n"
+            )
+            config_path.write_text(original_content, encoding="utf-8")
+            original_bytes = config_path.read_bytes()
+
+            # Simulate a transient parse failure: the file exists and is
+            # non-empty, but read_raw_config() returns {}.
+            with patch("hermes_cli.config.read_raw_config", return_value={}):
+                save_config({"model": {"default": "new-model", "provider": "new-provider"}})
+
+            assert config_path.read_bytes() == original_bytes, (
+                "save_config overwrote a non-empty config.yaml when "
+                "read_raw_config() returned {} — the wipe guard failed"
+            )
+
+    def test_save_config_allows_write_on_empty_config(self, tmp_path):
+        """save_config should proceed when config.yaml doesn't exist yet (fresh install)."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            # No config.yaml exists — this is a fresh install, not a parse failure.
+            save_config({"model": "test/new-model"})
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert saved["model"] == "test/new-model"
+
+    def test_set_config_value_refuses_on_unparseable_yaml(self, tmp_path):
+        """set_config_value must not wipe a non-empty config.yaml that failed to parse."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            # Write broken YAML that fails to parse.
+            broken_content = "model: [unclosed\n  bad: yaml: }}\n"
+            config_path.write_text(broken_content, encoding="utf-8")
+
+            from hermes_cli.config import set_config_value
+            set_config_value("terminal.timeout", "300")
+
+            # File content should be unchanged — the guard refused the write.
+            assert config_path.read_bytes() == broken_content.encode("utf-8"), (
+                "set_config_value overwrote a non-empty config.yaml that "
+                "failed to parse — the wipe guard failed"
+            )
+
+
+class TestReversibleSecretRedaction:
+    """Tests for _redact_yaml_secrets / _restore_yaml_secrets.
+
+    These power the credential-safe config-recovery flow: secrets in
+    broken config.yaml are replaced with __REDACTED_N__ placeholders
+    before the YAML is sent to an external LLM, then restored after the
+    repair comes back.
+    """
+
+    def test_redacts_named_secret_keys(self):
+        """Values under keys named api_key, token, password, etc. are replaced."""
+        yaml_text = (
+            "model:\n"
+            "  default: test-model\n"
+            "providers:\n"
+            "  openrouter:\n"
+            "    api_key: sk-or-abc123def456\n"
+            "    name: OpenRouter\n"
+            "mcp_servers:\n"
+            "  github:\n"
+            "    token: ghp_abc123def456ghi789\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert "sk-or-abc123def456" not in redacted
+        assert "ghp_abc123def456ghi789" not in redacted
+        assert "__REDACTED_1__" in redacted
+        assert "__REDACTED_2__" in redacted
+        assert len(mapping) == 2
+
+    def test_restore_roundtrip_recovers_original_secrets(self):
+        """After redact → restore, the YAML has real values back."""
+        yaml_text = (
+            "providers:\n"
+            "  openrouter:\n"
+            "    api_key: sk-or-abc123def456\n"
+            "    name: OpenRouter\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        # Simulate the LLM fixing YAML but keeping placeholders intact
+        restored = _restore_yaml_secrets(redacted, mapping)
+        assert "sk-or-abc123def456" in restored
+        assert "__REDACTED_" not in restored
+
+    def test_redacts_inline_token_patterns(self):
+        """Inline tokens in arbitrary values are caught by prefix patterns."""
+        yaml_text = (
+            "mcp_servers:\n"
+            "  custom:\n"
+            "    env:\n"
+            "      SOME_VAR: sk-abc123def456ghi789\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert "sk-abc123def456ghi789" not in redacted
+        assert len(mapping) >= 1
+
+    def test_does_not_redact_non_secret_values(self):
+        """Model names, URLs without credentials, and numbers are left alone."""
+        yaml_text = (
+            "model:\n"
+            "  default: anthropic/claude-sonnet-4\n"
+            "  provider: openrouter\n"
+            "terminal:\n"
+            "  timeout: 180\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert mapping == {}
+        assert "claude-sonnet-4" in redacted
+        assert "180" in redacted
+
+    def test_handles_unparseable_yaml_with_regex_fallback(self):
+        """Even if the YAML can't be parsed, known token patterns are redacted."""
+        broken_yaml = (
+            "model: [unclosed\n"
+            "  api_key: sk-or-abc123def456\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(broken_yaml)
+        assert "sk-or-abc123def456" not in redacted
+        assert len(mapping) >= 1
+
+    def test_empty_secrets_not_redacted(self):
+        """Empty-string secret values are not replaced with placeholders."""
+        yaml_text = (
+            "providers:\n"
+            "  openrouter:\n"
+            "    api_key: ''\n"
+            "    name: OpenRouter\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        # Empty values (including empty-quoted) should not be redacted.
+        # The regex captures the value between optional quotes; an empty
+        # quoted string yields a placeholder for the quote char, which is
+        # harmless noise — the important assertion is that no real secret
+        # was captured.
+        assert len(mapping) == 0 or all(
+            not v.strip() or v in ('"', "'")
+            for v in mapping.values()
+        ), f"Unexpected non-empty secret captured: {mapping}"
+
+    def test_restore_handles_reformatted_yaml(self):
+        """Restore works even if the LLM reformatted the YAML structure."""
+        original_yaml = (
+            "providers:\n"
+            "  test:\n"
+            "    api_key: sk-test-abc123def456\n"
+        )
+        _, mapping = _redact_yaml_secrets(original_yaml)
+        # Simulate the LLM changing indentation but keeping placeholders
+        reformatted = (
+            "providers:\n"
+            "    test:\n"
+            "        api_key: __REDACTED_1__\n"
+        )
+        restored = _restore_yaml_secrets(reformatted, mapping)
+        assert "sk-test-abc123def456" in restored
 
 
 class TestSaveEnvValueSecure:

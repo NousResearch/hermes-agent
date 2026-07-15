@@ -1015,6 +1015,14 @@ def load_gateway_config() -> GatewayConfig:
             logger.warning("Failed to load %s: %s", gateway_json_path, e)
 
     # Primary source: config.yaml
+    # Clear stale parse-failure guard from a previous startup.
+    os.environ.pop("HERMES_CONFIG_PARSE_FAILED", None)
+    # Remove leftover recovery artifacts from a previous parse failure.
+    for _artifact in ("config.yaml.broken", "config.yaml.error"):
+        try:
+            (_home / _artifact).unlink(missing_ok=True)
+        except Exception:
+            pass
     try:
         import yaml
         config_yaml_path = _home / "config.yaml"
@@ -1389,6 +1397,21 @@ def load_gateway_config() -> GatewayConfig:
             _home / "config.yaml",
             e,
         )
+        # Guard: prevent save_config / save_config_value from writing back
+        # defaults (which would destroy the user's real config).  Cleared
+        # on the next successful config load above.
+        os.environ.setdefault("HERMES_CONFIG_PARSE_FAILED", "1")
+        # Preserve the broken YAML and error for the recovery flow.
+        # The TUI can offer to start a repair session where the agent
+        # reads these files and writes a fixed config.yaml directly.
+        broken_path = _home / "config.yaml.broken"
+        error_path = _home / "config.yaml.error"
+        try:
+            raw = (_home / "config.yaml").read_text(encoding="utf-8")
+            broken_path.write_text(raw, encoding="utf-8")
+            error_path.write_text(str(e), encoding="utf-8")
+        except Exception:
+            pass
 
     config = GatewayConfig.from_dict(gw_data)
 

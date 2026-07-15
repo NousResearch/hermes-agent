@@ -26,4 +26,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run --prefix apps/mobile typecheck
+      - run: npm run --prefix apps/mobile test
       - run: npm run --prefix apps/mobile build

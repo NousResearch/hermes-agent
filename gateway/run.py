@@ -9586,6 +9586,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _cmd_def_inner.name == "version":
                     return await self._handle_version_command(event)
 
+            # /bot-ping — liveness check, replies 'pong' without LLM call.
+            # Must work during active session so monitoring can distinguish
+            # a live-but-busy agent from a dead one.
+            if _cmd_def_inner and _cmd_def_inner.name == "bot-ping":
+                return await self._handle_bot_ping_command(event)
+
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
             # through to interrupt + discard. Without this, commands

@@ -351,6 +351,43 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _load_profile_soul(profile_name: str) -> str:
+    """Load the identity prompt for a named Hermes profile.
+
+    Delegation intentionally borrows only ``SOUL.md``.  The child keeps the
+    parent's runtime, credentials, and tool isolation; selecting a profile is
+    not the same as starting that profile's independent Hermes instance.
+    """
+    if not isinstance(profile_name, str):
+        raise ValueError("profile must be a string")
+
+    from hermes_cli.profiles import (
+        get_profile_dir,
+        normalize_profile_name,
+        validate_profile_name,
+    )
+
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    if canon == "default":
+        raise ValueError("profile must name a non-default profile")
+
+    profile_dir = get_profile_dir(canon)
+    if not profile_dir.is_dir():
+        raise ValueError(f"Unknown profile {canon!r}")
+
+    soul_path = profile_dir / "SOUL.md"
+    if not soul_path.is_file():
+        raise ValueError(f"Profile {canon!r} has no SOUL.md")
+    try:
+        soul = soul_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(f"Could not read SOUL.md for profile {canon!r}: {exc}") from exc
+    if not soul:
+        raise ValueError(f"Profile {canon!r} has an empty SOUL.md")
+    return soul
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -666,6 +703,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    profile_soul: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -675,11 +713,16 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts = []
+    if profile_soul and profile_soul.strip():
+        parts.extend([profile_soul.strip(), ""])
+    parts.extend(
+        [
+            "You are a focused subagent working on a specific delegated task.",
+            "",
+            f"YOUR TASK:\n{goal}",
+        ]
+    )
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -1064,6 +1107,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Optional identity prompt loaded from a named profile's SOUL.md.
+    profile_soul: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1151,6 +1196,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        profile_soul=profile_soul,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -2374,18 +2420,23 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    profile: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, role, profile)
+      - Batch:  provide tasks array [{goal, context, role, profile}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The optional 'profile' selects only the named profile's SOUL.md identity
+    prompt. Per-task profile beats the top-level one; runtime configuration,
+    credentials, and tool access remain unchanged.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2473,7 +2524,14 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [
+            {
+                "goal": goal,
+                "context": context,
+                "role": top_role,
+                "profile": profile,
+            }
+        ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2488,6 +2546,21 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Resolve every requested identity before constructing any child. A bad
+    # profile therefore fails the whole batch without partially dispatching it.
+    profile_souls: List[Optional[str]] = []
+    for i, task in enumerate(task_list):
+        profile_name = task.get("profile")
+        if profile_name is None:
+            profile_name = profile
+        if profile_name is None:
+            profile_souls.append(None)
+            continue
+        try:
+            profile_souls.append(_load_profile_soul(profile_name))
+        except ValueError as exc:
+            return tool_error(f"Task {i} profile error: {exc}")
 
     overall_start = time.monotonic()
     results = []
@@ -2532,6 +2605,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                profile_soul=profile_souls[i],
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3436,6 +3510,13 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": (
+                                "Per-task named profile override. Only that "
+                                "profile's SOUL.md identity prompt is loaded."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3448,6 +3529,15 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Optional named Hermes profile (not 'default'). Only its "
+                    "SOUL.md identity prompt is prepended to the subagent; "
+                    "runtime configuration, credentials, and tool access are "
+                    "unchanged. Per-task profile overrides this value."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3519,6 +3609,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        profile=args.get("profile"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

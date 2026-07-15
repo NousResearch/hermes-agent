@@ -164,3 +164,10 @@ export const blurComposerInput = () => {
     el.blur()
   }
 }
+
+/** Toggle dictation — the `composer.dictation` hotkey reaching into the
+ *  composer that owns the voice recorder state. */
+const DICTATION_TOGGLE_EVENT = 'hermes:composer-dictation-toggle'
+export const requestDictationToggle = () => dispatch<{ at: number }>(DICTATION_TOGGLE_EVENT, { at: Date.now() })
+export const onComposerDictationToggleRequest = (handler: () => void) =>
+  subscribe<{ at: number }>(DICTATION_TOGGLE_EVENT, () => handler())

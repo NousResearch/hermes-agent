@@ -8,7 +8,7 @@ import { notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
 import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
-import { onComposerVoiceToggleRequest } from '../focus'
+import { onComposerDictationToggleRequest, onComposerVoiceToggleRequest } from '../focus'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
@@ -123,6 +123,14 @@ export function useComposerVoice({
   }, [conversation, disabled, voiceConversationActive])
 
   useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
+  const toggleDictation = useCallback(() => {
+    if (disabled) {
+      return
+    }
+    dictate()
+  }, [dictate, disabled])
+
+  useEffect(() => onComposerDictationToggleRequest(toggleDictation), [toggleDictation])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

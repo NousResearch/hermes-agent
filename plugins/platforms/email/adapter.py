@@ -1075,7 +1075,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Models sometimes produce full HTML documents or fragments with
         # preamble text before the first HTML tag.
         html_match = _HTML_RE.search(body)
-        if html_match:
+        if html_match and self._html_format:
             # Body already contains HTML — strip preamble and trailing
             # commentary, then send as multipart/alternative.
             html_body = body[html_match.start():]
@@ -1367,6 +1367,7 @@ async def _standalone_send(
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
     password = os.getenv("EMAIL_PASSWORD", "")
     smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    html_format = extra.get("html_format", True)
     try:
         smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
     except (ValueError, TypeError):
@@ -1387,23 +1388,29 @@ async def _standalone_send(
         alt = _MIMEMultipart("alternative")
         alt.attach(MIMEText(message, "plain", "utf-8"))
 
-        # HTML part (when markdown is available)
-        try:
+        # HTML part (when markdown is available and html_format enabled)
+        if html_format:
+          try:
             import markdown
             html_body = markdown.markdown(
                 message, extensions=["tables", "fenced_code", "nl2br"]
             )
             html_body = _style_html_email(_HTML_PREFIX + html_body + _HERMES_EMAIL_FOOTER)
             alt.attach(MIMEText(html_body, "html", "utf-8"))
-        except ImportError:
-            pass  # no markdown lib, send plain only
-        except Exception:
-            pass  # HTML conversion failed, send plain only
+          except ImportError:
+              pass  # no markdown lib, send plain only
+          except Exception:
+              pass  # HTML conversion failed, send plain only
 
         msg.attach(alt)
 
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
+        # Port 465 uses implicit TLS (SMTP_SSL), others use STARTTLS
+        ctx = _ssl.create_default_context()
+        if smtp_port == 465:
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30, context=ctx)
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+            server.starttls(context=ctx)
         server.login(address, password)
         server.send_message(msg)
         server.quit()

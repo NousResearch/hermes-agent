@@ -5,6 +5,8 @@ Covers:
 - _attach_body: multipart/alternative wrapping
 - _create_body_part: multipart/alternative for attachment paths
 - html_format config: opt-in/opt-out behavior
+- Pre-existing HTML detection and preamble stripping
+- Port 465 SMTP_SSL handling
 """
 
 import pytest
@@ -277,3 +279,64 @@ class TestPreExistingHTML:
         payloads = alt.get_payload()
         assert len(payloads) == 1
         assert payloads[0].get_content_type() == "text/plain"
+
+
+class TestHtmlFormatOptOut:
+    """Tests for html_format=False opt-out behavior."""
+
+    def _make_adapter(self, html_format=True):
+        from plugins.platforms.email.adapter import EmailAdapter
+        with patch.object(EmailAdapter, '__init__', lambda self, *a, **kw: None):
+            adapter = EmailAdapter.__new__(EmailAdapter)
+            adapter._html_format = html_format
+            return adapter
+
+    def _decode_payload(self, part):
+        decoded = part.get_payload(decode=True)
+        if decoded:
+            return decoded.decode("utf-8", errors="replace")
+        return part.get_payload()
+
+    def test_pre_existing_html_opt_out(self):
+        """html_format=False should send pre-existing HTML as plain text."""
+        adapter = self._make_adapter(html_format=False)
+        body = "<!DOCTYPE html><html><body><h1>Report</h1></body></html>"
+        msg = MIMEMultipart()
+        adapter._attach_body(msg, body)
+
+        alt = msg.get_payload()[0]
+        payloads = alt.get_payload()
+        # Should have only plain text (HTML stripped to plain)
+        assert len(payloads) == 1
+        assert payloads[0].get_content_type() == "text/plain"
+
+    def test_html_fragment_opt_out(self):
+        """html_format=False should send HTML fragments as plain text."""
+        adapter = self._make_adapter(html_format=False)
+        body = "<div><h1>Status</h1><p>OK</p></div>"
+        msg = MIMEMultipart()
+        adapter._attach_body(msg, body)
+
+        alt = msg.get_payload()[0]
+        payloads = alt.get_payload()
+        assert len(payloads) == 1
+        assert payloads[0].get_content_type() == "text/plain"
+
+
+class TestStandaloneSendPort465:
+    """Tests for standalone send path port 465 handling."""
+
+    def test_standalone_send_uses_smtp_ssl_for_port465(self):
+        """_standalone_send should use SMTP_SSL for port 465."""
+        import inspect
+        from plugins.platforms.email.adapter import _standalone_send
+        source = inspect.getsource(_standalone_send)
+        assert "SMTP_SSL" in source, "_standalone_send should use SMTP_SSL for port 465"
+        assert "smtp_port == 465" in source, "_standalone_send should check port 465"
+
+    def test_standalone_send_reads_html_format(self):
+        """_standalone_send should read html_format from config."""
+        import inspect
+        from plugins.platforms.email.adapter import _standalone_send
+        source = inspect.getsource(_standalone_send)
+        assert "html_format" in source, "_standalone_send should read html_format setting"

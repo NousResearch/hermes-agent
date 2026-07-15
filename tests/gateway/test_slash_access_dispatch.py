@@ -352,7 +352,7 @@ async def test_non_admin_denied_before_quick_command_argv_spawn(monkeypatch):
     runner.config.quick_commands = {
         "remember": {
             "type": "argv",
-            "command": ["atlas-spool-append", "--type", "fact"],
+            "command": ["remember-spool-append", "--type", "fact"],
             "argument_mode": "text",
             "destination_alias": "owner",
         }

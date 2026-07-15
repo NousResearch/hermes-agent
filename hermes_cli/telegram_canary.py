@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import CodeType
 from typing import Any
 
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -76,7 +77,7 @@ def build_live_payload(runtime_sha: str) -> str:
         raise ValueError("runtime_sha must be an exact 40-character lowercase Git SHA")
     header = (
         "Hermes synthetic Telegram gateway canary. "
-        "Non-private and not qualifying for Health P6/P7. "
+        "Non-private and not a production or domain acceptance receipt. "
         f"Runtime {runtime_sha}.\n"
     )
     return header + ("A" * 5000)
@@ -86,9 +87,10 @@ def _pyc_matches_tracked_source(cache_path: Path, source_path: Path) -> bool:
     """Return True only when a PEP 3147 cache contains the source's code.
 
     Timestamp/size metadata is insufficient: an equal-size malicious source can
-    be compiled and the tracked source's timestamp restored. Compare the exact
-    marshalled code payload instead, using the optimization level encoded in
-    the cache filename.
+    be compiled and the tracked source's timestamp restored. Compare the loaded
+    code object to a fresh compilation instead, using the optimization level
+    encoded in the cache filename. Raw marshal bytes are not canonical because
+    equivalent code objects can encode string-reference tables differently.
     """
     optimization = 0
     match = re.search(r"\.opt-([0-9]+)\.pyc$", cache_path.name)
@@ -101,6 +103,7 @@ def _pyc_matches_tracked_source(cache_path: Path, source_path: Path) -> bool:
         if len(cached) <= 16 or cached[:4] != importlib.util.MAGIC_NUMBER:
             return False
         source_bytes = source_path.read_bytes()
+        cached_code = marshal.loads(cached[16:])
         expected_code = compile(
             source_bytes,
             str(source_path),
@@ -108,8 +111,8 @@ def _pyc_matches_tracked_source(cache_path: Path, source_path: Path) -> bool:
             dont_inherit=True,
             optimize=optimization,
         )
-        return cached[16:] == marshal.dumps(expected_code)
-    except (OSError, SyntaxError, ValueError):
+        return isinstance(cached_code, CodeType) and cached_code == expected_code
+    except (EOFError, OSError, SyntaxError, TypeError, ValueError):
         return False
 
 
@@ -376,7 +379,7 @@ def finalize_live_canary(
         "runtime_sha": claim.runtime_sha,
         "synthetic": True,
         "private_data": False,
-        "qualifies_for_health_p6": False,
+        "qualifies_for_external_acceptance": False,
         "destination_alias": claim.destination_alias,
         "result": "pass" if passed else "fail",
         "checks": {

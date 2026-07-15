@@ -133,7 +133,7 @@ class TestCLIQuickCommands:
         cli = self._make_cli({
             "remember": {
                 "type": "argv",
-                "command": ["/opt/atlas/bin/atlas-spool-append", "--type", "fact"],
+                "command": ["/opt/companion/bin/remember-spool-append", "--type", "fact"],
                 "argument_mode": "text",
             }
         })
@@ -147,7 +147,7 @@ class TestCLIQuickCommands:
 
         assert result is True
         assert run.call_args.args[0] == [
-            "/opt/atlas/bin/atlas-spool-append",
+            "/opt/companion/bin/remember-spool-append",
             "--type",
             "fact",
             "hello; echo not-a-shell",
@@ -376,7 +376,7 @@ class TestGatewayQuickCommands:
     async def test_argv_passes_one_text_item_and_exact_provenance_env(self):
         runner = self._make_runner({
             "type": "argv",
-            "command": ["/opt/atlas/bin/atlas-spool-append", "--type", "fact"],
+            "command": ["/opt/companion/bin/remember-spool-append", "--type", "fact"],
             "argument_mode": "text",
             "destination_alias": "owner",
         })
@@ -393,7 +393,7 @@ class TestGatewayQuickCommands:
 
         assert result == "saved"
         assert create.await_args.args == (
-            "/opt/atlas/bin/atlas-spool-append",
+            "/opt/companion/bin/remember-spool-append",
             "--type",
             "fact",
             "hello; echo not-a-shell",

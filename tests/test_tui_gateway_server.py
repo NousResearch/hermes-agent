@@ -4518,7 +4518,7 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
                 "git": {"type": "alias", "target": "/shell git"},
                 "remember": {
                     "type": "argv",
-                    "command": ["atlas-spool-append", "--type", "fact"],
+                    "command": ["remember-spool-append", "--type", "fact"],
                 },
                 "notes": {
                     "type": "exec",
@@ -4709,7 +4709,7 @@ def test_command_dispatch_argv_passes_text_as_one_item_without_shell(monkeypatch
             "quick_commands": {
                 "remember": {
                     "type": "argv",
-                    "command": ["atlas-spool-append", "--type", "fact"],
+                    "command": ["remember-spool-append", "--type", "fact"],
                     "argument_mode": "text",
                 }
             }
@@ -4736,7 +4736,7 @@ def test_command_dispatch_argv_passes_text_as_one_item_without_shell(monkeypatch
 
     assert resp["result"] == {"type": "argv", "output": "saved"}
     assert calls[0][0][0] == [
-        "atlas-spool-append",
+        "remember-spool-append",
         "--type",
         "fact",
         "hello; echo not-a-shell",

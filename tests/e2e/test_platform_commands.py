@@ -172,7 +172,7 @@ class TestSlashCommands:
         runner.config.quick_commands = {
             "remember": {
                 "type": "argv",
-                "command": ["atlas-spool-append", "--type", "fact"],
+                "command": ["remember-spool-append", "--type", "fact"],
                 "argument_mode": "text",
                 "destination_alias": "owner",
             }
@@ -191,7 +191,7 @@ class TestSlashCommands:
             )
 
         assert spawn.await_args.args == (
-            "atlas-spool-append",
+            "remember-spool-append",
             "--type",
             "fact",
             "hello; echo not-a-shell",
@@ -291,7 +291,7 @@ class TestSlashCommands:
             receipt = json.loads(receipt_path.read_text(encoding="utf-8").strip())
             assert receipt["result"] == "pass"
             assert receipt["mode"] == "live_gateway_pipeline"
-            assert receipt["qualifies_for_health_p6"] is False
+            assert receipt["qualifies_for_external_acceptance"] is False
             assert receipt["checks"]["idempotency"]["duplicate_probe_suppressed"] is True
             assert receipt["checks"]["retry"]["safe_retry_verified"] is True
             assert receipt["checks"]["length"]["all_chunks_acknowledged"] is True

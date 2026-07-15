@@ -160,7 +160,7 @@ quick_commands:
     command: nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
   remember:
     type: argv
-    command: [atlas-spool-append, --type, fact]
+    command: [remember-spool-append, --type, fact]
     argument_mode: text
     destination_alias: owner
   restart:

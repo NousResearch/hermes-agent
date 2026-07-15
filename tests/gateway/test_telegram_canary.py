@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import marshal
 import os
 import py_compile
 import subprocess
@@ -175,6 +176,23 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
     )
     assert ordinary_cache.parent.name == "__pycache__"
     assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
+
+    # Marshal byte streams are not canonical: different valid encodings can
+    # load to the exact same code object. The verifier must accept that normal
+    # tracked-source cache while still rejecting changed executable content.
+    ordinary_bytes = ordinary_cache.read_bytes()
+    equivalent_code = compile(
+        tracked_module.read_bytes(),
+        str(tracked_module),
+        "exec",
+        dont_inherit=True,
+        optimize=0,
+    )
+    alternate_payload = marshal.dumps(equivalent_code, 3)
+    assert alternate_payload != ordinary_bytes[16:]
+    ordinary_cache.write_bytes(ordinary_bytes[:16] + alternate_payload)
+    assert marshal.loads(alternate_payload) == equivalent_code
+    assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
     ordinary_cache.unlink()
     ordinary_cache.parent.rmdir()
 
@@ -294,7 +312,7 @@ async def test_live_retry_probe_stays_inside_existing_telegram_send(monkeypatch)
     assert bot.calls == result.raw_response["chunk_count"]
 
 
-def test_live_receipt_hashes_ids_and_marks_health_non_qualifying(tmp_path):
+def test_live_receipt_hashes_ids_and_marks_external_acceptance_non_qualifying(tmp_path):
     state_path = tmp_path / "private" / "telegram-canary-state.json"
     receipt_path = tmp_path / "private" / "telegram-canary.jsonl"
     claim, duplicate = claim_live_canary(
@@ -358,7 +376,7 @@ def test_live_receipt_hashes_ids_and_marks_health_non_qualifying(tmp_path):
 
     assert receipt["result"] == "pass"
     assert receipt["private_data"] is False
-    assert receipt["qualifies_for_health_p6"] is False
+    assert receipt["qualifies_for_external_acceptance"] is False
     assert receipt["checks"]["idempotency"]["scope"] == "canary_producer"
     assert receipt["checks"]["delivery"]["confirmation"] == "api_acknowledged"
     assert all(

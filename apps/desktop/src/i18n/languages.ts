@@ -12,6 +12,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'en'
   },
   {
+    id: 'es',
+    name: 'Español',
+    englishName: 'Spanish',
+    configValue: 'es'
+  },
+  {
     id: 'zh',
     name: '简体中文',
     englishName: 'Simplified Chinese',
@@ -43,6 +49,13 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   en: 'en',
   'en-us': 'en',
   en_us: 'en',
+  es: 'es',
+  'es-es': 'es',
+  es_es: 'es',
+  'es-mx': 'es',
+  es_mx: 'es',
+  'es-ar': 'es',
+  es_ar: 'es',
   zh: 'zh',
   'zh-cn': 'zh',
   zh_cn: 'zh',

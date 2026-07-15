@@ -3220,6 +3220,7 @@ def write_raw_config(content: str) -> bool:
     """
     ensure_hermes_home()
     config_path = get_config_path()
+    from utils import atomic_yaml_write
     try:
         atomic_yaml_write(config_path, content, raw_text=True)
         _secure_file(config_path)
@@ -3237,6 +3238,12 @@ def write_raw_config(content: str) -> bool:
 # YAML to an external LLM for syntax repair would disclose those credentials.
 # These functions replace sensitive values with numbered placeholders before
 # the LLM sees them, then restore the originals after the repair comes back.
+#
+# IMPORTANT: redaction operates on raw text, NOT on parsed YAML.  The Hermes
+# venv ships a security-hardened PyYAML C extension that masks known token
+# patterns (sk-*, ghp_*, etc.) at the scanner level before Python code sees
+# them.  A parse-then-walk approach stores masked values in the mapping and
+# corrupts credentials on restore.
 # ---------------------------------------------------------------------------
 
 # YAML keys whose values are credentials.  Matched case-insensitively.
@@ -3246,93 +3253,73 @@ _SECRET_KEY_NAMES = frozenset({
     "refresh_token", "id_token",
 })
 
+# Matches  key: value  or  key: "value"  or  key: 'value'  lines where
+# the key is one of _SECRET_KEY_NAMES.  Captures the quoted or unquoted
+# value.  Operates on raw YAML text so the C scanner never runs.
+_SECRET_KEY_VALUE_RE = re.compile(
+    r'^(\s*(?:\w+\.)*)*('
+    + '|'.join(re.escape(k) for k in _SECRET_KEY_NAMES)
+    + r')\s*:\s*["\']?(?!__REDACTED)(.+?)["\']?\s*$',
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _redact_yaml_secrets(yaml_text: str) -> tuple[str, dict[str, str]]:
     """Replace credential values in YAML text with numbered placeholders.
 
-    Returns (redacted_text, mapping) where mapping is ``{placeholder:
-    original_value}``.  Call :func:`_restore_yaml_secrets` with the LLM's
-    repaired output and the mapping to put real values back.
+    Returns ``(redacted_text, mapping)`` where *mapping* is
+    ``{placeholder: original_value}``.  Call :func:`_restore_yaml_secrets`
+    with the LLM's repaired output and the mapping to put real values back.
 
-    Uses the existing ``redact_sensitive_text`` prefix patterns (sk-, ghp_,
-    etc.) as a second net for secrets that live in values whose key names
-    don't match ``_SECRET_KEY_NAMES`` — e.g. inside MCP server ``env``
-    blocks or arbitrary string values that happen to contain inline tokens.
+    Two layers, both operating on raw text before any YAML parsing:
+
+    1. **Key-name layer** — matches ``key: value`` lines where *key* is in
+       :data:`_SECRET_KEY_NAMES` (``api_key``, ``token``, ``password``, etc.).
+       Captures the value regardless of quoting style.
+
+    2. **Prefix-token layer** — runs the existing :data:`agent.redact._PREFIX_RE`
+       patterns (``sk-``, ``ghp_``, ``xox-``, ``AIza``, etc.) to catch inline
+       tokens in arbitrary values like MCP ``env`` blocks.
+
+    Neither layer invokes ``yaml.safe_load()``, so the security-hardened
+    C scanner that masks tokens at the parser level does not interfere.
     """
-    import yaml as _yaml
-
-    try:
-        data = _yaml.safe_load(yaml_text)
-    except Exception:
-        # Can't parse — the file is broken, that's why we're here.
-        # Fall back to regex-only redaction on the raw text so we still
-        # protect obvious token patterns before sending to the LLM.
-        from agent.redact import _PREFIX_RE, _mask_token
-        mapping: dict[str, str] = {}
-        counter = [0]
-
-        def _regex_repl(m):
-            counter[0] += 1
-            ph = f"__REDACTED_{counter[0]}__"
-            mapping[ph] = m.group(1)
-            return ph
-
-        redacted = _PREFIX_RE.sub(_regex_repl, yaml_text)
-        return redacted, mapping
-
-    if not isinstance(data, dict):
-        # Not a mapping — regex-only fallback.
-        from agent.redact import _PREFIX_RE
-        mapping = {}
-        counter = [0]
-
-        def _regex_repl(m):
-            counter[0] += 1
-            ph = f"__REDACTED_{counter[0]}__"
-            mapping[ph] = m.group(1)
-            return ph
-
-        redacted = _PREFIX_RE.sub(_regex_repl, yaml_text)
-        return redacted, mapping
+    from agent.redact import _PREFIX_RE
 
     mapping: dict[str, str] = {}
 
-    def _walk(obj):
-        """Recursively walk the parsed YAML, redacting sensitive values."""
-        if isinstance(obj, dict):
-            for key, value in list(obj.items()):
-                if isinstance(value, str) and key.lower() in _SECRET_KEY_NAMES:
-                    if value.strip():
-                        ph = f"__REDACTED_{len(mapping) + 1}__"
-                        mapping[ph] = value
-                        obj[key] = ph
-                elif isinstance(value, str):
-                    # Check for inline token patterns in arbitrary string
-                    # values (URLs with credentials, env blocks, etc.)
-                    from agent.redact import _PREFIX_RE
-                    def _inline_repl(m):
-                        ph = f"__REDACTED_{len(mapping) + 1}__"
-                        mapping[ph] = m.group(1)
-                        return ph
-                    new_val = _PREFIX_RE.sub(_inline_repl, value)
-                    if new_val != value:
-                        obj[key] = new_val
-                else:
-                    _walk(value)
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                _walk(item)
+    def _next_ph() -> str:
+        return f"__REDACTED_{len(mapping) + 1}__"
 
-    _walk(data)
-    redacted_text = _yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    return redacted_text, mapping
+    # --- Layer 1: key-name matching on raw text ---
+    def _key_name_repl(m):
+        full = m.group(0)
+        prefix = full[:m.start(3) - m.start(0)]
+        value = m.group(3)
+        if not value.strip():
+            return full
+        ph = _next_ph()
+        mapping[ph] = value
+        return f"{prefix}__REDACTED_{len(mapping)}__"
+
+    redacted = _SECRET_KEY_VALUE_RE.sub(_key_name_repl, yaml_text)
+
+    # --- Layer 2: inline prefix-token patterns on raw text ---
+    def _prefix_repl(m):
+        ph = _next_ph()
+        mapping[ph] = m.group(1)
+        return ph
+
+    redacted = _PREFIX_RE.sub(_prefix_repl, redacted)
+
+    return redacted, mapping
 
 
 def _restore_yaml_secrets(yaml_text: str, mapping: dict[str, str]) -> str:
     """Restore redacted placeholder values in repaired YAML.
 
     Replaces each ``__REDACTED_N__`` placeholder with the original secret
-    value from ``mapping``.  Works on raw text so it handles YAML the LLM
+    value from *mapping*.  Works on raw text so it handles YAML the LLM
     may have reformatted.
     """
     for placeholder, original in mapping.items():

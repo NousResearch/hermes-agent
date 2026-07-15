@@ -22,7 +22,7 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { setSessionUnread } from '@/store/session'
+import { $sessions, setSessionUnread } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { $threadScrolledUp } from '@/store/thread-scroll'
@@ -67,8 +67,20 @@ export function useMessageStream({
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
-  const storedSessionIdForRuntime = useCallback(
-    (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? undefined,
+  const ownerSessionIdForRuntime = useCallback(
+    (sessionId: string) => {
+      const storedSessionId = sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? undefined
+
+      if (!storedSessionId) {
+        return undefined
+      }
+
+      const stored = $sessions
+        .get()
+        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)
+
+      return stored?._lineage_root_id ?? storedSessionId
+    },
     [sessionStateByRuntimeIdRef]
   )
 
@@ -366,7 +378,7 @@ export function useMessageStream({
             subagentPayload,
             true,
             phase === 'complete' ? 'delegate.complete' : 'delegate.running',
-            storedSessionIdForRuntime(sessionId)
+            ownerSessionIdForRuntime(sessionId)
           )
         }
       }
@@ -378,7 +390,7 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [flushQueuedDeltas, mutateStream, sessionInterrupted, storedSessionIdForRuntime]
+    [flushQueuedDeltas, mutateStream, ownerSessionIdForRuntime, sessionInterrupted]
   )
 
   const completeAssistantMessage = useCallback(
@@ -588,7 +600,7 @@ export function useMessageStream({
     refreshHermesConfig,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
-    storedSessionIdForRuntime,
+    ownerSessionIdForRuntime,
     updateSessionState,
     upsertToolCall
   })

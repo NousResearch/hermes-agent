@@ -6,7 +6,8 @@ import { useNavigate } from 'react-router-dom'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
 import { $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states'
+import { $attentionSessionIds } from '@/store/session-states'
+import { $sessionActivityIds } from '@/store/session-activity'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
@@ -18,7 +19,7 @@ export function SessionSwitcher() {
   const open = useStore($switcherOpen)
   const sessions = useStore($switcherSessions)
   const index = useStore($switcherIndex)
-  const working = useStore($workingSessionIds)
+  const working = useStore($sessionActivityIds)
   const attention = useStore($attentionSessionIds)
   const unread = useStore($unreadFinishedSessionIds)
   const navigate = useNavigate()
@@ -61,6 +62,7 @@ export function SessionSwitcher() {
       >
         {sessions.map((session, i) => {
           const selected = i === index
+          const sessionWorking = workingIds.has(session.id)
 
           return (
             <div
@@ -70,6 +72,7 @@ export function SessionSwitcher() {
                 HUD_TEXT,
                 selected ? 'bg-accent text-accent-foreground' : 'text-(--ui-text-secondary)'
               )}
+              data-working={sessionWorking ? 'true' : undefined}
               key={session.id}
               onMouseDown={e => {
                 e.preventDefault()
@@ -80,7 +83,7 @@ export function SessionSwitcher() {
               <SwitcherDot
                 attention={attentionIds.has(session.id)}
                 unread={unreadIds.has(session.id)}
-                working={workingIds.has(session.id)}
+                working={sessionWorking}
               />
               <span className="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
               {i < 9 && (
@@ -110,7 +113,7 @@ function SwitcherDot({ attention, working, unread }: { attention: boolean; worki
         attention
           ? 'bg-amber-400'
           : working
-            ? 'animate-pulse bg-(--ui-accent)'
+            ? 'animate-pulse bg-(--ui-accent) motion-reduce:animate-none'
             : unread
               ? 'bg-emerald-500'
               : 'bg-(--ui-text-quaternary)/50'

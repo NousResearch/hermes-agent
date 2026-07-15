@@ -309,7 +309,8 @@ const DOT_BASE = 'relative size-1.5 rounded-full'
 // the two pulsing dots. The `before:bg-*` color is written inline per variant
 // (NOT interpolated here): Tailwind only generates utilities it can see as
 // complete static strings, so a `before:bg-${color}` template never emits.
-const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
+const PING =
+  "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-[''] motion-reduce:before:animate-none"
 
 const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Amber steady — a clarify/approval is blocking the turn. Steady (not

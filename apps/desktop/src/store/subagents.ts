@@ -58,8 +58,19 @@ const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
 
-const asStatus = (v: unknown): SubagentStatus =>
-  v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued' ? v : 'running'
+const asStatus = (v: unknown, eventType = ''): SubagentStatus => {
+  if (v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued' || v === 'running') {
+    return v
+  }
+
+  if (v === 'error' || v === 'timeout') {
+    return 'failed'
+  }
+
+  // Completion is terminal even when a newer backend adds a status string this
+  // renderer does not know yet. Never leave a finished reviewer running forever.
+  return eventType === 'subagent.complete' ? 'failed' : 'running'
+}
 
 const compact = (text: string, max = PREVIEW_MAX) => {
   const line = text.replace(/\s+/g, ' ').trim()
@@ -156,7 +167,7 @@ function toProgress(
   ownerSessionId?: string
 ): SubagentProgress {
   const at = Date.now()
-  const status = asStatus(payload.status)
+  const status = asStatus(payload.status, eventType)
   const tool = str(payload.tool_name)
   const stream = streamFromPayload(payload, status, eventType, at).reduce(appendStream, prev?.stream ?? [])
   const filesRead = strList(payload.files_read)
@@ -200,6 +211,32 @@ export function clearSessionSubagents(sid: string) {
 
 export function clearAllSubagents() {
   $subagentsBySession.set({})
+}
+
+/** Remove settled children at the start of a new parent turn without dropping
+ * independent reviewers that are still running in the background. */
+export function pruneSettledSessionSubagents(sid: string): boolean {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list?.length) {
+    return false
+  }
+
+  const active = list.filter(item => !TERMINAL.has(item.status))
+
+  if (active.length === 0) {
+    const { [sid]: _drop, ...rest } = map
+    $subagentsBySession.set(rest)
+
+    return false
+  }
+
+  if (active.length !== list.length) {
+    $subagentsBySession.set({ ...map, [sid]: active })
+  }
+
+  return true
 }
 
 export function pruneDelegateFallbackSubagents(sid: string) {

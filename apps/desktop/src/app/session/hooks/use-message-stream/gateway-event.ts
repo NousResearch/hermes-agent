@@ -42,7 +42,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { pruneDelegateFallbackSubagents, pruneSettledSessionSubagents, upsertSubagent } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
@@ -80,7 +80,7 @@ interface GatewayEventDeps {
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
-  storedSessionIdForRuntime: (sessionId: string) => string | undefined
+  ownerSessionIdForRuntime: (sessionId: string) => string | undefined
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -110,7 +110,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     refreshHermesConfig,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
-    storedSessionIdForRuntime,
+    ownerSessionIdForRuntime,
     updateSessionState,
     upsertToolCall
   } = deps
@@ -364,10 +364,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        clearSessionSubagents(sessionId)
+        const reviewersStillRunning = pruneSettledSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
-        nativeSubagentSessionsRef.current.delete(sessionId)
+
+        if (!reviewersStillRunning) {
+          nativeSubagentSessionsRef.current.delete(sessionId)
+        }
 
         if (isActiveEvent) {
           triggerHaptic('streamStart')
@@ -570,7 +573,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             payload as Record<string, unknown>,
             event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
             event.type,
-            storedSessionIdForRuntime(sessionId)
+            ownerSessionIdForRuntime(sessionId)
           )
         }
       } else if (event.type === 'clarify.request') {
@@ -816,7 +819,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       scheduleConfigRefresh,
       sessionInterrupted,
       sessionStateByRuntimeIdRef,
-      storedSessionIdForRuntime,
+      ownerSessionIdForRuntime,
       updateSessionState,
       upsertToolCall
     ]

@@ -8,6 +8,7 @@ import {
   clearSessionSubagents,
   failedSubagentCount,
   pruneDelegateFallbackSubagents,
+  pruneSettledSessionSubagents,
   upsertSubagent
 } from './subagents'
 
@@ -99,6 +100,27 @@ describe('subagent store', () => {
     pruneDelegateFallbackSubagents('s1')
 
     expect(listFor('s1').map(item => item.id)).toEqual(['sa-0-xyz'])
+  })
+
+  it('keeps active reviewers across a new parent turn while pruning settled reviewers', () => {
+    upsertSubagent('s1', { goal: 'active', status: 'running', subagent_id: 'active' })
+    upsertSubagent('s1', { goal: 'done', status: 'completed', subagent_id: 'done' })
+
+    expect(pruneSettledSessionSubagents('s1')).toBe(true)
+    expect(listFor('s1').map(item => item.id)).toEqual(['active'])
+
+    upsertSubagent('s1', { goal: 'active', status: 'completed', subagent_id: 'active' })
+
+    expect(pruneSettledSessionSubagents('s1')).toBe(false)
+    expect($subagentsBySession.get().s1).toBeUndefined()
+  })
+
+  it.each(['error', 'timeout'])('treats backend %s completions as terminal failures', status => {
+    upsertSubagent('s1', { goal: 'review', status: 'running', subagent_id: status })
+    upsertSubagent('s1', { goal: 'review', status, subagent_id: status }, false, 'subagent.complete')
+
+    expect(listFor('s1')[0]?.status).toBe('failed')
+    expect(activeSubagentCount(listFor('s1'))).toBe(0)
   })
 
   // Contract: the status-bar "Agents" indicator and the Spawn-tree panel read

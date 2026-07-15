@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $unreadFinishedSessionIds, $workingSessionIds } from '@/store/session'
+import { $sessions, $unreadFinishedSessionIds, $workingSessionIds } from '@/store/session'
 import { $sessionActivityIds } from '@/store/session-activity'
 import { $subagentsBySession } from '@/store/subagents'
 import type { RpcEvent } from '@/types/hermes'
@@ -14,6 +14,7 @@ import { useMessageStream } from './index'
 
 const RUNTIME_ID = 'runtime-parent'
 const STORED_ID = 'stored-parent'
+const LINEAGE_ROOT_ID = 'lineage-root'
 const CHILD_ID = 'stored-review'
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
@@ -70,6 +71,7 @@ const subagentEvent = (status: 'completed' | 'running'): RpcEvent => ({
 describe('useMessageStream subagent session activity', () => {
   beforeEach(() => {
     handleEvent = null
+    $sessions.set([{ _lineage_root_id: LINEAGE_ROOT_ID, id: STORED_ID } as never])
     $workingSessionIds.set([])
     $subagentsBySession.set({})
     $unreadFinishedSessionIds.set([])
@@ -77,6 +79,7 @@ describe('useMessageStream subagent session activity', () => {
 
   afterEach(() => {
     cleanup()
+    $sessions.set([])
     $workingSessionIds.set([])
     $subagentsBySession.set({})
     $unreadFinishedSessionIds.set([])
@@ -88,8 +91,8 @@ describe('useMessageStream subagent session activity', () => {
 
     act(() => handleEvent!(subagentEvent('running')))
 
-    expect($subagentsBySession.get()[RUNTIME_ID]?.[0]?.ownerSessionId).toBe(STORED_ID)
-    expect($sessionActivityIds.get()).toEqual([STORED_ID, CHILD_ID])
+    expect($subagentsBySession.get()[RUNTIME_ID]?.[0]?.ownerSessionId).toBe(LINEAGE_ROOT_ID)
+    expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, STORED_ID])
 
     act(() =>
       handleEvent!({
@@ -100,7 +103,23 @@ describe('useMessageStream subagent session activity', () => {
     )
 
     expect($workingSessionIds.get()).toEqual([])
-    expect($sessionActivityIds.get()).toEqual([STORED_ID, CHILD_ID])
+    expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, STORED_ID])
+
+    act(() =>
+      handleEvent!({
+        payload: {},
+        session_id: RUNTIME_ID,
+        type: 'message.start'
+      })
+    )
+
+    expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, STORED_ID])
+
+    act(() => {
+      $sessions.set([{ _lineage_root_id: LINEAGE_ROOT_ID, id: 'second-continuation' } as never])
+    })
+
+    expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, 'second-continuation'])
 
     act(() => handleEvent!(subagentEvent('completed')))
 

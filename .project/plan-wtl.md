@@ -64,8 +64,8 @@
 | WTL-P3 | เชื่อม Shortcut และกฎกลาง | 20 | 20 | 100% | verified |
 | WTL-P4 | สำรวจและกำหนดทางจัดการของเดิม | 6 | 6 | 100% | verified |
 | WTL-P5 | ทดสอบเหตุการณ์จริง | 12 | 12 | 100% | verified |
-| WTL-P6 | ทดลองใช้ เปิดใช้ และ PDCA | 8 | 5 | 62.50% | owner/deploy gate |
-| **รวม** |  | **71** | **68** | **95.77%** | owner/deploy gate |
+| WTL-P6 | ทดลองใช้ เปิดใช้ และ PDCA | 8 | 8 | 100% | verified |
+| **รวม** |  | **71** | **71** | **100%** | verified |
 
 ## WTL-P0 — ตั้งพื้นที่และแผนติดตาม
 
@@ -180,16 +180,16 @@
 | WTL-P6-I2 | Pilot โครงการไม่ใช้งานจริงลูกค้า | เหตุการณ์หลักผ่าน | 100 | verified | isolated bare-origin tests 22/22 |
 | WTL-P6-I3 | ตรวจ Notebook จริง | path/registry/disk ถูกต้อง | 100 | verified | 4 worktrees, 96% disk, bucket baseline; no mutation |
 | WTL-P6-I4 | ตรวจ VPS จริง | route/service/runtime namespace ถูกต้อง | 100 | verified | SSH scan 4 worktrees/78% + concurrent remote registry lock/atomic write |
-| WTL-P6-I5 | ตรวจเบาทุก 24 ชั่วโมง | มี scheduler/report และทดสอบเรียกได้ | 0 | deploy-gated | `pdca_report.py --mode light` test ผ่าน; cron activation รอ merge/install |
-| WTL-P6-I6 | เสนอ cleanup ทุก 168 ชั่วโมง | dry-run report ไม่ลบเอง | 0 | deploy-gated | cleanup mode test ผ่าน; cron activation รอ merge/install |
+| WTL-P6-I5 | ตรวจเบาทุก 24 ชั่วโมง | มี scheduler/report และทดสอบเรียกได้ | 100 | verified | Notebook job `63639d7adcfd` + launchd 86400 วินาที exit 0; VPS job `754c9588d645` + systemd timer active/enabled และรันจริง ok |
+| WTL-P6-I6 | เสนอ cleanup ทุก 168 ชั่วโมง | dry-run report ไม่ลบเอง | 100 | verified | Notebook job `5594d40ca72d` + launchd 604800 วินาที exit 0; VPS job `0948314bfe5e` รันจริง ok; คำสั่งมี `--cleanup-review` แต่ไม่มี `cleanup --apply` |
 | WTL-P6-I7 | Dashboard/รายงาน PDCA | เห็นจำนวน พื้นที่ unknown/block/ready | 100 | verified | `hermes worktree report` + cadence/state/project/bytes/blocked/candidates test |
-| WTL-P6-I8 | Closeout 71/71 | ทุก Issue 100% + หลักฐาน + owner review | 0 | owner-gated | รอ owner review + stable ids สำหรับ legacy inventory + merge/install |
+| WTL-P6-I8 | Closeout 71/71 | ทุก Issue 100% + หลักฐาน + owner review | 100 | verified | เจ้าของอนุมัติแผนและสั่ง Use Continue จนจบทุก Phase; code PR #39/#40 และ vault MR #2 merged; Notebook/VPS ติดตั้งและรันจริง 4/4 งานผ่าน |
 
 ## งานถัดไป
 
-1. B1 อนุมัติแล้ว: เก็บ Worktree เดิม 8 รายการเป็น legacy inventory โดยไม่ import/ย้าย/ลบ
-2. B2 อนุมัติแล้ว: ตรวจ → commit สองคลัง → push branch → เปิดคำขอรวมงานให้เจ้าของตรวจและกด merge
-3. B3 ยังไม่อนุมัติ: หลัง merge/install จึง activate cron 24h/168h และทดสอบ `hermes cron run/status`; ก่อนหน้านั้นห้ามลง scheduler จาก source worktree
+1. งานตามแผน WTL ปิดครบ 71/71 = 100% แล้ว
+2. รอบถัดไปให้ปล่อยตัวตั้งเวลาทำงานตามปกติและดูรายงาน PDCA; Worktree เดิม 8 รายการยังเป็น legacy inventory และยังไม่ถูก import/ย้าย/ลบ
+3. หากจะนำ Worktree เดิมเข้าทะเบียน ต้องมีเจ้าของ task และรหัสงานจริงก่อน ห้ามเดาข้อมูลย้อนหลัง
 
 ### โซน B — แผนอนุมัติรวม
 
@@ -197,9 +197,9 @@
 |---|---|---|---|---|
 | B1 | WTL-P4-I3/I4 | อนุมัติแล้ว 2026-07-15 · เก็บ Worktree เดิม 8 รายการเป็น legacy inventory โดยไม่สร้าง task id/owner ปลอม และไม่นำเข้าทะเบียนจนกว่าจะมีเจ้าของมารับรอง | ไม่มีการย้ายหรือลบ; ปิดความเสี่ยงเดาข้อมูล | เปลี่ยนสถานะจาก inventory เป็น import candidate ภายหลังได้ |
 | B2 | WTL-P6-I8 | อนุมัติแล้ว 2026-07-15 · commit สองคลัง → push branch → เปิดคำขอรวมงาน → เจ้าของตรวจและกด merge | ส่งโค้ด/กติกาเข้าสู่แหล่งกลาง แต่ยังไม่เปิด scheduler | ยังไม่ merge สามารถปิดคำขอรวมงาน; หลัง merge ใช้ commit ย้อนกลับ |
-| B3 | WTL-P6-I5/I6 | ติดตั้งรุ่นที่ merge แล้วและเปิดตารางตรวจ 24 ชั่วโมง/เสนอ cleanup 168 ชั่วโมง | เริ่มรายงานอัตโนมัติ; cleanup ยังเป็น dry-run และไม่ลบเอง | ปิด scheduler/service และคงข้อมูลทะเบียนเดิม |
+| B3 | WTL-P6-I5/I6 | อนุมัติจากคำสั่ง Use Continue 2026-07-15 และดำเนินการแล้ว · ติดตั้งรุ่นที่ merge แล้ว เปิดตารางตรวจ 24 ชั่วโมง/เสนอ cleanup 168 ชั่วโมงบน Notebook และ VPS | เริ่มรายงานอัตโนมัติ; cleanup ยังเป็น dry-run และไม่ลบเอง | ปิด launchd jobs / systemd timer และคงข้อมูลทะเบียนเดิม |
 
-ด่านหยุด: B2 เริ่มได้หลังเจ้าของอนุมัติ B1+B2; B3 เริ่มได้เมื่อ merge/install สำเร็จและต้องตรวจ `hermes cron run/status` จริง ห้ามข้ามลำดับ
+ด่านลำดับผ่านแล้ว: B1 → B2 merge/install → B3 activation; ตรวจ `hermes cron run/list/status` จริงทั้ง Notebook/VPS และใช้ launchd/systemd timer แยกเพื่อไม่เปิด Gateway ที่อาจกระทบช่องทางข้อความ
 
 ## บันทึกการเปลี่ยนแปลง
 
@@ -217,9 +217,12 @@
 | 2026-07-14 | WTL-P3-I4/I12 | เพิ่มกติกาเดินงาน 2 โซนให้ Continue/Comply/Contract | โซน A ทำต่อเอง · โซน B ขออนุมัติระดับ Phase ครั้งเดียว |
 | 2026-07-14 | Closeout โซน A | ตรวจ syntax/contract/shortcut/tests หลังเพิ่ม 2 โซน | Python 3.12 compile pass · tests 32/32 · contract 16/16 headings, 17/17 phrases, 30/30 shortcuts · parity ผ่าน |
 | 2026-07-15 | WTL-P4-I3/I4 · B1 | เจ้าของอนุมัติให้เก็บ 8 paths เป็น legacy inventory โดยไม่เดาข้อมูลและไม่ import/ย้าย/ลบ | ข้อความ “อนุมัติ Zone B B1+B2” + `.project/wtl-migration-inventory.md` |
+| 2026-07-15 | WTL-P6-I5/I6/I8 · B2/B3 | รวมโค้ดและคลังคำสั่งกลาง ติดตั้งคำสั่ง Worktree เปิดรอบตรวจ Notebook/VPS และรันจริง | GitHub PR #39/#40 merged · GitLab MR #2 merged · cron jobs 4/4 last run ok · launchd 2/2 exit 0 · VPS systemd timer enabled+active · central PDCA timestamps recorded |
 
 ## ข้อจำกัดการตรวจทั้ง Repository
 
 - ชุด targeted WTL ใช้ bundled Python 3.12.13 และผ่าน 32/32
 - ยังรัน `pytest` ทั้ง Hermes repository ไม่ได้ใน worktree นี้ เพราะไม่มี `.venv`/`venv`; Python ระบบ 3.9 เก่าเกินโค้ด และ bundled Python ไม่มี PyYAML/pytest stack ของโครงการ
 - ข้อนี้ไม่ถูกนับเป็น test failure แต่ก่อน merge ควรรัน CI หรือ `scripts/run_tests.sh` ใน environment มาตรฐานของ Hermes
+- `hermes cron status` รุ่นปัจจุบันตรวจเฉพาะ Gateway จึงยังพิมพ์คำเตือนแม้ launchd/systemd timer ทำงานอยู่; หลักฐานอัตโนมัติให้อ่านจากสถานะตัวตั้งเวลาของระบบและประวัติ `Last run: ok` ของงานทั้ง 4 รายการ
+- Vault หลักบน Notebook ตามหลัง `origin/main` 2 commit และมีไฟล์ค้างของแชทอื่น 5 รายการ จึงไม่ดึงทับ; แหล่งกลางบน GitLab รวม WTL แล้วที่ `faadbd626375a0d039ca611c2a44450907ff7ed3` และตัวติดตั้ง Worktree บน Notebook ไม่ขึ้นกับการดึง Vault รอบนี้

@@ -31,6 +31,7 @@ if sys.platform != "win32":
 try:
     import win32service
     import win32serviceutil
+    import servicemanager
 except ImportError:
     raise RuntimeError(
         "pywin32 is required for Windows Service support. "
@@ -86,6 +87,27 @@ class HermesGatewayService(win32serviceutil.ServiceFramework):
 
     def SvcDoRun(self):
         global _gateway_exit_code
+
+        # Configure logging to file NOW (SCM dispatcher is connected).
+        # ``main()`` intentionally skips this before HandleCommandLine /
+        # StartServiceCtrlDispatcher so the process reaches the SCM
+        # connection within the 30-second timeout (fix for Error 1053).
+        try:
+            from hermes_constants import get_hermes_home
+
+            log_dir = Path(get_hermes_home()) / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+                handlers=[
+                    logging.FileHandler(
+                        str(log_dir / "gateway-service.log"), encoding="utf-8"
+                    )
+                ],
+            )
+        except Exception:
+            logging.basicConfig(level=logging.INFO)
 
         # CRITICAL: Report SERVICE_RUNNING immediately (R-04)
         # SCM expects this within 30 seconds. MCP discovery blocks 120s.
@@ -339,24 +361,25 @@ def main():
             sys.argv.pop(idx)
             sys.argv.pop(idx)
 
-    # Configure logging to file (Services run in Session 0)
-    try:
-        from hermes_constants import get_hermes_home
+    # SCM launch path: ImagePath has custom args only, no verb.
+    # After stripping --hermes-home/--profile/--name, sys.argv is
+    # just the script name. ``HandleCommandLine`` with no verb just
+    # prints usage and exits (line 704-705 of win32serviceutil.py),
+    # so we MUST go through ``servicemanager`` instead.
+    # This is the fix for Error 1053 (PR #50200).
+    if len(sys.argv) <= 1:
+        # Launched by SCM — connect to Service Control Dispatcher.
+        # ``servicemanager.Initialize()`` /
+        # ``PrepareToHostSingle()`` /
+        # ``StartServiceCtrlDispatcher()`` handle the full lifecycle:
+        # dispatcher sends ``start`` → ``SvcDoRun()`` runs on a thread
+        # → ``SvcStop()`` on ``stop``.
+        servicemanager.Initialize()
+        servicemanager.PrepareToHostSingle(HermesGatewayService)
+        servicemanager.StartServiceCtrlDispatcher()
+        return
 
-        log_dir = Path(get_hermes_home()) / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-            handlers=[
-                logging.FileHandler(
-                    str(log_dir / "gateway-service.log"), encoding="utf-8"
-                )
-            ],
-        )
-    except Exception:
-        logging.basicConfig(level=logging.INFO)
-
+    # Command-line verb path: install / start / stop / remove / debug
     if len(sys.argv) > 1 and sys.argv[1].lower() == "install":
         win32serviceutil.HandleCommandLine(HermesGatewayService)
         configure_recovery_actions(SERVICE_NAME)

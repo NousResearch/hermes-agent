@@ -8756,8 +8756,17 @@ def _cold_start_windows_gateway_after_update(*, via_scm: bool = False) -> None:
                 return
         except Exception as exc:
             logger.debug("Could not SCM-start Windows gateway after update: %s", exc)
-            # fall through to detached spawn as a last-ditch fallback
+        # SCM path failed — print error and give up. Deliberately do NOT
+        # fall through to _spawn_detached: a detached gateway alongside
+        # an SCM service would create two parallel gateways competing for
+        # the same port/session state (PR #50200 review requirement).
+        print()
+        print("  ✗ SCM StartService failed — gateway not restarted")
+        print("    Fix the SCM service and run: sc start <service-name>")
+        return
 
+    # Non-SCM (Scheduled Task / detached) cold-start: use the windowless
+    # pythonw + breakaway spawn path.
     try:
         pid = gateway_windows._spawn_detached()
     except Exception as exc:

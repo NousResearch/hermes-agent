@@ -1253,6 +1253,10 @@ def uninstall() -> None:
 _RECOVERY_DELAYS_MS = [1000, 2000, 4000, 9000, 16000, 25000, 36000, 49000, 64000]
 _RECOVERY_RESET_PERIOD_S = 60
 
+# SCM stop/start polling timeouts (PR #50200)
+_STOP_TIMEOUT_S = 30  # max seconds to wait for SERVICE_STOPPED
+_START_TIMEOUT_S = 60  # max seconds to wait for SERVICE_RUNNING
+
 
 def get_service_name() -> str:
     """Service name, scoped per profile."""
@@ -1326,15 +1330,15 @@ def is_service_registered_for_hermes_home(hermes_home: str) -> bool:
 
 
 def stop_service_for_hermes_home(hermes_home: str) -> bool:
-    """Stop the SCM service for a specific HERMES_HOME (not the active one).
+    """Stop the SCM service for a specific HERMES_HOME and wait for stopped.
 
     Used by the update pause path so we stop the service whose
     pythonw.exe child is the gateway PID we discovered — not
     whichever service happens to match the active process profile.
 
-    Returns True iff SCM accepted the STOP control (or the service was
-    already stopped). False if the service is not registered, an
-    unexpected error occurred, or pywin32 is unavailable.
+    Returns True iff the service reached SERVICE_STOPPED within the
+    timeout (``_STOP_TIMEOUT_S`` = 30 s). Returns False if the service is
+    not registered, pywin32 is unavailable, or the stop/poll failed.
     """
     _assert_windows()
     name = get_service_name_for_hermes_home(hermes_home)
@@ -1356,13 +1360,12 @@ def stop_service_for_hermes_home(hermes_home: str) -> bool:
                 win32service.ControlService(
                     svc, win32service.SERVICE_CONTROL_STOP
                 )
-                return True
             finally:
                 win32service.CloseServiceHandle(svc)
         finally:
             win32service.CloseServiceHandle(scm)
     except Exception as exc:
-        # ERROR_SERVICE_NOT_ACTIVE is benign — already stopped.
+        # ERROR_SERVICE_NOT_ACTIVE (1062) — already stopped.
         try:
             import pywintypes
 
@@ -1372,13 +1375,26 @@ def stop_service_for_hermes_home(hermes_home: str) -> bool:
             pass
         return False
 
+    # Wait for SERVICE_STOPPED (PR #50200: stop must complete before update
+    # mutates the checkout, not just "accepted by SCM").
+    try:
+        import win32serviceutil
+
+        win32serviceutil.WaitForServiceStatus(
+            name, win32service.SERVICE_STOPPED, _STOP_TIMEOUT_S
+        )
+        return True
+    except Exception:
+        return False
+
 
 def start_service_for_hermes_home(hermes_home: str) -> bool:
-    """Start the SCM service for a specific HERMES_HOME.
+    """Start the SCM service for a specific HERMES_HOME and wait for running.
 
     Used by the update resume path so we route to the same SCM unit
     that we paused, instead of spawning a parallel detached gateway.
-    Returns True iff StartService was accepted by SCM.
+    Returns True iff the service reached SERVICE_RUNNING within the
+    timeout (``_START_TIMEOUT_S`` = 60 s — MCP discovery can take >30 s).
     """
     _assert_windows()
     name = get_service_name_for_hermes_home(hermes_home)
@@ -1398,11 +1414,22 @@ def start_service_for_hermes_home(hermes_home: str) -> bool:
             )
             try:
                 win32service.StartService(svc, None)
-                return True
             finally:
                 win32service.CloseServiceHandle(svc)
         finally:
             win32service.CloseServiceHandle(scm)
+    except Exception:
+        return False
+
+    # Wait for SERVICE_RUNNING (PR #50200: resume must confirm the
+    # gateway is actually serving before returning).
+    try:
+        import win32serviceutil
+
+        win32serviceutil.WaitForServiceStatus(
+            name, win32service.SERVICE_RUNNING, _START_TIMEOUT_S
+        )
+        return True
     except Exception:
         return False
 
@@ -1525,7 +1552,7 @@ def install_service(force: bool = False, allow_fallback: bool = True) -> None:
                 win32service.SERVICE_ERROR_NORMAL,
                 bin_path,
                 None,  # loadOrderGroup
-                None,  # tagId
+                0,     # tagId (must be int 0, not None — PR #50200)
                 None,  # dependencies
                 None,  # serviceStartName
                 None,  # password
@@ -1535,10 +1562,18 @@ def install_service(force: bool = False, allow_fallback: bool = True) -> None:
             action_tuples = [
                 (1, d) for d in _RECOVERY_DELAYS_MS
             ]  # 1 = SC_ACTION_RESTART
+            # pywin32 >= 312 requires dict format for SERVICE_CONFIG_FAILURE_ACTIONS.
+            # The legacy tuple format (60, None, None, actions) raises TypeError on
+            # newer pywin32. We use the dict form which works across supported versions.
             win32service.ChangeServiceConfig2(
                 svc,
                 win32service.SERVICE_CONFIG_FAILURE_ACTIONS,
-                (_RECOVERY_RESET_PERIOD_S, None, None, action_tuples),
+                {
+                    "ResetPeriod": _RECOVERY_RESET_PERIOD_S,
+                    "RebootMsg": "",
+                    "Command": "",
+                    "Actions": action_tuples,
+                },
             )
             win32service.ChangeServiceConfig2(
                 svc,

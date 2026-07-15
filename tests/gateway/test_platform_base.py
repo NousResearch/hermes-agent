@@ -1,6 +1,8 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import json
 import os
+import tempfile
 import time
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    get_docker_extraction_max_bytes,
     safe_url_for_log,
     utf16_len,
     validate_inbound_media_size,
@@ -1922,11 +1925,39 @@ class TestMediaFallbackDoesNotLeakHostPath:
         assert self.SENSITIVE_PATH not in sent_text
 
 
+def _docker_exec_stub(*, realpath_rc=0, realpath_out="", stat_rc=0, stat_out="0",
+                       cat_rc=0, cat_bytes=b"", allow_cat=True):
+    """Build a ``subprocess.run`` stub for the realpath -> stat -> cat sequence
+    ``BasePlatformAdapter._extract_docker_path`` issues. Raises if a call is
+    made past a point the caller expected extraction to have already stopped
+    (``allow_cat=False``), so tests can assert *which* gate rejected a path."""
+    def fake_run(cmd, **kwargs):
+        assert cmd[:2] == ["docker", "exec"]
+        sub = cmd[3]
+        if sub == "realpath":
+            assert cmd[3:6] == ["realpath", "-e", "--"]
+            return type("R", (), {"returncode": realpath_rc, "stdout": realpath_out})()
+        if sub == "stat":
+            assert cmd[3:6] == ["stat", "-c", "%s"]
+            return type("R", (), {"returncode": stat_rc, "stdout": stat_out})()
+        if sub == "cat":
+            if not allow_cat:
+                raise AssertionError(f"must not reach cat: {cmd}")
+            assert cmd[3:5] == ["cat", "--"]
+            kwargs["stdout"].write(cat_bytes)
+            return type("R", (), {"returncode": cat_rc})()
+        raise AssertionError(f"unexpected docker exec subcommand: {cmd}")
+    return fake_run
+
+
 class TestDockerPathTranslation:
     """Shared Docker container→host path translation (used by send_message and the
     gateway delivery loop). The mount table is stubbed so tests never shell out to
-    docker; container_id=None disables the docker-cp fallback, exercising pure
-    bind-mount mapping."""
+    docker; container_id=None disables the extraction fallback, exercising pure
+    bind-mount mapping. The extraction fallback (docker-exec-cat) only runs when
+    ``task_id`` is passed — see NousResearch/hermes-agent#64889 for why callers
+    that can't identify the producing task get the degraded mount-only /
+    single-environment-only behavior instead."""
 
     def test_media_paths_passthrough_when_no_docker_env(self):
         mf = [("/workspace/a.png", False)]
@@ -1953,11 +1984,11 @@ class TestDockerPathTranslation:
         assert out == [("/host/data/file.bin", False)]
 
     def test_unmapped_path_passthrough_without_container(self):
-        # No matching mount and container_id=None → docker cp skipped, path unchanged.
+        # No matching mount and container_id=None → extraction skipped, path unchanged.
         with patch.object(BasePlatformAdapter, "_get_docker_mount_table",
                           return_value=([("/workspace", "/host/ws")], None)):
-            out = BasePlatformAdapter.translate_docker_media_paths([("/tmp/x.png", False)])
-        assert out == [("/tmp/x.png", False)]
+            out = BasePlatformAdapter.translate_docker_media_paths([("/other/x.png", False)])
+        assert out == [("/other/x.png", False)]
 
     def test_local_paths_mapped(self):
         mounts = [("/workspace", "/host/ws")]
@@ -1970,63 +2001,213 @@ class TestDockerPathTranslation:
         assert BasePlatformAdapter.translate_docker_media_paths([]) == []
         assert BasePlatformAdapter.translate_docker_local_paths([]) == []
 
+    # -- task-bound extraction (task_id given -> allow_extraction=True) -----
+
     def test_extraction_uses_exec_cat_not_cp(self):
         # docker cp fails against the overlayfs storage driver on some hosts;
         # exec+cat must be used instead for the last-resort extraction path.
-        container_path = "/tmp/song_deadbeef01.mp3"
-        dest_path = os.path.join("/tmp", os.path.basename(container_path))
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            kwargs["stdout"].write(b"fake-audio-bytes")
-            return type("R", (), {"returncode": 0})()
-
+        container_path = "/workspace/song_deadbeef01.mp3"
+        fake_run = _docker_exec_stub(
+            realpath_out=container_path + "\n", stat_out="16\n", cat_bytes=b"fake-audio-bytes",
+        )
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths([container_path], task_id="task-1")
         try:
-            with patch("subprocess.run", side_effect=fake_run), \
-                 patch.object(BasePlatformAdapter, "_get_docker_mount_table",
-                              return_value=([], "abc123")):
-                out = BasePlatformAdapter.translate_docker_local_paths([container_path])
-            assert out == [dest_path]
-            assert captured["cmd"][:3] == ["docker", "exec", "abc123"]
-            assert captured["cmd"][3] == "cat"
-            assert "cp" not in captured["cmd"]
+            assert len(out) == 1
+            assert out[0] != container_path
+            assert os.path.basename(out[0]) == "song_deadbeef01.mp3"
+            with open(out[0], "rb") as fh:
+                assert fh.read() == b"fake-audio-bytes"
         finally:
-            if os.path.exists(dest_path):
-                os.unlink(dest_path)
+            if os.path.exists(out[0]):
+                os.unlink(out[0])
+                os.rmdir(os.path.dirname(out[0]))
 
     def test_extraction_preserves_original_basename(self):
-        # Regression: the old implementation renamed extracted files to
+        # Regression: an earlier implementation renamed extracted files to
         # hermes_docker_media_<md5hash>.<ext>, which some platform adapters
         # then used as a fallback display title instead of the real filename.
-        container_path = "/tmp/my_generated_track.mp3"
-        dest_path = os.path.join("/tmp", "my_generated_track.mp3")
-
-        def fake_run(cmd, **kwargs):
-            kwargs["stdout"].write(b"fake-audio-bytes")
-            return type("R", (), {"returncode": 0})()
-
+        container_path = "/workspace/my_generated_track.mp3"
+        fake_run = _docker_exec_stub(
+            realpath_out=container_path + "\n", stat_out="16\n", cat_bytes=b"fake-audio-bytes",
+        )
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths([container_path], task_id="task-1")
         try:
-            with patch("subprocess.run", side_effect=fake_run), \
-                 patch.object(BasePlatformAdapter, "_get_docker_mount_table",
-                              return_value=([], "abc123")):
-                out = BasePlatformAdapter.translate_docker_local_paths([container_path])
-            assert out == [dest_path]
+            assert os.path.basename(out[0]) == "my_generated_track.mp3"
             assert "hermes_docker_media_" not in out[0]
+            # Regression: the destination must not be the old predictable
+            # /tmp/<basename> path — a private per-extraction directory instead.
+            assert out[0] != os.path.join("/tmp", "my_generated_track.mp3")
         finally:
-            if os.path.exists(dest_path):
-                os.unlink(dest_path)
+            if os.path.exists(out[0]):
+                os.unlink(out[0])
+                os.rmdir(os.path.dirname(out[0]))
 
-    def test_extraction_failure_falls_back_to_original_path_and_cleans_up(self):
-        container_path = "/tmp/missing_in_container.mp3"
-        dest_path = os.path.join("/tmp", os.path.basename(container_path))
+    def test_extraction_cat_failure_falls_back_to_original_path_and_cleans_up(self):
+        container_path = "/workspace/missing_in_container.mp3"
+        fake_run = _docker_exec_stub(realpath_out=container_path + "\n", stat_out="10\n", cat_rc=1)
+        created_dirs = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def spy_mkdtemp(*a, **kw):
+            d = real_mkdtemp(*a, **kw)
+            created_dirs.append(d)
+            return d
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("tempfile.mkdtemp", side_effect=spy_mkdtemp), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths([container_path], task_id="task-1")
+        assert out == [container_path]
+        for d in created_dirs:
+            assert not os.path.exists(d)
+
+    def test_extraction_refuses_oversize_file_and_leaves_no_host_file(self):
+        container_path = "/workspace/huge.mp4"
+        oversize = get_docker_extraction_max_bytes() + 1
+        fake_run = _docker_exec_stub(
+            realpath_out=container_path + "\n", stat_out=f"{oversize}\n", allow_cat=False,
+        )
+        created_dirs = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def spy_mkdtemp(*a, **kw):
+            d = real_mkdtemp(*a, **kw)
+            created_dirs.append(d)
+            return d
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("tempfile.mkdtemp", side_effect=spy_mkdtemp), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths([container_path], task_id="task-1")
+        assert out == [container_path]
+        # Refused before ever creating an extraction destination.
+        assert created_dirs == []
+
+    # -- containment: out-of-root and symlink-escape paths -------------------
+
+    def test_extraction_rejects_path_outside_workspace_before_any_docker_call(self):
+        # A path outside /workspace that also happens not to exist on the
+        # *host* (e.g. /etc, unlike /root, is world-traversable, so this
+        # exercises the lexical containment check rather than a host
+        # permission error on the probe path).
+        outside_path = "/etc/does-not-exist/credential.env"
 
         def fake_run(cmd, **kwargs):
-            return type("R", (), {"returncode": 1})()
+            raise AssertionError(f"must not shell out for an out-of-root path: {cmd}")
 
         with patch("subprocess.run", side_effect=fake_run), \
              patch.object(BasePlatformAdapter, "_get_docker_mount_table",
                           return_value=([], "abc123")):
-            out = BasePlatformAdapter.translate_docker_local_paths([container_path])
-        assert out == [container_path]
-        assert not os.path.exists(dest_path)
+            out = BasePlatformAdapter.translate_docker_local_paths(
+                [outside_path], task_id="task-1",
+            )
+        assert out == [outside_path]
+
+    def test_extraction_rejects_dotdot_traversal_before_any_docker_call(self):
+        def fake_run(cmd, **kwargs):
+            raise AssertionError(f"must not shell out for a traversal path: {cmd}")
+
+        traversal_path = "/workspace/../etc/does-not-exist/credential.env"
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths(
+                [traversal_path], task_id="task-1",
+            )
+        assert out == [traversal_path]
+
+    def test_extraction_rejects_symlink_escape_after_realpath_but_before_stat_or_cat(self):
+        # /workspace/report.pdf is lexically fine, but a symlink planted at
+        # that path resolves (inside the container) to a credential file —
+        # this must be caught by the post-realpath containment re-check, and
+        # must never reach stat or cat.
+        fake_run = _docker_exec_stub(
+            realpath_out="/root/.hermes/.env\n", allow_cat=False,
+        )
+
+        def guarded_run(cmd, **kwargs):
+            if cmd[3] in ("stat", "cat"):
+                raise AssertionError(f"must not proceed past realpath for a symlink escape: {cmd}")
+            return fake_run(cmd, **kwargs)
+
+        with patch("subprocess.run", side_effect=guarded_run), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths(
+                ["/workspace/report.pdf"], task_id="task-1",
+            )
+        assert out == ["/workspace/report.pdf"]
+
+    # -- task-bound container selection (point 1: no more "first env wins") --
+
+    def test_task_bound_lookup_uses_own_container_not_another_active_one(self):
+        env_a = type("Env", (), {"_container_id": "container-a"})()
+        env_b = type("Env", (), {"_container_id": "container-b"})()
+        fake_envs = {"task-a": env_a, "task-b": env_b}
+        mounts_by_cid = {
+            "container-a": [{"Destination": "/workspace", "Source": "/host/a/workspace", "Type": "bind"}],
+            "container-b": [{"Destination": "/workspace", "Source": "/host/b/workspace", "Type": "bind"}],
+        }
+
+        def fake_run(cmd, **kwargs):
+            cid = cmd[-1]
+            return type("R", (), {"returncode": 0, "stdout": json.dumps(mounts_by_cid[cid])})()
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("tools.terminal_tool._active_environments", fake_envs):
+            out_a = BasePlatformAdapter.translate_docker_local_paths(["/workspace/x.txt"], task_id="task-a")
+            out_b = BasePlatformAdapter.translate_docker_local_paths(["/workspace/x.txt"], task_id="task-b")
+
+        assert out_a == ["/host/a/workspace/x.txt"]
+        assert out_b == ["/host/b/workspace/x.txt"]
+
+    # -- degraded/unscoped path (task_id=None): mount-only + single-env-only -
+
+    def test_get_docker_mount_table_without_task_id_uses_sole_environment(self):
+        env = type("Env", (), {"_container_id": "solo"})()
+        fake_envs = {"task-x": env}
+
+        def fake_run(cmd, **kwargs):
+            return type("R", (), {"returncode": 0, "stdout": json.dumps(
+                [{"Destination": "/workspace", "Source": "/host/solo/workspace", "Type": "bind"}]
+            )})()
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("tools.terminal_tool._active_environments", fake_envs):
+            mounts, cid = BasePlatformAdapter._get_docker_mount_table()
+        assert cid == "solo"
+        assert mounts == [("/workspace", "/host/solo/workspace")]
+
+    def test_get_docker_mount_table_without_task_id_refuses_when_multiple_environments(self):
+        env_a = type("Env", (), {"_container_id": "container-a"})()
+        env_b = type("Env", (), {"_container_id": "container-b"})()
+        fake_envs = {"task-a": env_a, "task-b": env_b}
+
+        def fake_run(cmd, **kwargs):
+            raise AssertionError("must not inspect any container when the active env is ambiguous")
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch("tools.terminal_tool._active_environments", fake_envs):
+            mounts, cid = BasePlatformAdapter._get_docker_mount_table()
+        assert (mounts, cid) == ([], None)
+
+    def test_unscoped_translation_never_extracts_even_with_a_container_available(self):
+        # task_id omitted (generic/degraded callers): even if a mount-table
+        # lookup somehow yields a container_id, extraction must not fire —
+        # allow_extraction is gated purely on task_id being provided.
+        def fake_run(cmd, **kwargs):
+            raise AssertionError(f"degraded/unscoped path must never shell out to extract: {cmd}")
+
+        with patch("subprocess.run", side_effect=fake_run), \
+             patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([], "abc123")):
+            out = BasePlatformAdapter.translate_docker_local_paths(["/workspace/x.mp3"])
+        assert out == ["/workspace/x.mp3"]

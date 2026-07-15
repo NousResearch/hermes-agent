@@ -618,6 +618,60 @@ def get_inbound_media_max_bytes() -> int:
         return DEFAULT_INBOUND_MEDIA_MAX_BYTES
 
 
+# ---------------------------------------------------------------------------
+# Docker-extraction size cap — bounds BasePlatformAdapter._extract_docker_path
+# (the docker-exec-cat fallback in Docker-terminal-backend media delivery).
+# Extraction is only useful for files that are subsequently deliverable, so
+# the cap tracks the delivery ceiling: the largest outbound attachment size
+# among the platforms actually enabled on ``gateway.platforms``. Genuinely
+# large media should go through Docker's persistent_filesystem mode instead,
+# where stage-1 bind-mount translation delivers it with zero copy and no cap.
+#
+# Configurable via ``gateway.max_docker_extraction_bytes`` in config.yaml.
+# ---------------------------------------------------------------------------
+_KNOWN_PLATFORM_UPLOAD_LIMITS_BYTES = {
+    "whatsapp_cloud": 100 * 1024 * 1024,  # whatsapp_cloud.py _MEDIA_SIZE_LIMITS["document"]
+    "signal": 100 * 1024 * 1024,          # signal.py SIGNAL_MAX_ATTACHMENT_SIZE
+    "telegram": 50 * 1024 * 1024,         # Bot API document/file upload limit
+    "yuanbao": 50 * 1024 * 1024,          # yuanbao.py MessageSender.MEDIA_MAX_SIZE_MB
+}
+DEFAULT_DOCKER_EXTRACTION_MAX_BYTES = max(_KNOWN_PLATFORM_UPLOAD_LIMITS_BYTES.values())
+
+
+def get_docker_extraction_max_bytes() -> int:
+    """Return the max bytes the Docker-extraction fallback will read out of a container.
+
+    An explicit ``gateway.max_docker_extraction_bytes`` always wins.
+    Otherwise defaults to the largest outbound upload ceiling among the
+    platforms actually enabled under ``gateway.platforms`` (falling back to
+    ``DEFAULT_DOCKER_EXTRACTION_MAX_BYTES`` if none of the enabled platforms
+    are in the known-limits table, or if config is unreadable).
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+        cfg = _load_config()
+    except Exception:
+        return DEFAULT_DOCKER_EXTRACTION_MAX_BYTES
+    gw = cfg.get("gateway", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(gw, dict):
+        return DEFAULT_DOCKER_EXTRACTION_MAX_BYTES
+    if "max_docker_extraction_bytes" in gw:
+        try:
+            return int(gw["max_docker_extraction_bytes"])
+        except (TypeError, ValueError):
+            pass
+    platforms = gw.get("platforms", {})
+    if not isinstance(platforms, dict):
+        return DEFAULT_DOCKER_EXTRACTION_MAX_BYTES
+    enabled_limits = [
+        _KNOWN_PLATFORM_UPLOAD_LIMITS_BYTES[name]
+        for name, block in platforms.items()
+        if isinstance(block, dict) and block.get("enabled")
+        and name in _KNOWN_PLATFORM_UPLOAD_LIMITS_BYTES
+    ]
+    return max(enabled_limits) if enabled_limits else DEFAULT_DOCKER_EXTRACTION_MAX_BYTES
+
+
 def validate_inbound_media_size(
     size: int,
     *,
@@ -3496,18 +3550,47 @@ class BasePlatformAdapter(ABC):
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
-    @staticmethod
-    def _get_docker_mount_table() -> Tuple[List[Tuple[str, str]], Optional[str]]:
-        """Return ([(container_dest, host_src), ...], container_id) for the active Docker env.
+    # Container-side root the Docker exec-cat extraction fallback (stage 2 of
+    # _translate_one_docker_path) is allowed to read from. This is the agent's
+    # own writable scratch/output directory; tools/environments/docker.py
+    # mounts credential files at /root/.hermes/* — never under here — so
+    # confining extraction to this root keeps it from ever reading a secret.
+    _DOCKER_EXTRACTION_ROOT = "/workspace"
 
-        Mounts are sorted longest-destination-first so the most specific prefix wins.
-        Returns ([], None) if no active Docker environment is found.
+    @staticmethod
+    def _get_docker_mount_table(
+        task_id: Optional[str] = None,
+    ) -> Tuple[List[Tuple[str, str]], Optional[str]]:
+        """Return ([(container_dest, host_src), ...], container_id) for a Docker env.
+
+        ``task_id``, when given, resolves *only* that task's own environment
+        (``_active_environments[task_id]``) — callers that know which task
+        produced a path must always pass it, so this never mixes up two
+        concurrently-running tasks' containers.
+
+        When ``task_id`` is None — the caller can't identify the producing
+        task (see the generic per-platform delivery paths) — this only
+        proceeds if there is exactly one active Docker environment; with
+        zero or multiple concurrent environments there's no way to guess
+        correctly, so it returns ([], None) rather than risk resolving
+        against the wrong container.
+
+        Mounts are sorted longest-destination-first so the most specific
+        prefix wins.
         """
         try:
             import json
             import subprocess
             from tools.terminal_tool import _active_environments  # type: ignore[import]
-            for env in list(_active_environments.values()):
+
+            if task_id is not None:
+                env = _active_environments.get(task_id)
+                candidates = [env] if env is not None else []
+            else:
+                all_envs = list(_active_environments.values())
+                candidates = all_envs if len(all_envs) == 1 else []
+
+            for env in candidates:
                 cid = getattr(env, "_container_id", None)
                 if not cid:
                     continue
@@ -3529,21 +3612,144 @@ class BasePlatformAdapter(ABC):
         return [], None
 
     @staticmethod
+    def _extract_docker_path(path: str, container_id: str) -> Optional[str]:
+        """Copy a container-only file to a private host temp file via ``docker exec``.
+
+        Only called for a path that didn't resolve through a declared bind
+        mount — the common case is the default non-persistent Docker mode,
+        where ``/workspace`` is a tmpfs mount and never appears in
+        ``docker inspect``'s mount list, so this is the only way to retrieve
+        a legitimately-produced agent output.
+
+        Gated before any container read happens:
+
+        1. Lexically confined to ``_DOCKER_EXTRACTION_ROOT`` (POSIX
+           ``normpath``; any ``..`` segment is rejected outright).
+        2. Symlink-safe: resolved *inside the container* via ``realpath -e``
+           first, and the resolved path re-checked against the root — a
+           symlink planted at ``/workspace/x`` -> ``/root/.hermes/.env`` must
+           not be followed out. (Hardlinks aren't a bypass: ``/workspace``
+           and the credential mounts are always separate filesystems, in
+           both persistent and tmpfs mode.)
+        3. Size-bounded via ``docker exec stat`` before the actual read, so
+           a container read is never spent on a file no enabled platform
+           could even deliver.
+
+        The realpath-then-cat sequence has a TOCTOU window, but delivery only
+        runs after the agent's turn has finished producing its response, so
+        there's no attacker-controlled process racing the swap.
+
+        Returns the new host path, or None if disqualified or the extraction
+        failed — the caller keeps the original container-only path, which
+        then simply fails downstream host-path validation instead of being
+        treated as resolved.
+        """
+        import os
+        import posixpath
+        import subprocess
+        import tempfile
+
+        root = BasePlatformAdapter._DOCKER_EXTRACTION_ROOT
+        normalized = posixpath.normpath(path)
+        if ".." in normalized.split("/") or not (
+            normalized == root or normalized.startswith(root + "/")
+        ):
+            logger.warning(
+                "Refusing Docker extraction outside %s: %s", root, _log_safe_path(path),
+            )
+            return None
+
+        try:
+            resolved = subprocess.run(
+                ["docker", "exec", container_id, "realpath", "-e", "--", normalized],
+                capture_output=True, text=True, timeout=5,
+            )
+            if resolved.returncode != 0:
+                logger.warning(
+                    "Docker extraction: realpath failed for %s in container %s",
+                    _log_safe_path(path), container_id,
+                )
+                return None
+            real_path = resolved.stdout.strip()
+            if not (real_path == root or real_path.startswith(root + "/")):
+                logger.warning(
+                    "Refusing Docker extraction: %s resolves to %s, outside %s",
+                    _log_safe_path(path), _log_safe_path(real_path), root,
+                )
+                return None
+
+            size_check = subprocess.run(
+                ["docker", "exec", container_id, "stat", "-c", "%s", "--", real_path],
+                capture_output=True, text=True, timeout=5,
+            )
+            if size_check.returncode != 0:
+                logger.warning(
+                    "Docker extraction: stat failed for %s in container %s",
+                    _log_safe_path(real_path), container_id,
+                )
+                return None
+            try:
+                size = int(size_check.stdout.strip())
+            except ValueError:
+                logger.warning(
+                    "Docker extraction: unparseable size for %s", _log_safe_path(real_path),
+                )
+                return None
+
+            max_bytes = get_docker_extraction_max_bytes()
+            if size > max_bytes:
+                logger.warning(
+                    "Refusing Docker extraction of %s: %d bytes exceeds the %d-byte cap. "
+                    "Use persistent_filesystem mode to deliver larger files via "
+                    "zero-copy bind mount instead.",
+                    _log_safe_path(real_path), size, max_bytes,
+                )
+                return None
+
+            dest_dir = tempfile.mkdtemp(prefix="hermes_docker_extract_")
+            dest_path = os.path.join(dest_dir, os.path.basename(real_path))
+            with open(dest_path, "wb") as fh:
+                r = subprocess.run(
+                    ["docker", "exec", container_id, "cat", "--", real_path],
+                    stdout=fh, stderr=subprocess.DEVNULL, timeout=30,
+                )
+            if r.returncode == 0 and os.path.getsize(dest_path) > 0:
+                return dest_path
+            logger.warning(
+                "Docker extraction: cat failed or produced an empty file for %s",
+                _log_safe_path(real_path),
+            )
+            try:
+                os.unlink(dest_path)
+                os.rmdir(dest_dir)
+            except OSError:
+                pass
+        except Exception:
+            logger.warning(
+                "Docker path extraction failed for %s", _log_safe_path(path), exc_info=True,
+            )
+        return None
+
+    @staticmethod
     def _translate_one_docker_path(
-        path: str, mounts: List[Tuple[str, str]], container_id: Optional[str]
+        path: str,
+        mounts: List[Tuple[str, str]],
+        container_id: Optional[str],
+        *,
+        allow_extraction: bool,
     ) -> str:
         """Translate one container path to a host-readable path.
 
-        1. Map via the longest matching bind-mount prefix.
-        2. If still unmapped (e.g. /tmp/) and absent on the host, extract it via
-           ``docker exec cat`` into a temp file the host can read. ``docker cp``
-           is avoided here because it fails against the overlayfs storage driver
-           on some hosts; ``exec`` + ``cat`` works regardless of storage driver.
-           The extracted file keeps the container path's original basename
-           (rather than a hash) since some platform adapters use the local
-           filename as a fallback display title when no explicit title is set.
+        1. Map via the longest matching bind-mount prefix (declarative,
+           always safe).
+        2. If still unmapped and ``allow_extraction`` is True, try
+           extracting it from the container — see ``_extract_docker_path``
+           for the containment/symlink/size gates that make this safe.
+           ``allow_extraction`` must only be True when the caller knows
+           which specific task/container produced *path*: extraction reads
+           whatever the container has at that path, so it must never run
+           against a container we can't confirm produced the request.
         """
-        import os
         from pathlib import Path
 
         host_path = path
@@ -3555,58 +3761,74 @@ class BasePlatformAdapter(ABC):
                 host_path = src + path[len(dest):]
                 break
 
-        if host_path == path and not Path(path).exists() and container_id:
+        if host_path == path and allow_extraction and container_id:
             try:
-                import subprocess
-                dest_path = os.path.join("/tmp", os.path.basename(path))
-                with open(dest_path, "wb") as fh:
-                    r = subprocess.run(
-                        ["docker", "exec", container_id, "cat", path],
-                        stdout=fh, stderr=subprocess.DEVNULL, timeout=30,
-                    )
-                if r.returncode == 0 and os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
-                    host_path = dest_path
-                else:
-                    try:
-                        os.unlink(dest_path)
-                    except OSError:
-                        pass
-            except Exception:
-                pass
+                exists_on_host = Path(path).exists()
+            except OSError:
+                # e.g. PermissionError probing a host dir the gateway process
+                # can't traverse (/root/* when not running as root) — treat
+                # as "can't confirm it exists here", not a crash.
+                exists_on_host = False
+            if not exists_on_host:
+                extracted = BasePlatformAdapter._extract_docker_path(path, container_id)
+                if extracted:
+                    host_path = extracted
         return host_path
 
     @staticmethod
-    def translate_docker_media_paths(media_files: list) -> list:
+    def translate_docker_media_paths(media_files: list, task_id: Optional[str] = None) -> list:
         """Translate ``(path, is_voice)`` container paths to host equivalents.
 
-        send_message and the gateway delivery loop run on the HOST; files written
-        by the agent inside a Docker terminal backend are only reachable via a
-        bind-mount or by copying them out.  The mount table is built once per call.
-        No-op when no Docker environment is active.
+        Pass ``task_id`` whenever the caller knows which agent task produced
+        these paths (tool calls, background tasks) — translation then
+        resolves only that task's own container, and the docker-exec-cat
+        extraction fallback (for paths not covered by a declared bind mount,
+        e.g. the default ephemeral ``/workspace`` tmpfs) is available.
+
+        When ``task_id`` is omitted — the generic per-platform
+        response/delivery paths can't identify which task produced a MEDIA:
+        tag — this degrades to mount-table-only translation, and only when
+        exactly one Docker environment is active (see
+        ``_get_docker_mount_table``). It never shells out to extract a file
+        in this mode. NousResearch/hermes-agent#64889 tracks threading a real
+        task_id through those paths so they can get the same task-bound
+        behavior as the tool-call paths.
+
+        No-op when no Docker environment is active or eligible.
         """
         if not media_files:
             return media_files
-        mounts, container_id = BasePlatformAdapter._get_docker_mount_table()
+        mounts, container_id = BasePlatformAdapter._get_docker_mount_table(task_id)
         if not mounts and not container_id:
             return media_files
+        allow_extraction = task_id is not None
         return [
-            (BasePlatformAdapter._translate_one_docker_path(p, mounts, container_id), is_voice)
+            (
+                BasePlatformAdapter._translate_one_docker_path(
+                    p, mounts, container_id, allow_extraction=allow_extraction
+                ),
+                is_voice,
+            )
             for p, is_voice in media_files
         ]
 
     @staticmethod
-    def translate_docker_local_paths(file_paths: list) -> list:
+    def translate_docker_local_paths(file_paths: list, task_id: Optional[str] = None) -> list:
         """Translate bare container file-path strings to host equivalents.
 
-        Plain-path counterpart to translate_docker_media_paths (no is_voice flag).
+        Plain-path counterpart to translate_docker_media_paths (no is_voice
+        flag) — see its docstring for the ``task_id`` contract.
         """
         if not file_paths:
             return file_paths
-        mounts, container_id = BasePlatformAdapter._get_docker_mount_table()
+        mounts, container_id = BasePlatformAdapter._get_docker_mount_table(task_id)
         if not mounts and not container_id:
             return file_paths
+        allow_extraction = task_id is not None
         return [
-            BasePlatformAdapter._translate_one_docker_path(p, mounts, container_id)
+            BasePlatformAdapter._translate_one_docker_path(
+                p, mounts, container_id, allow_extraction=allow_extraction
+            )
             for p in file_paths
         ]
 
@@ -5015,6 +5237,14 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
+                # Docker terminal backend writes inside the container; remap
+                # container paths to host equivalents before the host-side
+                # filter runs. This generic path has no task_id, so
+                # translation degrades to mount-table-only /
+                # single-Docker-environment-only (see
+                # translate_docker_media_paths's docstring and
+                # NousResearch/hermes-agent#64889).
+                media_files = self.translate_docker_media_paths(media_files)
                 media_files = self.filter_media_delivery_paths(media_files)
 
                 # Extract image URLs and send them as native platform attachments
@@ -5034,6 +5264,7 @@ class BasePlatformAdapter(ABC):
                     # system/command notices so config paths stay visible text
                     # instead of becoming native uploads.
                     local_files, text_content = self.extract_local_files(text_content)
+                    local_files = self.translate_docker_local_paths(local_files)
                     local_files = self.filter_local_delivery_paths(local_files)
                     if local_files:
                         logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))

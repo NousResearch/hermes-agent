@@ -191,7 +191,7 @@ def send_message_tool(args, **kw):
     if action == "unreact":
         return _handle_react(args, remove=True)
 
-    return _handle_send(args)
+    return _handle_send(args, task_id=kw.get("task_id"))
 
 
 def _handle_list():
@@ -295,7 +295,7 @@ def _handle_react(args, remove=False):
     return json.dumps({"success": bool(result)})
 
 
-def _handle_send(args):
+def _handle_send(args, task_id=None):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
@@ -380,7 +380,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.translate_docker_media_paths(media_files)
+    media_files = BasePlatformAdapter.translate_docker_media_paths(media_files, task_id=task_id)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 

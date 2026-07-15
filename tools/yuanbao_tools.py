@@ -472,6 +472,7 @@ async def _handle_yb_send_dm(args, **kw):
     embedded_media, message = BasePlatformAdapter.extract_media(message)
     if embedded_media:
         media_files.extend(embedded_media)
+    media_files = BasePlatformAdapter.translate_docker_media_paths(media_files, task_id=kw.get("task_id"))
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     return tool_result(await send_dm(

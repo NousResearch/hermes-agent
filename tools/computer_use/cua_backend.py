@@ -78,6 +78,68 @@ _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport (fallback when the
                             # driver doesn't expose `manifest` — see
                             # `_resolve_mcp_invocation` below)
 
+# Whole-screen / desktop capture. cua-driver is a window-oriented driver —
+# its `get_window_state` / `screenshot` tools capture a single window (by
+# pid + window_id), and there is no MCP tool that captures the entire virtual
+# desktop or an arbitrary monitor as one image. But the OS shell surfaces
+# themselves (the desktop backdrop and the taskbar/menu-bar) are real windows
+# that show up in `list_windows`, so "show me my screen" / "click the taskbar"
+# is reachable by targeting those windows. When `app` is one of these
+# sentinels, capture() resolves to the desktop/shell window instead of an
+# application window.
+_SCREEN_CAPTURE_SENTINELS = {"screen", "desktop", "fullscreen", "full screen", "all"}
+
+# Known shell/desktop window identifiers across platforms. Matched
+# case-insensitively as a substring against both the window's app_name and
+# its title (cua-driver surfaces the Win32 class name / app name here).
+#   Windows: Progman / WorkerW back the desktop; Shell_TrayWnd is the taskbar.
+#   macOS:   Finder owns the desktop; the menu bar / Dock are the shell.
+_DESKTOP_WINDOW_NAMES = (
+    "progman", "workerw", "program manager",  # Windows desktop
+    "shell_traywnd", "taskbar",               # Windows taskbar
+    "finder", "desktop", "dock",              # macOS desktop / shell
+)
+
+
+# Env var cua-driver reads to gate its anonymous usage telemetry (PostHog).
+# Setting it to "0" disables telemetry; absence => the binary's own default
+# (telemetry ON upstream).
+_CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
+
+
+def _cua_telemetry_disabled() -> bool:
+    """True when Hermes should disable cua-driver telemetry for this user.
+
+    Reads ``computer_use.cua_telemetry`` from config.yaml. Default is False
+    (telemetry off). Any failure to read config fails SAFE — toward the
+    privacy-preserving default of telemetry disabled.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cu = cfg.get("computer_use") or {}
+        # opt-in flag: True => user wants telemetry => do NOT disable.
+        return not bool(cu.get("cua_telemetry", False))
+    except Exception:
+        # Config unreadable — default to disabling telemetry (fail safe).
+        return True
+
+
+def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Return the environment dict for spawning cua-driver.
+
+    Starts from ``base_env`` (defaults to ``os.environ``) and, when telemetry
+    is disabled (the default), injects ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``.
+    When the user has opted in, the var is left untouched so cua-driver uses
+    its own default. Used by every cua-driver spawn site (MCP backend, status,
+    doctor, install) so the policy is applied consistently.
+    """
+    env = dict(base_env if base_env is not None else os.environ)
+    if _cua_telemetry_disabled():
+        env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    return env
+
 
 def _resolve_mcp_invocation(
     driver_cmd: str,
@@ -98,10 +160,15 @@ def _resolve_mcp_invocation(
     not refuse to start just because the discovery hop failed.
     """
     try:
+        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [driver_cmd, "manifest"],
             capture_output=True, text=True, timeout=timeout,
             stdin=subprocess.DEVNULL,
+            # cua-driver is a third-party binary — never hand it provider
+            # API keys via inherited env (same policy as the MCP and CLI
+            # fallback spawns below; #53503/#55709/#58889 lineage).
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
     except Exception:
         return driver_cmd, list(_CUA_DRIVER_ARGS)
@@ -129,16 +196,31 @@ def _resolve_mcp_invocation(
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
-# Handles two output formats from different cua-driver versions:
-#   Classic:  "  - [N] AXRole \"label\""
-#   New:       "[N] AXRole (order) id=Label"
+# cua-driver renders each actionable node as one of:
+#   - [N] AXRole "label"                         (quoted label, classic)
+#   - [N] AXRole = "value"                        (value form, e.g. AXStaticText/AXPopUpButton)
+#   - [N] AXRole (label)                          (parenthesised label, e.g. AXButton (Dark))
+#   - [N] AXRole (order) id=Label                 (order number + id= label, newer builds)
+#   - [N] AXRole id=Label                         (id= label only)
+#   - [N] AXRole                                  (no label)
+# followed by trailing metadata like [help="..." actions=[...]].
 #
-# Group 1: element index
-# Group 2: AX role
-# Group 3: quoted label (classic format)
-# Group 4: id= label (new format)
+# Earlier the regex only matched the quoted and id= forms, so the very common
+# `(label)` and `= "value"` forms (System Settings buttons, static text, popups)
+# came back with an empty label — which made label-driven clicking impossible.
+# A parenthesised group that is purely digits is an ORDER index, not a label, so
+# it is excluded and we fall through to the id= label.
+#
+# Group 1: element index   Group 2: AX role
+# Groups 3-6: the label in value / quoted / paren / id= form (whichever matched)
 _ELEMENT_LINE_RE = re.compile(
-    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?' ,
+    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)'
+    r'(?:'
+      r'\s*=\s*"([^"]*)"'              # = "value"
+      r'|\s+"([^"]*)"'                 # "value"
+      r'|\s+\((?!\d+\))([^)]*)\)'      # (value) but not a pure-digit (order) number
+    r')?'
+    r'(?:\s+(?:\(\d+\)\s+)?id=([^\s\[\]]+))?',  # optional id=value (after an optional (order))
     re.MULTILINE,
 )
 
@@ -169,6 +251,7 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
     raises.
     """
     try:
+        from tools.environments.local import _sanitize_subprocess_env
         proc = subprocess.run(
             [_CUA_DRIVER_CMD, "check-update", "--json"],
             capture_output=True, text=True, timeout=timeout,
@@ -176,6 +259,9 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
             # so they exit fast instead of blocking until the timeout.
             stdin=subprocess.DEVNULL,
+            # Sanitized like every other cua-driver spawn: third-party
+            # binary, no inherited provider keys (#53503/#55709/#58889).
+            env=_sanitize_subprocess_env(cua_driver_child_env()),
         )
     except Exception:
         return None
@@ -260,15 +346,17 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     ``_parse_elements_from_structured`` — Surface 2 of #47072 prefers
     that path).
 
-    Handles both the classic ``"label"``-quoted format and the newer
-    ``id=Label`` format introduced in cua-driver v0.1.6. Bounds always
+    Captures the label whichever form cua-driver used: ``= "value"``,
+    ``"quoted"``, ``(parenthesised)``, or ``id=Label``. Bounds always
     come back ``(0, 0, 0, 0)`` because the markdown surface doesn't
-    carry them — yet another reason to prefer the structured path.
+    carry them — yet another reason to prefer the structured path;
+    element-index clicks don't need them (the driver resolves the index
+    to a frame internally).
     """
     elements = []
     for m in _ELEMENT_LINE_RE.finditer(markdown):
-        # group(3) = quoted label (classic); group(4) = id= label (new)
-        label = m.group(3) or m.group(4) or ""
+        # groups 3-6: value / quoted / paren / id= label (first non-None wins)
+        label = m.group(3) or m.group(4) or m.group(5) or m.group(6) or ""
         elements.append(UIElement(
             index=int(m.group(1)),
             role=m.group(2),
@@ -504,6 +592,7 @@ class _CuaDriverSession:
         different task than it was entered in" warning emitted by the
         previous _aenter/_aexit split.
         """
+        import time as _time
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         from tools.environments.local import _sanitize_subprocess_env
@@ -511,6 +600,11 @@ class _CuaDriverSession:
         # Build the shutdown event on the loop's thread so the asyncio
         # primitive belongs to the correct loop.
         self._shutdown_event = asyncio.Event()
+        _t0 = _time.monotonic()
+        # Phase marker surfaced by the ready-timeout error (issue #57025):
+        # when startup wedges, the caller reports HOW FAR it got instead of
+        # an opaque "never reached ready".
+        self._startup_phase = "binary-check"
 
         try:
             if not cua_driver_binary_available():
@@ -519,22 +613,37 @@ class _CuaDriverSession:
             # Surface 8: ask cua-driver itself which subcommand spawns
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
+            self._startup_phase = "manifest-discovery"
             command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            _t_manifest = _time.monotonic()
             params = StdioServerParameters(
                 command=command,
                 args=args,
-                env=_sanitize_subprocess_env(dict(os.environ)),
+                # Apply the telemetry policy first (default: disabled), then
+                # sanitize Hermes-managed secrets out of the child env.
+                env=_sanitize_subprocess_env(cua_driver_child_env()),
             )
 
             async with stdio_client(params) as (read, write):
+                self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
                     await session.initialize()
+                    _t_init = _time.monotonic()
                     # Populate capabilities + capability_version BEFORE
                     # exposing the session to callers, so the first
                     # tool call already sees them.
+                    self._startup_phase = "capability-discovery"
                     await self._populate_capabilities(session)
                     self._session = session
+                    self._startup_phase = "ready"
                     self._ready_event.set()
+                    logger.info(
+                        "cua-driver session ready in %.1fs "
+                        "(manifest=%.1fs, mcp_init=%.1fs)",
+                        _time.monotonic() - _t0,
+                        _t_manifest - _t0,
+                        _t_init - _t_manifest,
+                    )
                     # Hold the contexts open until stop() / restart asks
                     # us to wind down. Tool calls run as their own tasks
                     # on the same loop and touch self._session directly.
@@ -612,10 +721,20 @@ class _CuaDriverSession:
         self._lifecycle_future = asyncio.run_coroutine_threadsafe(
             self._lifecycle_coro(), loop
         )
-        if not self._ready_event.wait(timeout=15.0):
+        if not self._ready_event.wait(timeout=30.0):
             # Best-effort: signal shutdown if the future is still alive.
             self._signal_shutdown_locked()
-            raise RuntimeError("cua-driver session never reached ready (timeout 15s)")
+            # Surface which startup phase wedged (issue #57025) — "doctor
+            # passes but the wrapper times out" reports are undiagnosable
+            # from a bare "never reached ready".
+            phase = getattr(self, "_startup_phase", "unknown")
+            from hermes_constants import display_hermes_home
+            raise RuntimeError(
+                "cua-driver session never reached ready (timeout 30s; "
+                f"stuck in phase: {phase}). "
+                "Run `hermes computer-use doctor` and check "
+                f"{display_hermes_home()}/logs/agent.log for the phase timings."
+            )
         # If setup failed, the lifecycle coroutine set _setup_error
         # before setting _ready_event. Re-raise it on the caller's thread.
         if self._setup_error is not None:
@@ -681,6 +800,28 @@ class _CuaDriverSession:
             return capability in self._capabilities.get(tool, set())
         return any(capability in caps for caps in self._capabilities.values())
 
+    def _has_tool(self, name: str) -> bool:
+        """Return True when ``tools/list`` advertised a tool by this name.
+
+        Used to route capture(): cua-driver dropped the standalone
+        ``screenshot`` tool and folded full-window PNG capture into
+        ``get_window_state`` (whose own description notes it "Also captures
+        a PNG screenshot of the specified window"). Older drivers that still
+        expose ``screenshot`` keep using it; newer ones fall through to
+        ``get_window_state``.
+
+        Returns False when discovery hasn't populated the map yet — callers
+        treat that as "unknown" and probe defensively rather than trusting it.
+        """
+        return name in self._capabilities
+
+    @property
+    def capabilities_discovered(self) -> bool:
+        """True once ``tools/list`` populated the per-tool map. When False,
+        ``_has_tool`` answers are not trustworthy (discovery failed or the
+        session hasn't started) and capture() should probe defensively."""
+        return bool(self._capabilities)
+
     @property
     def capability_version(self) -> str:
         """Driver-advertised capability vocabulary version (empty string
@@ -698,6 +839,31 @@ class _CuaDriverSession:
             or isinstance(exc, (BrokenPipeError, EOFError))
         )
 
+    @staticmethod
+    def _is_transient_daemon_error(exc: Exception) -> bool:
+        """Return True for the cua-driver daemon-proxy EAGAIN congestion error.
+
+        On macOS the ``cua-driver mcp`` bridge forwards calls to the CuaDriver
+        daemon over a non-blocking unix socket. Heavier ops (notably
+        ``get_window_state``, which walks the AX tree and captures a PNG) can
+        come back as an ``McpError`` carrying ``Resource temporarily
+        unavailable (os error 35)`` — POSIX EAGAIN — when the socket buffer is
+        momentarily full. This is transient by definition: the same call
+        succeeds when retried after a short pause (which is why spaced-out
+        single calls work while rapid/large ones intermittently fail). Detect
+        it by message so we can retry with backoff rather than surfacing an
+        empty 0x0 capture to the model. See the EAGAIN diagnosis in
+        references/catalog-add-troubleshooting (apple-music skill) and the
+        cua-driver daemon-proxy note.
+        """
+        msg = str(exc)
+        return (
+            "Resource temporarily unavailable" in msg
+            or "os error 35" in msg
+            or "daemon transport error" in msg
+            or "daemon proxy" in msg
+        )
+
     def _restart_session_locked(self) -> None:
         """Recreate the MCP session after the daemon/stdin transport was closed.
         Caller must hold self._lock (the reconnect-once retry path holds it)."""
@@ -713,11 +879,132 @@ class _CuaDriverSession:
         self._start_lifecycle_locked()
         self._started = True
 
+    def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+        """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a
+        subprocess instead of going through the stdio MCP bridge.
+
+        The ``cua-driver mcp`` stdio bridge can persistently fail to forward
+        heavier calls (notably ``get_window_state``) to the daemon with POSIX
+        EAGAIN, while the plain ``cua-driver call`` path — which talks to the
+        daemon over its own socket — keeps working. When the MCP path gives up,
+        we retry over the CLI and remap the JSON into the same dict shape that
+        ``_extract_tool_result`` produces, so callers (capture(), _action(),
+        list_windows parsing) are transport-agnostic.
+
+        For ``get_window_state`` we route the screenshot to a temp file via
+        ``screenshot_out_file`` so the daemon returns a tiny JSON body (a path)
+        instead of a multi-megabyte base64 blob — the large payload is what
+        congests the daemon socket and triggers EAGAIN in the first place. We
+        read the PNG back from disk and base64-encode it ourselves. The CLI
+        call is itself retried a few times with backoff, since the underlying
+        daemon socket can still be momentarily busy.
+        """
+        import subprocess as _subprocess
+        import tempfile as _tempfile
+        import time as _time
+        from tools.environments.local import _sanitize_subprocess_env
+
+        call_args = dict(args)
+        shot_file: Optional[str] = None
+        if name == "get_window_state" and "screenshot_out_file" not in call_args:
+            fd, shot_file = _tempfile.mkstemp(prefix="cua_shot_", suffix=".png")
+            os.close(fd)
+            call_args["screenshot_out_file"] = shot_file
+
+        cmd = [_CUA_DRIVER_CMD, "call", name, json.dumps(call_args)]
+        attempts = 4
+        backoff = 0.5
+        parsed: Any = None
+        last_err = ""
+        try:
+            for attempt in range(attempts):
+                try:
+                    proc = _subprocess.run(
+                        cmd, capture_output=True, text=True, timeout=max(15.0, timeout),
+                        env=_sanitize_subprocess_env(cua_driver_child_env()),
+                    )
+                except Exception as e:  # pragma: no cover - subprocess spawn failure
+                    raise RuntimeError(f"cua-driver CLI fallback for {name} failed to spawn: {e}") from e
+
+                out = (proc.stdout or "").strip()
+                last_err = out[:200] or (proc.stderr or "")[:200]
+                start = min(
+                    (i for i in (out.find("{"), out.find("[")) if i != -1),
+                    default=-1,
+                )
+                if start != -1:
+                    try:
+                        candidate = json.loads(out[start:])
+                    except json.JSONDecodeError:
+                        candidate = None
+                    if candidate is not None:
+                        parsed = candidate
+                        break
+                # No JSON (EAGAIN warning / empty) — retry with backoff.
+                if attempt < attempts - 1:
+                    logger.warning(
+                        "cua-driver CLI fallback for %s got no JSON "
+                        "(attempt %d/%d); retrying in %.1fs",
+                        name, attempt + 1, attempts, backoff,
+                    )
+                    _time.sleep(backoff)
+                    backoff *= 2
+
+            if parsed is None:
+                raise RuntimeError(
+                    f"cua-driver CLI fallback for {name} returned no JSON after "
+                    f"{attempts} attempts: {last_err}"
+                )
+
+            # Remap structured JSON into {data, images, structuredContent, isError}.
+            images: List[str] = []
+            data: Any = None
+            structured: Optional[Dict] = parsed if isinstance(parsed, dict) else None
+            if isinstance(parsed, dict):
+                shot = parsed.get("screenshot_png_b64")
+                if not shot:
+                    # Screenshot was routed to a file (ours or the daemon's choice).
+                    fpath = parsed.get("screenshot_file_path") or shot_file
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            with open(fpath, "rb") as fh:
+                                shot = base64.b64encode(fh.read()).decode("ascii")
+                        except Exception as e:
+                            logger.debug("cua-driver CLI fallback: failed reading %s: %s", fpath, e)
+                if shot:
+                    images.append(shot)
+                tree = parsed.get("tree_markdown")
+                if tree is not None:
+                    ec = parsed.get("element_count")
+                    summary = f"{ec} elements" if ec is not None else ""
+                    data = f"{summary}\n{tree}" if summary else tree
+            return {"data": data, "images": images, "structuredContent": structured, "isError": False}
+        finally:
+            if shot_file and os.path.exists(shot_file):
+                try:
+                    os.remove(shot_file)
+                except OSError:
+                    pass
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
+        # The cua-driver daemon proxy returns POSIX EAGAIN ("Resource
+        # temporarily unavailable") for heavier calls like get_window_state when
+        # its non-blocking socket buffer is full. On some machines/builds this
+        # is persistent for get_window_state over the MCP stdio bridge, while
+        # the direct CLI transport keeps working. So: try the MCP path ONCE,
+        # and on the transient/transport error fall straight through to the CLI
+        # transport (which has its own retry + screenshot-to-file mitigation)
+        # rather than burning a long backoff chain on a path that won't recover.
         try:
             return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         except Exception as e:
+            if self._is_transient_daemon_error(e):
+                logger.warning(
+                    "cua-driver MCP transport failed on %s (%s); "
+                    "falling back to CLI transport", name, e,
+                )
+                return self._call_tool_via_cli(name, args, timeout)
             if not self._is_closed_session_error(e):
                 raise
             # Daemon restart closes the cached stdio channel. Reconnect once and
@@ -781,6 +1068,80 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
         "structuredContent": structured,
         "isError": is_error,
     }
+
+
+def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """Pull a (png_b64, mime_type) pair out of a flattened tool result.
+
+    cua-driver delivers window screenshots in two shapes depending on tool +
+    transport:
+
+      * As an MCP ``image`` content part — surfaced by ``_extract_tool_result``
+        in ``out["images"]`` with a parallel ``image_mime_types`` entry. This
+        is what ``get_window_state`` emits over the stdio MCP transport.
+      * As a base64 field inside ``structuredContent`` —
+        ``screenshot_png_b64`` (+ ``screenshot_mime_type``). This is what
+        ``get_window_state`` returns when its structured payload carries the
+        image instead of a content part (newer driver builds; also the shape
+        seen via the ``cua-driver call`` CLI surface).
+
+    Checking both makes capture() robust to either delivery shape, so the
+    image never silently drops just because the driver moved it between the
+    content list and structuredContent. Returns ``(None, None)`` when neither
+    location carries an image.
+    """
+    images = out.get("images") or []
+    if images and images[0]:
+        mimes = out.get("image_mime_types") or []
+        mime = mimes[0] if mimes and mimes[0] else None
+        return images[0], mime
+
+    structured = out.get("structuredContent") or {}
+    b64 = structured.get("screenshot_png_b64") or structured.get("png_b64")
+    if b64:
+        mime = (
+            structured.get("screenshot_mime_type")
+            or structured.get("mime_type")
+            or None
+        )
+        return b64, mime
+
+    return None, None
+
+
+def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
+
+    Every downstream operation needs both an integer ``pid`` (for
+    get_window_state / action tools) and ``window_id`` (for screenshot /
+    element clicks), so a window missing either is uncapturable.
+
+    Crucially, on X11 a window's PID comes from the *optional*
+    ``_NET_WM_PID`` property — the desktop root, panels, and
+    override-redirect popups routinely omit it, so the driver reports
+    ``pid: null`` for them. Coercing every entry unconditionally
+    (``int(w["pid"])``) let one such window abort enumeration of the real,
+    targetable windows. We skip the unusable entries instead so capture()
+    and focus_app() still find the windows that matter.
+    """
+    windows: List[Dict[str, Any]] = []
+    for w in raw_windows:
+        pid, window_id = w.get("pid"), w.get("window_id")
+        if pid is None or window_id is None:
+            continue
+        try:
+            pid_int, window_id_int = int(pid), int(window_id)
+        except (TypeError, ValueError):
+            continue
+        windows.append({
+            "app_name": w.get("app_name", ""),
+            "pid": pid_int,
+            "window_id": window_id_int,
+            "off_screen": not w.get("is_on_screen", True),
+            "title": w.get("title", ""),
+            "z_index": w.get("z_index", 0),
+        })
+    return windows
 
 
 # ---------------------------------------------------------------------------
@@ -901,20 +1262,33 @@ class CuaDriverBackend(ComputerUseBackend):
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
-        # Sort by z_index descending (lowest z_index = frontmost on macOS).
-        windows.sort(key=lambda w: w["z_index"])
+
+        def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+            raw_ = (out.get("structuredContent") or {}).get("windows") or []
+            wins_ = _ingest_windows(raw_)
+            # Sort by z_index descending (lowest z_index = frontmost on macOS).
+            wins_.sort(key=lambda w: w["z_index"])
+            return wins_
+
+        windows = _windows_from(lw_out)
+
+        # If the MCP bridge returned an empty/degenerate window list (flaky
+        # session), re-fetch over the CLI transport before giving up — otherwise
+        # the caller sees a silent 0x0 capture even though windows exist.
+        if not windows:
+            logger.warning(
+                "cua-driver list_windows returned no windows over MCP; "
+                "re-fetching via CLI transport",
+            )
+            try:
+                cli_lw = self._session._call_tool_via_cli(
+                    "list_windows",
+                    {"on_screen_only": True, "session": self._session_id},
+                    20.0,
+                )
+                windows = _windows_from(cli_lw)
+            except Exception as cli_exc:
+                logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
@@ -926,7 +1300,43 @@ class CuaDriverBackend(ComputerUseBackend):
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
-        if app:
+        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
+            # Whole-screen / desktop request. cua-driver has no virtual-desktop
+            # capture tool, so resolve to the OS shell/desktop window (the
+            # desktop backdrop or the taskbar/menu-bar), which list_windows
+            # does surface. This makes "show me my screen" and "click the
+            # taskbar" work; a single image still can't span multiple monitors
+            # — that's a driver limitation, not a wrapper one.
+            def _is_desktop_window(w: Dict[str, Any]) -> bool:
+                haystack = f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+                return any(name in haystack for name in _DESKTOP_WINDOW_NAMES)
+
+            desktop = [w for w in windows if _is_desktop_window(w)]
+            if not desktop:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="",
+                    window_title=(
+                        f"<no desktop/shell window found for app={app!r}; "
+                        f"cua-driver captures one window at a time and exposes "
+                        f"no whole-virtual-desktop or per-monitor capture. "
+                        f"Call list_apps / capture(app='<AppName>') to target a "
+                        f"specific window instead. On Windows the taskbar is "
+                        f"'Shell_TrayWnd' and the desktop is 'Progman'.>"
+                    ),
+                    png_bytes_len=0,
+                )
+            # Prefer the desktop backdrop (Progman/WorkerW/Finder) over the
+            # taskbar when both are present, so a bare "screen" capture shows
+            # the full desktop rather than just the task strip.
+            windows = sorted(
+                desktop,
+                key=lambda w: 0 if any(
+                    n in f"{w.get('app_name', '')} {w.get('title', '')}".lower()
+                    for n in ("progman", "workerw", "program manager", "finder", "desktop")
+                ) else 1,
+            )
+        elif app:
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
             if not filtered:
@@ -961,25 +1371,88 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {
-                    "window_id": self._active_window_id,
-                    "format": "jpeg",
-                    "quality": 85,
-                    "session": self._session_id,
-                },
+            # Plain screenshot, no AX walk. cua-driver dropped the standalone
+            # `screenshot` tool (≥0.5.x) and folded full-window PNG capture
+            # into `get_window_state`. Route accordingly:
+            #   * Driver advertises `screenshot` (older builds) → use it; it's
+            #     the cheapest path (no AX tree walked server-side).
+            #   * Otherwise (current drivers) → call `get_window_state` but
+            #     DISCARD the AX tree/elements, returning only the PNG. Vision
+            #     mode's whole contract is "just the pixels, no element noise",
+            #     so we drop everything but the image.
+            # When capability discovery hasn't run (empty map), we don't trust
+            # a negative `_has_tool` answer — we still try `screenshot` first
+            # and fall back if the driver rejects it, so the path self-heals on
+            # any driver version.
+            use_screenshot = (
+                self._session._has_tool("screenshot")
+                or not self._session.capabilities_discovered
             )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
-                # Pick up the explicit mimeType cua-driver attaches to image
-                # parts (Surface 7). Empty string means the driver didn't
-                # carry one — callers will fall back to magic-byte sniffing.
-                mimes = sc_out.get("image_mime_types") or []
-                image_mime_type = mimes[0] if mimes and mimes[0] else None
+            sc_out: Optional[Dict[str, Any]] = None
+            if use_screenshot:
+                sc_out = self._session.call_tool(
+                    "screenshot",
+                    {
+                        "window_id": self._active_window_id,
+                        "format": "jpeg",
+                        "quality": 85,
+                        "session": self._session_id,
+                    },
+                )
+                png_b64, image_mime_type = _image_from_tool_result(sc_out)
+                if not png_b64:
+                    # Driver had no usable `screenshot` (e.g. "Unknown tool:
+                    # screenshot" on ≥0.5.x, or an empty image part). Fall
+                    # through to the get_window_state path below.
+                    sc_out = None
+
+            if sc_out is None:
+                gws_out = self._session.call_tool(
+                    "get_window_state",
+                    {
+                        "pid": self._active_pid,
+                        "window_id": self._active_window_id,
+                        "session": self._session_id,
+                    },
+                )
+                png_b64, image_mime_type = _image_from_tool_result(gws_out)
+                # Still grab the window title — it's cheap and useful in the
+                # vision response — but deliberately leave `elements` empty so
+                # vision stays free of AX-tree noise.
+                text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
+                _, tree = _split_tree_text(text)
+                wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
+                if wt:
+                    window_title = wt.group(1)
+
+            if not png_b64:
+                # Both MCP attempts came back imageless without raising (flaky
+                # bridge dropping the heavy payload) — re-fetch the window
+                # state over the CLI transport, which embeds a screenshot.
+                logger.warning(
+                    "cua-driver vision capture returned no image over MCP "
+                    "(window_id=%s); re-fetching via CLI transport",
+                    self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state",
+                        {
+                            "pid": self._active_pid,
+                            "window_id": self._active_window_id,
+                            "session": self._session_id,
+                        },
+                        30.0,
+                    )
+                    if cli_out.get("images"):
+                        png_b64 = cli_out["images"][0]
+                        image_mime_type = "image/png"
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for vision screenshot failed: %s", cli_exc,
+                    )
         else:
-            # get_window_state: AX tree + optional screenshot.
+            # get_window_state: AX tree + screenshot.
             gws_out = self._session.call_tool(
                 "get_window_state",
                 {
@@ -988,6 +1461,51 @@ class CuaDriverBackend(ComputerUseBackend):
                     "session": self._session_id,
                 },
             )
+            # The persistent MCP session can return a degenerate result —
+            # empty/partial data with NO exception — when the bridge is flaky
+            # (e.g. it reconnected mid-call and dropped the heavy
+            # get_window_state payload). That surfaces to the model as a silent
+            # 0x0 capture. Detect "no screenshot AND no parseable tree" and
+            # force a one-shot CLI-transport re-fetch, which talks to the daemon
+            # over a different socket and returns the full result. This is
+            # distinct from the EAGAIN McpError path (handled in call_tool);
+            # here the MCP call "succeeded" but gave us nothing usable.
+            def _gws_is_empty(out: Dict[str, Any]) -> bool:
+                if out.get("images"):
+                    return False
+                sc_ = out.get("structuredContent") or {}
+                # Modern drivers carry the payload in structuredContent
+                # (elements array / embedded screenshot) with no markdown
+                # tree — that is NOT an empty result.
+                if sc_.get("elements") or sc_.get("screenshot_png_b64"):
+                    return False
+                txt = out.get("data") if isinstance(out.get("data"), str) else ""
+                _, tr = _split_tree_text(txt or "")
+                return not (tr and tr.strip())
+
+            if _gws_is_empty(gws_out):
+                logger.warning(
+                    "cua-driver get_window_state returned an empty result over MCP "
+                    "(pid=%s window_id=%s); re-fetching via CLI transport",
+                    self._active_pid, self._active_window_id,
+                )
+                try:
+                    cli_out = self._session._call_tool_via_cli(
+                        "get_window_state",
+                        {
+                            "pid": self._active_pid,
+                            "window_id": self._active_window_id,
+                            "session": self._session_id,
+                        },
+                        30.0,
+                    )
+                    if not _gws_is_empty(cli_out):
+                        gws_out = cli_out
+                except Exception as cli_exc:
+                    logger.error(
+                        "cua-driver CLI re-fetch for get_window_state failed: %s", cli_exc,
+                    )
+
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
@@ -1016,10 +1534,10 @@ class CuaDriverBackend(ComputerUseBackend):
                 if e.element_token
             }
 
-            if gws_out["images"]:
-                png_b64 = gws_out["images"][0]
-                mimes = gws_out.get("image_mime_types") or []
-                image_mime_type = mimes[0] if mimes and mimes[0] else None
+            # Image may arrive as an MCP image part or inside
+            # structuredContent (screenshot_png_b64) depending on the driver
+            # build — _image_from_tool_result handles both.
+            png_b64, image_mime_type = _image_from_tool_result(gws_out)
 
             # Extract window title from the AX tree first AXWindow line.
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
@@ -1235,15 +1753,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _ingest_windows(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

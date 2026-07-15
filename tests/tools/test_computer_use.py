@@ -1132,6 +1132,36 @@ class TestElementLabelParsing:
         assert labels[14] == "One"
         assert labels[15] == "Search"
 
+    def test_parenthesised_and_value_label_formats(self):
+        """Real cua-driver System Settings format: `(label)` and `= "value"`.
+
+        Regression for the bug where AXButton (Dark), AXStaticText = "Wi-Fi",
+        and AXPopUpButton = "Automatic" all came back with EMPTY labels because
+        the regex only matched the quoted and id= forms. A pure-digit (N) is an
+        order number, not a label, and must be skipped in favour of id=.
+        """
+        from tools.computer_use.cua_backend import _parse_elements_from_tree
+        tree = (
+            '- [77] AXButton (Auto) [help="..." actions=[press]]\n'
+            '- [78] AXButton (Light) [help="..." actions=[press]]\n'
+            '- [79] AXButton (Dark) [help="Use a dark appearance..." actions=[press]]\n'
+            '          - [4] AXStaticText = "Wi\u2011Fi" [id=com.apple.wifi actions=[showmenu]]\n'
+            '- [92] AXPopUpButton = "Automatic" [id=HighlightColorPicker actions=[press]]\n'
+            '- [100] AXRadioButton (Always) [actions=[press]]\n'
+            '[200] AXButton (5) id=RealLabel\n'   # (5) is order number -> label from id=
+            '[201] AXButton (7)\n'                # order number only, no real label
+        )
+        els = _parse_elements_from_tree(tree)
+        labels = {e.index: e.label for e in els}
+        assert labels[77] == "Auto"
+        assert labels[78] == "Light"
+        assert labels[79] == "Dark"           # the exact case that broke theme-switching
+        assert labels[4] == "Wi\u2011Fi"
+        assert labels[92] == "Automatic"
+        assert labels[100] == "Always"
+        assert labels[200] == "RealLabel"     # (5) order skipped, id= used
+        assert labels[201] == ""              # pure order number, no label
+
 
 class TestUpdateCheck:
     """cua_driver_update_check() / _nudge(): native `check-update --json`.
@@ -1467,6 +1497,194 @@ class TestCuaDriverSessionReconnect:
             session.call_tool("list_apps", {})
         # Exactly one attempt, no reconnect.
         assert len(bridge.calls) == 1
+
+    def test_is_transient_daemon_error_matches_eagain(self):
+        """The EAGAIN daemon-proxy error must be classified as transient."""
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        msg = ("daemon transport error forwarding `get_window_state`: "
+               "Resource temporarily unavailable (os error 35)")
+        assert _CuaDriverSession._is_transient_daemon_error(RuntimeError(msg)) is True
+        assert _CuaDriverSession._is_transient_daemon_error(
+            RuntimeError("daemon proxy to /tmp/sock not ready")) is True
+        # Unrelated errors must NOT be treated as transient.
+        assert _CuaDriverSession._is_transient_daemon_error(ValueError("boom")) is False
+
+    def test_call_tool_falls_back_to_cli_on_transient_error(self):
+        """When the MCP bridge throws EAGAIN, call_tool routes to the CLI transport."""
+        import threading
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        eagain = RuntimeError(
+            "daemon transport error forwarding `get_window_state`: "
+            "Resource temporarily unavailable (os error 35)"
+        )
+
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, value, timeout=None):
+                self.calls.append((value, timeout))
+                raise eagain
+
+        bridge = FakeBridge()
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._bridge = bridge
+        session._session = object()
+        session._exit_stack = None
+        session._lock = threading.Lock()
+        session._started = True
+        session._call_tool_async = lambda name, args: ("call", name, args)
+
+        cli_calls = []
+
+        def fake_cli(name, args, timeout):
+            cli_calls.append((name, args))
+            return {"data": "42 elements\ntree", "images": ["B64PNG"],
+                    "structuredContent": {"element_count": 42}, "isError": False}
+
+        session._call_tool_via_cli = fake_cli
+
+        result = session.call_tool("get_window_state", {"pid": 1, "window_id": 2})
+        # MCP path attempted exactly once, then CLI fallback used.
+        assert len(bridge.calls) == 1
+        assert cli_calls == [("get_window_state", {"pid": 1, "window_id": 2})]
+        assert result["images"] == ["B64PNG"]
+
+    def test_cli_fallback_reads_screenshot_from_file(self, tmp_path):
+        """_call_tool_via_cli must base64-read a screenshot written to disk
+        (screenshot_out_file path) when no inline base64 is present."""
+        import base64 as _b64
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        png_bytes = b"\x89PNG\r\n\x1a\nFAKEDATA"
+        shot = tmp_path / "shot.png"
+        shot.write_bytes(png_bytes)
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+
+        captured_cmd = {}
+
+        class FakeProc:
+            returncode = 0
+            stderr = ""
+            # Daemon returns a path, not inline base64.
+            stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
+                      ' "screenshot_file_path": "%s"}' % str(shot))
+
+        import subprocess as _sp
+        orig_run = _sp.run
+
+        def fake_run(cmd, **kw):
+            captured_cmd["cmd"] = cmd
+            return FakeProc()
+
+        _sp.run = fake_run
+        try:
+            out = session._call_tool_via_cli("get_window_state",
+                                             {"pid": 1, "window_id": 2}, 30.0)
+        finally:
+            _sp.run = orig_run
+
+        # Screenshot read from disk and base64-encoded.
+        assert out["images"] == [_b64.b64encode(png_bytes).decode("ascii")]
+        # tree_markdown surfaced as the data text blob with the element-count summary.
+        assert "AXButton" in out["data"]
+        assert "7 elements" in out["data"]
+
+
+class TestCaptureEmptyResultClipFallback:
+    """When the MCP bridge returns a degenerate/empty get_window_state result
+    (no screenshot, no parseable tree) WITHOUT raising, capture() must re-fetch
+    over the CLI transport rather than surfacing a silent 0x0 capture."""
+
+    def test_capture_refetches_via_cli_on_empty_gws(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [{
+            "app_name": "Finder", "pid": 1208, "window_id": 1500,
+            "is_on_screen": True, "z_index": 0, "title": "Desktop",
+        }]
+
+        # A valid 1x1 PNG, base64-encoded.
+        png = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+               b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00"
+               b"\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+        png_b64 = base64.b64encode(png).decode("ascii")
+
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+
+        # MCP path: list_windows OK, but get_window_state returns EMPTY (no
+        # images, blank data) — the silent-failure mode.
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            if name == "get_window_state":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": None}
+            return {"data": "", "images": [], "isError": False, "structuredContent": None}
+        sess.call_tool.side_effect = mcp_call
+
+        # CLI re-fetch returns a real screenshot + tree.
+        cli_calls = []
+        def cli_call(name, args, timeout):
+            cli_calls.append(name)
+            return {"data": "5 elements\n- [0] AXButton 'OK'", "images": [png_b64],
+                    "structuredContent": {"element_count": 5}, "isError": False}
+        sess._call_tool_via_cli.side_effect = cli_call
+
+        backend._session = cast(Any, sess)
+        cap = backend.capture(mode="som", app="Finder")
+
+        # The empty MCP gws result triggered a CLI re-fetch that supplied the PNG.
+        assert "get_window_state" in cli_calls
+        assert cap.png_b64 == png_b64
+        assert cap.width == 1 and cap.height == 1
+        assert len(cap.elements) >= 1
+
+    def test_capture_refetches_windows_via_cli_when_mcp_empty(self):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [{
+            "app_name": "Finder", "pid": 1208, "window_id": 1500,
+            "is_on_screen": True, "z_index": 0, "title": "Desktop",
+        }]
+        backend = CuaDriverBackend()
+        sess = MagicMock()
+
+        # MCP list_windows returns NO windows (flaky session); gws would work but
+        # we never reach it unless the window list is recovered via CLI.
+        def mcp_call(name, args, timeout=30.0):
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": []}}
+            return {"data": "3 elements\n- [0] AXButton", "images": [], "isError": False,
+                    "structuredContent": None}
+        sess.call_tool.side_effect = mcp_call
+
+        cli_calls = []
+        def cli_call(name, args, timeout):
+            cli_calls.append(name)
+            if name == "list_windows":
+                return {"data": "", "images": [], "isError": False,
+                        "structuredContent": {"windows": windows}}
+            return {"data": "3 elements\n- [0] AXButton", "images": [], "isError": False,
+                    "structuredContent": None}
+        sess._call_tool_via_cli.side_effect = cli_call
+
+        backend._session = cast(Any, sess)
+        cap = backend.capture(mode="ax", app="Finder")
+
+        # CLI recovered the window list; capture resolved the Finder window.
+        assert "list_windows" in cli_calls
+        assert cap.app == "Finder"
 
 
 class TestCaptureAppFilterNoMatch:
@@ -2139,6 +2357,123 @@ class TestStructuredElementsConsumption:
         # Markdown surface doesn't carry bounds — lossy by design.
         assert cap.elements[0].bounds == (0, 0, 0, 0)
 
+    def test_vision_capture_falls_back_to_get_window_state_when_screenshot_dropped(self):
+        """cua-driver >=0.5.x dropped the standalone `screenshot` MCP tool and
+        folded full-window PNG capture into `get_window_state`. When the driver
+        no longer advertises `screenshot`, vision capture must route through
+        `get_window_state` (discarding the AX tree) and still return a PNG."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        # Modern driver: capabilities discovered, `screenshot` not advertised.
+        backend._session._has_tool.return_value = False
+        backend._session.capabilities_discovered = True
+
+        windows_payload = {
+            "windows": [{
+                "app_name": "Demo", "pid": 9, "window_id": 1,
+                "is_on_screen": True, "title": "Demo", "z_index": 0,
+            }],
+        }
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42m"
+            "NkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        )
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                return {"data": "", "images": [png_b64],
+                        "image_mime_types": ["image/png"],
+                        "structuredContent": None, "isError": False}
+            if name == "screenshot":
+                raise AssertionError("driver dropped screenshot; must not be called")
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="vision")
+
+        tool_names = [call.args[0] for call in backend._session.call_tool.call_args_list]
+        assert tool_names == ["list_windows", "get_window_state"]
+        assert cap.png_b64 == png_b64
+        assert cap.image_mime_type == "image/png"
+        assert cap.width == 1
+        assert cap.height == 1
+        # Vision mode stays free of AX element noise.
+        assert cap.elements == []
+
+    def test_capture_app_screen_targets_desktop_window(self):
+        """capture(app='screen') resolves to the OS shell/desktop window
+        (Windows Progman) rather than an application window, so 'show me my
+        screen' works on cua-driver's window-oriented capture surface."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [
+                {"app_name": "Code", "pid": 11, "window_id": 1,
+                 "is_on_screen": True, "title": "editor", "z_index": 0},
+                {"app_name": "Progman", "pid": 4, "window_id": 99,
+                 "is_on_screen": True, "title": "Program Manager", "z_index": 5},
+                {"app_name": "Shell_TrayWnd", "pid": 4, "window_id": 50,
+                 "is_on_screen": True, "title": "Taskbar", "z_index": 4},
+            ],
+        }
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            if name == "get_window_state":
+                # Should be invoked against the desktop backdrop, not Code.
+                assert args["window_id"] == 99
+                return {"data": "✅ Desktop — 0 elements", "images": [],
+                        "image_mime_types": [], "structuredContent": None,
+                        "isError": False}
+            return {"data": "", "images": [], "image_mime_types": [],
+                    "structuredContent": None, "isError": False}
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="ax", app="screen")
+
+        assert backend._active_window_id == 99
+        assert cap.app == "Progman"
+
+    def test_capture_app_screen_no_desktop_window_surfaces_limitation(self):
+        """When no desktop/shell window is present, capture(app='screen')
+        returns a clear message about cua-driver's per-window capture limit
+        instead of silently grabbing the frontmost app."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+
+        windows_payload = {
+            "windows": [
+                {"app_name": "Code", "pid": 11, "window_id": 1,
+                 "is_on_screen": True, "title": "editor", "z_index": 0},
+            ],
+        }
+
+        def fake_call_tool(name, args):
+            if name == "list_windows":
+                return {"data": "", "images": [], "image_mime_types": [],
+                        "structuredContent": windows_payload, "isError": False}
+            raise AssertionError(f"unexpected tool {name} — should short-circuit")
+
+        backend._session.call_tool.side_effect = fake_call_tool
+        cap = backend.capture(mode="vision", app="desktop")
+
+        assert cap.width == 0 and cap.height == 0
+        assert cap.png_b64 is None
+        assert "captures one window at a time" in cap.window_title
+
 
 class TestCapabilityDiscovery:
     """Surface 4 (NousResearch/hermes-agent#47072): the wrapper learns
@@ -2750,3 +3085,66 @@ class TestCuaToolCoverageExpansion:
         backend.call_tool("get_cursor_position")
         name, args = backend._session.call_tool.call_args.args
         assert args == {"session": backend._session_id}
+
+
+class TestStartupTimeoutPhaseDetail:
+    """Issue #57025: the ready-timeout error must report which startup phase
+    wedged, so 'doctor passes but wrapper times out' reports are diagnosable."""
+
+    def test_timeout_error_includes_startup_phase(self):
+        import threading
+        from typing import Any, cast
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._lock = threading.Lock()
+        session._ready_event = threading.Event()  # never set → timeout path
+        session._setup_error = None
+        session._shutdown_event = None
+        session._startup_phase = "mcp-initialize"
+        session._signal_shutdown_locked = lambda: None
+
+        fake_bridge = MagicMock()
+        fake_bridge._loop = MagicMock()
+        session._bridge = fake_bridge
+
+        import asyncio
+        from unittest.mock import patch as _patch
+        with _patch.object(session._ready_event, "wait", return_value=False), \
+             _patch.object(asyncio, "run_coroutine_threadsafe", return_value=MagicMock()), \
+             _patch.object(_CuaDriverSession, "_lifecycle_coro", lambda self: None):
+            try:
+                session._start_lifecycle_locked()
+                assert False, "expected RuntimeError"
+            except RuntimeError as e:
+                msg = str(e)
+                assert "stuck in phase: mcp-initialize" in msg
+                assert "computer-use doctor" in msg
+
+    def test_timeout_error_defaults_to_unknown_phase(self):
+        import threading
+        from typing import Any, cast
+        from unittest.mock import MagicMock, patch as _patch
+        import asyncio
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+        session._lock = threading.Lock()
+        session._ready_event = threading.Event()
+        session._setup_error = None
+        session._shutdown_event = None
+        # no _startup_phase attribute at all
+        session._signal_shutdown_locked = lambda: None
+        fake_bridge = MagicMock()
+        fake_bridge._loop = MagicMock()
+        session._bridge = fake_bridge
+
+        with _patch.object(session._ready_event, "wait", return_value=False), \
+             _patch.object(asyncio, "run_coroutine_threadsafe", return_value=MagicMock()), \
+             _patch.object(_CuaDriverSession, "_lifecycle_coro", lambda self: None):
+            try:
+                session._start_lifecycle_locked()
+                assert False, "expected RuntimeError"
+            except RuntimeError as e:
+                assert "stuck in phase: unknown" in str(e)

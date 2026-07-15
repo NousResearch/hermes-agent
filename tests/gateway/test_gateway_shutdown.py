@@ -169,6 +169,58 @@ async def test_planned_service_exit_issues_no_restart_of_its_own(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unexpected_signal_starts_teardown_after_bounded_interrupt_grace():
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.0
+    runner._signal_initiated_shutdown = True
+    runner._signal_interrupt_grace_timeout = 0.01
+    runner._running_agents = {"session": MagicMock()}
+
+    disconnect_started = asyncio.Event()
+
+    async def disconnect():
+        disconnect_started.set()
+
+    adapter.disconnect = disconnect
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        stop_task = asyncio.create_task(runner.stop())
+        await asyncio.wait_for(disconnect_started.wait(), timeout=0.75)
+        await stop_task
+
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.parametrize(
+    ("signal_initiated", "restart_requested", "expected"),
+    [
+        (True, False, 0.25),
+        (False, False, 5.0),
+        (True, True, 5.0),
+    ],
+)
+def test_post_interrupt_grace_only_shortens_unexpected_signal_shutdown(
+    signal_initiated, restart_requested, expected
+):
+    runner, _adapter = make_restart_runner()
+    runner._signal_initiated_shutdown = signal_initiated
+    runner._restart_requested = restart_requested
+    runner._signal_interrupt_grace_timeout = 0.25
+
+    assert runner._post_interrupt_grace_timeout() == expected
+
+
+def test_post_interrupt_grace_tolerates_duck_typed_runner():
+    runner = MagicMock(spec=[])
+
+    assert (
+        gateway_run.GatewayRunner._post_interrupt_grace_timeout(runner)
+        == gateway_run.DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT
+    )
+
+@pytest.mark.asyncio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
@@ -343,5 +395,3 @@ def test_pid_exists_zombie_via_psutil_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
     assert status._pid_exists(4242) is False
-
-

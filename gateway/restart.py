@@ -1,5 +1,6 @@
 """Shared gateway restart constants and supervisor detection helpers."""
 
+import math
 import os
 from collections.abc import Mapping
 
@@ -23,6 +24,10 @@ EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(
     DEFAULT_CONFIG["agent"]["restart_drain_timeout"]
 )
+DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT = float(
+    DEFAULT_CONFIG["gateway"]["signal_interrupt_grace_timeout"]
+)
+DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT = 5.0
 
 # In-band restart (``/restart``, SIGUSR1, self-restart from a child CLI)
 # waits for active turns to finish *before* ``stop()`` begins. Distinct
@@ -238,3 +243,17 @@ def resolve_restart_exit_wait_budget(
     except (TypeError, ValueError):
         margin = 0.0
     return drain + after_turn + margin
+
+
+def parse_signal_interrupt_grace_timeout(raw: object) -> float:
+    """Parse the unexpected-signal post-interrupt grace timeout."""
+    try:
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            value = DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+        else:
+            value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    if not math.isfinite(value):
+        return DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    return max(0.0, value)

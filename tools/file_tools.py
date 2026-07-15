@@ -1164,6 +1164,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             if env_type == "local":
                 local_config = {
                     "persistent": config.get("local_persistent", False),
+                    "shell": config.get("shell", "auto"),
                 }
 
             terminal_env = _create_environment(

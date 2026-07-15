@@ -398,12 +398,15 @@ class BaseEnvironment(ABC):
         # and is genuinely unique per writer, which closes the race.  The
         # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
         # with ``$BASHPID`` left outside the quotes so it still expands.
-        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$BASHPID"
+        # Shell-aware temp file naming: bash uses $BASHPID (actual subshell PID),
+        # zsh uses $$ (which IS the subshell PID in zsh, unlike bash)
+        _is_zsh = getattr(self, "_shell_kind", "bash") == "zsh"
+        _pid_var = "$$" if _is_zsh else "$BASHPID"
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + _pid_var
         # Shell-aware bootstrap: zsh uses different commands than bash for
         # function listing (functions vs declare -F), alias dump (alias -L
         # vs alias -p), and alias expansion enable (setopt vs shopt).  Using
         # the wrong commands crashes the snapshot shell with exit 1.
-        _is_zsh = getattr(self, "_shell_kind", "bash") == "zsh"
         bootstrap = (
             f"umask 077\n"
             f"export -p > {_snap_tmp}\n"

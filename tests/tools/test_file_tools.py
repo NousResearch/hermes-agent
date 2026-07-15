@@ -889,9 +889,10 @@ class TestIsHostLocalEnv:
 
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
     def test_false_when_active_env_is_not_local(self, mock_active):
+        from tools.environments.docker import DockerEnvironment
         from tools.file_tools import _is_host_local_env
 
-        mock_active["default"] = MagicMock()  # e.g. a container/ssh backend
+        mock_active["default"] = MagicMock(spec=DockerEnvironment)
         assert _is_host_local_env("default") is False
 
     @patch("tools.terminal_tool._get_env_config")
@@ -907,11 +908,33 @@ class TestIsHostLocalEnv:
 
     @patch("tools.terminal_tool._get_env_config")
     @patch("tools.terminal_tool._active_environments", new_callable=dict)
-    def test_false_on_exception(self, mock_active, mock_config):
+    def test_falls_back_to_terminal_env_when_config_raises(
+        self, mock_active, mock_config, monkeypatch
+    ):
         from tools.file_tools import _is_host_local_env
 
         mock_config.side_effect = RuntimeError("no config available")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
         assert _is_host_local_env("default") is False
+
+        # Nothing configured anywhere: no remote backend exists to be wrong
+        # about, so the host filesystem is the right assumption.
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        assert _is_host_local_env("default") is True
+
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_false_for_subagent_sharing_parent_container(self, mock_active, monkeypatch):
+        """A delegate_task subagent registers no env of its own — it shares
+        the parent's container under the collapsed "default" key.  Looking up
+        the raw subagent id finds nothing and would fall back to the global
+        config default ("local"), silently re-enabling host mtimes for a file
+        that only exists inside the container."""
+        from tools.environments.docker import DockerEnvironment
+        from tools.file_tools import _is_host_local_env
+
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        mock_active["default"] = MagicMock(spec=DockerEnvironment)
+        assert _is_host_local_env("subagent_1") is False
 
 
 class TestReadDedupHostLocalGate:
@@ -1009,3 +1032,106 @@ class TestCheckFileStalenessHostLocalGate:
         assert warning is not None
         assert "modified since you last read it" in warning
         _read_tracker.pop(task_id, None)
+
+
+class TestFileStateRegistryRemoteGate:
+    """Public-tool coverage for the cross-agent registry on remote backends.
+
+    read_file → write_file and read_file → patch_tool run the registry, which
+    stamps a host mtime on read and re-stats the host path before the write.
+    On a remote backend that path is not the file the tools actually touched
+    — either a same-named host twin (ssh) or nothing at all (container) — so
+    those mtimes must not drive warnings.  The backend-agnostic half of the
+    registry (per-path locks, sibling-write coordination) must keep working.
+    """
+
+    @staticmethod
+    def _file_ops():
+        mock_ops = MagicMock()
+        read_obj = MagicMock()
+        read_obj.content = "sandbox v1"
+        read_obj.to_dict.return_value = {"content": "sandbox v1", "total_lines": 1}
+        mock_ops.read_file.return_value = read_obj
+        for _attr in ("write_file", "patch_replace"):
+            _obj = MagicMock()
+            _obj.to_dict.return_value = {"success": True}
+            getattr(mock_ops, _attr).return_value = _obj
+        return mock_ops
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_read_then_write_ignores_host_twin_mtime(self, mock_active, mock_get, tmp_path):
+        import os
+        from tools import file_state
+        from tools.environments.ssh import SSHEnvironment
+        from tools.file_tools import read_file_tool, write_file_tool
+
+        file_state.get_registry().clear()
+        mock_active["default"] = MagicMock(spec=SSHEnvironment)
+        mock_get.return_value = self._file_ops()
+
+        # ssh resolves host-style paths, so a same-named file on the host is
+        # stat-able — and completely unrelated to the file over the wire.
+        twin = tmp_path / "app.py"
+        twin.write_text("host twin v1\n")
+        task_id = "remote-read-write"
+
+        read_file_tool(str(twin), 1, 500, task_id)
+        os.utime(twin, (0, 0))  # host-side churn on the twin only
+
+        result = json.loads(write_file_tool(str(twin), "sandbox v2", task_id))
+
+        assert "_warning" not in result, result.get("_warning")
+        file_state.get_registry().clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_read_then_patch_ignores_host_twin_mtime(self, mock_active, mock_get, tmp_path):
+        import os
+        from tools import file_state
+        from tools.environments.ssh import SSHEnvironment
+        from tools.file_tools import patch_tool, read_file_tool
+
+        file_state.get_registry().clear()
+        mock_active["default"] = MagicMock(spec=SSHEnvironment)
+        mock_get.return_value = self._file_ops()
+
+        twin = tmp_path / "mod.py"
+        twin.write_text("host twin v1\n")
+        task_id = "remote-read-patch"
+
+        read_file_tool(str(twin), 1, 500, task_id)
+        os.utime(twin, (0, 0))
+
+        result = json.loads(patch_tool(
+            mode="replace", path=str(twin), old_string="sandbox v1",
+            new_string="sandbox v2", task_id=task_id,
+        ))
+
+        assert "_warning" not in result, result.get("_warning")
+        file_state.get_registry().clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    @patch("tools.terminal_tool._active_environments", new_callable=dict)
+    def test_sibling_write_coordination_survives_on_container_backend(
+        self, mock_active, mock_get, tmp_path
+    ):
+        """The gate must not disable the registry: a container path never
+        stats on the host, so dropping the read/write records entirely would
+        leave two subagents editing the same sandbox file unwarned."""
+        from tools import file_state
+        from tools.environments.docker import DockerEnvironment
+        from tools.file_tools import read_file_tool, write_file_tool
+
+        file_state.get_registry().clear()
+        mock_active["default"] = MagicMock(spec=DockerEnvironment)
+        mock_get.return_value = self._file_ops()
+
+        target = "/workspace/shared.py"  # exists only inside the container
+        read_file_tool(target, 1, 500, "agent-A")
+        write_file_tool(target, "sibling edit", "agent-B")
+
+        result = json.loads(write_file_tool(target, "stale edit", "agent-A"))
+
+        assert "sibling subagent" in result.get("_warning", ""), result
+        file_state.get_registry().clear()

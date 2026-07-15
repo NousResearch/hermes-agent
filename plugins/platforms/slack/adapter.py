@@ -2085,10 +2085,25 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 1) Protect fenced code blocks (``` ... ```)
+        # 1) Protect fenced code blocks (``` ... ```).  Slack's mrkdwn does not
+        # strip the optional language tag like GitHub-flavored markdown — it
+        # renders ```text\nfoo\n``` as a code block whose literal first line
+        # is "text".  Drop the tag from the opening fence before stashing.
+        # Stripping only fires for a genuine opening fence — a ``` at the
+        # start of a line, tagged with a single token (no spaces/backticks).
+        # The outer regex below deliberately matches loosely, so it can also
+        # group from a mid-line ``` (e.g. an inline ```span```); that first
+        # line is real content and must survive byte-for-byte.  This pass
+        # runs first, so match positions refer to the original message.
+        def _protect_fence(m):
+            block = m.group(0)
+            if m.start() == 0 or m.string[m.start() - 1] == "\n":
+                block = re.sub(r"\A```[^\s`]+[ \t]*(\r?\n)", r"```\1", block)
+            return _ph(block)
+
         text = re.sub(
             r"(```(?:[^\n]*\n)?[\s\S]*?```)",
-            lambda m: _ph(m.group(0)),
+            _protect_fence,
             text,
         )
 

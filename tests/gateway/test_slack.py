@@ -2469,7 +2469,60 @@ class TestFormatMessage:
         assert adapter.format_message("~~deleted~~") == "~deleted~"
 
     def test_code_block_preserved(self, adapter):
+        # Slack mrkdwn doesn't recognize language tags — it would render the
+        # tag as a literal first line of the code block — so the converter
+        # strips it.  Body content is still passed through verbatim.
         code = "```python\nx = **not bold**\n```"
+        assert adapter.format_message(code) == "```\nx = **not bold**\n```"
+
+    def test_code_block_strips_language_tag(self, adapter):
+        # Regression: Slack rendered a literal "text" line at the top of code
+        # blocks containing raw command output because the LLM emitted
+        # ```text fences and the converter passed them through unchanged.
+        code = "```text\nhello world\nline 2\n```"
+        assert adapter.format_message(code) == "```\nhello world\nline 2\n```"
+
+    def test_code_block_no_language_tag_unchanged(self, adapter):
+        code = "```\nplain output\n```"
+        assert adapter.format_message(code) == code
+
+    def test_inline_triple_backtick_unchanged(self, adapter):
+        # Single-line ```hello``` has no newline after the opening fence, so
+        # nothing should be stripped.
+        code = "```hello```"
+        assert adapter.format_message(code) == code
+
+    def test_mid_line_triple_backticks_content_preserved(self, adapter):
+        # The fence-protection regex matches loosely, so the inline
+        # ```pip install foo``` span is grouped as an "opening fence" whose
+        # first line is real content.  Stripping only fires for a ``` at the
+        # start of a line, so the span survives byte-for-byte.
+        text = "Use ```pip install foo``` then:\n```bash\ncode\n```"
+        assert adapter.format_message(text) == text
+
+    def test_mid_line_single_token_span_preserved(self, adapter):
+        # A single-token inline span that wraps across a newline looks
+        # exactly like a language tag — the line-start guard is what keeps
+        # the word "quotes" from being stripped as one.
+        text = "Wrap it in ```quotes\nlike this\n```"
+        assert adapter.format_message(text) == text
+
+    def test_back_to_back_fences_second_token_preserved(self, adapter):
+        # The second ``` group starts mid-line (right after the previous
+        # closing fence), so its first token is content, not a tag.
+        text = "```\nx\n``````b\ny\n```"
+        assert adapter.format_message(text) == text
+
+    def test_code_block_lang_tag_trailing_spaces_stripped(self, adapter):
+        code = "```python  \nx = 1\n```"
+        assert adapter.format_message(code) == "```\nx = 1\n```"
+
+    def test_code_block_crlf_lang_tag_stripped_preserves_crlf(self, adapter):
+        code = "```python\r\nx = 1\r\n```"
+        assert adapter.format_message(code) == "```\r\nx = 1\r\n```"
+
+    def test_code_block_crlf_no_tag_unchanged(self, adapter):
+        code = "```\r\nplain output\r\n```"
         assert adapter.format_message(code) == code
 
     def test_inline_code_preserved(self, adapter):
@@ -2623,9 +2676,9 @@ class TestFormatMessage:
     # --- Additional edge cases ---
 
     def test_message_only_code_block(self, adapter):
-        """Entire message is a fenced code block — no conversion."""
+        """Entire message is a fenced code block — body preserved, lang tag dropped."""
         code = "```python\nx = 1\n```"
-        assert adapter.format_message(code) == code
+        assert adapter.format_message(code) == "```\nx = 1\n```"
 
     def test_multiline_mixed_formatting(self, adapter):
         """Multi-line message with headers, bold, links, code, and blockquotes."""
@@ -2753,7 +2806,8 @@ class TestEditMessageStreamingPipeline:
         assert result.success is True
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"].startswith("*Result:*")
-        assert "```python\nprint('hello')\n```" in kwargs["text"]
+        # Language tag is stripped — Slack mrkdwn would render it as a literal line
+        assert "```\nprint('hello')\n```" in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_edit_message_formats_blockquote_in_stream(self, adapter):

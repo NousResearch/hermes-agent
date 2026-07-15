@@ -211,6 +211,67 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_script_relative_path_with_arguments(self, cron_env):
+        """Cron scripts preserve quoted paths and CLI arguments."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "args file.py"
+        script.write_text(textwrap.dedent("""\
+            import sys
+            print("|".join(sys.argv[1:]))
+        """))
+
+        success, output = _run_job_script(
+            '"args file.py" expire "check only"'
+        )
+        assert success is True
+        assert output == "expire|check only"
+
+    def test_legacy_unquoted_script_path_with_spaces(self, cron_env):
+        """An existing legacy filename containing spaces is not split into argv."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "legacy report.py"
+        script.write_text("import sys\nprint(len(sys.argv) - 1)\n")
+
+        success, output = _run_job_script("legacy report.py")
+
+        assert success is True
+        assert output == "0"
+
+
+class TestParseScriptCommand:
+    def test_windows_backslashes_are_preserved(self, monkeypatch):
+        from cron import script_command
+
+        monkeypatch.setattr(script_command.sys, "platform", "win32")
+
+        executable, args = script_command.parse_script_command(
+            'C:\\Users\\alice\\job.py --mode "full scan"'
+        )
+
+        assert executable == r"C:\Users\alice\job.py"
+        assert args == ["--mode", "full scan"]
+
+    def test_unbalanced_quotes_raise_clean_error(self):
+        from cron.script_command import parse_script_command
+
+        with pytest.raises(ValueError, match="invalid script command"):
+            parse_script_command('\"broken.py --flag')
+
+    def test_windows_format_round_trips_argv_without_a_shell(self, monkeypatch):
+        from cron import script_command
+
+        monkeypatch.setattr(script_command.sys, "platform", "win32")
+        expected = (
+            r"C:\Program Files\Hermes\job.py",
+            ["O'Brien", r"C:\reports\weekly scan.json", "say \"hello\"", ""],
+        )
+
+        stored = script_command.format_script_command(expected[0], expected[1])
+
+        assert script_command.parse_script_command(stored) == expected
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

@@ -37,6 +37,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from cron.script_command import parse_script_command
+
 
 class GatewayLifecycleBlocked(ValueError):
     """Raised when a cron job spec contains a gateway-lifecycle command."""
@@ -73,7 +75,7 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     return bool(_GATEWAY_LIFECYCLE_PATTERN.search(text))
 
 
-def _resolve_script_path(script_path: str) -> Path:
+def _resolve_script_path(script_command: str) -> Path:
     """Resolve a cron ``script`` value the same way the scheduler does.
 
     The scheduler (``cron.scheduler``) resolves a bare/relative script path
@@ -86,10 +88,15 @@ def _resolve_script_path(script_path: str) -> Path:
     """
     from hermes_constants import get_hermes_home
 
-    raw = Path(script_path).expanduser()
+    scripts_dir = get_hermes_home() / "scripts"
+    try:
+        executable, _argv = parse_script_command(script_command, scripts_dir)
+    except ValueError as exc:
+        raise ValueError(f"Invalid script command: {exc}") from exc
+    raw = Path(executable).expanduser()
     if raw.is_absolute():
         return raw
-    return get_hermes_home() / "scripts" / raw
+    return scripts_dir / raw
 
 
 def _read_script_for_scanning(script_path: str) -> str:
@@ -107,6 +114,24 @@ def _read_script_for_scanning(script_path: str) -> str:
         )
     except OSError:
         return ""
+
+
+def _script_command_for_scanning(script_command: str) -> str:
+    """Return parsed executable and argv as command-shaped text.
+
+    A generic dispatcher such as ``exec \"$@\"`` is safe only if its arguments
+    are safe. Scanning the file alone would let
+    ``dispatch.sh hermes gateway restart`` bypass the lifecycle guard.
+    """
+    from hermes_constants import get_hermes_home
+
+    try:
+        executable, argv = parse_script_command(
+            script_command, get_hermes_home() / "scripts"
+        )
+    except ValueError as exc:
+        raise ValueError(f"Invalid script command: {exc}") from exc
+    return " ".join((Path(executable).name, *argv))
 
 
 def check_gateway_lifecycle(
@@ -127,9 +152,9 @@ def check_gateway_lifecycle(
     """
     combined = prompt or ""
     if script:
+        command_text = _script_command_for_scanning(script)
         script_text = _read_script_for_scanning(script)
-        if script_text:
-            combined = f"{combined}\n{script_text}"
+        combined = f"{combined}\n{command_text}\n{script_text}"
 
     if contains_gateway_lifecycle_command(combined):
         raise GatewayLifecycleBlocked(

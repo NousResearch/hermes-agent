@@ -166,6 +166,33 @@ class TestCronCreateLifecycleBlock:
         out = capsys.readouterr().out
         assert "Blocked" in out
 
+    def test_block_lifecycle_command_passed_through_script_arguments(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        scripts_dir = tmp_path / ".hermes" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "dispatch.sh").write_text(
+            '#!/bin/bash\n"$@"\n', encoding="utf-8"
+        )
+        args = Namespace(
+            cron_command="create",
+            schedule="1h",
+            prompt=None,
+            name=None,
+            deliver=None,
+            repeat=None,
+            skill=None,
+            skills=None,
+            script="dispatch.sh hermes gateway restart",
+            workdir=None,
+            profile=None,
+            no_agent=True,
+        )
+
+        assert cron_command(args) == 1
+        assert "Blocked" in capsys.readouterr().out
+
     def test_allow_safe_prompt(self, capsys):
         args = Namespace(
             cron_command="create",
@@ -464,6 +491,36 @@ class TestCreateJobBlocksLifecycleCommands:
         with pytest.raises(GatewayLifecycleBlocked):
             create_job(prompt="then run hermes gateway restart", schedule="30m")
 
+    def test_create_job_blocks_argument_bearing_lifecycle_script(
+        self, tmp_path, monkeypatch
+    ):
+        """The guard scans the executable, not the full script command string."""
+        from cron.jobs import create_job
+        from cron.lifecycle_guard import GatewayLifecycleBlocked
+
+        hermes_home = tmp_path / ".hermes"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "restart script.sh").write_text("hermes gateway restart\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            create_job(
+                prompt="daily ops",
+                schedule="30m",
+                script='"restart script.sh" --flag',
+            )
+
+    def test_create_job_reports_unbalanced_script_quotes(self):
+        from cron.jobs import create_job
+
+        with pytest.raises(ValueError, match="Invalid script command"):
+            create_job(
+                prompt="daily ops",
+                schedule="30m",
+                script='"broken.py --flag',
+            )
+
     def test_create_job_allows_benign_prompt(self):
         from cron.jobs import create_job
         job = create_job(prompt="summarize the API gateway logs and note restart events",
@@ -482,6 +539,61 @@ class TestCreateJobBlocksLifecycleCommands:
         ))
         assert result.get("success") is False
         assert "#30719" in result.get("error", "")
+
+
+class TestUpdateJobBlocksLifecycleCommands:
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        scripts_dir = hermes_home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("cron.jobs.CRON_DIR", hermes_home / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", hermes_home / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", hermes_home / "cron" / "output")
+        self.scripts_dir = scripts_dir
+
+    def test_update_prompt_checks_effective_existing_script_before_save(self):
+        from cron.jobs import create_job, get_job, update_job
+        from cron.lifecycle_guard import GatewayLifecycleBlocked
+
+        script = self.scripts_dir / "ops.sh"
+        script.write_text("echo safe\n")
+        job = create_job(prompt="daily ops", schedule="30m", script="ops.sh")
+        script.write_text("hermes gateway restart\n")
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            update_job(job["id"], {"prompt": "updated daily ops"})
+
+        assert get_job(job["id"])["prompt"] == "daily ops"
+
+    def test_update_script_checks_effective_prompt_before_save(self):
+        from cron.jobs import create_job, get_job, update_job
+        from cron.lifecycle_guard import GatewayLifecycleBlocked
+
+        script = self.scripts_dir / "restart.sh"
+        script.write_text("hermes gateway restart\n")
+        job = create_job(prompt="daily ops", schedule="30m")
+
+        with pytest.raises(GatewayLifecycleBlocked):
+            update_job(job["id"], {"script": "restart.sh"})
+
+        assert get_job(job["id"]).get("script") is None
+
+    def test_cronjob_tool_update_surfaces_script_block(self):
+        from cron.jobs import create_job
+        from tools.cronjob_tools import cronjob
+
+        script = self.scripts_dir / "restart.sh"
+        script.write_text("hermes gateway restart\n")
+        job = create_job(prompt="daily ops", schedule="30m")
+
+        result = json.loads(
+            cronjob(action="update", job_id=job["id"], script="restart.sh")
+        )
+
+        assert result["success"] is False
+        assert "#30719" in result["error"]
 
 
 # ---------------------------------------------------------------------------

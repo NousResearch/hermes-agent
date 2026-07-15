@@ -996,6 +996,9 @@ class ModelAssignment(BaseModel):
 class MoaModelSlot(BaseModel):
     provider: str = ""
     model: str = ""
+    # Optional per-slot reasoning effort. Declared so a client round-tripping
+    # the GET payload doesn't have it stripped at parse time and wiped on save.
+    reasoning_effort: Optional[str] = None
 
 
 class MoaPresetPayload(BaseModel):
@@ -1006,6 +1009,11 @@ class MoaPresetPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    # Newer per-preset knobs (see moa_config._normalize_preset). Optional so
+    # older clients that never send them keep working; declared so clients
+    # that round-trip the GET payload don't silently erase hand-set values.
+    reference_max_tokens: Optional[int] = None
+    fanout: Optional[str] = None
     enabled: bool = True
 
 
@@ -1020,6 +1028,8 @@ class MoaConfigPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    reference_max_tokens: Optional[int] = None
+    fanout: Optional[str] = None
     enabled: bool = True
     profile: Optional[str] = None
 
@@ -5576,6 +5586,7 @@ def get_recommended_default_model(provider: str = ""):
                 get_pricing_for_provider,
                 check_nous_free_tier,
                 partition_nous_models_by_tier,
+                pick_silent_default_model,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -5604,21 +5615,25 @@ def get_recommended_default_model(provider: str = ""):
                     model_ids, pricing, portal_url
                 )
 
-            model = model_ids[0] if model_ids else ""
+            model = pick_silent_default_model(model_ids, provider="nous")
             return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
 
-    # Non-Nous: first curated model for the provider, matching prior behaviour.
+    # Non-Nous: preferred silent default when the provider's curated list
+    # carries it, else the first curated model. Aggregator lists lead with the
+    # priciest Anthropic flagship (claude-fable-5), which must never be the
+    # model a user lands on without explicitly picking it.
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.models import pick_silent_default_model
 
         payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
-                models = row.get("models") or []
-                return {"provider": slug, "model": models[0] if models else "", "free_tier": None}
+                models = [str(m) for m in (row.get("models") or [])]
+                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
@@ -5696,7 +5711,23 @@ def get_moa_models(profile: Optional[str] = None):
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     try:
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
+
+        def _slot_dict(slot: MoaModelSlot) -> dict:
+            # Drop unset optionals so saved slots stay minimal ({provider, model}).
+            return {k: v for k, v in slot.dict().items() if v is not None}
+
+        def _preset_dict(preset: MoaPresetPayload) -> dict:
+            return {
+                "reference_models": [_slot_dict(slot) for slot in preset.reference_models],
+                "aggregator": _slot_dict(preset.aggregator),
+                "reference_temperature": preset.reference_temperature,
+                "aggregator_temperature": preset.aggregator_temperature,
+                "max_tokens": preset.max_tokens,
+                "reference_max_tokens": preset.reference_max_tokens,
+                "fanout": preset.fanout,
+                "enabled": preset.enabled,
+            }
 
         with _profile_scope(body.profile or profile):
             cfg = load_config()
@@ -5704,27 +5735,35 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
-                    "presets": {
-                        name: {
-                            "reference_models": [slot.dict() for slot in preset.reference_models],
-                            "aggregator": preset.aggregator.dict(),
-                            "reference_temperature": preset.reference_temperature,
-                            "aggregator_temperature": preset.aggregator_temperature,
-                            "max_tokens": preset.max_tokens,
-                            "enabled": preset.enabled,
-                        }
-                        for name, preset in body.presets.items()
-                    },
+                    "presets": {name: _preset_dict(preset) for name, preset in body.presets.items()},
                 }
             else:
-                raw = {
-                    "reference_models": [slot.dict() for slot in body.reference_models],
-                    "aggregator": body.aggregator.dict(),
-                    "reference_temperature": body.reference_temperature,
-                    "aggregator_temperature": body.aggregator_temperature,
-                    "max_tokens": body.max_tokens,
-                    "enabled": body.enabled,
-                }
+                raw = _preset_dict(
+                    MoaPresetPayload(
+                        reference_models=body.reference_models,
+                        aggregator=body.aggregator,
+                        reference_temperature=body.reference_temperature,
+                        aggregator_temperature=body.aggregator_temperature,
+                        max_tokens=body.max_tokens,
+                        reference_max_tokens=body.reference_max_tokens,
+                        fanout=body.fanout,
+                        enabled=body.enabled,
+                    )
+                )
+
+            # Reject-don't-repair: normalize_moa_config() silently swaps any
+            # preset containing incomplete slots for the hardcoded defaults —
+            # correct tolerance for hand-edited configs at READ time, silent
+            # data loss at WRITE time (#64156: desktop autosave of a
+            # half-filled slot replaced the user's whole preset). Refuse the
+            # save loudly so no client can corrupt config through this route.
+            problems = validate_moa_payload(raw)
+            if problems:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Invalid MoA config: " + "; ".join(problems),
+                )
+
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized
             save_config(cfg)
@@ -11915,8 +11954,9 @@ def _new_dashboard_backup_path() -> Path:
 async def run_backup(body: BackupRequest):
     args = ["backup"]
     archive: Optional[Path] = None
-    if body.output:
-        args.append(body.output.strip())
+    output = (body.output or "").strip()
+    if output:
+        args.extend(["-o", output])
     else:
         archive = _new_dashboard_backup_path()
         try:
@@ -11926,7 +11966,7 @@ async def run_backup(body: BackupRequest):
                 status_code=500,
                 detail=f"Could not create backup directory: {exc}",
             )
-        args.append(str(archive))
+        args.extend(["-o", str(archive)])
     try:
         proc = _spawn_hermes_action(args, "backup")
     except Exception as exc:
@@ -14142,7 +14182,9 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
-            save_config(parsed)
+            # Full-document replacement: the editor owns the whole file; do not
+            # merge omitted sections back from disk (#62723).
+            save_config(parsed, merge_existing=False)
         return {"ok": True}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")

@@ -120,11 +120,54 @@ _REFERENCE_SYSTEM_PROMPT = (
 
 
 
-def _slot_label(slot: dict[str, str]) -> str:
-    return f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
+def _slot_label(slot: dict[str, Any]) -> str:
+    label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
+    effort = str(slot.get("reasoning_effort") or "").strip()
+    return f"{label}[reasoning={effort}]" if effort else label
 
 
-def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
+def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate optional per-MoA-slot reasoning_effort into runtime config."""
+    effort = slot.get("reasoning_effort")
+    try:
+        from hermes_constants import parse_reasoning_effort
+
+        return parse_reasoning_effort(effort)
+    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return None
+
+
+def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the aggregator's reasoning config: slot > per-model > global.
+
+    The aggregator is MoA's ACTING model, so when its slot doesn't pin a
+    reasoning_effort it must resolve exactly like any other acting model:
+    through the shared chokepoint (``resolve_reasoning_config``), which
+    applies ``agent.reasoning_overrides`` for the slot's model first, then
+    the global ``agent.reasoning_effort``. Without this the main loop's
+    reasoning gates (keyed to the virtual ``moa://local`` identity) never
+    fire, so the aggregator silently ran at the backend default (#64187).
+
+    Reference advisors intentionally do NOT get this fallback: they are side
+    calls (like auxiliary tasks), and inheriting a global ``xhigh`` into every
+    advisor fan-out would silently multiply cost. Their depth is slot-or-
+    provider-default only.
+    """
+    cfg = _slot_reasoning_config(aggregator)
+    if cfg is not None:
+        return cfg
+    try:
+        from hermes_cli.config import load_config
+        from hermes_constants import resolve_reasoning_config
+
+        return resolve_reasoning_config(
+            load_config() or {}, str(aggregator.get("model") or "")
+        )
+    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return None
+
+
+def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Resolve a reference/aggregator slot to real runtime call kwargs.
 
     A MoA slot is just a model selection — it must be called the same way any
@@ -276,6 +319,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_config=_slot_reasoning_config(slot),
             **runtime,
         )
         usage = CanonicalUsage()
@@ -680,6 +724,7 @@ def aggregate_moa_context(
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
+            reasoning_config=_aggregator_reasoning_config(aggregator),
             **agg_runtime,
         )
         synthesis = _extract_text(response)
@@ -1074,6 +1119,7 @@ class MoAChatCompletions:
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
+            reasoning_config=_aggregator_reasoning_config(aggregator),
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )

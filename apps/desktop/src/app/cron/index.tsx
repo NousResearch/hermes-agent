@@ -54,8 +54,8 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
-import { jobState, jobTitle, STATE_DOT } from './job-state'
 import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
+import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -398,6 +398,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
+
       const updated = await updateCronJob(
         editor.job.id,
         cronEditorUpdates(values, { scriptOnlyJob })
@@ -756,6 +757,7 @@ function CronEditorDialog({
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
+
     const validationError = validateCronEditor({
       prompt,
       schedule,

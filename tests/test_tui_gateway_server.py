@@ -5093,6 +5093,51 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_prompt_submit_sanitizes_bracketed_paste_before_agent(monkeypatch):
+    """prompt.submit must sanitize corrupted user text before run_conversation."""
+    captured: dict[str, str] = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    corrupted = "hello[" + "~[[e" * 8
+    server._sessions["sid"] = _session(agent=_Agent())
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda *a, **k: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda *a, **k: None)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": corrupted},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert captured["prompt"] == "hello"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_prompt_submit_history_version_match_persists_normally(monkeypatch):
     """Regression guard: the backstop does not affect the happy path."""
 
@@ -7596,7 +7641,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
         },
     )
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "off")
-    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda model="": None)
     monkeypatch.setattr(server, "_load_service_tier", lambda: None)
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)

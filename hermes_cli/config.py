@@ -1159,6 +1159,7 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
+            "hard_timeout": 0,     # seconds — wall-clock cap on the whole vision call (asyncio.wait_for); 0 = auto (timeout + 60s). Bounds a hung/stalled provider so it can't block the turn.
         },
         "web_extract": {
             "provider": "auto",

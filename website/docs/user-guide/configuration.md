@@ -879,6 +879,7 @@ auxiliary:
     api_key: ""                # API key for base_url (falls back to OPENAI_API_KEY)
     timeout: 120               # seconds — LLM API call timeout; vision payloads need generous timeout
     download_timeout: 30       # seconds — image HTTP download; increase for slow connections
+    hard_timeout: 0            # seconds — wall-clock cap on the whole vision call; 0 = auto (timeout + 60s)
 
   # Web page summarization + browser page text extraction
   web_extract:
@@ -930,7 +931,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers. A `hard_timeout` (default `0` = auto, resolving to `timeout + 60s`) puts a wall-clock cap on the entire vision call so a hung or stalled provider can't block the agent turn indefinitely.
 :::
 
 :::info

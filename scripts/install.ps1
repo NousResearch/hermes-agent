@@ -2123,9 +2123,10 @@ You are Hermes Agent, an intelligent AI assistant created by Nous Research. You 
             # Force the child python.exe to emit UTF-8 on its stdout/stderr.
             # On non-UTF-8 Windows locales (CP936/GBK zh-CN) Python defaults
             # its stream encoding to the active codepage and crashes on glyphs
-            # like ✓ (U+2713) that the codepage can't encode; the resulting
-            # non-UTF-8 bytes break this script's JSON result frame on stdout
-            # and abort the config-templates stage. Scope to this call only.
+            # like the checkmark (U+2713) that the codepage can't encode; the
+            # resulting non-UTF-8 bytes break this script's JSON result frame on
+            # stdout and abort the config-templates stage. Scope to this call
+            # only. (Comment kept ASCII per this file's PS 5.1 contract above.)
             $prevPythonioencoding = $env:PYTHONIOENCODING
             $prevPythonutf8 = $env:PYTHONUTF8
             $env:PYTHONIOENCODING = "utf-8"

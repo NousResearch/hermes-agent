@@ -281,6 +281,7 @@ class TestOpenVikingSkillQuerySafety:
         RecordingVikingClient.calls = []
         monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
         provider = OpenVikingMemoryProvider()
+        provider._provider_mode = "native"
         provider._client = cast(Any, object())
         provider._endpoint = "http://openviking.test"
         provider._api_key = ""

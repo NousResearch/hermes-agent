@@ -35,6 +35,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _resolve_per_call_credentials,
 )
 
 
@@ -3157,3 +3158,255 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerCallCredentialOverride(unittest.TestCase):
+    """Tests for _resolve_per_call_credentials and the per-call override path."""
+
+    def test_resolve_model_only_no_provider(self):
+        """When provider is None, returns model-only with None credentials
+        so _build_child_agent inherits from the parent."""
+        result = _resolve_per_call_credentials(model="deepseek-v4-flash")
+        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertIsNone(result["provider"])
+        self.assertIsNone(result["base_url"])
+        self.assertIsNone(result["api_key"])
+        self.assertIsNone(result["api_mode"])
+        self.assertIsNone(result["request_overrides"])
+        self.assertIsNone(result["max_output_tokens"])
+
+    def test_resolve_model_with_provider_no_profile(self):
+        """When provider is set but profile is None, attempts to resolve
+        from default profile directories. Credential fields may be None
+        if no .env/config.yaml is configured."""
+        result = _resolve_per_call_credentials(
+            model="deepseek-v4-flash",
+            provider="opencode-go",
+        )
+        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertEqual(result["provider"], "opencode-go")
+        # base_url/api_key/api_mode are None when no .env is configured
+
+    def test_resolve_model_with_provider_explicitly(self):
+        """Passing both model and provider returns both in the result."""
+        result = _resolve_per_call_credentials(
+            model="mimo-v2-5-pro",
+            provider="opencode-go",
+            profile="default",
+        )
+        self.assertEqual(result["model"], "mimo-v2-5-pro")
+        self.assertEqual(result["provider"], "opencode-go")
+
+    def test_resolve_returns_dict_compatible_with_delegation_creds(self):
+        """The return shape matches _resolve_delegation_credentials
+        key-for-key so the caller can merge or swap the result."""
+        result = _resolve_per_call_credentials(
+            model="test-model",
+            provider="test-provider",
+        )
+        required_keys = {
+            "model", "provider", "base_url", "api_key", "api_mode",
+            "request_overrides", "max_output_tokens", "command", "args",
+        }
+        self.assertEqual(set(result.keys()), required_keys)
+        # All keys beyond model/provider are None when no config is found
+        for key in ("base_url", "api_key", "api_mode"):
+            self.assertIsNone(result[key], f"{key} should be None")
+
+    def test_resolve_nonexistent_profile_falls_back(self):
+        """When the named profile doesn't exist, the function degrades
+        gracefully to the default profile rather than crashing."""
+        result = _resolve_per_call_credentials(
+            model="test-model",
+            provider="opencode-go",
+            profile="nonexistent-profile-that-will-never-exist-12345",
+        )
+        self.assertEqual(result["model"], "test-model")
+        self.assertEqual(result["provider"], "opencode-go")
+        # Credential fields for base_url/api_mode come from config.yaml
+        # (not .env), so they should be None for non-existent profiles
+        self.assertIsNone(result["base_url"])
+        self.assertIsNone(result["api_mode"])
+
+    def test_empty_model_returns_empty_model_dict(self):
+        """When model is an empty string, _resolve_per_call_credentials
+        returns it as-is. The actual guard (if model: in delegate_task())
+        prevents this path from being reached with empty model."""
+        result = _resolve_per_call_credentials(model="")
+        self.assertEqual(result["model"], "")
+        # No overrides triggered — all creds are None
+        self.assertIsNone(result["provider"])
+
+    def test_delegate_task_accepts_model_param(self):
+        """delegate_task must accept model/provider/profile in its signature."""
+        import inspect
+
+        sig = inspect.signature(delegate_task)
+        self.assertIn("model", sig.parameters)
+        self.assertIn("provider", sig.parameters)
+        self.assertIn("profile", sig.parameters)
+
+    def test_DELEGATE_TASK_SCHEMA_has_model_fields(self):
+        """The static schema must advertise model/provider/profile."""
+        schema_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("model", schema_props)
+        self.assertIn("provider", schema_props)
+        self.assertIn("profile", schema_props)
+
+
+class TestEndToEndOverride(unittest.TestCase):
+    """End-to-end tests exercising delegate_task with per-call overrides.
+
+    Uses mocked _build_child_agent to verify the credential merge and
+    override passthrough logic without needing a real LLM or API keys.
+    Runs in CI as standard unit tests.
+    """
+
+    def _make_mock_parent(self, depth=0):
+        """Create a mock parent agent with the fields delegate_task expects."""
+        parent = MagicMock()
+        parent.base_url = "https://openrouter.ai/api/v1"
+        parent.api_key = "sk-parent-test-key-12345"
+        parent.provider = "openrouter"
+        parent.api_mode = "chat_completions"
+        parent.model = "anthropic/claude-sonnet-4"
+        parent.platform = "cli"
+        parent.providers_allowed = None
+        parent.providers_ignored = None
+        parent.providers_order = None
+        parent.provider_sort = None
+        parent.provider_require_parameters = False
+        parent.provider_data_collection = ""
+        parent.openrouter_min_coding_score = None
+        parent.max_iterations = 50
+        parent.max_tokens = None
+        parent._delegate_depth = depth
+        parent._delegate_spinner = None
+        parent._fallback_chain = None
+        parent._print_fn = None
+        parent.session_id = "test-session-001"
+        parent._client_kwargs = {}
+        parent._safe_print = lambda x: None
+        return parent
+
+    def setUp(self):
+        self.parent = self._make_mock_parent()
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_explicit_model_provider_profile(self, mock_run, mock_build):
+        """Full override: model + provider + profile."""
+        mock_child = MagicMock()
+        mock_child.session_prompt_tokens = 100
+        mock_child.session_completion_tokens = 50
+        mock_child.session_estimated_cost_usd = 0.01
+        mock_child.model = "deepseek-v4-flash"
+        mock_build.return_value = mock_child
+        mock_run.return_value = {"status": "completed", "summary": "done"}
+
+        result = delegate_task(
+            goal="Test explicit override",
+            model="deepseek-v4-flash",
+            provider="opencode-go",
+            profile="default",
+            parent_agent=self.parent,
+        )
+
+        result_data = json.loads(result)
+        mock_build.assert_called_once()
+        call_kwargs = mock_build.call_args[1]
+        self.assertEqual(
+            call_kwargs["model"], "deepseek-v4-flash",
+            "Child model should be the overridden model"
+        )
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_model_only_override_inherits_provider(self, mock_run, mock_build):
+        """Model-only: model set, provider not set.
+
+        override_provider should be None so _build_child_agent inherits
+        from the parent via its ``or`` fallback pattern."""
+        mock_child = MagicMock()
+        mock_child.session_prompt_tokens = 100
+        mock_child.session_completion_tokens = 50
+        mock_child.session_estimated_cost_usd = 0.01
+        mock_child.model = "deepseek-v4-flash"
+        mock_build.return_value = mock_child
+        mock_run.return_value = {"status": "completed", "summary": "done"}
+
+        result = delegate_task(
+            goal="Test model-only override",
+            model="deepseek-v4-flash",
+            parent_agent=self.parent,
+        )
+
+        result_data = json.loads(result)
+        mock_build.assert_called_once()
+        call_kwargs = mock_build.call_args[1]
+        self.assertEqual(
+            call_kwargs["model"], "deepseek-v4-flash",
+            "Child model should be the overridden model"
+        )
+        self.assertIsNone(
+            call_kwargs.get("override_provider"),
+            "override_provider should be None — _build_child_agent "
+            "inherits from parent via `override_provider or parent.provider`"
+        )
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_no_override_passes_none_to_child_builder(self, mock_run, mock_build):
+        """No override: creds['model'] is None, passed to _build_child_agent
+        which handles parent inheritance internally."""
+        mock_child = MagicMock()
+        mock_child.session_prompt_tokens = 100
+        mock_child.session_completion_tokens = 50
+        mock_child.session_estimated_cost_usd = 0.01
+        mock_build.return_value = mock_child
+        mock_run.return_value = {"status": "completed", "summary": "done"}
+
+        result = delegate_task(
+            goal="Test no override",
+            parent_agent=self.parent,
+        )
+
+        result_data = json.loads(result)
+        mock_build.assert_called_once()
+        call_kwargs = mock_build.call_args[1]
+        self.assertIsNone(
+            call_kwargs["model"],
+            "Child model should be None when no override — "
+            "_build_child_agent handles parent inheritance"
+        )
+
+    def test_credential_merge_preserves_existing_keys(self):
+        """Merge semantics: per_call_creds with None values should not
+        clobber existing delegation creds for provider/api_key/etc."""
+        per_call = _resolve_per_call_credentials(
+            model="deepseek-v4-flash",
+        )
+        self.assertEqual(per_call["model"], "deepseek-v4-flash")
+        self.assertIsNone(per_call["provider"])
+        self.assertIsNone(per_call["base_url"])
+        self.assertIsNone(per_call["api_key"])
+        self.assertIsNone(per_call["api_mode"])
+
+        existing_creds = {
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-existing-key",
+            "api_mode": "chat_completions",
+        }
+
+        for key, value in per_call.items():
+            if value is not None:
+                existing_creds[key] = value
+        existing_creds["model"] = per_call["model"]
+
+        self.assertEqual(existing_creds["model"], "deepseek-v4-flash")
+        self.assertEqual(existing_creds["provider"], "openrouter")
+        self.assertEqual(existing_creds["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(existing_creds["api_key"], "sk-existing-key")
+        self.assertEqual(existing_creds["api_mode"], "chat_completions")

@@ -28,7 +28,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from toolsets import TOOLSETS
 
@@ -2459,16 +2459,23 @@ def delegate_task(
 
     # Per-call model/provider/profile override — applied before task building
     # so all children in a batch inherit the same override. When model is set,
-    # resolves credentials from the specified profile's .env and config.yaml,
-    # bypassing the delegation config block entirely.
-    # provider defaults to None so _build_child_agent inherits from the parent.
+    # resolves credentials from the specified profile's .env and config.yaml.
+    # Uses a merge approach: only overrides the keys that _resolve_per_call_credentials
+    # returns non-None, preserving the existing creds for everything else. This
+    # ensures model-only overrides (no provider) still inherit the parent's
+    # provider, base_url, api_key, and api_mode from the delegation config.
     if model:
         per_call_creds = _resolve_per_call_credentials(
             model=model,
             provider=provider,
             profile=profile,
         )
-        creds = per_call_creds
+        # Merge: per_call_creds values win only when non-None
+        for key, value in per_call_creds.items():
+            if value is not None:
+                creds[key] = value
+        # model is always set (guaranteed by the if model: guard above)
+        creds["model"] = per_call_creds["model"]
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -3185,11 +3192,30 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 # ---------------------------------------------------------------------------
 # Per-call credential resolution (model/provider/profile overrides)
 # ---------------------------------------------------------------------------
+class _CredentialOverrideDict(TypedDict, total=True):
+    """Return type for _resolve_per_call_credentials().
+
+    All keys are always present in the returned dict. Keys with None
+    values should be inherited from the parent/delegation config.
+    Matches the shape returned by _resolve_delegation_credentials()
+    for compatibility.
+    """
+    model: str
+    provider: Optional[str]
+    base_url: Optional[str]
+    api_key: Optional[str]
+    api_mode: Optional[str]
+    request_overrides: Optional[Dict[str, Any]]
+    max_output_tokens: Optional[int]
+    command: Optional[str]
+    args: Optional[List[str]]
+
+
 def _resolve_per_call_credentials(
     model: str,
     provider: Optional[str] = None,
     profile: Optional[str] = None,
-) -> dict:
+) -> _CredentialOverrideDict:
     """Resolve credentials for a per-call model/provider override.
 
     Reads the specified profile's ``.env`` and ``config.yaml`` to find the
@@ -3208,6 +3234,17 @@ def _resolve_per_call_credentials(
     Returns a dict: {model, provider, base_url, api_key, api_mode}
     Compatible with the shape returned by _resolve_delegation_credentials
     so the caller can swap the result in.
+
+    Examples:
+        >>> _resolve_per_call_credentials(model="deepseek-v4-flash")
+        {...}  # model-only override, inherits parent's provider
+
+        >>> _resolve_per_call_credentials(
+        ...     model="mimo-v2-5-pro",
+        ...     provider="opencode-go",
+        ...     profile="coder",
+        ... )
+        {...}  # full override: model, provider, and profile credentials
     """
     from pathlib import Path
 
@@ -3216,6 +3253,14 @@ def _resolve_per_call_credentials(
     # Determine profile directory
     if profile and profile != "default":
         profile_dir = hermes_home / "profiles" / profile
+        if not profile_dir.exists():
+            logger.warning(
+                "Per-call override profile directory not found: %s. "
+                "Falling back to default profile directories. "
+                "Check that the profile name is correct and exists under ~/.hermes/profiles/.",
+                profile_dir,
+            )
+            profile_dir = hermes_home
     else:
         profile_dir = hermes_home
 
@@ -3255,17 +3300,16 @@ def _resolve_per_call_credentials(
 
     api_key_var = provider_key_map.get(provider, f"{provider.upper()}_API_KEY")  # provider is non-None here (early return above)
 
-    # Read env from .env files (profile first, then global)
+    # Read env from .env files using python-dotenv (bundled with Hermes)
+    # to handle edge cases: values with = signs, quoted values, comments,
+    # export prefix, etc.
+    from dotenv import dotenv_values
+
     env_vars = {}
     for env_path in [profile_dir / ".env", hermes_home / ".env"]:
         if env_path.exists():
             try:
-                with open(env_path) as f:
-                    for line in f:
-                        line = line.strip()
-                        if "=" in line and not line.startswith("#"):
-                            key, _, val = line.partition("=")
-                            env_vars[key.strip()] = val.strip().strip("'\"")
+                env_vars.update(dotenv_values(str(env_path)))
             except OSError:
                 pass
 

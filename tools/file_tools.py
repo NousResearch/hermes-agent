@@ -1046,38 +1046,50 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     a registered env override keep their isolation.
     """
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
+        _create_environment,
+        _get_active_environment_if_compatible,
+        _get_env_config,
+        _start_cleanup_thread,
+        _store_active_environment,
         _creation_locks,
         _creation_locks_lock,
         _resolve_container_task_id,
-        _is_unusable_container_cwd,
-        _CONTAINER_BACKENDS,
+        resolve_terminal_runtime_identity,
     )
-    import time
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
+    config = _get_env_config()
+    runtime = resolve_terminal_runtime_identity(
+        config,
+        raw_task_id=raw_task_id,
+        cwd_fallback=_last_known_cwd.get(task_id),
+    )
+    env_signature = runtime["signature"]
 
     # Fast path: check cache -- but also verify the underlying environment
-    # is still alive (it may have been killed by the cleanup thread).
+    # is still alive and still compatible with the current runtime.
     with _file_ops_lock:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                return cached
-            else:
-                # Environment was cleaned up -- preserve the old cwd before
-                # invalidating the stale cache entry (fixes #26211: silent
-                # file-creation failures in long-running conversations).
-                old_cwd = getattr(cached, "cwd", None)
-                if old_cwd:
-                    with _file_ops_lock:
-                        _last_known_cwd[task_id] = old_cwd
-                with _file_ops_lock:
-                    _file_ops_cache.pop(task_id, None)
+        terminal_env = _get_active_environment_if_compatible(task_id, env_signature)
+        if terminal_env is not None:
+            return cached
+        # Environment was cleaned up or replaced -- preserve the old cwd before
+        # invalidating the stale cache entry (fixes #26211: silent file-creation
+        # failures in long-running conversations).
+        old_cwd = getattr(cached, "cwd", None)
+        if old_cwd:
+            with _file_ops_lock:
+                _last_known_cwd[task_id] = old_cwd
+            runtime = resolve_terminal_runtime_identity(
+                config,
+                raw_task_id=raw_task_id,
+                cwd_fallback=old_cwd,
+            )
+            env_signature = runtime["signature"]
+        with _file_ops_lock:
+            _file_ops_cache.pop(task_id, None)
 
     # Need to ensure the environment exists before building file_ops.
     # Acquire per-task lock so only one thread creates the sandbox.
@@ -1088,99 +1100,25 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     with task_lock:
         # Double-check: another thread may have created it while we waited
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                terminal_env = _active_environments[task_id]
-            else:
-                terminal_env = None
+        terminal_env = _get_active_environment_if_compatible(task_id, env_signature)
 
         if terminal_env is None:
-            from tools.terminal_tool import resolve_task_overrides
-
-            config = _get_env_config()
-            env_type = config["env_type"]
-            overrides = resolve_task_overrides(raw_task_id)
-
-            if env_type == "docker":
-                image = overrides.get("docker_image") or config["docker_image"]
-            elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
-            elif env_type == "modal":
-                image = overrides.get("modal_image") or config["modal_image"]
-            elif env_type == "daytona":
-                image = overrides.get("daytona_image") or config["daytona_image"]
-            else:
-                image = ""
-
-            cwd = overrides.get("cwd") or _last_known_cwd.get(task_id) or config["cwd"]
-            # Re-apply the container cwd guard that _get_env_config() already
-            # ran on config["cwd"] (see #50636).  A per-task cwd override
-            # registered by the gateway/TUI/ACP for workspace tracking is a
-            # raw host path (e.g. a Desktop session's /Users/<me>/workspace or
-            # C:\\Users\\<me>). On a container backend that reaches
-            # ``docker run -w <host-path>`` and the container starts in a
-            # directory that doesn't exist inside the sandbox, so search_files
-            # and friends silently return empty results (#54447).  Sanitize it
-            # back to the already-validated config["cwd"] so the override can't
-            # bypass the guard.  Valid in-container override paths (RL/benchmark
-            # sandboxes that set cwd to /workspace, /root, etc.) are absolute
-            # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-                if cwd != config["cwd"]:
-                    logger.info(
-                        "Ignoring host/relative cwd override %r for %s backend "
-                        "(won't exist in sandbox). Using %r instead.",
-                        cwd, env_type, config["cwd"],
-                    )
-                cwd = config["cwd"]
+            env_type = runtime["env_type"]
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
-
-            container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                    "docker_network": config.get("docker_network", True),
-                }
-
-            ssh_config = None
-            if env_type == "ssh":
-                ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
-                }
-
-            local_config = None
-            if env_type == "local":
-                local_config = {
-                    "persistent": config.get("local_persistent", False),
-                }
 
             terminal_env = _create_environment(
                 env_type=env_type,
-                image=image,
-                cwd=cwd,
+                image=runtime["image"],
+                cwd=runtime["cwd"],
                 timeout=config["timeout"],
-                ssh_config=ssh_config,
-                container_config=container_config,
-                local_config=local_config,
+                ssh_config=runtime["ssh_config"],
+                container_config=runtime["container_config"],
+                local_config=runtime["local_config"],
                 task_id=task_id,
                 host_cwd=config.get("host_cwd"),
             )
 
-            with _env_lock:
-                _active_environments[task_id] = terminal_env
-                _last_activity[task_id] = time.time()
+            _store_active_environment(task_id, terminal_env, env_signature)
 
             _start_cleanup_thread()
             logger.info("%s environment ready for task %s", env_type, task_id[:8])

@@ -2265,28 +2265,6 @@ def terminal_tool(
                         env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
-        # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
-        # restart|stop targeting hermes-gateway) must never run inside the
-        # gateway process itself. The restart would SIGTERM the gateway, which
-        # kills this very subprocess before it can complete — the service may
-        # never restart. This mirrors the `hermes gateway restart` guard in
-        # hermes_cli/gateway.py and the cron-path guard in hermes_cli/cron.py,
-        # but applies unconditionally (force=True cannot help here).
-        if os.environ.get("_HERMES_GATEWAY") == "1":
-            from hermes_cli.cron import _contains_gateway_lifecycle_command
-            if _contains_gateway_lifecycle_command(command):
-                return json.dumps({
-                    "output": "",
-                    "exit_code": 1,
-                    "error": (
-                        "Blocked: cannot restart or stop the gateway from inside the "
-                        "gateway process. The gateway would kill this command before "
-                        "it could complete (SIGTERM propagates to child processes). "
-                        "Run `hermes gateway restart` from a separate shell outside "
-                        "the running gateway."
-                    ),
-                    "status": "error",
-                }, ensure_ascii=False)
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
@@ -2296,6 +2274,7 @@ def terminal_tool(
         # an approved command can't be SIGINT-killed by a bit that landed during
         # the approval-wait (see clear_current_thread_interrupt).
         _approved_run = bool(force)
+        _user_approved_run = False
         if not force:
             approval = _check_all_guards(
                 command, env_type,
@@ -2333,9 +2312,42 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command required approval ({desc}) and was approved by the user."
                 _approved_run = True
+                _user_approved_run = True
+
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+
+        # Lifecycle commands cannot run as child processes: service-manager
+        # termination kills the child before it can report completion. A fresh
+        # owner approval can request a supervised POSIX gateway restart by
+        # signalling the existing in-process graceful-restart handler instead.
+        if os.environ.get("_HERMES_GATEWAY") == "1":
+            from hermes_cli.cron import _contains_gateway_lifecycle_command
+            if _contains_gateway_lifecycle_command(command):
+                from gateway.restart import (
+                    is_gateway_restart_command,
+                    request_approved_gateway_restart_handoff,
+                )
+
+                if _user_approved_run and is_gateway_restart_command(command):
+                    accepted, message = request_approved_gateway_restart_handoff()
+                    return json.dumps({
+                        "output": message,
+                        "exit_code": 0 if accepted else 1,
+                        "error": "" if accepted else message,
+                        "status": "completed" if accepted else "error",
+                        "restart_scheduled": accepted,
+                    }, ensure_ascii=False)
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": (
+                        "Blocked: gateway lifecycle commands require a fresh owner "
+                        "approval and a supported supervisor handoff."
+                    ),
+                    "status": "error",
+                }, ensure_ascii=False)
 
         # Validate workdir against shell injection
         if workdir:

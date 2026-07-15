@@ -280,13 +280,7 @@ class TestGatewaySelfTargetingGuard:
 # ---------------------------------------------------------------------------
 
 class TestTerminalToolGatewayLifecycleGuard:
-    """terminal_tool must refuse gateway lifecycle commands when _HERMES_GATEWAY=1.
-
-    Issue #37453: systemctl --user restart hermes-gateway runs as a child of the
-    gateway process.  When systemd delivers SIGTERM the gateway kills its own
-    restart command mid-execution — the service may never restart.  The guard
-    must fire before execution, unconditionally (force=True cannot bypass it).
-    """
+    """Terminal lifecycle commands are blocked except approved safe handoffs."""
 
     def _make_fake_env(self):
         class _FakeEnv:
@@ -307,6 +301,8 @@ class TestTerminalToolGatewayLifecycleGuard:
         monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
         if inside_gateway:
             monkeypatch.setenv("_HERMES_GATEWAY", "1")
+            monkeypatch.delenv("INVOCATION_ID", raising=False)
+            monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
         else:
             monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
 
@@ -337,6 +333,55 @@ class TestTerminalToolGatewayLifecycleGuard:
 
         assert result["exit_code"] == 1
         assert "Blocked" in result["error"]
+    def test_approved_restart_uses_safe_handoff(self, monkeypatch):
+        import gateway.restart as restart
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+        monkeypatch.setattr(
+            restart,
+            "request_approved_gateway_restart_handoff",
+            lambda: (True, "Gateway restart accepted and scheduled through its supervisor."),
+        )
+
+        monkeypatch.setattr(
+            tt,
+            "_check_all_guards",
+            lambda *_args, **_kwargs: {"approved": True, "user_approved": True},
+        )
+        result = json.loads(tt.terminal_tool(
+            command="systemctl --user restart hermes-gateway"
+        ))
+
+        assert result == {
+            "output": "Gateway restart accepted and scheduled through its supervisor.",
+            "exit_code": 0,
+            "error": "",
+            "status": "completed",
+            "restart_scheduled": True,
+        }
+    def test_smart_approval_cannot_schedule_restart(self, monkeypatch):
+        import gateway.restart as restart
+        import tools.terminal_tool as tt
+
+        self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
+        monkeypatch.setattr(
+            tt,
+            "_check_all_guards",
+            lambda *_args, **_kwargs: {"approved": True, "smart_approved": True},
+        )
+        monkeypatch.setattr(
+            restart.os,
+            "kill",
+            lambda *_args: pytest.fail("must not schedule"),
+        )
+
+        result = json.loads(tt.terminal_tool(
+            command="systemctl restart hermes-gateway"
+        ))
+
+        assert result["exit_code"] == 1
+        assert result.get("restart_scheduled") is not True
 
     def test_safe_systemctl_commands_pass_through(self, monkeypatch):
         """Non-hermes systemctl commands must not be blocked by this guard."""

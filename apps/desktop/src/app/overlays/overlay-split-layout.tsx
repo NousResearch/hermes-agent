@@ -40,7 +40,6 @@ interface OverlayNavItemProps {
 export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutProps) {
   return (
     <div
-      data-overlay-split
       className={cn(
         // Narrow: one column, and pin rows to [nav-bar auto | main 1fr] — without
         // an explicit template the grid's default align-content:stretch splits the
@@ -57,7 +56,6 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
 export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
   return (
     <aside
-      data-overlay-sidebar
       className={cn(
         // pt clears the in-card close button (the OverlayView now insets the
         // whole card below the OS titlebar); the bg fills from the card's top
@@ -74,7 +72,6 @@ export function OverlaySidebar({ children, className }: OverlaySidebarProps) {
 export function OverlayMain({ children, className }: OverlayMainProps) {
   return (
     <main
-      data-overlay-main
       className={cn(
         // Narrow: the OverlayNav dropdown bar already clears the titlebar, so
         // drop the tall top pad to a normal gap below it.
@@ -92,7 +89,6 @@ export function OverlayMain({ children, className }: OverlayMainProps) {
 export function OverlayNavItem({ active, icon: Icon, label, nested, onClick, trailing }: OverlayNavItemProps) {
   return (
     <button
-      data-overlay-nav-item
       className={cn(
         'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested

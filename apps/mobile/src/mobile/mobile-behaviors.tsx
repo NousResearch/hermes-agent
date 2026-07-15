@@ -1,7 +1,6 @@
 import { App } from '@capacitor/app'
 import { Keyboard } from '@capacitor/keyboard'
 import { useEffect } from 'react'
-import { createPortal } from 'react-dom'
 import { useLocation } from 'react-router-dom'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
@@ -21,17 +20,12 @@ import {
  *  1. Sidebar drawers: the titlebar burgers flip $sidebarOpen/$fileBrowserOpen,
  *     but collapsed panes only show via PANE_TOGGLE_REVEAL_EVENT (the mod+B
  *     path). Bridge that, normalize the pane flip, and dismiss on tap-outside.
- *  2. Overlay master-detail: Settings/Skills/Profiles are a desktop two-pane
- *     split; on a phone we show the category list full-screen, then a tapped
- *     category full-screen (data-detail on the split, styled in theme-fallback),
- *     with a back button to return to the list.
- *  3. One Android back handler: detail → list, else drawer → closed, else default.
+ *  2. One Android back handler: keyboard → dismiss, else drawer → closed, else
+ *     default (history back / exit).
  *
- * The back button visibility is pure CSS (`body:has([data-overlay-split][data-detail])`),
- * so it correctly hides when the overlay is closed via its own X.
+ * Overlay screens (Settings/Skills/Profiles) get their responsive master-detail
+ * from upstream now (overlays/overlay-split-layout.tsx), so nothing here.
  */
-const MOBILE_QUERY = '(max-width: 47.5rem)'
-
 function revealPane(id: string) {
   window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id } }))
 }
@@ -41,14 +35,6 @@ function anyDrawerOpen() {
 function closeOpenDrawer() {
   if ($sidebarOpen.get()) toggleSidebarOpen()
   else if ($fileBrowserOpen.get()) toggleFileBrowserOpen()
-}
-function openDetailSplit(): Element | null {
-  return document.querySelector('[data-overlay-split][data-detail]')
-}
-function closeDetail() {
-  document
-    .querySelectorAll('[data-overlay-split][data-detail]')
-    .forEach((el) => el.removeAttribute('data-detail'))
 }
 
 export function MobileBehaviors() {
@@ -97,19 +83,6 @@ export function MobileBehaviors() {
     }
     document.addEventListener('pointerdown', onPointerDown, true)
 
-    // Drill into a tapped settings/skills/profiles category, full-screen. This
-    // runs on CLICK (not pointerdown) so the nav item's OWN onClick — which
-    // selects the category — fires first. Setting data-detail on pointerdown hid
-    // the sidebar before the click could land, so the selection never happened
-    // and every category opened the same (default) page.
-    const onNavClick = (e: MouseEvent) => {
-      const navItem = (e.target as Element | null)?.closest('[data-overlay-nav-item]')
-      if (navItem && window.matchMedia(MOBILE_QUERY).matches) {
-        navItem.closest('[data-overlay-split]')?.setAttribute('data-detail', '')
-      }
-    }
-    document.addEventListener('click', onNavClick)
-
     let backHandle: { remove: () => void } | undefined
     void App.addListener('backButton', ({ canGoBack }) => {
       // Keyboard open → just dismiss it (and blur, so it doesn't auto-reopen
@@ -117,10 +90,6 @@ export function MobileBehaviors() {
       if (keyboardOpen) {
         ;(document.activeElement as HTMLElement | null)?.blur()
         void Keyboard.hide()
-        return
-      }
-      if (openDetailSplit()) {
-        closeDetail()
         return
       }
       if (anyDrawerOpen()) {
@@ -139,7 +108,6 @@ export function MobileBehaviors() {
       offSidebarAttr()
       offFilesAttr()
       document.removeEventListener('pointerdown', onPointerDown, true)
-      document.removeEventListener('click', onNavClick)
       backHandle?.remove()
       void kbShow.then((h) => h.remove())
       void kbHide.then((h) => h.remove())
@@ -147,19 +115,6 @@ export function MobileBehaviors() {
     }
   }, [])
 
-  // Back affordance for the overlay master-detail. Always rendered; CSS shows it
-  // only while a detail page is open (and hides it if the overlay is X-closed).
-  return createPortal(
-    <button
-      type="button"
-      className="mobile-overlay-back"
-      aria-label="Back to settings menu"
-      onClick={closeDetail}
-    >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M15 18l-6-6 6-6" />
-      </svg>
-    </button>,
-    document.body,
-  )
+  // No UI — this component exists only for the side effects wired up above.
+  return null
 }

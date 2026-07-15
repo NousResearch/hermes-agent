@@ -176,12 +176,10 @@ body {
 }
 
 /*
- * Overlay screens (Settings / Skills / Profiles …) — native mobile master-detail.
- * The desktop two-pane split would cram both panes on a phone, so instead:
- *   - default: the category list (sidebar) fills the screen; content is hidden.
- *   - drilled in (MobileBehaviors sets data-detail on the split when a category
- *     is tapped): the list hides and that page fills the screen, with the
- *     .mobile-overlay-back button to return. The overlay's own X still closes it.
+ * Overlay screens (Settings / Skills / Profiles …). Upstream ships its own
+ * responsive master-detail for these now (a category dropdown bar + full-width
+ * content on narrow viewports — see overlays/overlay-split-layout.tsx), so the
+ * only mobile tweak here is insetting the overlay CARD into the safe area.
  */
 @media (max-width: 47.5rem) {
   /* Inset the whole overlay CARD (Settings/Skills/Profiles) into the safe area so
@@ -194,62 +192,4 @@ body {
     padding-left: calc(env(safe-area-inset-left) + 0.5rem) !important;
     padding-right: calc(env(safe-area-inset-right) + 0.5rem) !important;
   }
-
-  [data-overlay-split] {
-    display: flex !important;
-    flex-direction: column !important;
-  }
-
-  /* category list — fills the (inset) card */
-  [data-overlay-sidebar] {
-    flex: 1 1 auto !important;
-    max-height: none !important;
-  }
-
-  /* content hidden until a category is chosen */
-  [data-overlay-main] {
-    display: none !important;
-  }
-
-  /* drilled in: hide the list, show the page full-card */
-  [data-overlay-split][data-detail] [data-overlay-sidebar] {
-    display: none !important;
-  }
-  [data-overlay-split][data-detail] [data-overlay-main] {
-    display: flex !important;
-    flex: 1 1 auto !important;
-    min-height: 0 !important;
-  }
-}
-
-/* Back affordance for the overlay master-detail. Rendered always (portal); shown
-   only while a detail page is open — and auto-hidden if the overlay is X-closed.
-   Sits in the inset card's header row, mirroring the overlay's own ✕ on the right
-   (card is inset by env + 0.5rem; the ✕ sits ~0.75rem in from the card edge). */
-.mobile-overlay-back {
-  position: fixed;
-  z-index: 80;
-  /* Mirror the overlay's own ✕ (top-right): same size/shape/ghost styling,
-     vertically centered on the card's titlebar row, 0.75rem in from the card's
-     left edge (card is inset by env + 0.5rem). */
-  top: calc(env(safe-area-inset-top) + 0.6875rem + (var(--titlebar-height, 2.125rem) - var(--titlebar-control-height)) / 2);
-  left: calc(env(safe-area-inset-left) + 1.25rem);
-  display: none;
-  height: var(--titlebar-control-height);
-  width: var(--titlebar-control-size);
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ui-text-tertiary, currentColor);
-  -webkit-tap-highlight-color: transparent;
-}
-body:has([data-overlay-split][data-detail]) .mobile-overlay-back {
-  display: flex;
-}
-.mobile-overlay-back:hover,
-.mobile-overlay-back:active {
-  background: var(--chrome-action-hover);
-  color: var(--dt-foreground, currentColor);
 }

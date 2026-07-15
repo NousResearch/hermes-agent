@@ -168,6 +168,7 @@ def finalize_turn(
     # are surfaced on the result dict via ``cleanup_errors`` rather than
     # killing the turn.
     _cleanup_errors = []
+    _response_transformed = False
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
@@ -227,6 +228,34 @@ def finalize_turn(
                 _tail_role = None
             if _tail_role != "assistant":
                 messages.append({"role": "assistant", "content": final_response})
+
+        # Plugin hook: transform_llm_output
+        # Fired once per turn after the tool-calling loop completes.
+        # Plugins can transform the LLM's output text before it's returned.
+        # First hook to return a string wins; None/empty return leaves text unchanged.
+        # Running before _persist_session ensures that the transformed text is durable.
+        if final_response and not interrupted:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _transform_results = _invoke_hook(
+                    "transform_llm_output",
+                    response_text=final_response,
+                    session_id=agent.session_id or "",
+                    model=agent.model,
+                    platform=getattr(agent, "platform", None) or "",
+                )
+                for _hook_result in _transform_results:
+                    if isinstance(_hook_result, str) and _hook_result:
+                        final_response = _hook_result
+                        _response_transformed = True
+                        # Update the last assistant message in messages so the persisted transcript matches
+                        for _m in reversed(messages):
+                            if _m.get("role") == "assistant":
+                                _m["content"] = final_response
+                                break
+                        break  # First non-empty string wins
+            except Exception as exc:
+                logger.warning("transform_llm_output hook failed: %s", exc)
 
         # The model has completed its request, so replace API-local
         # voice/model/skill guidance with the clean user input before writing the
@@ -367,30 +396,6 @@ def finalize_turn(
                             )
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
-
-    _response_transformed = False
-
-    # Plugin hook: transform_llm_output
-    # Fired once per turn after the tool-calling loop completes.
-    # Plugins can transform the LLM's output text before it's returned.
-    # First hook to return a string wins; None/empty return leaves text unchanged.
-    if final_response and not interrupted:
-        try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _transform_results = _invoke_hook(
-                "transform_llm_output",
-                response_text=final_response,
-                session_id=agent.session_id or "",
-                model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
-            )
-            for _hook_result in _transform_results:
-                if isinstance(_hook_result, str) and _hook_result:
-                    final_response = _hook_result
-                    _response_transformed = True
-                    break  # First non-empty string wins
-        except Exception as exc:
-            logger.warning("transform_llm_output hook failed: %s", exc)
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.

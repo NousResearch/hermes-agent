@@ -93,3 +93,19 @@ def test_rerank_memories_does_not_mutate_input_items():
 
     assert "freshness" not in items[0]
     assert ranked[0]["freshness"] == "untracked"
+
+
+def test_rerank_memories_preserves_explicit_zero_time():
+    ranked = rerank_memories(
+        [{"memory": "epoch fact", "score": 1.0, "metadata": {"created": 0.0}}],
+        now=0.0,
+    )
+
+    assert ranked[0]["age_days"] == 0.0
+    assert ranked[0]["freshness"] == "fresh"
+
+
+def test_reinforce_access_preserves_explicit_zero_timestamp():
+    state = reinforce_access({}, ["epoch fact"], timestamp=0.0)
+
+    assert state["memories"][memory_key("epoch fact")]["last_accessed"] == 0.0

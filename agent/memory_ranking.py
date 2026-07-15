@@ -110,7 +110,7 @@ def rerank_memories(
     context, while current-context/open-issue records are protected from strong
     decay because old active work can still be relevant until explicitly closed.
     """
-    now = float(now or time.time())
+    now = float(time.time() if now is None else now)
     query_tokens = _tokenize(query)
     ranked: list[dict[str, Any]] = []
 
@@ -191,7 +191,7 @@ def reinforce_access(
     expects. The function mutates and returns the same dict for convenient use in
     load-update-save flows.
     """
-    timestamp = float(timestamp or time.time())
+    timestamp = float(time.time() if timestamp is None else timestamp)
     state.setdefault("version", 1)
     bucket = state.setdefault("memories", {})
     for memory in memories:

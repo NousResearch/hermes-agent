@@ -9,23 +9,41 @@ description: Read, write, search, and format Apple Numbers (.numbers) spreadshee
 source: https://github.com/sweetrb/apple-numbers-mcp
 
 # Published npm package — npx fetches and runs it. No install/clone step is
-# needed (transport.command IS the install, per the npm/uvx note).
+# needed (transport.command IS the install, per the npm/uvx note). Pinned to
+# the exact version validated on macOS per catalog policy (no auto-update;
+# auditable); bump the pin via PR after validating a new release.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-numbers-mcp"
+    - "apple-numbers-mcp@1.1.7"
 
 # Reads/writes .numbers files via a numbers-parser Python sidecar plus
 # AppleScript for formatting/formulas; no credentials.
 auth:
   type: none
 
+# Read-only by default: file inspection, table/cell reads, search, export,
+# and diagnostics. Cell/row/sheet mutation, formatting, formula, CSV-import,
+# and document-creation tools stay disabled unless the user enables them at
+# install time — so a failed tool probe or a non-TTY install still yields a
+# safe, non-mutating surface.
+tools:
+  default_enabled:
+    - doctor
+    - health-check
+    - get-file-info
+    - read-table
+    - get-cell
+    - search
+    - export-table
+
 post_install: |
   Requires macOS and Python 3.11+ — the server uses a numbers-parser Python
   sidecar and bootstraps a local venv on first run (this can take ~a minute).
   The formatting/formula tools also drive Numbers via AppleScript and will
-  prompt for Automation access.
+  prompt for Automation access. It ships read-only by default; enable the
+  write/formatting tools in the install-time checklist if you want them.
 
   Start a new Hermes session to load the Apple Numbers tools.

@@ -9,22 +9,54 @@ description: Create, search, read, update, and organize Apple Notes on macOS.
 source: https://github.com/sweetrb/apple-notes-mcp
 
 # Published npm package — npx fetches and runs it. No install/clone step is
-# needed (transport.command IS the install, per the npm/uvx note).
+# needed (transport.command IS the install, per the npm/uvx note). Pinned to
+# the exact version validated on macOS per catalog policy (no auto-update;
+# auditable); bump the pin via PR after validating a new release.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp"
+    - "apple-notes-mcp@2.5.12"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:
   type: none
 
+# Read-only by default: listing, search, note reads in every format,
+# checklist state, stats, and diagnostics. Create / update / delete / move
+# (single and batch), folder mutation, and attachment-export tools stay
+# disabled unless the user enables them at install time — so a failed tool
+# probe or a non-TTY install still yields a safe, non-mutating surface.
+tools:
+  default_enabled:
+    - doctor
+    - health-check
+    - get-sync-status
+    - list-accounts
+    - list-folders
+    - list-notes
+    - search-notes
+    - get-note-by-id
+    - get-note-content
+    - get-note-details
+    - get-note-markdown
+    - get-note-metadata
+    - get-note-plaintext
+    - get-notes-stats
+    - get-checklist-state
+    - get-default-location
+    - get-selected-notes
+    - list-attachments
+    - list-shared-notes
+    - export-notes-json
+
 post_install: |
   Requires macOS — the server controls Apple Notes via AppleScript and will
   prompt for Automation access to Notes on first use. A couple of read tools
-  (checklist state, markdown export) also use Full Disk Access when granted, but
-  degrade gracefully without it.
+  (checklist state, markdown export) also use Full Disk Access when granted,
+  but degrade gracefully without it. It ships read-only by default; enable
+  the create / update / delete / move tools in the install-time checklist if
+  you want write access.
 
   Start a new Hermes session to load the Apple Notes tools.

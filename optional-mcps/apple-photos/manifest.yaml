@@ -9,22 +9,50 @@ description: Query, search, export, and inspect the macOS Photos library.
 source: https://github.com/sweetrb/apple-photos-mcp
 
 # Published npm package — npx fetches and runs it. No install/clone step is
-# needed (transport.command IS the install, per the npm/uvx note).
+# needed (transport.command IS the install, per the npm/uvx note). Pinned to
+# the exact version validated on macOS per catalog policy (no auto-update;
+# auditable); bump the pin via PR after validating a new release.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-photos-mcp"
+    - "apple-photos-mcp@2.1.0"
 
 # Reads the Photos library via an osxphotos Python sidecar; no credentials.
 auth:
   type: none
 
+# Read-only by default: library queries, photo/thumbnail reads, duplicate
+# detection, catalog listings, and diagnostics. `export` (writes files to
+# disk) and the library-mutation tools (albums, keywords, metadata, dates,
+# import) stay disabled here unless enabled at install time — and the
+# mutation tools are additionally gated server-side behind
+# APPLE_PHOTOS_MCP_ENABLE_WRITES, so both switches must be on before
+# anything can modify the library.
+tools:
+  default_enabled:
+    - doctor
+    - health-check
+    - library-info
+    - query
+    - get-photo
+    - get-photos
+    - get-thumbnail
+    - get-selected-photos
+    - find-duplicates
+    - list-albums
+    - list-folders
+    - list-keywords
+    - list-persons
+
 post_install: |
   Requires macOS, Python 3.11+, and Full Disk Access for the process that
   launches Hermes — the Photos library database lives in a protected location.
   The server uses an osxphotos Python sidecar and bootstraps a local venv on
-  first run (~a minute). All tools are read-only except `export`.
+  first run (~a minute). It ships read-only by default; `export` and the
+  album/metadata write tools can be enabled in the install-time checklist,
+  and the write tools also require APPLE_PHOTOS_MCP_ENABLE_WRITES=1
+  server-side (read-only guarantee unless both are on).
 
   Start a new Hermes session to load the Apple Photos tools.

@@ -1428,7 +1428,13 @@ class PluginManager:
             # just work. Selection among them (e.g. which image_gen backend
             # services calls) is driven by ``<category>.provider`` config,
             # enforced by the tool wrapper.
-            if manifest.source == "bundled" and manifest.kind == "backend":
+            # Bundled platform plugins (gateway adapters like IRC) auto-load
+            # for the same reason: every platform Hermes ships must be
+            # available out of the box without the user having to opt in.
+            if manifest.source == "bundled" and manifest.kind in {"backend", "platform"}:
+                if manifest.kind == "platform" and ("pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ):
+                    logger.debug("Skipping platform auto-load under test: %s", lookup_key)
+                    continue
                 self._load_plugin(manifest)
                 continue
 

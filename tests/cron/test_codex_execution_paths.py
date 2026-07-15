@@ -98,7 +98,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     monkeypatch.setattr(run_agent, "AIAgent", _Codex401ThenSuccessAgent)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, target_model=None, **kwargs: {
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",
@@ -130,7 +130,7 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda **kwargs: {
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": "https://chatgpt.com/backend-api/codex",

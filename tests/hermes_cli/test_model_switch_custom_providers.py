@@ -1206,6 +1206,7 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
     assert gateway_prov["models"] == ["only-model"]
 
 
+<<<<<<< HEAD
 def test_custom_providers_discover_models_false_list_of_dict_ids(monkeypatch):
     """List-of-dicts ``models: [{id: ...}]`` must be preserved as configured
     model IDs when discovery is disabled."""
@@ -1326,3 +1327,44 @@ def test_resolve_custom_provider_bare_custom_self_heal_passes_key_env():
 
     assert resolved is not None
     assert resolved.api_key_env_vars == ("XIAOMI_MIMO_API_KEY",)
+
+
+def test_switch_model_preserves_custom_provider_current_base_url_when_provider_unchanged(monkeypatch):
+    """If the provider is already a custom provider (e.g. "custom:local") and we switch the model,
+    it should preserve the current_base_url rather than overwriting it with the config default
+    from resolve_runtime_provider when the resolved provider falls through to 'custom'.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "provider": "custom",
+            "api_key": "config-key-default",
+            "base_url": "http://config-default-url/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="rotator-openrouter-coding",
+        current_provider="custom:local-(127.0.0.1:4141)",
+        current_model="gpt-5.4",
+        current_base_url="http://127.0.0.1:4141/v1",
+        current_api_key="my-session-key",
+        explicit_provider="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:4141)",
+                "base_url": "http://config-default-url/v1",
+                "model": "rotator-openrouter-coding",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.base_url == "http://127.0.0.1:4141/v1"
+    assert result.api_key == "my-session-key"
+>>>>>>> e4d2fb9b7 (fix: resolve and stabilize 10 core agent, TUI, and gateway issues)

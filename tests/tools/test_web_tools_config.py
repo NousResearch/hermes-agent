@@ -218,6 +218,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "ANYSEARCH_API_KEY",
     )
 
     def setup_method(self):
@@ -540,6 +541,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "ANYSEARCH_API_KEY",
     )
 
     def setup_method(self):
@@ -591,6 +593,11 @@ class TestCheckWebApiKey:
             from tools.web_tools import _load_web_config, check_web_api_key
             assert _load_web_config() == {}
             assert check_web_api_key() is False
+
+    def test_anysearch_key_only(self):
+        with patch.dict(os.environ, {"ANYSEARCH_API_KEY": "anysearch-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
 
     def test_firecrawl_key_only(self):
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
@@ -692,6 +699,7 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "ANYSEARCH_API_KEY" in _web_requires_env()
 
 
 class TestNonBuiltinProviderAvailability:

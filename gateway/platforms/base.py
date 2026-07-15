@@ -3686,6 +3686,8 @@ class BasePlatformAdapter(ABC):
         for match in media_pattern.finditer(scan_content):
             path = _normalize_media_tag_path(match.group("path"))
             if path:
+                if "\x00" in path:
+                    continue
                 try:
                     media.append((os.path.expanduser(path), has_voice_tag))
                 except (OSError, RuntimeError, ValueError):

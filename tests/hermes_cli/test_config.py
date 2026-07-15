@@ -32,10 +32,16 @@ from hermes_cli.config import (
 
 class TestGetHermesHome:
     def test_default_path(self):
+        import sys
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            if sys.platform == "win32":
+                local_appdata = os.environ.get("LOCALAPPDATA", "")
+                base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                assert home == base / "hermes"
+            else:
+                assert home == Path.home() / ".hermes"
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):

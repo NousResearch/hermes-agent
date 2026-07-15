@@ -80,6 +80,13 @@ describe('onboarding Picker', () => {
     expect(screen.queryByText('Recommended')).toBeNull()
   })
 
+  it('uses the shorter Claude Code title', () => {
+    setProviders([provider('claude-code', 'Claude Code')])
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.getByText('Anthropic OAuth (Claude Code)')).toBeTruthy()
+  })
+
   it('offers "choose later" on first run and persists the skip', () => {
     setProviders([provider('nous', 'Nous Portal')])
     render(<Picker ctx={ctx} />)

@@ -1036,6 +1036,7 @@ def _discover_all_plugins() -> list:
     # Entry-point plugins (installed as Python packages; no plugin directory).
     for name, version, description, path in _discover_entrypoint_plugins():
         seen[name] = (name, version, description, "entrypoint", path, name)
+
     return list(seen.values())
 
 

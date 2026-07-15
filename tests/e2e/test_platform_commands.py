@@ -11,6 +11,7 @@ Tests are parametrized over platforms via the ``platform`` fixture in conftest.
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -39,6 +40,18 @@ class TestSlashCommands:
         send.assert_called_once()
         response_text = send.call_args[1].get("content") or send.call_args[0][1]
         assert "session" in response_text.lower() or "Session" in response_text
+
+    @pytest.mark.asyncio
+    async def test_status_logs_slash_command(self, adapter, platform, caplog):
+        caplog.set_level(logging.INFO, logger="gateway.run")
+
+        await send_and_capture(adapter, "/status", platform)
+
+        assert any(
+            record.message.startswith("slash command:")
+            and "command=/status" in record.message
+            for record in caplog.records
+        )
 
     @pytest.mark.asyncio
     async def test_new_resets_session(self, adapter, runner, platform):

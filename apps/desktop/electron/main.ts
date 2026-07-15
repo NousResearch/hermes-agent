@@ -31,7 +31,13 @@ import nodePty from 'node-pty'
 
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { buildDesktopBackendEnv, splitHermesHomeRootAndProfile } from './backend-env'
+import {
+  preferredDesktopLaunchProfile,
+  primaryProfileKeyFromLaunch,
+  PROFILE_NAME_RE,
+  sanitizeProfileHint
+} from './desktop-launch-profile'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
@@ -290,13 +296,15 @@ if (INSTALL_STAMP) {
 // HERMES_DESKTOP_USER_DATA_DIR (used by test:desktop:fresh) puts the sandbox
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
-function resolveHermesHome() {
+function resolveHermesHomeContext() {
   if (process.env.HERMES_HOME) {
-    return normalizeHermesHomeRoot(process.env.HERMES_HOME)
+    const parsed = splitHermesHomeRootAndProfile(process.env.HERMES_HOME)
+
+    return { profileHint: parsed.profileHint, home: parsed.root }
   }
 
   if (USER_DATA_OVERRIDE) {
-    return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
+    return { profileHint: null, home: path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home') }
   }
 
   if (IS_WINDOWS) {
@@ -309,7 +317,9 @@ function resolveHermesHome() {
     const fromRegistry = readWindowsUserEnvVar('HERMES_HOME')
 
     if (fromRegistry) {
-      return normalizeHermesHomeRoot(fromRegistry)
+      const parsed = splitHermesHomeRootAndProfile(fromRegistry)
+
+      return { profileHint: parsed.profileHint, home: parsed.root }
     }
   }
 
@@ -320,16 +330,16 @@ function resolveHermesHome() {
     // Migrate transparently to LOCALAPPDATA, but honour an existing legacy
     // ~/.hermes setup (no LOCALAPPDATA install yet) so users don't lose state.
     if (!directoryExists(localappdata) && directoryExists(legacy)) {
-      return legacy
+      return { profileHint: null, home: legacy }
     }
 
-    return localappdata
+    return { profileHint: null, home: localappdata }
   }
 
-  return path.join(app.getPath('home'), '.hermes')
+  return { profileHint: null, home: path.join(app.getPath('home'), '.hermes') }
 }
 
-const HERMES_HOME = resolveHermesHome()
+const { home: HERMES_HOME, profileHint: HERMES_HOME_PROFILE_HINT_RAW } = resolveHermesHomeContext()
 
 function hermesManagedNodePathEntries() {
   // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
@@ -377,8 +387,9 @@ const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-sta
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
-// value its profile resolver would reject and exit on.
-const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+// value its profile resolver would reject and exit on. Shared with the pure
+// desktop-launch-profile helpers so tests cover the same contract.
+const HERMES_HOME_PROFILE_HINT = sanitizeProfileHint(HERMES_HOME_PROFILE_HINT_RAW)
 // Branch we track for self-update. The GUI work has merged to main, so this
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
@@ -6370,11 +6381,21 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
   })
 }
 
-// The profile the primary (window) backend runs as. readActiveDesktopProfile()
-// returns the desktop's stored preference, or null when unset (legacy launch
-// that defers to active_profile / default).
+// The profile the primary (window) backend runs as. Prefer an env-derived
+// profiles/<name> hint (when HERMES_HOME itself is profile-scoped) over the
+// desktop's stored preference; null falls back to 'default'.
 function primaryProfileKey() {
-  return readActiveDesktopProfile() || 'default'
+  return primaryProfileKeyFromLaunch({
+    profileHint: HERMES_HOME_PROFILE_HINT,
+    preference: readActiveDesktopProfile()
+  })
+}
+
+function preferredPrimaryLaunchProfile() {
+  return preferredDesktopLaunchProfile({
+    profileHint: HERMES_HOME_PROFILE_HINT,
+    preference: readActiveDesktopProfile()
+  })
 }
 
 // Resolve a backend connection for the given profile. Routes the primary
@@ -6733,8 +6754,9 @@ async function startHermes() {
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
     // unset preference keeps the legacy launch so existing installs are
-    // unaffected.
-    const activeProfile = readActiveDesktopProfile()
+    // unaffected — unless HERMES_HOME itself is profile-scoped, in which case
+    // the inferred profiles/<name> hint supplies the pin.
+    const activeProfile = preferredPrimaryLaunchProfile()
 
     if (activeProfile) {
       backendArgs.unshift('--profile', activeProfile)

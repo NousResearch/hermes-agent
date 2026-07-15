@@ -17,6 +17,7 @@ Run with:  python -m pytest tests/tools/test_read_loop_detection.py -v
 
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from tools.file_tools import (
@@ -144,12 +145,13 @@ class TestReadLoopDetection(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_warning_still_returns_content(self, _mock_ops):
         """Even with a warning (3rd read), the file content is still returned."""
+        test_path = str(Path.cwd().resolve() / "test.py")
         for _ in range(2):
-            read_file_tool("/tmp/test.py", task_id="t1")
-        result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
+            read_file_tool(test_path, task_id="t1")
+        result = json.loads(read_file_tool(test_path, task_id="t1"))
         self.assertIn("_warning", result)
         self.assertIn("content", result)
-        self.assertIn("content of /tmp/test.py", result["content"])
+        self.assertIn(f"content of {test_path}", result["content"])
 
 
 class TestNotifyOtherToolCall(unittest.TestCase):

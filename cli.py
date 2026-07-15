@@ -15841,7 +15841,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 # Main Entry Point
 # ============================================================================
 
-def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
+def _single_query_failure_exit_code(result: object) -> int:
+    """Return the automation exit code and preserve kanban billing detail."""
+    if not isinstance(result, dict) or not result.get("failed"):
+        return 0
+
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id:
+        return 1
+
+    try:
+        from hermes_cli.kanban_db import (
+            kanban_worker_exit_code_for_failure,
+            record_kanban_worker_failure_error,
+        )
+
+        failure_reason = result.get("failure_reason")
+        exit_code = kanban_worker_exit_code_for_failure(failure_reason)
+        if failure_reason == "billing":
+            try:
+                record_kanban_worker_failure_error(
+                    task_id,
+                    os.environ.get("HERMES_KANBAN_CLAIM_LOCK", ""),
+                    result.get("error"),
+                )
+            except Exception as persist_exc:
+                # Preserve the sentinel even when the best-effort detail write
+                # loses a DB race or the board is unavailable.
+                logger.debug(
+                    "kanban worker failure detail persistence failed: %s",
+                    persist_exc,
+                )
+        return exit_code
+    except Exception:
+        return 1
+
+
+def _run_kanban_goal_loop_q(
+    cli: "HermesCLI", first_response: str,
+) -> "dict | None":
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
     Called from the quiet single-query path AFTER the worker's first turn,
@@ -15882,8 +15920,14 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
 
     max_turns = task.goal_max_turns or _DEF_TURNS
 
+    terminal_failure: dict | None = None
+
+    class _GoalTurnFailed(RuntimeError):
+        """Stop the goal loop so the CLI can emit the worker sentinel."""
+
     def _run_turn(prompt: str) -> str:
-        result = cli.agent.run_conversation(
+        nonlocal terminal_failure
+        turn_result = cli.agent.run_conversation(
             user_message=prompt,
             conversation_history=cli.conversation_history,
         )
@@ -15893,9 +15937,18 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
             and cli.agent.session_id != cli.session_id
         ):
             cli.session_id = cli.agent.session_id
-        resp = result.get("final_response", "") if isinstance(result, dict) else str(result)
+        resp = (
+            turn_result.get("final_response", "")
+            if isinstance(turn_result, dict)
+            else str(turn_result)
+        )
         if resp:
             print(resp)
+        if isinstance(turn_result, dict) and turn_result.get("failed"):
+            terminal_failure = turn_result
+            raise _GoalTurnFailed(
+                str(turn_result.get("failure_reason") or "provider failure")
+            )
         return resp or ""
 
     def _task_status() -> "str | None":
@@ -15929,6 +15982,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
         first_response=first_response or "",
         log=lambda m: logger.info("%s", m),
     )
+    return terminal_failure
 
 
 def main(
@@ -16375,9 +16429,19 @@ def main(
                         # out (→ sticky block). Gated on the env vars the
                         # dispatcher sets in `_default_spawn`; a no-op for every
                         # normal worker and every non-kanban `-q` run.
-                        if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+                        if (
+                            os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1"
+                            and not (
+                                isinstance(result, dict)
+                                and result.get("failed")
+                            )
+                        ):
                             try:
-                                _run_kanban_goal_loop_q(cli, response)
+                                _goal_failure = _run_kanban_goal_loop_q(
+                                    cli, response
+                                )
+                                if _goal_failure is not None:
+                                    result = _goal_failure
                             except Exception as _goal_exc:
                                 logger.debug("kanban goal loop failed: %s", _goal_exc)
 
@@ -16386,30 +16450,19 @@ def main(
 
                         # Ensure proper exit code for automation wrappers.
                         #
-                        # Kanban workers get a special case: when the run failed
-                        # purely because the provider rate-limited / exhausted
-                        # quota (not because the task itself is broken), exit with
-                        # the EX_TEMPFAIL sentinel instead of the generic 1. The
-                        # dispatcher's reap classifier maps that code to a
-                        # ``rate_limited`` exit and releases the task back to
-                        # ``ready`` WITHOUT incrementing the failure counter, so a
-                        # 5-hour quota window can't trip the circuit breaker and
-                        # permanently block the card. Non-kanban runs keep the
-                        # plain 0/1 contract automation wrappers expect.
-                        _exit_code = 0
-                        if isinstance(result, dict) and result.get("failed"):
-                            _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing"):
-                                try:
-                                    from hermes_cli.kanban_db import (
-                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
-                                    )
-                                    _exit_code = _RL_CODE
-                                except Exception:
-                                    _exit_code = 1
-                        sys.exit(_exit_code)
+                        # Kanban workers get a special case keyed on the run's
+                        # classified ``failure_reason`` so the dispatcher can tell a
+                        # transient throttle from a hard wall. The exit code carries
+                        # the category; hard-billing workers also persist the actual
+                        # provider error on their active run before exiting:
+                        #   - ``rate_limit`` -> EX_TEMPFAIL sentinel -> released back to
+                        #     ``ready`` WITHOUT counting a failure and cheap-probed on
+                        #     a cooldown (a 5-hour quota window can't trip the breaker).
+                        #   - ``billing``    -> hard-blocker sentinel -> auto-blocked with
+                        #     the cause surfaced; retrying/probing a depleted balance
+                        #     just burns paid requests and loops forever (#41805).
+                        # Non-kanban runs keep the plain 0/1 contract wrappers expect.
+                        sys.exit(_single_query_failure_exit_code(result))
 
                 # Exit with error code if credentials or agent init fails
                 sys.exit(1)

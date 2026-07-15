@@ -291,6 +291,100 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.retryable is True
 
+    # ── 429 billing wall vs transient throttle (#41805) ──
+
+    def test_429_insufficient_balance_classified_as_billing(self):
+        """A 429 carrying hard billing vocabulary is billing, not a transient
+        throttle — otherwise a kanban worker probes a depleted balance on a
+        cooldown forever (#41805). Mirrors the 402/403 billing carve-outs."""
+        e = MockAPIError(
+            "HTTP 429: Insufficient balance or no resource package. "
+            "Please recharge.",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_credits_exhausted_classified_as_billing(self):
+        e = MockAPIError("credits have been exhausted", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_plain_throttle_stays_rate_limit(self):
+        """An ordinary 429 with no billing vocabulary stays a transient rate
+        limit — the common case must be unchanged."""
+        e = MockAPIError("Too Many Requests", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_bare_usage_limit_without_reset_classified_as_billing(self):
+        """A bare exhausted usage limit has no evidence it will clear on a
+        timer, so treat it as a hard account wall instead of probing forever.
+
+        This is the exact OpenAI Codex wording reported in #41805.
+        """
+        e = MockAPIError(
+            "HTTP 429: The usage limit has been reached",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "The usage limit has been reached",
+                    "type": "usage_limit_reached",
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_bare_quota_without_reset_stays_rate_limit(self):
+        e = MockAPIError("Quota exceeded", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_gemini_resource_exhausted_stays_rate_limit(self):
+        e = MockAPIError(
+            "Resource has been exhausted (e.g. check quota).",
+            status_code=429,
+            body={
+                "error": {
+                    "code": 429,
+                    "message": "Resource has been exhausted (e.g. check quota).",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            },
+        )
+        result = classify_api_error(e, provider="gemini")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_usage_limit_with_reset_stays_rate_limit(self):
+        """A time-windowed usage limit ('resets at ...') is transient — it WILL
+        clear, so it stays rate_limit and is cheap-probed on a cooldown rather
+        than hard-blocked (#41805). Only explicit billing vocabulary blocks."""
+        e = MockAPIError(
+            "HTTP 429: Usage limit reached for 5 hour. Your limit will reset "
+            "at 2026-05-30 22:00:45",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_usage_limit_resets_in_stays_rate_limit(self):
+        """Plural ``resets in`` also proves a quota is time-windowed."""
+        e = MockAPIError(
+            "HTTP 429: Usage limit reached. Quota resets in 24 hours.",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     def test_403_plan_entitlement_billing(self):
         e = MockAPIError("This plan does not include the requested model", status_code=403)
         result = classify_api_error(e)
@@ -1100,13 +1194,43 @@ class TestClassifyApiError:
         assert result.should_rotate_credential is True
         assert result.should_fallback is True
 
-    def test_message_usage_limit_no_retry_signal_is_billing(self):
-        """'usage limit' with no transient signal and no status code → billing."""
+    def test_message_usage_limit_no_structured_code_stays_rate_limit(self):
+        """Ambiguous status-less usage text must not become hard billing."""
         e = Exception("usage limit reached")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+
+    def test_message_structured_usage_limit_reached_is_billing(self):
+        e = MockAPIError(
+            "The usage limit has been reached",
+            body={
+                "error": {
+                    "message": "The usage limit has been reached",
+                    "type": "usage_limit_reached",
+                }
+            },
+        )
         result = classify_api_error(e)
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
-        assert result.should_rotate_credential is True
+
+    def test_message_structured_usage_limit_with_reset_stays_rate_limit(self):
+        e = MockAPIError(
+            "The usage limit has been reached and resets in 24 hours",
+            body={
+                "error": {
+                    "message": (
+                        "The usage limit has been reached and resets in 24 hours"
+                    ),
+                    "type": "usage_limit_reached",
+                }
+            },
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
 
     def test_message_quota_with_reset_window_is_rate_limit(self):
         """'quota' + 'resets at' with no status code → rate_limit."""
@@ -1918,6 +2042,27 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.should_rotate_credential is False
         assert result.should_fallback is True
         assert result.error_context.get("upstream_provider") == "DeepSeek"
+
+    def test_openrouter_wrapped_billing_wall_stays_billing(self):
+        """Explicit billing vocabulary wins over an aggregator wrapper."""
+        e = MockAPIError(
+            "Provider returned error: Insufficient balance or no resource "
+            "package. Please recharge.",
+            status_code=429,
+            body={
+                "error": {
+                    "message": "Provider returned error: Insufficient balance",
+                    "code": 429,
+                    "metadata": {
+                        "provider_name": "DeepSeek",
+                        "raw": '{"error":{"message":"Insufficient balance"}}',
+                    },
+                }
+            },
+        )
+        result = classify_api_error(e, provider="openrouter", model="x")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
 
     def test_upstream_429_metadata_shape_without_explicit_provider(self):
         """metadata.raw shape alone (provider != openrouter literal) still detected."""

@@ -1178,6 +1178,12 @@ def run_conversation(
                             "completed": False,
                             "failed": True,
                             "error": _nous_msg,
+                            # Preserve the same transient-quota contract as a
+                            # reactive 429. Kanban workers use this reason to
+                            # exit with EX_TEMPFAIL instead of counting a task
+                            # failure when the proactive cross-session guard
+                            # skips the API call entirely (#41805).
+                            "failure_reason": "rate_limit",
                         }
                 except ImportError:
                     pass
@@ -4010,6 +4016,20 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _nonretryable_summary,
+                        # Surface the classified reason here too — this is the
+                        # TERMINAL non-retryable path that hard billing errors
+                        # (HTTP 402, or a 429 carrying billing vocabulary like
+                        # "insufficient balance") fall through to once credential
+                        # rotation and fallback are exhausted (``is_client_error``
+                        # includes ``billing``; see the comment block above).
+                        # Without this, a kanban worker that hits a hard billing
+                        # wall before any tool work exits a generic ``1`` instead
+                        # of the billing-blocker sentinel, so the dispatcher
+                        # records a bare crash and re-spawns it against a depleted
+                        # balance (#41805). The retry-exhaustion return below
+                        # already stamps this; mirror it so the worker exit code
+                        # reflects the cause.
+                        "failure_reason": classified.reason.value,
                     }
 
                 if retry_count >= max_retries:

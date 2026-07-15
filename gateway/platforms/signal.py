@@ -329,6 +329,8 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
+        # Bot's own UUID (resolved at connect time so @mention detection works)
+        self._bot_uuid: Optional[str] = None
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
                      self.http_url, redact_phone(self.account),
@@ -366,6 +368,44 @@ class SignalAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
                 return False
+
+            # Resolve own UUID from group membership so @mention detection works.
+            # Modern Signal @mentions include only the UUID in metadata, not the
+            # phone number. We need our own UUID to match against mention metadata.
+            try:
+                rpc_payload = {
+                    "jsonrpc": "2.0",
+                    "method": "listGroups",
+                    "params": {},
+                    "id": f"init_bot_uuid_{int(__import__('time').time() * 1000)}",
+                }
+                grp_resp = await self.client.post(
+                    f"{self.http_url}/api/v1/rpc",
+                    json=rpc_payload,
+                    timeout=15.0,
+                )
+                if grp_resp.status_code == 200:
+                    grp_data = grp_resp.json()
+                    groups = grp_data.get("result", []) if isinstance(grp_data, dict) else []
+                    if isinstance(groups, list):
+                        for group in groups:
+                            for member in group.get("members", []):
+                                if member.get("number") == self._account_normalized:
+                                    uid = member.get("uuid") or member.get("aci")
+                                    if uid and uid != self._account_normalized:
+                                        self._bot_uuid = uid
+                                        self._recipient_uuid_by_number[self._account_normalized] = uid
+                                        self._recipient_number_by_uuid[uid] = self._account_normalized
+                                        logger.info(
+                                            "Signal: resolved own UUID: %s", uid
+                                        )
+                                        break
+                            if self._bot_uuid:
+                                break
+            except Exception as e:
+                logger.warning(
+                    "Signal: failed to resolve own UUID (non-fatal): %s", e
+                )
 
             self._running = True
             self._last_sse_activity = time.time()
@@ -621,7 +661,9 @@ class SignalAdapter(BasePlatformAdapter):
                 f"@{account_norm}" in (text or "")
             )
             mentioned_in_metadata = any(
-                m.get("number") == account_norm or m.get("uuid") == account_norm
+                m.get("number") == account_norm
+                or m.get("uuid") == account_norm
+                or (self._bot_uuid and m.get("uuid") == self._bot_uuid)
                 for m in (data_message.get("mentions") or [])
             )
             if not mentioned_in_text and not mentioned_in_metadata:

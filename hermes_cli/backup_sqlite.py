@@ -139,6 +139,32 @@ class _OffThreadCopy:
         return self.thread.is_alive()
 
 
+def _open_source(src: Path) -> sqlite3.Connection:
+    """Open *src* for a WAL-safe backup, retrying read-write if the read-only open fails.
+
+    A read-only client cannot open a WAL database whose -shm file is absent or
+    still needs recovery: SQLite raises "unable to open database file" because a
+    read-only connection is not allowed to create or recover the shared-memory
+    index.  That is exactly the shape of a database nothing currently holds
+    open, so the read-only open fails precisely when the copy would otherwise
+    succeed.  A read-write client can create/recover the -shm, and backup() over
+    it is still a consistent snapshot, so retry read-write before giving up.
+
+    Only the *open* is retried.  A source that is merely locked is handled by the
+    caller's busy deadline, and a read-write attempt would spend that deadline a
+    second time over the same lock without being any more able to take it.
+    """
+    try:
+        # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
+        # full locked-source deadline instead of adding the default timeout before each callback.
+        return sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,  # health: allow HX015 -- stdlib-only module (Desktop runs it without app imports), so connect_tracked is out of reach
+                               check_same_thread=False)
+    except sqlite3.Error as exc:
+        logger.warning("SQLite read-only open failed for %s: %s; retrying read-write", src, exc)
+        return sqlite3.connect(str(src.resolve()), timeout=0.0,  # health: allow HX015 -- stdlib-only module, see above
+                               check_same_thread=False)
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 
@@ -162,10 +188,7 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
                 os.fchmod(secure_fd, 0o600)
             finally:
                 os.close(secure_fd)
-        # timeout=0.0 disables sqlite3's implicit busy wait so the progress callback owns the
-        # full locked-source deadline instead of adding the default timeout before each callback.
-        conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True, timeout=0.0,  # health: allow HX015 -- stdlib-only module (Desktop runs it without app imports), so connect_tracked is out of reach
-                               check_same_thread=False)
+        conn = _open_source(src)
         backup_conn = sqlite3.connect(str(dst), check_same_thread=False)
         busy_deadline = time.monotonic() + max(0.0, timeout_seconds)
 

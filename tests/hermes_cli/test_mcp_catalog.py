@@ -143,6 +143,54 @@ class TestManifestParsing:
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
 
+    def test_http_transport_headers(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {
+                    "Authorization": "Bearer ${DEMO_TOKEN}",
+                    "X-Demo": "demo",
+                },
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        e = list_catalog()[0]
+        assert e.transport.type == "http"
+        assert e.transport.url == "https://mcp.example.com/mcp"
+        assert e.transport.headers == {
+            "Authorization": "Bearer ${DEMO_TOKEN}",
+            "X-Demo": "demo",
+        }
+
+    def test_stdio_transport_headers_rejected(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "npx",
+                "headers": {"Authorization": "Bearer ${DEMO_TOKEN}"},
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
+
+    def test_transport_headers_must_be_mapping(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": [],
+            }
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        from hermes_cli.mcp_catalog import list_catalog
+
+        assert list_catalog() == []
+
     def test_install_block(self, catalog_dir):
         body = _basic_manifest(
             install={
@@ -306,6 +354,25 @@ class TestInstall:
         server = load_config()["mcp_servers"]["demo"]
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
+
+    def test_install_http_writes_headers(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Authorization": "Bearer ${DEMO_TOKEN}"},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert server["headers"] == {"Authorization": "Bearer ${DEMO_TOKEN}"}
 
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
@@ -812,3 +879,46 @@ class TestShippedCatalog:
             assert entry.name
             assert entry.description
             assert entry.transport.type in ("stdio", "http")
+
+    def test_agentcard_manifest_contract(self, monkeypatch):
+        """AgentCard stays token-based and conservative by default."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        manifest = _catalog_root() / "agentcard" / "manifest.yaml"
+        if not manifest.exists():
+            pytest.skip("agentcard manifest not present in this checkout")
+
+        entry = _parse_manifest(manifest)
+        assert entry.name == "agentcard"
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://mcp.agentcard.sh/mcp"
+        assert entry.transport.headers == {
+            "Authorization": "Bearer ${AGENT_CARDS_JWT}",
+        }
+        assert entry.auth.type == "api_key"
+        assert [spec.name for spec in entry.auth.env] == ["AGENT_CARDS_JWT"]
+        assert entry.auth.env[0].secret is True
+        assert entry.auth.env[0].required is True
+
+        enabled = set(entry.tools.default_enabled or [])
+        assert {
+            "list_cards",
+            "check_balance",
+            "list_transactions",
+            "detect_checkout",
+            "start_support_chat",
+            "send_support_message",
+            "read_support_chat",
+        } <= enabled
+        assert not {
+            "setup_payment_method",
+            "create_card",
+            "submit_user_info",
+            "get_card_details",
+            "close_card",
+            "approve_request",
+            "pay_checkout",
+            "fill_card",
+            "remove_payment_method",
+        } & enabled

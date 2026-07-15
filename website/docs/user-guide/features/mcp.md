@@ -57,6 +57,7 @@ want.
 hermes mcp                # interactive picker (default)
 hermes mcp catalog        # plain-text list, scriptable
 hermes mcp install n8n    # install a catalog entry by name
+hermes mcp install agentcard
 ```
 
 The picker shows each entry with its current status:
@@ -64,6 +65,7 @@ The picker shows each entry with its current status:
 ```
 n8n          available              Manage and inspect n8n workflows from Hermes
 linear       enabled                Linear issue/project management (remote OAuth)
+agentcard    available              AgentCard virtual debit card tools
 github       installed (disabled)   GitHub repo + PR tools
 ```
 
@@ -77,6 +79,9 @@ Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
   `~/.hermes/.env`. Non-secret values (base URLs) go to the same file.
+- **Static bearer token** — same flow as API keys; manifests can write HTTP
+  authorization headers into `config.yaml` using `${ENV_VAR}` placeholders, with
+  the secret value itself kept in `~/.hermes/.env`.
 - **OAuth** (remote MCP) — written as `auth: oauth` in your config; the MCP
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at

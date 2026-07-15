@@ -1,0 +1,53 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: agentcard
+description: Use AgentCard virtual debit card tools with a conservative default tool set.
+source: https://www.agentcard.sh/agent.txt
+
+# AgentCard hosts a Streamable HTTP MCP server. The Authorization header uses
+# runtime environment interpolation so Hermes never stores the JWT in config.yaml.
+transport:
+  type: http
+  url: https://mcp.agentcard.sh/mcp
+  headers:
+    Authorization: "Bearer ${AGENT_CARDS_JWT}"
+
+auth:
+  type: api_key
+  env:
+    - name: AGENT_CARDS_JWT
+      prompt: "AgentCard JWT (run `npx -y agent-cards@0.5.22 login` first)"
+      required: true
+      secret: true
+
+# AgentCard can create cards, reveal card credentials, approve requests, fill
+# checkouts, close cards, and remove payment methods. Keep the default surface
+# to read-only/support-ish tools; users can opt into riskier tools explicitly
+# with `hermes mcp configure agentcard`.
+tools:
+  default_enabled:
+    - list_cards
+    - check_balance
+    - list_transactions
+    - detect_checkout
+    - start_support_chat
+    - send_support_message
+    - read_support_chat
+
+post_install: |
+  Log in to AgentCard with:
+    npx -y agent-cards@0.5.22 login
+
+  The AgentCard CLI stores its JWT in ~/.agent-cards/config.json and also
+  supports AGENT_CARDS_JWT. Copy the JWT into ~/.hermes/.env as
+  AGENT_CARDS_JWT; do not put it in config.yaml.
+
+  Restart Hermes after setting the secret so the MCP client can resolve:
+    Authorization: Bearer ${AGENT_CARDS_JWT}
+
+  This catalog entry enables only read-only/support-ish tools by default.
+  To opt into card creation, credential reveal, approval, checkout/fill,
+  close, or remove-payment-method tools, run:
+    hermes mcp configure agentcard

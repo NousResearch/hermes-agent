@@ -300,6 +300,110 @@ def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
     return False
 
 
+# Default background color for compositing transparent images. White makes
+# the visible pixels render the way the human eye sees them on a typical web
+# page / document, which is what the model expects. Black would be wrong for
+# most logos, icons, and screenshots. See #64548.
+_ALPHA_COMPOSITE_BG = (255, 255, 255)
+
+
+def _composite_alpha_to_background(img, bg_color=_ALPHA_COMPOSITE_BG):
+    """Flatten an RGBA/P image onto a solid background color.
+
+    ``llama.cpp`` and other stb_image-based vision backends drop the alpha
+    channel instead of compositing it (#64548). PNG encoders write arbitrary
+    garbage RGB values under fully-transparent pixels (they're invisible, so
+    encoders don't care), and that garbage reaches the vision encoder verbatim
+    as high-frequency noise — hallucinations like "horizontal lines / glitch
+    effect" follow.
+
+    Cloud providers (Anthropic, OpenAI, xAI) composite server-side, so this is
+    a no-op for them in practice, but doing it client-side is harmless and
+    keeps the local-backend experience consistent.
+
+    Returns the original image unchanged if it has no alpha channel or if a
+    composite failure occurs (best-effort — never block the embed path).
+    """
+    try:
+        # 'P' may have transparency via a transparency index; 'RGBA' via alpha
+        # band. 'LA' is grayscale + alpha. Convert everything with potential
+        # transparency to RGBA first so the paste mask path is uniform.
+        if img.mode == "P":
+            img = img.convert("RGBA")
+        elif img.mode == "LA":
+            img = img.convert("RGBA")
+        if img.mode != "RGBA":
+            return img  # RGB / L / etc. — no alpha to composite
+        alpha = img.getchannel("A")
+        # Skip the expensive composite if the image is fully opaque.
+        if alpha.getextrema() == (255, 255):
+            return img
+        from PIL import Image as _PILImage
+        bg = _PILImage.new("RGB", img.size, bg_color)
+        bg.paste(img, mask=alpha)
+        return bg
+    except Exception as exc:
+        logger.info("Alpha composite failed (best-effort fallback to raw): %s", exc)
+        return img
+
+
+def _composite_png_alpha(
+    image_path: Path, detected_mime: str
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Composite a transparent PNG onto a white background in-place.
+
+    Returns a 3-tuple consistent with :func:`_normalize_to_supported_image`:
+      - ``(original_path, mime, None)`` if the image is fully opaque, has no
+        alpha channel, or Pillow is unavailable — the caller still gets a
+        valid path and mime, and no temp file is created.
+      - ``(new_png_path, "image/png", None)`` if a flattened copy was written
+        — the caller is responsible for cleaning up the temp file.
+      - ``(original_path, mime, None)`` on any best-effort failure (corrupt
+        PNG, disk full, ...) — never block the embed path.
+    """
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            mode = _img.mode
+            # P-mode may carry a transparency index; RGBA carries alpha; LA is
+            # grayscale + alpha. Anything else (RGB / L / CMYK) has no alpha
+            # to flatten — pass through unchanged.
+            if mode not in {"RGBA", "P", "LA"}:
+                return image_path, detected_mime, None
+            # Fully opaque? Skip the round-trip.
+            test_img = _img.convert("RGBA") if mode != "RGBA" else _img
+            alpha = test_img.getchannel("A")
+            if alpha.getextrema() == (255, 255):
+                return image_path, detected_mime, None
+    except Exception as _exc:
+        # Pillow unavailable / corrupt image — pass through; provider will
+        # either accept it (cloud backend that composites server-side) or
+        # reject with a normal image error.
+        logger.info("Alpha pre-check failed for %s (best-effort pass-through): %s",
+                    image_path, _exc)
+        return image_path, detected_mime, None
+
+    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"flattened_{uuid.uuid4()}.png"
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            flat = _composite_alpha_to_background(_img)
+            # If composite returned the same image (fully opaque / fallback),
+            # don't write a duplicate — pass the original through.
+            if flat is _img:
+                return image_path, detected_mime, None
+            flat.save(out_path, format="PNG")
+        if out_path.exists() and out_path.stat().st_size > 0:
+            logger.info("Flattened transparent PNG onto white background (#64548): %s",
+                        out_path.name)
+            return out_path, "image/png", None
+    except Exception as _exc:
+        logger.warning("Failed to flatten transparent PNG (#64548): %s", _exc)
+    return image_path, detected_mime, None
+
+
 def _normalize_to_supported_image(
     image_path: Path, detected_mime: str
 ) -> tuple[Optional[Path], Optional[str], Optional[str]]:
@@ -315,8 +419,20 @@ def _normalize_to_supported_image(
     Pillow can read (BMP, TIFF, etc.) are re-encoded to PNG.  This runs BEFORE
     the image is base64-embedded into conversation history, so an unsupported
     media_type can never reach the provider and wedge the session.
+
+    For PNG files, transparent-background RGBA images are composited onto a
+    white background so the pixel data sent to the vision provider does not
+    contain the garbage RGB values that hide under fully-transparent pixels
+    (``#64548``).
     """
     if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+        # PNG/WebP with transparency: composite onto white so local backends
+        # (llama.cpp / stb_image) don't feed garbage RGB-under-transparent
+        # pixels to the vision encoder (#64548). Cloud providers composite
+        # server-side so this is a no-op for them, but doing it client-side is
+        # harmless and keeps the local-backend experience consistent.
+        if detected_mime == "image/png":
+            return _composite_png_alpha(image_path, detected_mime)
         return image_path, detected_mime, None
 
     out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
@@ -680,9 +796,19 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
         if data_url is None:
             data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
         return data_url  # fall through to size-check in caller
-    # Convert RGBA to RGB for JPEG output
-    if pil_format == "JPEG" and img.mode in {"RGBA", "P"}:
-        img = img.convert("RGB")
+    # Convert RGBA to RGB for JPEG output. Use alpha-composite onto white
+    # rather than a bare .convert("RGB") — the latter drops the alpha channel
+    # without compositing, exposing garbage RGB-under-transparent pixels to
+    # the vision encoder (#64548). For JPEG output the alpha channel is
+    # always lost; we want it to flatten the way the eye sees it (white bg).
+    if pil_format == "JPEG" and img.mode in {"RGBA", "P", "LA"}:
+        img = _composite_alpha_to_background(img)
+    elif pil_format == "PNG" and img.mode in {"RGBA", "P", "LA"}:
+        # Even for PNG output, flatten onto white if the image has
+        # transparency — local backends (llama.cpp / stb_image) drop the
+        # alpha channel instead of compositing (#64548). Cloud providers
+        # composite server-side; client-side flatten is a harmless no-op.
+        img = _composite_alpha_to_background(img)
 
     # Strategy: halve dimensions until both base64 fits AND pixel dimensions
     # are within limits, up to 4 rounds.

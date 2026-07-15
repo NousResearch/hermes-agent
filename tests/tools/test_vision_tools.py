@@ -23,6 +23,9 @@ from tools.vision_tools import (
     _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
+    _composite_alpha_to_background,
+    _composite_png_alpha,
+    _normalize_to_supported_image,
 )
 
 

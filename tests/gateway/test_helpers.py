@@ -553,3 +553,171 @@ class TestTextModelPicker:
         picker._cleanup_expired()
         assert "sess-old" not in picker._state
         assert "sess-fresh" in picker._state
+
+    # ── DM-only guard ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_send_group_chat_returns_failure_without_registering_state(self, picker, mock_adapter):
+        """send() in a group chat must fail fast and never register state.
+
+        The gateway reads ``result.success`` and falls back to its static
+        text list when the picker is unavailable — so we must NOT leave a
+        stale state that would hijack the next ordinary message.
+        """
+        providers = [
+            {"name": "Alibaba", "slug": "alibaba", "models": ["qwen-v3"], "is_current": True},
+        ]
+
+        async def on_model_selected(chat_id, model, provider_slug):
+            return "ok"
+
+        result = await picker.send(
+            chat_id="chat-123",
+            providers=providers,
+            current_model="qwen-v3",
+            current_provider="alibaba",
+            session_key="sess-abc",
+            on_model_selected=on_model_selected,
+            chat_type="group",
+        )
+
+        assert result.success is False
+        assert "DM-only" in (result.error or "")
+        # Adapter.send must NOT have been called — fail before doing real work.
+        mock_adapter.send.assert_not_called()
+        # And no state registered.
+        assert "sess-abc" not in picker._state
+
+    @pytest.mark.asyncio
+    async def test_send_dm_chat_succeeds(self, picker, mock_adapter):
+        """Explicit chat_type='dm' produces a normal picker send."""
+        providers = [
+            {"name": "Alibaba", "slug": "alibaba", "models": ["qwen-v3"], "is_current": True},
+        ]
+
+        async def on_model_selected(chat_id, model, provider_slug):
+            return "ok"
+
+        result = await picker.send(
+            chat_id="chat-123",
+            providers=providers,
+            current_model="qwen-v3",
+            current_provider="alibaba",
+            session_key="sess-abc",
+            on_model_selected=on_model_selected,
+            chat_type="dm",
+        )
+
+        assert result.success is True
+        assert "sess-abc" in picker._state
+
+    @pytest.mark.asyncio
+    async def test_send_direct_chat_type_accepted_as_dm(self, picker, mock_adapter):
+        """chat_type='direct' is in the DM set alongside 'dm'/'private'."""
+        providers = [
+            {"name": "Alibaba", "slug": "alibaba", "models": ["qwen-v3"], "is_current": True},
+        ]
+
+        async def on_model_selected(chat_id, model, provider_slug):
+            return "ok"
+
+        result = await picker.send(
+            chat_id="chat-123",
+            providers=providers,
+            current_model="qwen-v3",
+            current_provider="alibaba",
+            session_key="sess-abc",
+            on_model_selected=on_model_selected,
+            chat_type="direct",
+        )
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_send_empty_chat_type_succeeds_for_backward_compat(self, picker, mock_adapter):
+        """When chat_type is empty (legacy callers), picker still works.
+
+        Empty string is in _DM_CHAT_TYPES — this preserves backward
+        compatibility for adapters that don't pass chat_type.
+        """
+        providers = [
+            {"name": "Alibaba", "slug": "alibaba", "models": ["qwen-v3"], "is_current": True},
+        ]
+
+        async def on_model_selected(chat_id, model, provider_slug):
+            return "ok"
+
+        result = await picker.send(
+            chat_id="chat-123",
+            providers=providers,
+            current_model="qwen-v3",
+            current_provider="alibaba",
+            session_key="sess-abc",
+            on_model_selected=on_model_selected,
+            chat_type="",
+        )
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_handle_response_group_chat_returns_none_without_touching_state(self, picker, mock_adapter):
+        """handle_response in a group chat falls through before any state lookup.
+
+        Even if a stale state somehow exists (e.g. from a future code path
+        or a manual test setup), a non-DM scope must not consume messages.
+        """
+        picker._state["sess-abc"] = {
+            "stage": "provider",
+            "providers": [{"name": "Alibaba", "slug": "alibaba", "models": ["qwen"], "is_current": True}],
+            "chat_id": "chat-123",
+            "current_model": "old",
+            "on_model_selected": AsyncMock(),
+            "requester_user_id": "",
+            "expires_at": time.monotonic() + 300,
+        }
+
+        result = await picker.handle_response(
+            session_key="sess-abc", text="1", requester_user_id="user-A", chat_type="group",
+        )
+        assert result is None
+        # State untouched.
+        assert "sess-abc" in picker._state
+        mock_adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_response_dm_chat_consumes_state_normally(self, picker, mock_adapter):
+        """chat_type='dm' does not block — picker behaves as before."""
+        picker._state["sess-abc"] = {
+            "stage": "provider",
+            "providers": [{"name": "Alibaba", "slug": "alibaba", "models": ["qwen"], "is_current": True}],
+            "chat_id": "chat-123",
+            "current_model": "old",
+            "on_model_selected": AsyncMock(return_value="Switched"),
+            "requester_user_id": "",
+            "expires_at": time.monotonic() + 300,
+        }
+
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await picker.handle_response(
+                session_key="sess-abc", text="1", chat_type="dm",
+            )
+        assert result == "picker_consumed"
+
+    @pytest.mark.asyncio
+    async def test_handle_response_empty_chat_type_consumes_state_normally(self, picker, mock_adapter):
+        """Empty chat_type (legacy callers) — picker behaves as before."""
+        picker._state["sess-abc"] = {
+            "stage": "provider",
+            "providers": [{"name": "Alibaba", "slug": "alibaba", "models": ["qwen"], "is_current": True}],
+            "chat_id": "chat-123",
+            "current_model": "old",
+            "on_model_selected": AsyncMock(return_value="Switched"),
+            "requester_user_id": "",
+            "expires_at": time.monotonic() + 300,
+        }
+
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await picker.handle_response(
+                session_key="sess-abc", text="1", chat_type="",
+            )
+        assert result == "picker_consumed"

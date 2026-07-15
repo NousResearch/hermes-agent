@@ -3242,6 +3242,7 @@ class DispatchMiddleware(InboundMiddleware):
                 session_key=picker_session_key,
                 text=ctx.raw_text,
                 requester_user_id=ctx.source.user_id,
+                chat_type=ctx.chat_type,
             )
             if picker_result is not None:
                 return  # message consumed by picker flow
@@ -5555,11 +5556,15 @@ class YuanbaoAdapter(BasePlatformAdapter):
         on_model_selected,
         requester_user_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        chat_type: str = "",
     ) -> SendResult:
         """Send an interactive text-based model picker.
 
         Two-step drill-down: provider selection -> model selection.
         On Yuanbao, the user replies with a number at each step, or 0/q/quit/exit/cancel/done to cancel.
+
+        DM-only: ``chat_type`` is forwarded to the picker which rejects
+        non-DM scopes (groups) so the gateway falls back to its static list.
         """
         return await self._model_picker.send(
             chat_id=chat_id,
@@ -5570,6 +5575,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
             on_model_selected=on_model_selected,
             requester_user_id=requester_user_id,
             metadata=metadata,
+            chat_type=chat_type,
         )
 
     async def _handle_picker_response(
@@ -5578,6 +5584,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         session_key: str,
         text: str,
         requester_user_id: Optional[str] = None,
+        chat_type: str = "",
     ) -> Optional[str]:
         """Process a user reply as a model picker selection.
 
@@ -5589,6 +5596,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
             session_key=session_key,
             text=text,
             requester_user_id=requester_user_id,
+            chat_type=chat_type,
         )
 
     async def _get_cached_token(self) -> dict:

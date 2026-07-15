@@ -447,6 +447,13 @@ class TextModelPicker:
     # approval timeout default).
     DEFAULT_TIMEOUT_SECONDS: int = 300
 
+    # Chat types that are considered DM (private) scope.  Picker is DM-only:
+    # the multi-step interactive state machine doesn't mix with multi-user
+    # group chatter, and requester validation alone is not enough to keep
+    # other participants' replies from confusing the flow.
+    # Aligned with ``gateway/slash_access._DM_CHAT_TYPES``.
+    _DM_CHAT_TYPES: frozenset[str] = frozenset({"dm", "direct", "private", ""})
+
     def __init__(self, adapter):
         """Initialize with a reference to the platform adapter.
 
@@ -498,6 +505,7 @@ class TextModelPicker:
         on_model_selected,
         requester_user_id: str | None = None,
         metadata: dict | None = None,
+        chat_type: str = "",
     ) -> "SendResult":
         """Send an interactive text-based model picker.
 
@@ -507,8 +515,20 @@ class TextModelPicker:
         State is registered *only* after the picker message is successfully
         delivered — a failed ``send()`` must not leave a stale state that would
         intercept the next ordinary message (see hermes-sweeper review #48199).
+
+        DM-only: when ``chat_type`` is a non-DM scope (e.g. ``"group"``),
+        returns a failed ``SendResult`` immediately so the caller falls back
+        to its static text list.  This avoids the multi-user cross-talk that
+        makes an interactive state machine unreliable in groups.
         """
         from gateway.platforms.base import SendResult
+
+        if chat_type and chat_type.lower() not in self._DM_CHAT_TYPES:
+            logger.info(
+                "[%s] text picker skipped in chat_type=%s (DM-only)",
+                self._adapter.name, chat_type,
+            )
+            return SendResult(success=False, error="text picker is DM-only")
 
         try:
             text = self._build_provider_text(providers, current_model, current_provider)
@@ -546,12 +566,17 @@ class TextModelPicker:
         session_key: str,
         text: str,
         requester_user_id: str | None = None,
+        chat_type: str = "",
     ) -> str | None:
         """Process a user reply as a model picker selection.
 
         Returns None if there's no active picker state for this session (the
         message should be forwarded to the agent normally). Returns a
         non-None value when the message was consumed by the picker flow.
+
+        DM-only: when ``chat_type`` is a non-DM scope, always falls through
+        so the multi-user group chatter is never consumed by a single-user
+        picker state machine.
 
         Security checks (all must pass before the reply is treated as a picker
         selection):
@@ -567,6 +592,11 @@ class TextModelPicker:
         - Typing one of: q, quit, exit, cancel, done
         - Sending an empty message
         """
+        # DM-only guard runs first so a non-DM scope never reaches the
+        # state lookup below — cheaper than touching the dict at all.
+        if chat_type and chat_type.lower() not in self._DM_CHAT_TYPES:
+            return None
+
         state = self._state.get(session_key)
         if state is None:
             return None

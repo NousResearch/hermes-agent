@@ -50,8 +50,12 @@ class CaptureSlackAdapter(BasePlatformAdapter):
 
 
 def _make_incomplete_result() -> dict:
+    # Mirror the REAL conversation-loop exhaustion shape: the sentinel text is
+    # returned as BOTH final_response and error (agent/conversation_loop.py's
+    # "remained incomplete after 3 continuation attempts" return).
+    _sentinel = "Codex response remained incomplete after 3 continuation attempts"
     return {
-        "final_response": None,
+        "final_response": _sentinel,
         "messages": [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": ""},
@@ -62,7 +66,7 @@ def _make_incomplete_result() -> dict:
         "partial": True,
         "completed": False,
         "interrupted": False,
-        "error": "Codex response remained incomplete after 3 continuation attempts",
+        "error": _sentinel,
         "last_prompt_tokens": 0,
     }
 
@@ -89,6 +93,10 @@ def _make_runner(adapter: CaptureSlackAdapter) -> gateway_run.GatewayRunner:
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.append_to_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
+    # The transient-failure persistence path dedupes on platform message_id
+    # (#47237). A bare MagicMock returns a truthy mock, which would wrongly
+    # mark the user turn as a duplicate and skip persisting it.
+    runner.session_store.has_platform_message_id = MagicMock(return_value=False)
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
@@ -116,13 +124,36 @@ def _make_event() -> MessageEvent:
 def test_incomplete_codex_warning_is_not_surfaced_as_chat_text():
     agent_result = _make_incomplete_result()
 
+    # Mirror the gateway pipeline: the hidden-turn detector blanks the
+    # sentinel final_response BEFORE empty-response normalization runs.
+    response = agent_result.get("final_response") or ""
+    assert gateway_run._is_gateway_hidden_reasoning_incomplete_turn(agent_result)
+    response = ""
+
     response = gateway_run._normalize_empty_agent_response(
         agent_result,
-        agent_result.get("final_response") or "",
+        response,
         history_len=4,
     )
 
     assert response == ""
+
+
+def test_real_answer_alongside_incomplete_error_is_never_suppressed():
+    """A turn whose final_response is genuine model text (not the sentinel
+    echo) must be delivered even when the error field carries the
+    retry-exhaustion sentinel — suppression is only for hidden turns."""
+    agent_result = _make_incomplete_result()
+    agent_result["final_response"] = "Here is the actual answer."
+
+    assert not gateway_run._is_gateway_hidden_reasoning_incomplete_turn(agent_result)
+
+
+def test_interrupted_or_failed_turns_are_not_classified_hidden():
+    for key in ("interrupted", "failed"):
+        agent_result = _make_incomplete_result()
+        agent_result[key] = True
+        assert not gateway_run._is_gateway_hidden_reasoning_incomplete_turn(agent_result)
 
 
 @pytest.mark.asyncio

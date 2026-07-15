@@ -178,8 +178,19 @@ def _effective_model(model_cfg: Dict[str, Any], target_model: Optional[str]) -> 
 
 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
+    configured_default = str(model_cfg.get("default") or "").strip()
+    requested_model = str(target_model or "").strip()
+    # Equivalent spellings must preserve the saved mode without requiring a live catalog.
+    target_overrides_default = False
+    if requested_model:
+        try:
+            norm_target = _models.normalize_copilot_model_id(requested_model) or requested_model
+            norm_default = _models.normalize_copilot_model_id(configured_default) or configured_default
+        except Exception:
+            norm_target, norm_default = requested_model, configured_default
+        target_overrides_default = norm_target != norm_default
     configured_mode = _configured_api_mode("copilot", model_cfg)
-    if configured_mode:
+    if configured_mode and not target_overrides_default:
         return configured_mode
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting
     # codex_responses from a GPT-5 default fails with "model ... does not support Responses API".

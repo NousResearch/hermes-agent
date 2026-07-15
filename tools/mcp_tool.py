@@ -2003,7 +2003,8 @@ class MCPServerTask:
         """
         if not self._ping_unsupported:
             try:
-                await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
+                async with self._rpc_lock:
+                    await asyncio.wait_for(self.session.send_ping(), timeout=30.0)
                 return
             except Exception as exc:
                 # Only a "method not found" means ping is unsupported. Any
@@ -2023,7 +2024,8 @@ class MCPServerTask:
                 )
 
         # Fallback probe for servers without ping support.
-        await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+        async with self._rpc_lock:
+            await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
 
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.

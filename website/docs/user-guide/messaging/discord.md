@@ -271,7 +271,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **Yes** | — | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications). |
-| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. |
+| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` / `DISCORD_ALLOWED_CATEGORIES` explicitly scopes guild access. |
 | `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
 | `DISCORD_ALLOW_ALL_USERS` | No | `false` | Explicit opt-in to allow every Discord user who can reach the bot. This restores the pre-0.18 open behavior for Discord only; use only for trusted/private guilds or development. |
 | `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
@@ -281,12 +281,14 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
-| `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
+| `DISCORD_FREE_RESPONSE_CATEGORIES` | No | — | Comma-separated category IDs or names. Every channel and thread under these categories is treated as free-response — the bot answers without an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. Threads inherit their parent channel's category. Kept separate from `DISCORD_FREE_RESPONSE_CHANNELS` so channel and category scopes don't overload one list. |
+| `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. Free-response channels and categories are exempt — the bot still answers there. |
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
 | `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
 | `DISCORD_ALLOWED_CHANNELS` | No | — | Comma-separated channel IDs. When set, the bot **only** responds in these channels (plus DMs if allowed). Overrides `config.yaml` `discord.allowed_channels`. Combine with `DISCORD_IGNORED_CHANNELS` to express allow/deny rules. |
+| `DISCORD_ALLOWED_CATEGORIES` | No | — | Comma-separated category IDs or names. When set, the bot responds in any channel or thread under these categories (in addition to any `DISCORD_ALLOWED_CHANNELS`). Threads inherit their parent channel's category. A guild with only category scopes configured still fails closed everywhere else. |
 | `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 | `DISCORD_HISTORY_BACKFILL` | No | `true` | When `true`, prepend recent channel scrollback (since the bot's last response) to the user message when the bot is mentioned. Recovers context the bot would otherwise miss with `require_mention`. Skipped in DMs and free-response channels. Set to `false` to disable. |
 | `DISCORD_HISTORY_BACKFILL_LIMIT` | No | `50` | Maximum number of messages to scan backwards when assembling the backfill block. In practice the scan usually stops earlier — at the bot's own last message in the channel. |
@@ -317,9 +319,11 @@ discord:
   require_mention: true           # Require @mention in server channels
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
+  free_response_categories: []    # Category IDs/names where no @mention is needed
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
+  allowed_categories: []          # If set, bot responds in channels/threads under these categories
   no_thread_channels: []          # Channel IDs where bot responds without threading
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)

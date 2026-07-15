@@ -101,8 +101,9 @@ Every run:
 2. Discover new CI failures on main and active PRs.
 3. If nothing is actionable, respond with only [SILENT].
 4. For one low-risk failure only, create a worktree and draft the smallest fix.
-5. Spawn an independent verifier with delegate_task. The verifier must run the
-   relevant test/lint command and reject unrelated file changes.
+5. Spawn an independent verifier with delegate_task. It receives a fresh,
+   isolated session and must run the relevant test/lint command and reject
+   unrelated file changes.
 6. Do not merge. Report the branch/PR, test evidence, and any human decision
    needed.
 7. If the same item has failed three automated attempts, stop and escalate.
@@ -124,7 +125,6 @@ Verifier rules:
 - run: npm test -- --runInBand
 - report APPROVE, REJECT, or ESCALATE_HUMAN with command output
 """,
-    toolsets=["terminal", "file"],
 )
 ```
 

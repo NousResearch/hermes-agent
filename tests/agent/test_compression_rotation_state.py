@@ -718,6 +718,7 @@ class TestTodoSnapshotMergedNotDuplicated:
             for previous, current in zip(compressed, compressed[1:])
         )
 
+
     def test_snapshot_merge_is_persisted_in_place(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")
         parent = "PARENT_TODO_INPLACE"

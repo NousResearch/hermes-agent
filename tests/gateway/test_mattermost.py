@@ -183,18 +183,65 @@ class TestMattermostConfigLoading:
         assert Platform.MATTERMOST in config.platforms
         assert config.platforms[Platform.MATTERMOST].extra.get("url") == ""
 
+    def test_apply_yaml_config_returns_rich_markdown_extra(self, monkeypatch):
+        monkeypatch.delenv("MATTERMOST_REQUIRE_MENTION", raising=False)
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config(
+            {"mattermost": {"rich_markdown": True}},
+            {"rich_markdown": True},
+        )
+
+        assert seeded == {"rich_markdown": True}
+
+    def test_apply_yaml_config_parses_rich_markdown_string(self):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        seeded = _apply_yaml_config(
+            {"mattermost": {"rich_markdown": "false"}},
+            {"rich_markdown": "false"},
+        )
+
+        assert seeded == {"rich_markdown": False}
+
+    def test_load_gateway_config_resolves_registered_rich_markdown_extra(
+        self, monkeypatch, tmp_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "mattermost:\n  rich_markdown: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
+        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
+
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import platform_registry
+
+        config = load_gateway_config()
+
+        entry = platform_registry.get("mattermost")
+        assert entry is not None
+        assert entry.apply_yaml_config_fn is not None
+        assert config.platforms[Platform.MATTERMOST].extra["rich_markdown"] is True
+
 
 # ---------------------------------------------------------------------------
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 
-def _make_adapter():
+def _make_adapter(extra=None):
     """Create a MattermostAdapter with mocked config."""
     from plugins.platforms.mattermost.adapter import MattermostAdapter
+    adapter_extra = {"url": "https://mm.example.com"}
+    if extra:
+        adapter_extra.update(extra)
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        extra=adapter_extra,
     )
     adapter = MattermostAdapter(config)
     return adapter
@@ -234,6 +281,34 @@ class TestMattermostFormatMessage:
         assert "![" not in result
         assert "http://a.com/1.png" in result
         assert "http://b.com/2.png" in result
+
+    def test_rich_markdown_disabled_preserves_html_details(self):
+        content = "<details><summary>Plan</summary>Do the thing</details>"
+        assert self.adapter.format_message(content) == content
+
+    def test_rich_markdown_preserves_mattermost_extensions(self):
+        adapter = _make_adapter({"rich_markdown": True})
+        content = (
+            "@alice check ~town-square :thumbsup:\n"
+            "- [ ] task\n"
+            "```mermaid\nflowchart TD\nA-->B\n```"
+        )
+
+        assert adapter.format_message(content) == content
+
+    def test_rich_markdown_expands_html_details_with_supported_markdown(self):
+        adapter = _make_adapter({"rich_markdown": True})
+        content = (
+            "<details>\n"
+            "<summary>Plan &amp; risks</summary>\n"
+            "\n"
+            "- [x] shipped\n"
+            "</details>"
+        )
+
+        assert adapter.format_message(content) == (
+            "**Plan & risks**\n> - [x] shipped"
+        )
 
 
 class TestMattermostTruncateMessage:

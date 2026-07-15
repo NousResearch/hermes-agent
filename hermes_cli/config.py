@@ -2561,6 +2561,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
+        "rich_markdown": False,        # Normalize unsupported rich HTML into Mattermost Markdown
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 

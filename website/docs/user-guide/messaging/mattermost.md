@@ -161,9 +161,12 @@ Optional behavior settings in `~/.hermes/config.yaml`:
 
 ```yaml
 group_sessions_per_user: true
+mattermost:
+  rich_markdown: true
 ```
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
+- `mattermost.rich_markdown: true` converts unsupported HTML disclosure blocks into expanded, readable Mattermost Markdown. Native Mattermost features such as mentions, task lists, emoji, math, and plugin-provided code fences are always passed through and do not require this option. Mattermost does not document a collapsible `::: details` fence, so Hermes does not emit one.
 
 ### Start the Gateway
 

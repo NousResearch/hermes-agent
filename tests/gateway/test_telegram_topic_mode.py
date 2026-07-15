@@ -123,6 +123,7 @@ def _make_runner(session_db=None):
     runner._busy_ack_ts = {}
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
+    runner._telegram_topic_rename_locks = {}
     # Gateway holds the async facade; the slash handlers await it.
     if session_db is not None:
         from hermes_state import AsyncSessionDB
@@ -919,6 +920,61 @@ async def test_auto_generated_title_renames_bound_telegram_topic(tmp_path):
         thread_id="42",
         name="Build Telegram Topic UX",
     )
+
+
+@pytest.mark.asyncio
+async def test_topic_renames_are_serialized_so_newest_title_wins(tmp_path):
+    """A delayed placeholder rename must not overwrite the generated title."""
+    import asyncio
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    applied_titles = []
+
+    async def _slow_rename(*, chat_id, thread_id, name):
+        if name == "New Session":
+            first_started.set()
+            await release_first.wait()
+        applied_titles.append(name)
+
+    setattr(
+        runner.adapters[Platform.TELEGRAM],
+        "rename_dm_topic",
+        AsyncMock(side_effect=_slow_rename),
+    )
+    source = _make_source(thread_id="42")
+
+    placeholder = asyncio.create_task(
+        runner._rename_telegram_topic_for_session_title(
+            source, "sess-topic", "New Session"
+        )
+    )
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    topic_key = (str(source.chat_id), str(source.thread_id))
+    assert runner._telegram_topic_rename_locks[topic_key].locked()
+
+    generated = asyncio.create_task(
+        runner._rename_telegram_topic_for_session_title(
+            source, "sess-topic", "Generated Topic Title"
+        )
+    )
+    release_first.set()
+    await asyncio.gather(placeholder, generated)
+
+    assert applied_titles == ["New Session", "Generated Topic Title"]
 
 
 @pytest.mark.asyncio

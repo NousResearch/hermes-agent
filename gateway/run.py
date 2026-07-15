@@ -2915,6 +2915,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Topic renames are serialized so a slow placeholder from /new cannot
+        # finish after (and overwrite) the generated or explicit title.
+        self._telegram_topic_rename_locks: Dict[tuple[str, str], asyncio.Lock] = {}
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
         self._exit_with_failure = False
@@ -13949,6 +13952,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     ) -> None:
         """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
+            return
+
+        topic_key = (str(source.chat_id), str(source.thread_id))
+        rename_lock = self._telegram_topic_rename_locks.get(topic_key)
+        if rename_lock is None:
+            rename_lock = asyncio.Lock()
+            self._telegram_topic_rename_locks[topic_key] = rename_lock
+        async with rename_lock:
+            await self._rename_telegram_topic_for_session_title_locked(
+                source, session_id, title
+            )
+
+    async def _rename_telegram_topic_for_session_title_locked(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Apply one topic rename while holding that topic's ordering lock."""
+        if not source.chat_id or not source.thread_id:
             return
 
         # Operator can fully disable per-topic auto-rename via

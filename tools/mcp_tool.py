@@ -2150,18 +2150,26 @@ class MCPServerTask:
         shutdown_task = asyncio.ensure_future(self._shutdown_event.wait())
         reconnect_task = asyncio.ensure_future(self._reconnect_event.wait())
         try:
-            await asyncio.wait(
-                {shutdown_task, reconnect_task},
-                return_when=asyncio.FIRST_COMPLETED,
-                timeout=timeout,
-            )
+            try:
+                await asyncio.wait(
+                    {shutdown_task, reconnect_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=timeout,
+                )
+            except GeneratorExit:
+                # Interpreter shutdown — GeneratorExit is thrown into the
+                # pending await.  Return "shutdown" so the caller exits
+                # cleanly instead of leaking a coroutine with a pending
+                # GeneratorExit that triggers "coroutine ignored
+                # GeneratorExit" during GC.
+                return "shutdown"
         finally:
             for t in (shutdown_task, reconnect_task):
                 if not t.done():
                     t.cancel()
                     try:
                         await t
-                    except (asyncio.CancelledError, Exception):
+                    except (asyncio.CancelledError, GeneratorExit, Exception):
                         pass
         if self._shutdown_event.is_set():
             return "shutdown"

@@ -995,14 +995,18 @@ def _pricing_entry_from_metadata(
 
 
 def _models_dev_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
-    """Fallback: look up pricing in models.dev for providers not in the
-    hardcoded table (e.g. Xiaomi MiMo, custom/unknown endpoints).
+    """Fallback: look up pricing in models.dev for named providers absent
+    from the hardcoded table (e.g. Xiaomi MiMo).
 
     Returns None gracefully if models.dev has no data for the model.
     Mirrors the pattern used in ``hermes_cli.model_cost_guard`` to keep
     the two lookup paths consistent.
     """
     if not route.provider or not route.model:
+        return None
+    # Generic custom/local routes do not carry a trusted upstream provider
+    # identity. Do not turn a coincidental model-name match into a cost claim.
+    if route.provider in {"custom", "local", "unknown"}:
         return None
     try:
         from agent.models_dev import get_model_info
@@ -1054,9 +1058,10 @@ def get_pricing_entry(
     official = _lookup_official_docs_pricing(route)
     if official:
         return official
-    # Final fallback: models.dev covers providers absent from the hardcoded
-    # table (e.g. Xiaomi MiMo, custom endpoints that don't embed pricing in
-    # their /models response).  Consistent with the lookup order used in
+    # Final fallback: models.dev covers named providers absent from the
+    # hardcoded table (e.g. Xiaomi MiMo). Generic custom endpoints retain the
+    # ``custom`` identity, so we do not guess an upstream provider or price.
+    # Consistent with the lookup order used in
     # ``hermes_cli.model_cost_guard.expensive_model_warning``.
     return _models_dev_pricing_entry(route)
 

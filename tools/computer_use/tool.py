@@ -57,6 +57,11 @@ from tools.computer_use.backend import (
 
 logger = logging.getLogger(__name__)
 
+_TIMEOUT_HINT = (
+    "Re-capture the target, avoid stale element indices, and restore any "
+    "minimized or off-screen window before retrying."
+)
+
 
 # ---------------------------------------------------------------------------
 # Approval & safety
@@ -285,7 +290,44 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         return _dispatch(backend, action, args)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
-        return json.dumps({"error": f"{action} failed: {e}"})
+        return json.dumps(
+            _format_tool_error_payload(
+                action,
+                e,
+                timeout_s=getattr(backend, "default_tool_timeout_s", None),
+            )
+        )
+
+
+def _format_tool_error_payload(
+    action: str,
+    exc: Exception,
+    *,
+    timeout_s: Optional[float] = None,
+) -> Dict[str, Any]:
+    detail = str(exc).strip()
+    payload: Dict[str, Any] = {
+        "error": f"{action} failed: {_render_exception_detail(exc)}",
+        "action": action,
+        "exception_type": type(exc).__name__,
+    }
+    if isinstance(exc, TimeoutError):
+        payload["hint"] = _TIMEOUT_HINT
+        payload["hint_code"] = "stale_or_offscreen_target"
+        if timeout_s is not None:
+            payload["timeout_s"] = float(timeout_s)
+    elif detail:
+        payload["detail"] = detail
+    return payload
+
+
+def _render_exception_detail(exc: Exception) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return detail
+    if isinstance(exc, TimeoutError):
+        return "timed out waiting for the computer-use backend"
+    return type(exc).__name__
 
 
 def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:

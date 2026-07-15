@@ -265,6 +265,36 @@ class TestDispatch:
         out = handle_computer_use({"action": "set_value"})
         parsed = json.loads(out)
         assert "error" in parsed
+
+    def test_capture_timeout_includes_exception_metadata(self):
+        from tools.computer_use import tool as cu_tool
+
+        class TimeoutBackend:
+            default_tool_timeout_s = 30.0
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def is_available(self):
+                return True
+
+            def capture(self, mode="som", app=None):
+                raise TimeoutError()
+
+        cu_tool.reset_backend_for_tests()
+        cu_tool._backend = TimeoutBackend()
+
+        out = cu_tool.handle_computer_use({"action": "capture"})
+        parsed = json.loads(out)
+        assert parsed["action"] == "capture"
+        assert parsed["exception_type"] == "TimeoutError"
+        assert parsed["timeout_s"] == 30.0
+        assert parsed["hint_code"] == "stale_or_offscreen_target"
+        assert "timed out waiting for the computer-use backend" in parsed["error"]
+
     def test_capture_after_skipped_when_action_failed(self, noop_backend):
         """capture_after must not fire when res.ok=False (regression guard).
 
@@ -1798,6 +1828,59 @@ class TestFocusAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
+    def test_focus_app_raise_window_uses_bring_to_front(self):
+        windows = [
+            {"app_name": "Calculator", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {
+                "data": "",
+                "images": [],
+                "structuredContent": {"windows": windows},
+                "isError": False,
+            },
+            {
+                "data": {"message": "raised"},
+                "images": [],
+                "structuredContent": None,
+                "isError": False,
+            },
+        ]
+
+        res = backend.focus_app("Calculator", raise_window=True)
+
+        assert res.ok is True
+        assert res.meta["raise_requested"] is True
+        assert res.meta["raised"] is True
+        assert "raised window" in res.message
+        assert backend._session.call_tool.call_args_list[1].args[0] == "bring_to_front"
+
+    def test_focus_app_raise_window_failure_returns_warning(self):
+        windows = [
+            {"app_name": "Calculator", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {
+                "data": "",
+                "images": [],
+                "structuredContent": {"windows": windows},
+                "isError": False,
+            },
+            TimeoutError(),
+        ]
+
+        res = backend.focus_app("Calculator", raise_window=True)
+
+        assert res.ok is True
+        assert res.meta["raise_requested"] is True
+        assert res.meta["raised"] is False
+        assert res.meta["warning"].startswith("raise_window=True could not bring")
+        assert res.meta["raise_meta"]["exception_type"] == "TimeoutError"
+
 
 class TestCuaEnvironmentScrubbing:
     """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
@@ -2904,6 +2987,18 @@ class TestCuaToolCoverageExpansion:
         backend.bring_to_front(pid=42, window_id=7)
         name, args = backend._session.call_tool.call_args.args
         assert args["window_id"] == 7
+
+    def test_action_timeout_without_message_is_descriptive(self):
+        backend = self._backend()
+        backend._session.call_tool.side_effect = TimeoutError()
+
+        res = backend._action("click", {"pid": 42, "button": "left"})
+
+        assert res.ok is False
+        assert res.message == "cua-driver error: timed out waiting for the computer-use backend"
+        assert res.meta["exception_type"] == "TimeoutError"
+        assert res.meta["timeout_s"] == 30.0
+        assert res.meta["hint_code"] == "stale_or_offscreen_target"
 
     # ── Pointer + display introspection ─────────────────────────
 

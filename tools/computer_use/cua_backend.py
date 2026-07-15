@@ -1151,6 +1151,8 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
+    default_tool_timeout_s = 30.0
+
     def __init__(self) -> None:
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge)
@@ -1767,10 +1769,42 @@ class CuaDriverBackend(ComputerUseBackend):
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]
             self._last_app = target["app_name"]  # preserve for capture_after= follow-ups
+            meta: Dict[str, Any] = {
+                "raise_requested": bool(raise_window),
+                "raised": False,
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+            }
+            base_message = (
+                f"Targeted {target['app_name']} (pid {self._active_pid}, "
+                f"window {self._active_window_id})"
+            )
+            if raise_window:
+                raised = self.bring_to_front(
+                    pid=self._active_pid,
+                    window_id=self._active_window_id,
+                )
+                if raised.ok:
+                    meta["raised"] = True
+                    if raised.message:
+                        meta["raise_message"] = raised.message
+                    return ActionResult(
+                        ok=True,
+                        action="focus_app",
+                        message=f"{base_message} and raised window.",
+                        meta=meta,
+                    )
+                meta["warning"] = (
+                    "raise_window=True could not bring the target window to the "
+                    f"front: {raised.message or 'unknown error'}"
+                )
+                if raised.meta:
+                    meta["raise_meta"] = raised.meta
             return ActionResult(
-                ok=True, action="focus_app",
-                message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
-                        f"window {self._active_window_id}) without raising window.",
+                ok=True,
+                action="focus_app",
+                message=f"{base_message} without raising window.",
+                meta=meta,
             )
         return ActionResult(ok=False, action="focus_app",
                             message=f"No on-screen window found for app '{app}'.")
@@ -2090,7 +2124,20 @@ class CuaDriverBackend(ComputerUseBackend):
             out = self._session.call_tool(name, args)
         except Exception as e:
             logger.exception("cua-driver %s call failed", name)
-            return ActionResult(ok=False, action=name, message=f"cua-driver error: {e}")
+            meta: Dict[str, Any] = {"exception_type": type(e).__name__}
+            if isinstance(e, TimeoutError):
+                meta["timeout_s"] = self.default_tool_timeout_s
+                meta["hint"] = (
+                    "Re-capture the target, avoid stale element indices, and "
+                    "restore any minimized or off-screen window before retrying."
+                )
+                meta["hint_code"] = "stale_or_offscreen_target"
+            return ActionResult(
+                ok=False,
+                action=name,
+                message=f"cua-driver error: {_render_exception_detail(e)}",
+                meta=meta,
+            )
         ok = not out["isError"]
         message = ""
         data = out["data"]
@@ -2100,3 +2147,12 @@ class CuaDriverBackend(ComputerUseBackend):
             message = data
         return ActionResult(ok=ok, action=name, message=message,
                             meta=data if isinstance(data, dict) else {})
+
+
+def _render_exception_detail(exc: Exception) -> str:
+    detail = str(exc).strip()
+    if detail:
+        return detail
+    if isinstance(exc, TimeoutError):
+        return "timed out waiting for the computer-use backend"
+    return type(exc).__name__

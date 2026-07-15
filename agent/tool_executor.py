@@ -1266,6 +1266,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
+        _edge_block_msg = None
+        if not _execution_blocked and getattr(agent, "edge_mode", False):
+            try:
+                from agent.edge_fault_damper import edge_precheck_tool_repeat
+
+                _edge_block_msg = edge_precheck_tool_repeat(
+                    agent, function_name, function_args,
+                )
+            except Exception:
+                _edge_block_msg = None
+
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
@@ -1297,6 +1308,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="guardrail_block",
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
+                middleware_trace=list(middleware_trace),
+            )
+        elif _edge_block_msg is not None:
+            function_result = json.dumps(
+                {"error": _edge_block_msg, "edge_fault_damper": True},
+                ensure_ascii=False,
+            )
+            tool_duration = 0.0
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="edge_fault_damper",
+                error_message=_edge_block_msg,
                 middleware_trace=list(middleware_trace),
             )
         elif function_name == "todo":
@@ -1612,6 +1641,24 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
+
+        if (
+            not _execution_blocked
+            and _edge_block_msg is None
+            and getattr(agent, "edge_mode", False)
+        ):
+            try:
+                from agent.edge_fault_damper import edge_record_tool_result_for_damper
+
+                _raw_fr = function_result
+                edge_record_tool_result_for_damper(
+                    agent,
+                    function_name,
+                    function_args,
+                    _raw_fr if isinstance(_raw_fr, str) else str(_raw_fr),
+                )
+            except Exception:
+                pass
 
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (

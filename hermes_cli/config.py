@@ -1161,6 +1161,10 @@ DEFAULT_CONFIG = {
         # cap compression trigger tokens for small local context windows.
         "edge_mode": False,
         "local_context_budget": 4000,
+        "edge_context_flush_ratio": 0.82,
+        "edge_flush_assistant_rounds": 0,
+        "edge_flush_token_soft_limit": 0,
+        "edge_max_consecutive_tool_failures": 0,
         "disabled_toolsets": [],
     },
     

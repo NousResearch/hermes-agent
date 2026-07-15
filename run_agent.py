@@ -762,6 +762,11 @@ class AIAgent:
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
 
+        if hasattr(self, "_edge_scratchpad"):
+            self._edge_scratchpad = ""
+        if hasattr(self, "_edge_failed_signatures"):
+            self._edge_failed_signatures = set()
+
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.
@@ -1697,6 +1702,12 @@ class AIAgent:
         self._session_messages = messages
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
+        if getattr(self, "edge_mode", False) and self._session_db and self.session_id:
+            try:
+                _sp = getattr(self, "_edge_scratchpad", "") or ""
+                self._session_db.update_edge_working_memory(self.session_id, _sp)
+            except Exception:
+                pass
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.

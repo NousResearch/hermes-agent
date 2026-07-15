@@ -688,6 +688,10 @@ agent:
   # and caps compression trigger tokens for small local context windows.
   # edge_mode: false
   # local_context_budget: 4000
+  # edge_context_flush_ratio: 0.82
+  # edge_flush_assistant_rounds: 0
+  # edge_flush_token_soft_limit: 0
+  # edge_max_consecutive_tool_failures: 0
 
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving

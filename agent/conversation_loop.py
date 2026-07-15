@@ -32,6 +32,11 @@ from agent.conversation_compression import conversation_history_after_compressio
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.edge_working_memory import (
+    absorb_assistant_scratchpad_update,
+    ensure_scratchpad_initialized,
+    format_edge_working_memory_injection,
+)
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -602,6 +607,8 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    ensure_scratchpad_initialized(agent, original_user_message)
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None
@@ -804,6 +811,12 @@ def run_conversation(
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                if getattr(agent, "edge_mode", False):
+                    _injections.append(
+                        format_edge_working_memory_injection(
+                            getattr(agent, "_edge_scratchpad", "") or ""
+                        )
+                    )
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:
@@ -4665,6 +4678,8 @@ def run_conversation(
                 # turn. If the follow-up turn after tools is empty, we use this.
                 turn_content = assistant_message.content or ""
                 if turn_content and agent._has_content_after_think_block(turn_content):
+                    if getattr(agent, "edge_mode", False):
+                        absorb_assistant_scratchpad_update(agent, turn_content)
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
                     # this turn is post-response housekeeping (memory, todo,
@@ -4784,7 +4799,30 @@ def run_conversation(
                 _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                 if _tc_names == {"execute_code"}:
                     agent.iteration_budget.refund()
-                
+
+                if getattr(agent, "edge_mode", False):
+                    _sid_before = agent.session_id
+                    try:
+                        from agent.edge_working_memory import maybe_edge_flush_mid_turn
+
+                        messages, active_system_prompt = maybe_edge_flush_mid_turn(
+                            agent,
+                            messages,
+                            system_message,
+                            current_turn_user_idx,
+                            effective_task_id,
+                            active_system_prompt,
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        if agent.session_id != _sid_before:
+                            conversation_history = conversation_history_after_compression(
+                                agent, messages
+                            )
+                    except Exception:
+                        pass
+
                 # Use real token counts from the API response to decide
                 # compression.  prompt_tokens + completion_tokens is the
                 # actual context size the provider reported plus the
@@ -4841,7 +4879,9 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
-                
+                if getattr(agent, "edge_mode", False) and final_response:
+                    absorb_assistant_scratchpad_update(agent, final_response)
+
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
                 # status messages.  _mute_post_response was set during a

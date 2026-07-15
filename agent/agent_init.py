@@ -1481,6 +1481,33 @@ def init_agent(
         except (TypeError, ValueError):
             agent.local_context_budget = 4000
 
+    agent._edge_scratchpad = ""
+    agent._edge_failed_signatures = set()
+    try:
+        _flush_ratio = float(_agent_section.get("edge_context_flush_ratio", 0.82))
+    except (TypeError, ValueError):
+        _flush_ratio = 0.82
+    agent._edge_context_flush_ratio = max(0.5, min(0.99, _flush_ratio))
+    try:
+        agent._edge_flush_assistant_rounds = int(
+            _agent_section.get("edge_flush_assistant_rounds", 0)
+        )
+    except (TypeError, ValueError):
+        agent._edge_flush_assistant_rounds = 0
+    try:
+        agent._edge_flush_token_soft_limit = int(
+            _agent_section.get("edge_flush_token_soft_limit", 0)
+        )
+    except (TypeError, ValueError):
+        agent._edge_flush_token_soft_limit = 0
+    try:
+        agent._edge_max_consecutive_tool_failures = int(
+            _agent_section.get("edge_max_consecutive_tool_failures", 0)
+        )
+    except (TypeError, ValueError):
+        agent._edge_max_consecutive_tool_failures = 0
+    agent._edge_consecutive_tool_failures = 0
+
     from tools.budget_config import DEFAULT_BUDGET, BudgetConfig
 
     if agent.edge_mode:
@@ -1890,6 +1917,12 @@ def init_agent(
             edge_mode=getattr(agent, "edge_mode", False),
             edge_context_budget_tokens=getattr(agent, "local_context_budget", 4000),
         )
+    if getattr(agent, "edge_mode", False):
+        agent.context_compressor._compression_threshold_scale = (
+            getattr(agent, "_edge_context_flush_ratio", 0.82)
+        )
+    else:
+        agent.context_compressor._compression_threshold_scale = 1.0
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
         try:

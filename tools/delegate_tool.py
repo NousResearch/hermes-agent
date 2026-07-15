@@ -1374,6 +1374,18 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    if getattr(parent_agent, "edge_mode", False):
+        child._edge_scratchpad = getattr(parent_agent, "_edge_scratchpad", "") or ""
+        child._edge_failed_signatures = {
+            str(x).lower()
+            for x in (getattr(parent_agent, "_edge_failed_signatures", None) or set())
+        }
+        try:
+            from agent.edge_fault_damper import resync_edge_failed_signatures
+
+            resync_edge_failed_signatures(child)
+        except Exception:
+            pass
     # Stable sidebar marker: delegate subagent sessions must stay out of
     # session pickers even when a parent delete orphans them (parent_session_id
     # → NULL). Mirrors /branch's ``_branched_from`` pattern — see

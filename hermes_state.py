@@ -752,6 +752,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    edge_working_memory TEXT,
     api_call_count INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
@@ -2516,6 +2517,40 @@ class SessionDB:
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
             )
+        self._execute_write(_do)
+
+    def get_edge_working_memory(self, session_id: str) -> Optional[str]:
+        """Return persisted edge-mode scratchpad markdown for ``session_id``."""
+        if not session_id:
+            return None
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "SELECT edge_working_memory FROM sessions WHERE id = ?",
+                    (session_id,),
+                )
+                row = cur.fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        if hasattr(row, "keys"):
+            val = row["edge_working_memory"]
+        else:
+            val = row[0]
+        if val is None or str(val).strip() == "":
+            return None
+        return str(val)
+
+    def update_edge_working_memory(self, session_id: str, payload: str) -> None:
+        """Persist edge-mode working-memory scratchpad for gateway/CLI continuity."""
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET edge_working_memory = ? WHERE id = ?",
+                (payload or "", session_id),
+            )
+
         self._execute_write(_do)
 
     def update_session_model(self, session_id: str, model: str) -> None:

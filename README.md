@@ -213,6 +213,27 @@ hermes -z "Analyze my local repo" --edge-mode
 
 Gateway, cron, and delegated subagents read the same `agent.*` settings so behaviour stays consistent across entry points.
 
+### Layer 2: Working-memory scratchpad (follow-up)
+
+When edge mode is on, Hermes can maintain a dense markdown **working-memory scratchpad** per session (stored in SessionDB as `edge_working_memory`). The scratchpad is injected ephemerally into the current user turn at API-call time — it is not duplicated onto the persisted user message row.
+
+- **Scratchpad sync:** The model can echo an updated scratchpad block in assistant output; Hermes absorbs it into runtime state and persists it.
+- **Compaction deltas:** After context compression, a short summary bullet is appended to the scratchpad under validated facts.
+- **Earlier flush:** `edge_context_flush_ratio` (default `0.82`) scales the compression trigger threshold so summarisation can run sooner on tight windows.
+- **Fault damper:** Optional repeat-failure blocking for identical tool+signature failures (`edge_max_consecutive_tool_failures`, `0` = off).
+
+Additional `agent:` keys (layer 2):
+
+```yaml
+agent:
+  edge_context_flush_ratio: 0.82
+  edge_flush_assistant_rounds: 0      # mid-turn flush after N assistant rounds (0 = off)
+  edge_flush_token_soft_limit: 0       # mid-turn flush soft token cap (0 = off)
+  edge_max_consecutive_tool_failures: 0
+```
+
+Requires the edge-mode foundation in [#27470](https://github.com/NousResearch/hermes-agent/pull/27470).
+
 ---
 
 ## Migrating from OpenClaw

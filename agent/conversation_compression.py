@@ -504,6 +504,18 @@ def compress_context(
             force=force,
         )
 
+    if getattr(agent, "edge_mode", False):
+        try:
+            from agent.edge_working_memory import EdgeCompressGuardError, validate_edge_compress_guard
+
+            validate_edge_compress_guard(agent, messages)
+        except EdgeCompressGuardError as exc:
+            logger.warning("edge compress guard — skipping compaction: %s", exc)
+            cached = getattr(agent, "_cached_system_prompt", None)
+            if cached:
+                return messages, cached
+            return messages, agent._build_system_prompt(system_message)
+
     # Every automatic entrypoint must honor compressor-owned cooldown and
     # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
     # persisted fallback streak is loaded by bind_session_state() before this.
@@ -535,6 +547,15 @@ def compress_context(
         check_compression_model_feasibility(agent)
         agent._compression_feasibility_checked = True
 
+    _compress_focus = focus_topic
+    if getattr(agent, "edge_mode", False):
+        from agent.edge_working_memory import merge_focus_topic_with_scratchpad
+
+        _compress_focus = merge_focus_topic_with_scratchpad(
+            focus_topic,
+            getattr(agent, "_edge_scratchpad", "") or "",
+        )
+
     _pre_msg_count = len(messages)
     # In-place compaction (config: compression.in_place, see #38763). When True,
     # this compaction rewrites the message list + rebuilds the system prompt but
@@ -550,7 +571,7 @@ def compress_context(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
         agent.session_id or "none", _pre_msg_count,
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
-        focus_topic,
+        _compress_focus,
     )
     agent._emit_status(COMPACTION_STATUS)
 
@@ -718,7 +739,7 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=_compress_focus, force=force)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
@@ -732,6 +753,25 @@ def compress_context(
         # session isn't permanently blocked from future compression.
         _release_lock()
         raise
+
+    if getattr(agent, "edge_mode", False):
+        from agent.edge_working_memory import (
+            append_compaction_delta_to_scratchpad,
+            extract_compression_summary_text,
+        )
+
+        _delta_summary = extract_compression_summary_text(compressed)
+        if _delta_summary:
+            agent._edge_scratchpad = append_compaction_delta_to_scratchpad(
+                getattr(agent, "_edge_scratchpad", "") or "",
+                _delta_summary,
+            )
+            try:
+                from agent.edge_working_memory import persist_edge_scratchpad_now
+
+                persist_edge_scratchpad_now(agent)
+            except Exception:
+                pass
 
     # Capture boundary quality before session-rotation callbacks run. Built-in
     # and plugin lifecycle hooks may reset per-session compressor fields while
@@ -961,6 +1001,11 @@ def compress_context(
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
                 agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                try:
+                    _esp = getattr(agent, "_edge_scratchpad", "") or ""
+                    agent._session_db.update_edge_working_memory(agent.session_id, _esp)
+                except Exception:
+                    pass
                 agent._last_flushed_db_idx = 0
             except Exception as e:
                 # If the rotation rolled back to the parent (orphan-avoidance

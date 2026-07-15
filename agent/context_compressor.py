@@ -1172,6 +1172,7 @@ class ContextCompressor(ContextEngine):
         self.abort_on_summary_failure = abort_on_summary_failure
         self._edge_mode = bool(edge_mode)
         self._edge_context_budget_tokens = int(edge_context_budget_tokens)
+        self._compression_threshold_scale = 1.0
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -1389,7 +1390,15 @@ class ContextCompressor(ContextEngine):
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        eff_threshold = self.threshold_tokens
+        scale = getattr(self, "_compression_threshold_scale", 1.0)
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError):
+            scale = 1.0
+        if eff_threshold > 0 and 0 < scale < 1.0:
+            eff_threshold = max(int(eff_threshold * scale), 1)
+        if tokens < eff_threshold:
             return False
         return not self._automatic_compression_blocked()
 

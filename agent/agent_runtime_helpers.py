@@ -1207,6 +1207,12 @@ def restore_primary_runtime(agent) -> bool:
             provider=rt["compressor_provider"],
             api_mode=rt.get("compressor_api_mode", ""),
         )
+        if getattr(agent, "edge_mode", False):
+            cc._compression_threshold_scale = getattr(
+                agent, "_edge_context_flush_ratio", 0.82
+            )
+        else:
+            cc._compression_threshold_scale = 1.0
 
         # ── Rebind and re-select the primary credential pool ──
         # A cross-provider fallback attaches the fallback provider's pool. The
@@ -2064,6 +2070,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        if getattr(agent, "edge_mode", False):
+            agent.context_compressor._compression_threshold_scale = getattr(
+                agent, "_edge_context_flush_ratio", 0.82
+            )
+        else:
+            agent.context_compressor._compression_threshold_scale = 1.0
 
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None

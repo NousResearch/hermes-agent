@@ -168,6 +168,21 @@ def build_models_payload(
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
+    # Config opt-in: ``model.picker_explicit_only: true`` restricts every
+    # model picker (CLI, TUI, dashboard) to providers the user explicitly
+    # configured, hiding the full canonical provider universe. Default
+    # behaviour is unchanged when the flag is absent or false.
+    try:
+        from hermes_cli.config import load_config
+        _picker_cfg = (load_config().get("model") or {}).get(
+            "picker_explicit_only", False
+        )
+        if _picker_cfg:
+            explicit_only = True
+            include_unconfigured = False
+    except Exception:
+        pass
+
     rows = list_authenticated_providers(
         current_provider=ctx.current_provider,
         current_base_url=ctx.current_base_url,

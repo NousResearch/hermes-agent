@@ -98,6 +98,53 @@ describe('ModelSettings', () => {
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
   })
 
+  it('preserves a user-defined provider endpoint when applying the main model', async () => {
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4'],
+          authenticated: true
+        },
+        {
+          name: 'Ollama',
+          slug: 'local-ollama',
+          models: ['qwen3:latest'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://localhost:11434/v1'
+        }
+      ]
+    })
+    setModelAssignment.mockResolvedValueOnce({
+      provider: 'local-ollama',
+      model: 'qwen3:latest',
+      gateway_tools: []
+    })
+
+    await renderModelSettings()
+
+    const providerSelect = (await screen.findAllByRole('combobox'))[0]
+    fireEvent.click(providerSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'Ollama' }))
+
+    const modelSelect = (await screen.findAllByRole('combobox'))[1]
+    fireEvent.click(modelSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'qwen3:latest' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'qwen3:latest',
+        provider: 'local-ollama',
+        scope: 'main',
+        base_url: 'http://localhost:11434/v1'
+      })
+    )
+  })
+
   it('writes the profile default speed (service_tier) when the fast switch is toggled', async () => {
     await renderModelSettings()
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())

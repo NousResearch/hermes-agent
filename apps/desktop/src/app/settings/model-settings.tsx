@@ -586,7 +586,12 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setError('')
 
     try {
-      const result = await setModelAssignment({ model: selectedModel, provider: selectedProvider, scope: 'main' })
+      const result = await setModelAssignment({
+        model: selectedModel,
+        provider: selectedProvider,
+        scope: 'main',
+        ...(selectedProviderRow?.api_url ? { base_url: selectedProviderRow.api_url } : {})
+      })
 
       if (profileEpoch.current !== epoch) {
         return
@@ -603,7 +608,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     } finally {
       setApplying(false)
     }
-  }, [onMainModelChanged, refresh, selectedModel, selectedProvider])
+  }, [onMainModelChanged, refresh, selectedModel, selectedProvider, selectedProviderRow])
 
   const setAuxiliaryToMain = useCallback(
     async (task: string) => {

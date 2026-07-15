@@ -66,6 +66,12 @@ gateway:
     always_singular:       "✅ 命令已批准（永久允许该模式）。代理正在恢复…"
     always_plural:         "✅ 命令已批准（永久允许该模式）（{count} 条命令）。代理正在恢复…"
 
+  auto_reset:
+    notice:                "◐ 会话已自动重置（{reason}）。对话历史已清空。\n使用 /resume 可浏览并恢复之前的会话。\n可在 config.yaml 的 session_reset 中调整重置时间。"
+    reason_suspended:      "上一个会话已停止或中断"
+    reason_daily:          "每日计划于 {hour}:00"
+    reason_idle:           "闲置 {duration}"
+
   background:
     usage:                 "用法：/background <提示>\n示例：/background 总结今天 HN 上热门的故事\n\n在独立会话中运行该提示。你可以继续聊天 — 结果完成后将在此显示。"
     started:               "🔄 后台任务已启动：「{preview}」\n任务 ID：{task_id}\n你可以继续聊天 — 完成后结果将在此显示。"
@@ -269,6 +275,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "无效的检查点编号。请使用 1-{max}。"
     restored:              "✅ 已恢复到检查点 {hash}：{reason}\n已自动保存回滚前的快照。"
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ 模型：`{model}`"
+    provider:              "◆ 提供方：{provider}"
+    context:               "◆ 上下文：{context} tokens（{source}）"
+    endpoint:              "◆ 端点：{endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "默认值 — 可在 config 中设置 model.context_length 覆盖"
+    ctx_source_detected:   "自动检测"
 
   set_home:
     save_failed:           "无法保存主频道：{error}"

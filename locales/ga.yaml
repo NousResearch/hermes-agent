@@ -70,6 +70,12 @@ gateway:
     always_singular:       "✅ Ordú ceadaithe (patrún ceadaithe go buan). Tá an gníomhaire ag atosú..."
     always_plural:         "✅ Orduithe ceadaithe (patrún ceadaithe go buan) ({count} ordú). Tá an gníomhaire ag atosú..."
 
+  auto_reset:
+    notice:                "◐ Athshocraíodh an seisiún go huathoibríoch ({reason}). Glanadh stair an chomhrá.\nÚsáid /resume chun seisiún roimhe seo a bhrabhsáil agus a aischur.\nCoigeartaigh uainiú an athshocraithe in config.yaml faoi session_reset."
+    reason_suspended:      "stopadh nó cuireadh isteach ar an seisiún roimhe seo"
+    reason_daily:          "sceideal laethúil ag {hour}:00"
+    reason_idle:           "neamhghníomhach le {duration}"
+
   background:
     usage:                 "Úsáid: /background <leid>\nSampla: /background Déan achoimre ar phríomhscéalta HN inniu\n\nRitheann an leid i seisiún ar leith. Is féidir leat leanúint leis an gcomhrá — taispeánfar an toradh anseo nuair a bheidh sé críochnaithe."
     started:               "🔄 Tasc cúlra tosaithe: \"{preview}\"\nAitheantas an tasc: {task_id}\nIs féidir leat leanúint leis an gcomhrá — taispeánfar na torthaí nuair a bheidh sé críochnaithe."
@@ -273,6 +279,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Uimhir seicphointe neamhbhailí. Úsáid 1-{max}."
     restored:              "✅ Aischurtha go seicphointe {hash}: {reason}\nSábháladh roghchóip réamh-rollback go huathoibríoch."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Samhail: `{model}`"
+    provider:              "◆ Soláthraí: {provider}"
+    context:               "◆ Comhthéacs: {context} comhartha ({source})"
+    endpoint:              "◆ Críochphointe: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "réamhshocrú — socraigh model.context_length sa config chun é a shárú"
+    ctx_source_detected:   "braite"
 
   set_home:
     save_failed:           "Theip ar shábháil chainéil bhaile: {error}"

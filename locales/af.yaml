@@ -66,6 +66,12 @@ gateway:
     always_singular:       "✅ Opdrag goedgekeur (patroon permanent goedgekeur). Die agent gaan voort..."
     always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
 
+  auto_reset:
+    notice:                "◐ Sessie outomaties herstel ({reason}). Gespreksgeskiedenis is uitgevee.\nGebruik /resume om 'n vorige sessie te blaai en te herstel.\nPas die hersteltyd aan in config.yaml onder session_reset."
+    reason_suspended:      "vorige sessie is gestop of onderbreek"
+    reason_daily:          "daaglikse skedule om {hour}:00"
+    reason_idle:           "onaktief vir {duration}"
+
   background:
     usage:                 "Gebruik: /background <prompt>\nVoorbeeld: /background Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."
     started:               "🔄 Agtergrondtaak begin: \"{preview}\"\nTaak-ID: {task_id}\nJy kan aanhou gesels — resultate verskyn hier wanneer dit klaar is."
@@ -269,6 +275,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Ongeldige kontrolepunt-nommer. Gebruik 1-{max}."
     restored:              "✅ Herstel na kontrolepunt {hash}: {reason}\n'n Voor-terugrol-momentopname is outomaties gestoor."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Model: `{model}`"
+    provider:              "◆ Verskaffer: {provider}"
+    context:               "◆ Konteks: {context} tokens ({source})"
+    endpoint:              "◆ Eindpunt: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "verstek — stel model.context_length in config om te oorskryf"
+    ctx_source_detected:   "bespeur"
 
   set_home:
     save_failed:           "Kon nie tuiste-kanaal stoor nie: {error}"

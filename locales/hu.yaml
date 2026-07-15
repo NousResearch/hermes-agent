@@ -66,6 +66,12 @@ gateway:
     always_singular:       "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
     always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
 
+  auto_reset:
+    notice:                "◐ A munkamenet automatikusan visszaállt ({reason}). A beszélgetés előzményei törölve.\nHasználd a /resume parancsot egy korábbi munkamenet böngészéséhez és visszaállításához.\nA visszaállítás időzítése a config.yaml session_reset szakaszában módosítható."
+    reason_suspended:      "az előző munkamenet leállt vagy megszakadt"
+    reason_daily:          "napi ütemezés {hour}:00-kor"
+    reason_idle:           "{duration} ideje inaktív"
+
   background:
     usage:                 "Használat: /background <prompt>\nPélda: /background Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
     started:               "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."
@@ -269,6 +275,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Érvénytelen ellenőrzőpont-szám. Használj 1-{max} közötti értéket."
     restored:              "✅ Visszaállítva a(z) {hash} ellenőrzőpontra: {reason}\nA visszaállítás előtti pillanatkép automatikusan elmentve."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Modell: `{model}`"
+    provider:              "◆ Szolgáltató: {provider}"
+    context:               "◆ Kontextus: {context} token ({source})"
+    endpoint:              "◆ Végpont: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "alapértelmezett — felülírható a model.context_length beállítással a configban"
+    ctx_source_detected:   "észlelt"
 
   set_home:
     save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"

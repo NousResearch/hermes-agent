@@ -66,6 +66,12 @@ gateway:
     always_singular:       "✅ Komut onaylandı (desen kalıcı olarak onaylandı). Ajan devam ediyor..."
     always_plural:         "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
 
+  auto_reset:
+    notice:                "◐ Oturum otomatik olarak sıfırlandı ({reason}). Konuşma geçmişi temizlendi.\nÖnceki bir oturumu görüntülemek ve geri yüklemek için /resume kullanın.\nSıfırlama zamanlamasını config.yaml içindeki session_reset altından ayarlayabilirsiniz."
+    reason_suspended:      "önceki oturum durduruldu veya kesintiye uğradı"
+    reason_daily:          "günlük zamanlama, saat {hour}:00"
+    reason_idle:           "{duration} boyunca etkin değil"
+
   background:
     usage:                 "Kullanım: /background <prompt>\nÖrnek: /background Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."
     started:               "🔄 Arka plan görevi başlatıldı: \"{preview}\"\nGörev kimliği: {task_id}\nSohbete devam edebilirsin — sonuçlar tamamlandığında burada görünecek."
@@ -269,6 +275,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Geçersiz kontrol noktası numarası. 1-{max} aralığını kullanın."
     restored:              "✅ {hash} kontrol noktasına geri yüklendi: {reason}\nGeri alma öncesi anlık görüntü otomatik olarak kaydedildi."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Model: `{model}`"
+    provider:              "◆ Sağlayıcı: {provider}"
+    context:               "◆ Bağlam: {context} token ({source})"
+    endpoint:              "◆ Uç nokta: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "varsayılan — geçersiz kılmak için config içinde model.context_length ayarlayın"
+    ctx_source_detected:   "algılandı"
 
   set_home:
     save_failed:           "Ana kanal kaydedilemedi: {error}"

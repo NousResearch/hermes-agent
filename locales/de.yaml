@@ -66,6 +66,12 @@ gateway:
     always_singular:       "✅ Befehl genehmigt (Muster dauerhaft genehmigt). Der Agent wird fortgesetzt..."
     always_plural:         "✅ Befehle genehmigt (Muster dauerhaft genehmigt) ({count} Befehle). Der Agent wird fortgesetzt..."
 
+  auto_reset:
+    notice:                "◐ Sitzung automatisch zurückgesetzt ({reason}). Konversationsverlauf gelöscht.\nNutze /resume, um eine frühere Sitzung zu durchsuchen und wiederherzustellen.\nDas Reset-Timing lässt sich in config.yaml unter session_reset anpassen."
+    reason_suspended:      "vorherige Sitzung wurde gestoppt oder unterbrochen"
+    reason_daily:          "täglicher Zeitplan um {hour}:00 Uhr"
+    reason_idle:           "inaktiv seit {duration}"
+
   background:
     usage:                 "Verwendung: /background <prompt>\nBeispiel: /background Fasse die Top-HN-Storys von heute zusammen\n\nFührt den Prompt in einer separaten Sitzung aus. Sie können weiter chatten — das Ergebnis erscheint hier, wenn es fertig ist."
     started:               "🔄 Hintergrund-Aufgabe gestartet: \"{preview}\"\nAufgaben-ID: {task_id}\nSie können weiter chatten — die Ergebnisse erscheinen hier, wenn sie fertig sind."
@@ -269,6 +275,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     invalid_number:        "Ungültige Checkpoint-Nummer. Verwenden Sie 1-{max}."
     restored:              "✅ Auf Checkpoint {hash} wiederhergestellt: {reason}\nEin Pre-Rollback-Snapshot wurde automatisch gespeichert."
     restore_failed:        "❌ {error}"
+
+  session_info:
+    model:                 "◆ Modell: `{model}`"
+    provider:              "◆ Anbieter: {provider}"
+    context:               "◆ Kontext: {context} Tokens ({source})"
+    endpoint:              "◆ Endpunkt: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "Standard — zum Überschreiben model.context_length in der Config setzen"
+    ctx_source_detected:   "erkannt"
 
   set_home:
     save_failed:           "Home-Kanal konnte nicht gespeichert werden: {error}"

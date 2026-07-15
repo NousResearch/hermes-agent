@@ -81,6 +81,12 @@ gateway:
     always_singular:       "✅ Command approved (pattern approved permanently). The agent is resuming..."
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
 
+  auto_reset:
+    notice:                "◐ Session automatically reset ({reason}). Conversation history cleared.\nUse /resume to browse and restore a previous session.\nAdjust reset timing in config.yaml under session_reset."
+    reason_suspended:      "previous session was stopped or interrupted"
+    reason_daily:          "daily schedule at {hour}:00"
+    reason_idle:           "inactive for {duration}"
+
   background:
     usage:                 "Usage: /background <prompt>\nExample: /background Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."
     started:               "🔄 Background task started: \"{preview}\"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done."
@@ -281,6 +287,18 @@ gateway:
     invalid_number:        "Invalid checkpoint number. Use 1-{max}."
     restored:              "✅ Restored to checkpoint {hash}: {reason}\nA pre-rollback snapshot was saved automatically."
     restore_failed:        "❌ {error}"
+
+  # Session config block appended to /new replies and auto-reset notices.
+  # Model IDs, provider slugs, and endpoint URLs are identifiers/values, not
+  # prose -- only the labels and the context-source hints are localized.
+  session_info:
+    model:                 "◆ Model: `{model}`"
+    provider:              "◆ Provider: {provider}"
+    context:               "◆ Context: {context} tokens ({source})"
+    endpoint:              "◆ Endpoint: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "default — set model.context_length in config to override"
+    ctx_source_detected:   "detected"
 
   set_home:
     save_failed:           "Failed to save home channel: {error}"

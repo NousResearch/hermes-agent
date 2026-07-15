@@ -384,6 +384,10 @@ export interface HermesConnection {
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
+  remoteHost?: string
+  remoteIdentity?: string
+  remoteKind?: 'cloud' | 'ssh' | 'url'
+  remoteHermesVersion?: string
   nativeOverlayWidth: number
   source?: 'env' | 'local' | 'settings'
   token: string

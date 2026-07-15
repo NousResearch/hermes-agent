@@ -229,6 +229,20 @@ function localProfileEntry(existing) {
   return ssh ? { mode: 'local', savedSsh: ssh } : null
 }
 
+function hostLabelFromBaseUrl(baseUrl) {
+  const raw = String(baseUrl || '').trim()
+  if (!raw) return null
+  try {
+    const parsed = new URL(raw)
+    if (!parsed.hostname) return null
+    return parsed.port && parsed.port !== '80' && parsed.port !== '443'
+      ? `${parsed.hostname}:${parsed.port}`
+      : parsed.hostname
+  } catch {
+    return null
+  }
+}
+
 /**
  * Select a profile's explicit remote override from a connection config, or null
  * when it has none (so the caller falls back to env → global remote → local).
@@ -396,6 +410,7 @@ export {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  hostLabelFromBaseUrl,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
   normalizeSshConfig,

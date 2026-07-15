@@ -31,7 +31,10 @@ const DEFAULT_SIGN_IN_COPY: SignInCopy = {
 // Gateway (edit URL / token / sign in) — the local Retry/Repair buttons target
 // the bundled backend and can't help. Drives the escape-hatch emphasis.
 export function isRemoteConfig(config: DesktopConnectionConfig | null | undefined): boolean {
-  return Boolean(config && (config.mode === 'remote' || config.mode === 'cloud') && config.remoteUrl)
+  if (!config) return false
+  const ssh = config as DesktopConnectionConfig & { sshHost?: string }
+  return ((config.mode === 'remote' || config.mode === 'cloud') && Boolean(config.remoteUrl)) ||
+    ((config.mode as string) === 'ssh' && Boolean(ssh.sshHost))
 }
 
 // True when a boot error is auth-shaped — the refresh token was rejected or the

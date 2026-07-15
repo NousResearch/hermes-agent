@@ -31,8 +31,19 @@ describe('isRemoteConfig', () => {
     expect(isRemoteConfig(config({ mode: 'cloud', remoteOauthConnected: true }))).toBe(true)
   })
 
-  it('false for local, for a remote with no URL, and for nullish', () => {
+  it('recognizes SSH as remote recovery without treating it as OAuth reauth', () => {
+    const ssh = config({ mode: 'ssh' as never, remoteUrl: '', remoteAuthMode: 'token' }) as DesktopConnectionConfig & {
+      sshHost: string
+    }
+    ssh.sshHost = 'remote-box'
+
+    expect(isRemoteConfig(ssh)).toBe(true)
+    expect(isRemoteReauthFailure(ssh, 'SSH authentication failed.')).toBe(false)
+  })
+
+  it('false for local, incomplete SSH, a remote with no URL, and nullish', () => {
     expect(isRemoteConfig(config({ mode: 'local' }))).toBe(false)
+    expect(isRemoteConfig(config({ mode: 'ssh' as never, remoteUrl: '' }))).toBe(false)
     expect(isRemoteConfig(config({ remoteUrl: '' }))).toBe(false)
     expect(isRemoteConfig(null)).toBe(false)
   })

@@ -145,6 +145,26 @@ class TestCopilotModelNormalization:
         """Regression: openai-codex must still strip the openai/ prefix."""
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
+    def test_openai_codex_strips_colon_prefix(self):
+        """``openai-codex:gpt-5.6-sol`` must strip the colon prefix (#64787).
+
+        ``parse_model_input`` splits on ``:`` (``openai-codex:gpt-5.6-sol``),
+        but ``_strip_matching_provider_prefix`` only handled ``/`` so the
+        colon-delineated prefix survived all the way to the API, causing
+        HTTP 400 (``model not supported``).
+        """
+        assert normalize_model_for_provider("openai-codex:gpt-5.6-sol", "openai-codex") == "gpt-5.6-sol"
+        # Non-matching colon prefix should be preserved unchanged.
+        result = normalize_model_for_provider("other:model", "openai-codex")
+        assert result == "other:model"
+        # Copilot colon prefix should also work.
+        result = normalize_model_for_provider("copilot:claude-sonnet-4.6", "copilot")
+        assert result == "claude-sonnet-4.6"
+        # Bare model name still passes through.
+        assert normalize_model_for_provider("gpt-5.6-sol", "openai-codex") == "gpt-5.6-sol"
+        # Slash syntax still works alongside colon.
+        assert normalize_model_for_provider("openai-codex/gpt-5.6-sol", "openai-codex") == "gpt-5.6-sol"
+
 
 # ── Aggregator providers (regression) ──────────────────────────────────
 

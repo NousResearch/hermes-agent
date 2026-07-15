@@ -224,23 +224,25 @@ def _normalize_provider_alias(provider_name: str) -> str:
 
 
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
-    """Strip ``provider/`` only when the prefix matches the target provider.
+    """Strip ``provider/`` or ``provider:`` only when the prefix matches.
 
-    This prevents arbitrary slash-bearing model IDs from being mangled on
-    native providers while still repairing manual config values like
-    ``zai/glm-5.1`` for the ``zai`` provider.
+    ``parse_model_input`` splits on ``:`` (``openai-codex:gpt-5.6-sol``),
+    but some callers supply a ``/``-delineated name.  Handle both so the
+    colon prefix used by CLI ``-m provider:model`` gets stripped too.
+
+    This prevents arbitrary slash/colon-bearing model IDs from being
+    mangled on native providers while still repairing manual config
+    values like ``zai/glm-5.1`` for the ``zai`` provider.
     """
-    if "/" not in model_name:
-        return model_name
-
-    prefix, remainder = model_name.split("/", 1)
-    if not prefix.strip() or not remainder.strip():
-        return model_name
-
-    normalized_prefix = _normalize_provider_alias(prefix)
-    normalized_target = _normalize_provider_alias(target_provider)
-    if normalized_prefix and normalized_prefix == normalized_target:
-        return remainder.strip()
+    for sep in ("/", ":"):
+        if sep in model_name:
+            prefix, remainder = model_name.split(sep, 1)
+            if not prefix.strip() or not remainder.strip():
+                continue
+            normalized_prefix = _normalize_provider_alias(prefix)
+            normalized_target = _normalize_provider_alias(target_provider)
+            if normalized_prefix and normalized_prefix == normalized_target:
+                return remainder.strip()
     return model_name
 
 

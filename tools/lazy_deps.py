@@ -172,8 +172,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
     "platform.slack": (
-        "slack-bolt==1.27.0",
-        "slack-sdk==3.40.1",
+        "slack-bolt==1.29.0",
+        "slack-sdk==3.43.0",
         "aiohttp==3.14.1",  # CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
     ),
     "platform.matrix": (
@@ -192,7 +192,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "qrcode==7.4.2",
     ),
     "platform.feishu": (
-        "lark-oapi==1.5.3",
+        "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
     # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
@@ -242,6 +242,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "mcp==1.26.0",
         "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
+    # HF Agent Trace Viewer upload (hermes trace upload / /upload-trace).
+    "tool.trace_upload": ("huggingface-hub==1.2.3",),
 }
 
 

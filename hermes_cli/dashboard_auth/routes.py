@@ -192,6 +192,14 @@ async def auth_login(request: Request, provider: str, next: str = ""):
             status_code=404,
             detail=f"Provider does not support interactive login: {provider!r}",
         )
+    if getattr(p, "supports_password", False):
+        from urllib.parse import quote
+
+        safe_next = _validate_post_login_target(next)
+        login_url = f"{_prefix(request)}/login"
+        if safe_next:
+            login_url = f"{login_url}?next={quote(safe_next, safe='')}"
+        return RedirectResponse(url=login_url, status_code=302)
 
     try:
         ls = p.start_login(redirect_uri=_redirect_uri(request))
@@ -357,6 +365,7 @@ async def auth_callback(
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
         prefix=_prefix(request),
+        provider=session.provider,
     )
     clear_pkce_cookie(resp, prefix=_prefix(request))
     # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
@@ -541,6 +550,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         access_token_expires_in=expires_in,
         use_https=detect_https(request),
         prefix=_prefix(request),
+        provider=session.provider,
     )
     return resp
 

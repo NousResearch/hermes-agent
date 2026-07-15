@@ -189,6 +189,10 @@ def _cmd_subscribe(args):
             return
         route["deliver_only"] = True
 
+    script = getattr(args, "script", "") or ""
+    if script.strip():
+        route["script"] = script.strip()
+
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
@@ -212,6 +216,8 @@ def _cmd_subscribe(args):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         label = "Message" if route.get("deliver_only") else "Prompt"
         print(f"  {label}: {prompt_preview}")
+    if route.get("script"):
+        print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
@@ -238,6 +244,8 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("script"):
+            print(f"    Script:  {route['script']}")
         print()
 
 

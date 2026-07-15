@@ -239,7 +239,7 @@ async function fetchProviderDefaultModel(
   let options
 
   try {
-    options = await getGlobalModelOptions()
+    options = await getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
   } catch {
     return null
   }

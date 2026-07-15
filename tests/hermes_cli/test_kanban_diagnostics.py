@@ -600,6 +600,39 @@ def test_stranded_in_ready_falls_back_to_created_at():
     assert stranded[0].data["age_seconds"] == 4 * 3600
 
 
+def test_stranded_in_ready_recognises_status_to_ready_event():
+    """A ``status`` event whose payload sets ``status`` to ``ready``
+    (written by the dashboard \"→ ready\" button / drag-drop via
+    ``_set_status_direct``) is a valid ready transition — the rule
+    must age from that event, not fall back to ``created_at``."""
+    now = 100_000
+    task = _task(status="ready", assignee="demo")
+    events = [
+        _event("created", ts=now - 6 * 3600),       # 6 h ago
+        _event("status", ts=now - 10 * 60, status="ready"),  # 10 min ago
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    assert [d for d in diags if d.kind == "stranded_in_ready"] == []
+
+
+def test_stranded_in_ready_ignores_non_ready_status_event():
+    """A ``status`` event with a payload that does NOT set status to
+    ``ready`` (e.g. a move to ``done``) must NOT count as a ready
+    transition — the rule should fall back to ``created_at``."""
+    now = 100_000
+    task = _task(
+        status="ready", assignee="demo", created_at=now - 4 * 3600,
+    )
+    events = [
+        _event("created", ts=now - 4 * 3600),
+        _event("status", ts=now - 10 * 60, status="done"),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+    stranded = [d for d in diags if d.kind == "stranded_in_ready"]
+    assert len(stranded) == 1
+    assert stranded[0].data["age_seconds"] == 4 * 3600
+
+
 def test_stranded_in_ready_works_on_real_db_row(kanban_home):
     """Round-trip through real kanban_db.connect() — confirms the rule
     works on sqlite3.Row objects, not just dicts."""

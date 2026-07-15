@@ -2935,6 +2935,7 @@ def run_job(
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
+        _model_cfg = {}
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
@@ -3037,7 +3038,16 @@ def run_job(
         _guard_job_credential_exfil(job)
 
         primary_model_for_drift = model
-        primary_provider_for_drift = (job.get("provider") or "").strip().lower() or None
+        configured_provider_for_drift = (
+            str(_model_cfg.get("provider") or "").strip().lower()
+            if isinstance(_model_cfg, dict)
+            else ""
+        )
+        primary_provider_for_drift = (
+            str(job.get("provider") or "").strip().lower()
+            or configured_provider_for_drift
+            or None
+        )
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -3070,9 +3080,9 @@ def run_job(
                 if not isinstance(entry, dict):
                     continue
                 fb_provider = str(entry.get("provider") or "").strip()
-                if not fb_provider:
+                fb_model = str(entry.get("model") or "").strip()
+                if not fb_provider or not fb_model:
                     continue
-                fb_model = str(entry.get("model") or "").strip() or None
                 try:
                     fb_kwargs = {
                         "requested": fb_provider,
@@ -3083,13 +3093,12 @@ def run_job(
                     if entry.get("api_key"):
                         fb_kwargs["explicit_api_key"] = entry["api_key"]
                     runtime = resolve_runtime_provider(**fb_kwargs)
-                    if fb_model:
-                        model = fb_model
+                    model = fb_model
                     logger.info(
-                        "Job '%s': fallback resolved to %s%s",
+                        "Job '%s': fallback resolved to %s model %s",
                         job_id,
                         runtime.get("provider"),
-                        f" model {fb_model}" if fb_model else "",
+                        fb_model,
                     )
                     break
                 except Exception as fb_exc:

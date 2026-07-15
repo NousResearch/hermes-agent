@@ -9528,11 +9528,12 @@ class TestResolveRuntimeWithFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kw: expected,
         )
-        runtime, fallback_model = server._resolve_runtime_with_fallback(
+        resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai"}
         )
-        assert runtime == expected
-        assert fallback_model is None
+        assert resolution.runtime == expected
+        assert resolution.selected_model is None
+        assert resolution.used_fallback is False
 
     def test_auth_error_tries_fallback_chain(self, monkeypatch):
         """On AuthError from primary, walk fallback_providers chain."""
@@ -9554,11 +9555,47 @@ class TestResolveRuntimeWithFallback:
             "_load_fallback_model",
             lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
         )
-        runtime, fallback_model = server._resolve_runtime_with_fallback(
+        resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert runtime == fallback_runtime
-        assert fallback_model == "deepseek-v4-pro"
+        assert resolution.runtime == fallback_runtime
+        assert resolution.selected_model == "deepseek-v4-pro"
+        assert resolution.used_fallback is True
+
+    def test_auth_error_skips_provider_only_fallback(self, monkeypatch):
+        """Auth fallback requires one complete provider/model pair."""
+        from hermes_cli.auth import AuthError
+
+        requested = []
+        fallback_runtime = {"provider": "openrouter", "api_key": "fb-tok"}
+
+        def fake_resolve(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                {"provider": "anthropic"},
+                {"provider": "openrouter", "model": "z-ai/glm-5.2"},
+            ],
+        )
+
+        resolution = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"}
+        )
+
+        assert requested == ["openai-codex", "openrouter"]
+        assert resolution.runtime == fallback_runtime
+        assert resolution.selected_model == "z-ai/glm-5.2"
+        assert resolution.used_fallback is True
 
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
@@ -9606,11 +9643,12 @@ class TestResolveRuntimeWithFallback:
                 {"provider": "anthropic", "model": "claude-sonnet-4-6"},
             ],
         )
-        runtime, fallback_model = server._resolve_runtime_with_fallback(
+        resolution = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert runtime == fallback_runtime
-        assert fallback_model == "claude-sonnet-4-6"
+        assert resolution.runtime == fallback_runtime
+        assert resolution.selected_model == "claude-sonnet-4-6"
+        assert resolution.used_fallback is True
 
     def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
         """Integration: _make_agent falls back to configured fallback

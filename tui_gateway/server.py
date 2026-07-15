@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from hermes_constants import (
     get_hermes_home,
@@ -4471,34 +4471,46 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     ).start()
 
 
+class _RuntimeFallbackResolution(NamedTuple):
+    runtime: dict
+    selected_model: str | None
+    used_fallback: bool
+
+
 def _resolve_runtime_with_fallback(
     resolve_kwargs: dict | None = None,
-) -> tuple[dict, str | None]:
-    """Resolve a runtime and the fallback model selected after auth failure.
+) -> _RuntimeFallbackResolution:
+    """Resolve the primary runtime or one complete provider/model fallback.
 
-    A fallback entry is one provider/model pair. Returning the model alongside
-    the runtime prevents callers from accidentally pairing the fallback
-    provider with the unavailable primary model.
+    Setup-time auth fallback only accepts entries with both fields. Provider-
+    only entries are skipped so the unavailable primary model can never leak
+    into a different runtime. ``used_fallback`` remains explicit rather than
+    overloading a nullable model as control flow.
     """
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     kwargs = resolve_kwargs or {}
     try:
-        return resolve_runtime_provider(**kwargs), None
+        return _RuntimeFallbackResolution(
+            resolve_runtime_provider(**kwargs),
+            None,
+            False,
+        )
     except AuthError as primary_exc:
         fb_chain = _load_fallback_model() or []
         for entry in fb_chain:
             if not isinstance(entry, dict):
                 continue
-            fb_provider = (entry.get("provider") or "").strip()
-            if not fb_provider:
+            fb_provider = str(entry.get("provider") or "").strip()
+            fb_model = str(entry.get("model") or "").strip()
+            if not fb_provider or not fb_model:
                 continue
-            fb_model = (entry.get("model") or "").strip() or None
             try:
-                fb_kwargs: dict = {"requested": fb_provider}
-                if fb_model:
-                    fb_kwargs["target_model"] = fb_model
+                fb_kwargs: dict = {
+                    "requested": fb_provider,
+                    "target_model": fb_model,
+                }
                 if entry.get("base_url"):
                     fb_kwargs["explicit_base_url"] = entry["base_url"]
                 if entry.get("api_key"):
@@ -4507,12 +4519,12 @@ def _resolve_runtime_with_fallback(
                 import logging
 
                 logging.getLogger(__name__).warning(
-                    "Primary auth failed (%s), falling back to %s%s",
+                    "Primary auth failed (%s), falling back to %s model %s",
                     primary_exc,
                     fb_provider,
-                    f" model {fb_model}" if fb_model else "",
+                    fb_model,
                 )
-                return runtime, fb_model
+                return _RuntimeFallbackResolution(runtime, fb_model, True)
             except Exception:
                 continue
         raise
@@ -4613,9 +4625,12 @@ def _make_agent(
                 resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs["requested"] = requested_provider
         resolve_kwargs["target_model"] = model or None
-        runtime, auth_fallback_model = _resolve_runtime_with_fallback(resolve_kwargs)
-        if auth_fallback_model:
-            model = auth_fallback_model
+        resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+        runtime = resolution.runtime
+        if resolution.used_fallback:
+            if not resolution.selected_model:
+                raise RuntimeError("Auth fallback resolved without a model")
+            model = resolution.selected_model
         else:
             # The switch already resolved concrete credentials/endpoint; honor
             # persisted overrides only while using that original runtime. They
@@ -4632,12 +4647,15 @@ def _make_agent(
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        runtime, auth_fallback_model = _resolve_runtime_with_fallback({
+        resolution = _resolve_runtime_with_fallback({
             "requested": requested_provider,
             "target_model": model or None,
         })
-        if auth_fallback_model:
-            model = auth_fallback_model
+        runtime = resolution.runtime
+        if resolution.used_fallback:
+            if not resolution.selected_model:
+                raise RuntimeError("Auth fallback resolved without a model")
+            model = resolution.selected_model
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,

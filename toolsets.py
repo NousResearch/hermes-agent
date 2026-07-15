@@ -63,6 +63,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Completion gate — autonomous task verification
+    "declare_complete", "mark_goal_met", "cancel_goal",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -480,6 +482,39 @@ TOOLSETS = {
     "hermes-bluebubbles": {
         "description": "BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server",
         "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-bluebubbles-isolated": {
+        "description": "BlueBubbles iMessage — read-only research. No terminal, file writes, memory writes, delegation, scheduling, or cross-platform actions. Each thread is fully isolated.",
+        "tools": [
+            # Web research (read-only)
+            "web_search", "web_extract",
+            # Vision (image understanding)
+            "vision_analyze",
+            # Skills (load only, no create/edit)
+            "skills_list", "skill_view",
+            # Browser (read-only subset — no CDP control, no dialogs)
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images", "browser_console",
+            # Clarifying questions
+            "clarify",
+        ],
+        "includes": []
+    },
+
+    "hermes-bluebubbles-strict": {
+        "description": "BlueBubbles iMessage — strict answer/research only. No file access, no terminal, no memory, no delegation, no scheduling, no cross-platform. Pure Q&A + web.",
+        "tools": [
+            "web_search", "web_extract",
+            "vision_analyze",
+            "skills_list", "skill_view",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images", "browser_console",
+            "clarify",
+        ],
         "includes": []
     },
 

@@ -1321,20 +1321,52 @@ def _build_child_agent(
     # These were intentionally skipped by the parent agent's startup; we
     # connect them now so the sub-agent can use them as first-class tools.
     try:
-        from tools.mcp_tool import _load_mcp_config, register_mcp_servers
+        from tools.mcp_tool import (
+            _load_mcp_config,
+            register_mcp_servers,
+            _servers as _mcp_servers,
+            _lock as _mcp_lock,
+        )
 
         delegation_servers = _load_mcp_config(scope_filter="delegation")
         if delegation_servers:
-            connected = register_mcp_servers(delegation_servers)
-            if connected:
-                # Add mcp-<server> toolsets for the child so its tool
-                # resolution includes these newly-connected servers.
+            register_mcp_servers(delegation_servers)
+            # Only add mcp-<server> toolsets for servers that actually
+            # connected.  register_mcp_servers returns ALL tool names from
+            # ALL servers — testing its return value for truthiness is a
+            # false positive when OTHER servers are connected.  Check each
+            # delegation server's presence in the global _servers dict
+            # instead.
+            with _mcp_lock:
                 for srv_name in delegation_servers:
                     ts_name = f"mcp-{srv_name}"
-                    if ts_name not in child_toolsets:
-                        child_toolsets.append(ts_name)
+                    if srv_name in _mcp_servers:
+                        if ts_name not in child_toolsets:
+                            child_toolsets.append(ts_name)
+                    else:
+                        logger.warning(
+                            "Sub-agent MCP delegation: server '%s' failed "
+                            "to connect — tools will not be available",
+                            srv_name,
+                        )
+            # Verify at least one delegation server connected.  If none
+            # did, it may indicate a transport issue (HTTP server not
+            # running, auth failure, timeout) that should be surfaced
+            # rather than silently degrading.
+            connected_count = sum(
+                1 for srv_name in delegation_servers
+                if srv_name in _mcp_servers
+            )
+            if connected_count == 0:
+                logger.warning(
+                    "Sub-agent MCP delegation: %d server(s) configured "
+                    "but NONE connected — is the MCP server running?",
+                    len(delegation_servers),
+                )
     except Exception:
-        logger.debug("Sub-agent MCP delegation connect failed", exc_info=True)
+        logger.warning(
+            "Sub-agent MCP delegation connect failed", exc_info=True
+        )
 
     child = AIAgent(
         base_url=effective_base_url,

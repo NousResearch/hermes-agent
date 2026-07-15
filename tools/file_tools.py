@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import posixpath
+import sys
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -406,6 +407,17 @@ def _resolve_base_dir(
         if not posixpath.isabs(base_text):
             base_text = posixpath.join(os.getcwd(), base_text)
         return _normalize_without_host_deref(base_text)
+    # Git Bash ``pwd -P`` reports ``/c/Users/...``; translate before Path so
+    # relative file-tool paths don't anchor under a nonexistent ``\\c\\Users``.
+    from tools.environments.local import _msys_to_windows_path
+
+    base_text = _msys_to_windows_path(base_text)
+    if sys.platform == "win32":
+        import ntpath
+
+        if not ntpath.isabs(base_text):
+            base_text = ntpath.join(os.getcwd(), base_text)
+        return Path(ntpath.normpath(base_text))
     base = Path(base_text)
     if not base.is_absolute():
         # Last-resort anchoring: a live cwd should already be absolute, but if a
@@ -420,14 +432,31 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
+
+    On native Windows, Git Bash / MSYS drive paths (``/c/Users/...``) are
+    translated to ``C:\\Users\\...`` before resolution so file tools don't
+    treat them as relative ``\\c\\Users\\...`` under the process cwd.
     """
     container_paths = _uses_container_paths(task_id)
-    expanded = _expand_tilde(filepath)
     if container_paths:
+        expanded = _expand_tilde(filepath)
         if posixpath.isabs(expanded):
             return _normalize_without_host_deref(expanded)
         resolved = _resolve_base_dir(task_id, container_paths=True) / expanded
         return _normalize_without_host_deref(resolved)
+
+    # Host paths only — never rewrite Linux paths inside a container/WSL env.
+    from tools.environments.local import _msys_to_windows_path
+
+    expanded = _expand_tilde(_msys_to_windows_path(filepath))
+    if sys.platform == "win32":
+        import ntpath
+
+        if ntpath.isabs(expanded):
+            return Path(ntpath.normpath(expanded))
+        joined = ntpath.join(str(_resolve_base_dir(task_id, container_paths=False)), expanded)
+        return Path(ntpath.normpath(joined))
+
     p = Path(expanded)
     if p.is_absolute():
         return p.resolve()

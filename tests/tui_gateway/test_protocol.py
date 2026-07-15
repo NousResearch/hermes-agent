@@ -1217,6 +1217,42 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     assert kwargs["model_config"] == {"_branched_from": parent_key}
 
 
+def test_make_agent_forwards_distinct_gateway_session_key(server, monkeypatch):
+    """TUI agents retain their stable gateway key beside the live session ID."""
+    captured = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.model = kwargs.get("model", "")
+
+    monkeypatch.setitem(sys.modules, "run_agent", types.SimpleNamespace(AIAgent=_Agent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "test",
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+            }
+        ),
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("test/model", "test"))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent(
+        "tui-session",
+        "agent:main:discord:channel:42",
+        session_id="live-agent-session",
+    )
+
+    assert captured["session_id"] == "live-agent-session"
+    assert captured["gateway_session_key"] == "agent:main:discord:channel:42"
+
+
 def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
     captured = {}
 
@@ -1361,7 +1397,7 @@ def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
 
 
 def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
-    """Plugin slash commands return normal slash.exec output without using the worker."""
+    """Plugin slash commands receive both agent and stable gateway session context."""
     sid = "test-session"
 
     class Worker:
@@ -1373,11 +1409,18 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
             return f"worker:{cmd}"
 
     worker = Worker()
-    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+        "slash_worker": worker,
+    }
+
+    def handler(arg, *, session_id, gateway_session_key):
+        return f"plugin:{arg}:{session_id}:{gateway_session_key}"
 
     with patch(
         "hermes_cli.plugins.get_plugin_command_handler",
-        lambda name: (lambda arg: f"plugin:{arg}") if name == "plugin-cmd" else None,
+        lambda name: handler if name == "plugin-cmd" else None,
     ):
         resp = server.handle_request({
             "id": "r-plugin-slash",
@@ -1386,7 +1429,7 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
         })
 
     assert "error" not in resp
-    assert resp["result"] == {"output": "plugin:hello"}
+    assert resp["result"] == {"output": "plugin:hello:agent-session:gateway-key"}
     assert worker.calls == []
 
 
@@ -1793,8 +1836,14 @@ def test_command_dispatch_returns_custom_bundle_payload(server):
 
 
 def test_command_dispatch_awaits_async_plugin_handler(server):
-    async def _handler(arg):
-        return f"async:{arg}"
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+
+    async def _handler(arg, *, session_id, gateway_session_key):
+        return f"async:{arg}:{session_id}:{gateway_session_key}"
 
     with patch(
         "hermes_cli.plugins.get_plugin_command_handler",
@@ -1803,11 +1852,14 @@ def test_command_dispatch_awaits_async_plugin_handler(server):
         resp = server.handle_request({
             "id": "r-plugin",
             "method": "command.dispatch",
-            "params": {"name": "async-cmd", "arg": "hello"},
+            "params": {"name": "async-cmd", "arg": "hello", "session_id": sid},
         })
 
     assert "error" not in resp
-    assert resp["result"] == {"type": "plugin", "output": "async:hello"}
+    assert resp["result"] == {
+        "type": "plugin",
+        "output": "async:hello:agent-session:gateway-key",
+    }
 
 
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────

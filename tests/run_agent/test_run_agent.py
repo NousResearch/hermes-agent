@@ -3034,6 +3034,7 @@ class TestConcurrentToolExecution:
                 enabled_toolsets=agent.enabled_toolsets,
                 disabled_toolsets=agent.disabled_toolsets,
                 tool_request_middleware_trace=[],
+                gateway_session_key="",
             )
             assert result == "result"
 
@@ -3175,6 +3176,35 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
 
         assert json.loads(result) == {"error": "Blocked"}
+
+    def test_agent_tool_routes_forward_gateway_session_key_to_pre_tool_hook(self, agent, monkeypatch):
+        gateway_session_key = "agent:main:discord:channel:42"
+        agent._gateway_session_key = gateway_session_key
+        seen = []
+
+        def resolve_pre_tool_block(*args, **kwargs):
+            seen.append(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            resolve_pre_tool_block,
+        )
+
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments='{"todos": []}',
+            call_id="todo-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+
+        with patch("tools.todo_tool.todo_tool", return_value='{"ok": true}'):
+            agent._invoke_tool("todo", {"todos": []}, "task-1")
+            agent._execute_tool_calls_sequential(mock_msg, [], "task-1")
+            agent._execute_tool_calls_concurrent(mock_msg, [], "task-1")
+
+        assert len(seen) == 3
+        assert all(call["gateway_session_key"] == gateway_session_key for call in seen)
 
     def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
         """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""

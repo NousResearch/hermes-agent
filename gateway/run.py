@@ -10223,15 +10223,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import (
+                    call_plugin_command_handler,
+                    get_plugin_command_handler,
+                )
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
+                    command_agent = self._running_agents.get(_quick_key)
+                    command_session_id = getattr(command_agent, "session_id", None)
+                    if not command_session_id:
+                        try:
+                            command_session = await self.async_session_store.get_or_create_session(source)
+                            command_session_id = getattr(command_session, "session_id", None)
+                        except Exception:
+                            logger.debug(
+                                "Could not resolve live session ID for plugin command",
+                                exc_info=True,
+                            )
+                    result = call_plugin_command_handler(
+                        plugin_handler,
+                        user_args,
+                        session_id=command_session_id or "",
+                        gateway_session_key=_quick_key,
+                    )
+                    if inspect.isawaitable(result):
                         result = await result
                     return str(result) if result else None
             except Exception as e:

@@ -2225,6 +2225,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 middleware_trace=list(_tool_middleware_trace),
+                gateway_session_key=getattr(agent, "_gateway_session_key", "") or "",
             )
         except Exception:
             block_message = None
@@ -2372,6 +2373,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
+                gateway_session_key=getattr(agent, "_gateway_session_key", "") or "",
             )
 
     from hermes_cli.middleware import run_tool_execution_middleware

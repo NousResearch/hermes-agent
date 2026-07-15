@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-fcntl = pytest.importorskip("fcntl")
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -307,12 +310,15 @@ class TestPushedHashesPopulated:
 class TestSyncBackFileLock:
     """Verify that fcntl.flock is used during sync-back."""
 
-    @patch("tools.environments.file_sync.fcntl.flock")
-    def test_sync_back_file_lock(self, mock_flock, tmp_path):
+    def test_sync_back_file_lock(self, tmp_path):
+        if fcntl is None:
+            pytest.skip("fcntl is unavailable on this platform")
+
         download_fn = _make_download_fn({})
         mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
 
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        with patch.object(fcntl, "flock") as mock_flock:
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # flock should have been called at least twice: LOCK_EX to acquire, LOCK_UN to release
         assert mock_flock.call_count >= 2
@@ -327,7 +333,7 @@ class TestSyncBackFileLock:
         download_fn = _make_download_fn({})
         mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
         fake_msvcrt = MagicMock()
-        fake_msvcrt.LK_LOCK = 1
+        fake_msvcrt.LK_NBLCK = 1
         fake_msvcrt.LK_UNLCK = 2
 
         with patch("tools.environments.file_sync.fcntl", None), \
@@ -335,7 +341,7 @@ class TestSyncBackFileLock:
             mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         lock_ops = [call.args[1] for call in fake_msvcrt.locking.call_args_list]
-        assert lock_ops == [fake_msvcrt.LK_LOCK, fake_msvcrt.LK_UNLCK]
+        assert lock_ops == [fake_msvcrt.LK_NBLCK, fake_msvcrt.LK_UNLCK]
 
     def test_sync_back_waits_for_busy_msvcrt_lock(self, tmp_path):
         """Windows locking should retry until the byte-range lock is free."""
@@ -344,7 +350,7 @@ class TestSyncBackFileLock:
         download_fn = _make_download_fn({})
         mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
         fake_msvcrt = MagicMock()
-        fake_msvcrt.LK_LOCK = 1
+        fake_msvcrt.LK_NBLCK = 1
         fake_msvcrt.LK_UNLCK = 2
         fake_msvcrt.locking.side_effect = [
             OSError(errno.EACCES, "locked"),
@@ -360,8 +366,8 @@ class TestSyncBackFileLock:
         sleep.assert_called_once_with(0.1)
         lock_ops = [call.args[1] for call in fake_msvcrt.locking.call_args_list]
         assert lock_ops == [
-            fake_msvcrt.LK_LOCK,
-            fake_msvcrt.LK_LOCK,
+            fake_msvcrt.LK_NBLCK,
+            fake_msvcrt.LK_NBLCK,
             fake_msvcrt.LK_UNLCK,
         ]
 

@@ -234,6 +234,8 @@ def test_subagent_and_approval_spans_use_safe_summaries(monkeypatch):
         child_role="researcher",
         child_goal="sensitive delegated goal",
     )
+    plugin.on_session_start(session_id="child", model="m", platform="subagent")
+    plugin.on_session_end(session_id="child", completed=True, interrupted=False)
     plugin.on_subagent_stop(
         parent_session_id="parent",
         parent_turn_id="turn",
@@ -274,6 +276,12 @@ def test_subagent_and_approval_spans_use_safe_summaries(monkeypatch):
     assert approval.attributes["hermes.approval.command_length"] > 0
     assert len(approval.attributes["hermes.approval.command_id"]) == 16
     assert subagent.parent.span_id == spans["hermes.turn"].context.span_id
+    child_session = next(
+        span
+        for span in runtime.exporter.get_finished_spans()
+        if span.name == "hermes.session" and span.attributes["hermes.session_id"] == "child"
+    )
+    assert child_session.parent.span_id == subagent.context.span_id
     serialized = repr([dict(subagent.attributes), dict(approval.attributes)])
     assert "sensitive delegated goal" not in serialized
     assert "sensitive child result" not in serialized

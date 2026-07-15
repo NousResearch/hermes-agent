@@ -91,6 +91,7 @@ class SpanBuilder:
         self._requests: dict[str, _SpanEntry] = {}
         self._tools: dict[str, _SpanEntry] = {}
         self._subagents: dict[str, _SpanEntry] = {}
+        self._subagent_by_child_session: dict[str, _SpanEntry] = {}
         self._approvals: dict[str, list[_SpanEntry]] = defaultdict(list)
 
     @staticmethod
@@ -167,7 +168,11 @@ class SpanBuilder:
                     "hermes.platform": _safe_label(kwargs.get("platform")),
                 }
             )
-            self._sessions[session_id] = self._start("hermes.session", attributes)
+            self._sessions[session_id] = self._start(
+                "hermes.session",
+                attributes,
+                parent=self._subagent_by_child_session.get(session_id),
+            )
 
     def mark_session_end(self, kwargs: dict[str, Any]) -> None:
         session_id = _text(kwargs.get("session_id"))
@@ -335,14 +340,18 @@ class SpanBuilder:
             parent = self._turn(_text(kwargs.get("parent_turn_id"))) or self._session(
                 _text(kwargs.get("parent_session_id"))
             )
-            self._subagents[child_id] = self._start(
-                "hermes.subagent", attributes, parent=parent
-            )
+            entry = self._start("hermes.subagent", attributes, parent=parent)
+            self._subagents[child_id] = entry
+            if child_session_id:
+                self._subagent_by_child_session[child_session_id] = entry
 
     def end_subagent(self, kwargs: dict[str, Any]) -> None:
         child_id = _text(kwargs.get("child_subagent_id")) or _text(kwargs.get("child_session_id"))
         status = _safe_label(kwargs.get("child_status"), "unknown")
         with self._lock:
+            child_session_id = _text(kwargs.get("child_session_id"))
+            if child_session_id:
+                self._subagent_by_child_session.pop(child_session_id, None)
             self._end(
                 self._subagents.pop(child_id, None),
                 {

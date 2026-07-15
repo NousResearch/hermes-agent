@@ -198,7 +198,11 @@ export function advanceCursorAfterRows(
 
 function optimisticTranscriptIds(messages: readonly ChatMessage[]): string[] {
   return messages
-    .filter(message => !Number.isInteger(Number(message.id)) && (message.id.startsWith('user-') || message.pending))
+    .filter(
+      message =>
+        !Number.isInteger(Number(message.id)) &&
+        (message.id.startsWith('user-') || message.id.startsWith('assistant-') || message.pending)
+    )
     .map(message => message.id)
 }
 
@@ -228,7 +232,16 @@ export function stampOptimisticTranscriptRows(messages: readonly ChatMessage[], 
       return message
     }
 
-    if (!message.id.startsWith('user-') && !message.pending) {
+    // An optimistic row still needs stamping whether or not it is still
+    // `pending`. The streamed assistant row is finalized by
+    // completeAssistantMessage() (pending:false, id `assistant-<ts>`) BEFORE
+    // markTurnComplete() runs this stamp — so a `pending`-only predicate skips
+    // it, it keeps its optimistic id, and the post-completion poll re-appends
+    // the committed integer row as a DUPLICATE. Recognize any non-committed
+    // optimistic id (`user-`/`assistant-` prefix) OR a still-pending row.
+    const isOptimisticId =
+      message.id.startsWith('user-') || message.id.startsWith('assistant-')
+    if (!isOptimisticId && !message.pending) {
       return message
     }
 

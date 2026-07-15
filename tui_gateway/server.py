@@ -5772,6 +5772,50 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     return messages
 
 
+def _completed_turn_committed_ids(history: list[dict]) -> list[int]:
+    """Committed DB row ids for the turn just finished: [user_id, assistant_id].
+
+    The desktop renders a sent turn optimistically (client-minted ids
+    ``user-<ts>`` / ``assistant-<ts>``) and relies on the ``message.complete``
+    frame carrying the real committed row ids to *stamp* those optimistic rows
+    to their persisted integer ids. Without this, the live session-sync poll
+    re-fetches the committed rows, fails to recognize them (the client still
+    holds the optimistic ids), and appends them as DUPLICATES — every message
+    shown twice while the DB stays clean.
+
+    Each persisted message carries its committed row id as
+    ``_db_persisted_row_id`` (stamped in ``run_agent._flush_messages_to_session_db``).
+    We return the LAST user row id and the LAST assistant *text* row id, in that
+    order — matching the client's optimistic-row order (user first, assistant
+    second). Tool rows are excluded: they are never optimistic client rows, and
+    the poll/append path handles them by their own ids. Missing ids are skipped
+    (best-effort — a partial or absent list simply means no stamping this turn).
+    """
+    if not isinstance(history, list):
+        return []
+
+    user_id: int | None = None
+    assistant_id: int | None = None
+    for m in history:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role")
+        row_id = m.get("_db_persisted_row_id")
+        if not isinstance(row_id, int):
+            continue
+        if role == "user":
+            user_id = row_id
+        elif role == "assistant" and not m.get("tool_calls"):
+            # Only a visible assistant *text* row is an optimistic client row;
+            # an assistant(tool_calls) row renders as a tool card via the poll.
+            content = m.get("content")
+            if isinstance(content, str) and not content.strip():
+                continue
+            assistant_id = row_id
+
+    return [rid for rid in (user_id, assistant_id) if rid is not None]
+
+
 def _coerce_seed_history(value: Any) -> list[dict]:
     if not isinstance(value, list):
         return []
@@ -10270,8 +10314,14 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
+            # Committed row ids for this turn so the desktop can stamp its
+            # optimistic rows to their persisted ids — without them the live
+            # session-sync poll re-appends every message as a duplicate.
             with session["history_lock"]:
+                committed_ids = _completed_turn_committed_ids(session.get("history") or [])
                 _clear_inflight_turn(session)
+            if committed_ids:
+                payload["message_ids"] = committed_ids
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────

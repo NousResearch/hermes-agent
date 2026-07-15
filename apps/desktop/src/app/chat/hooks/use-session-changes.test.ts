@@ -366,6 +366,44 @@ describe('useSessionChanges B4 own-turn suspension helpers', () => {
     expect(result.messages.map(row => row.id)).toEqual(['100', '101'])
   })
 
+  it('stamps an ALREADY-COMPLETED assistant row (pending cleared before stamping)', () => {
+    // Real runtime ordering: completeAssistantMessage() clears the streamed
+    // assistant row's `pending` flag BEFORE markTurnComplete() runs the stamp.
+    // So the row arriving at stampOptimisticTranscriptRows is pending:false and
+    // carries a non-`user-` id (`assistant-<ts>`). If the stamp predicate only
+    // accepts `user-`-prefixed OR pending rows, the assistant row is skipped,
+    // keeps its optimistic id, and the post-completion poll then appends the
+    // committed integer row as a DUPLICATE (the reported desktop bug).
+    const stamped = stampOptimisticTranscriptRows(
+      [
+        message('user-temp', 'user'),
+        { ...message('assistant-1', 'assistant'), pending: false }
+      ],
+      extractCommittedMessageIds({ message_ids: [100, 103] })
+    )
+
+    expect(stamped.messages.map(row => row.id)).toEqual(['100', '103'])
+    expect([...stamped.stampedIds]).toEqual(['100', '103'])
+  })
+
+  it('does NOT duplicate the assistant row end-to-end when the poll returns own committed rows', () => {
+    // Full seam: optimistic user + completed assistant → stamp from completion
+    // ids → post-completion poll returns the same committed rows → no dup.
+    const stamped = stampOptimisticTranscriptRows(
+      [
+        message('user-temp', 'user'),
+        { ...message('assistant-1', 'assistant'), pending: false }
+      ],
+      extractCommittedMessageIds({ message_ids: [100, 101] })
+    )
+    const result = appendFetchedMessages(stamped.messages, [
+      { id: 100, role: 'user', content: 'own user' },
+      { id: 101, role: 'assistant', content: 'own assistant' }
+    ])
+
+    expect(result.messages.map(row => row.id)).toEqual(['100', '101'])
+  })
+
   it('renders remote ids interleaved between own ids and advances only through rendered rows', () => {
     const stamped = stampOptimisticTranscriptRows(
       [

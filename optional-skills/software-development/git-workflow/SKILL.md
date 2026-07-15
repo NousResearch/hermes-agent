@@ -1,99 +1,84 @@
 ---
 name: git-workflow
-description: |
-  End-to-end Git workflow assistant — branching, committing, rebasing,
-  conflict resolution, PR preparation, and history cleanup. Works with
-  any repo and any branching strategy (GitFlow, trunk-based, GitHub Flow).
-version: 0.1.0
-author: HeLLGURD
+description: "Branch, commit, rebase, and clean history before a PR."
+version: 0.2.0
+author: Burak Koç (@HeLLGURD), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
-category: software-development
-triggers:
-  - "help me with git"
-  - "create a branch"
-  - "commit my changes"
-  - "rebase onto main"
-  - "resolve merge conflict"
-  - "squash my commits"
-  - "prepare PR"
-  - "clean up git history"
-  - "undo last commit"
-  - "stash my changes"
-  - "cherry-pick"
-  - "my branch is behind main"
-toolsets:
-  - terminal
-  - file
 metadata:
   hermes:
-    tags: [Git, Workflow, Branching, Rebase, Merge, Commit, PR, Version-Control]
-    related_skills: [changelog-generator, code-wiki]
+    tags: [Git, Workflow, Branching, Rebase, Merge, Commit, Version-Control]
+    category: software-development
+    requires_toolsets: [terminal, file]
+    related_skills: [github-code-review, github-pr-workflow]
 ---
 
-# Git Workflow
+# Git Workflow Skill
 
-A complete Git workflow assistant for everyday development tasks — from
-creating branches to cleaning up history before a PR. Handles the full
-lifecycle: branch → commit → sync → rebase → PR preparation.
-
-Works with any branching strategy. No external services. Uses only the
-`terminal` tool.
-
----
+Drive everyday local Git — branching, staging, committing, rebasing, conflict
+resolution, stash handling, and history cleanup before a pull request. Works
+with any branching strategy (GitFlow, trunk-based, GitHub Flow) and needs no
+external service. It stops at the repo boundary: opening, reviewing, or merging
+PRs on a hosting provider belongs to the `github-pr-workflow` and
+`github-code-review` skills.
 
 ## When to Use
 
-- User asks for help with any git operation
-- Branch is behind main and needs syncing
-- Commits are messy and need squashing before PR
-- Merge conflict needs resolving
-- Something went wrong and needs undoing
+- User asks for help with any local git operation
+- A branch is behind main and needs syncing or rebasing
+- Messy WIP commits need squashing into logical units before review
+- A merge or rebase conflict needs resolving
+- Something went wrong (bad commit, lost work) and needs undoing safely
 
-Do NOT use for:
-- GitHub-specific operations (opening PRs, reviewing code) — use the
-  `github-pr-reviewer` skill or `gh` CLI directly
-- Generating changelogs from history — use the `changelog-generator` skill
-- Setting up a repo from scratch — just run `git init` and answer inline
+Do NOT use this for:
 
----
+- Opening, reviewing, or merging PRs on GitHub — use `github-pr-workflow` for
+  the PR lifecycle or `github-code-review` for diffs and inline comments
+- Initializing a brand-new repo — just run `git init` and answer inline
 
 ## Prerequisites
 
-- `git` on PATH and working directory inside a git repo
-- For remote operations: SSH key or HTTPS credential configured
+- `git` on PATH, with the working directory inside a git repository.
+- For remote operations: an SSH key or HTTPS credential already configured.
+- No environment variables and no extra dependencies.
 
----
+## How to Run
+
+Run every git command through the `terminal` tool from the repository root.
+When a conflict or commit split needs a file edited, open it with `read_file`
+and apply changes with `patch` — do not hand-write a parser. To scan a diff for
+debug artifacts, use `search_files` rather than piping to a shell utility. This
+is a procedural skill: there is nothing to install and no script to run.
 
 ## Quick Reference
 
 | Task | Command |
 |---|---|
 | New branch | `git checkout -b feat/my-feature` |
-| Stage all | `git add -p` (interactive) or `git add .` |
+| Stage interactively | `git add -p` |
 | Commit | `git commit -m "feat: description"` |
 | Sync with main | `git fetch origin && git rebase origin/main` |
-| Squash N commits | `git rebase -i HEAD~N` |
-| Undo last commit | `git reset --soft HEAD~1` |
-| Stash | `git stash push -m "description"` |
+| Squash before PR | `git rebase -i origin/main` |
+| Undo last commit, keep work | `git reset --soft HEAD~1` |
+| Stash WIP | `git stash push -m "description"` |
 | Cherry-pick | `git cherry-pick <hash>` |
-| Force push safely | `git push --force-with-lease` |
+| Force-push safely | `git push --force-with-lease` |
+| Recover lost work | `git reflog` |
 
----
+## Procedure
 
-## Workflows
+### 1 — Start a feature branch
 
-### 1 — Start a new feature branch
+Always branch from the latest main:
 
 ```bash
-# Always branch from the latest main
 git fetch origin
 git checkout main
 git pull origin main
 git checkout -b feat/my-feature
 ```
 
-Branch naming conventions (auto-suggest based on task type):
+Branch naming (suggest based on task type):
 
 | Type | Pattern | Example |
 |---|---|---|
@@ -104,273 +89,194 @@ Branch naming conventions (auto-suggest based on task type):
 | Docs | `docs/short-description` | `docs/api-reference` |
 | Chore | `chore/short-description` | `chore/update-deps` |
 
----
-
 ### 2 — Stage and commit
 
-Always show the diff before staging:
+Show the diff before staging, then stage interactively so unrelated changes do
+not sneak in:
 
 ```bash
 git status
 git diff
-```
-
-Prefer interactive staging to avoid committing unrelated changes:
-
-```bash
 git add -p
-```
-
-Commit with a clear message following Conventional Commits:
-
-```bash
 git commit -m "feat(auth): add OAuth2 PKCE flow support"
 ```
 
-Commit message rules:
+Commit message rules (Conventional Commits):
+
 - Format: `type(scope): short description` (scope optional)
 - Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
-- Subject line ≤ 72 characters, imperative mood ("add" not "added")
-- Add `!` for breaking changes: `feat!: drop Python 3.9 support`
-- Body (optional): wrap at 72 chars, explain *why* not *what*
+- Subject ≤ 72 chars, imperative mood ("add" not "added")
+- Append `!` for breaking changes: `feat!: drop Python 3.9 support`
+- Optional body wraps at 72 chars and explains *why*, not *what*
 
----
+### 3 — Sync with main (rebase)
 
-### 3 — Sync branch with main (rebase)
-
-Rebase is preferred over merge for feature branches — keeps history linear:
+Rebase keeps feature-branch history linear:
 
 ```bash
 git fetch origin
 git rebase origin/main
 ```
 
-If conflicts arise during rebase:
+If conflicts arise, resolve them one file at a time. Open each conflicted file
+with `read_file`, edit it with `patch` to remove every conflict marker, then:
 
 ```bash
-# See which files conflict
-git status
-
-# For each conflicted file: open it, resolve the conflict markers, then:
+git diff --diff-filter=U   # list conflicted files
 git add <resolved-file>
-
-# Continue rebase after resolving all conflicts
-git rebase --continue
-
-# To abort and go back to original state
-git rebase --abort
+git rebase --continue      # or: git rebase --abort to bail out
 ```
 
-**Conflict resolution strategy:**
+Conflict markers look like this — keep one side, or combine both, and delete
+all markers so the file is valid afterwards:
 
-1. Run `git diff --diff-filter=U` to list all conflicted files
-2. For each file, read both sides of the conflict markers:
-   ```
-   <<<<<<< HEAD (your branch)
-   your changes
-   =======
-   incoming changes from main
-   >>>>>>> origin/main
-   ```
-3. Decide which version to keep (or combine both)
-4. Remove all conflict markers — the file must be valid after editing
-5. `git add <file>` → `git rebase --continue`
+```
+<<<<<<< HEAD (your branch)
+your changes
+=======
+incoming changes from main
+>>>>>>> origin/main
+```
 
----
-
-### 4 — Clean up commits before PR (interactive rebase)
-
-Squash messy WIP commits into clean logical units:
+### 4 — Clean up commits before a PR
 
 ```bash
-# See how many commits ahead of main you are
-git log origin/main..HEAD --oneline
-
-# Interactive rebase for last N commits
+git log origin/main..HEAD --oneline   # how far ahead you are
 git rebase -i origin/main
 ```
 
-In the interactive editor:
-- `pick` — keep the commit as-is
-- `reword` — keep the commit but edit the message
-- `squash` — merge into the previous commit (combine messages)
-- `fixup` — merge into previous commit (discard this message)
-- `drop` — delete the commit entirely
+In the interactive list: `pick` keeps the commit, `reword` edits its message,
+`squash` merges into the previous commit (combining messages), `fixup` merges
+and discards the message, `drop` deletes it. A common squash:
 
-**Common squash pattern:**
 ```
 pick a1b2c3 feat: initial implementation
 fixup d4e5f6 wip
 fixup g7h8i9 fix typo
-fixup j0k1l2 address review comments
 ```
-→ Results in one clean commit with the first message.
 
----
+The result is one clean commit that keeps the first message.
 
-### 5 — Undo operations
+### 5 — Undo safely
 
 | Situation | Command | Notes |
 |---|---|---|
 | Undo last commit, keep changes staged | `git reset --soft HEAD~1` | Safest undo |
-| Undo last commit, keep changes unstaged | `git reset HEAD~1` | Changes remain in working tree |
-| Undo last commit, discard changes | `git reset --hard HEAD~1` | Destructive — ask user to confirm |
-| Undo a pushed commit | `git revert <hash>` | Creates a new commit, safe for shared branches |
+| Undo last commit, keep changes unstaged | `git reset HEAD~1` | Work stays in the tree |
+| Undo last commit, discard changes | `git reset --hard HEAD~1` | Destructive — preview with `git status` / `git diff`, then confirm first |
+| Undo a pushed commit | `git revert <hash>` | New commit, safe on shared branches |
 | Unstage a file | `git restore --staged <file>` | |
-| Discard working tree changes | `git restore <file>` | Destructive — confirm first |
+| Discard working-tree changes | `git restore <file>` | Destructive — confirm first |
 | Recover a deleted branch | `git reflog` then `git checkout -b <name> <hash>` | |
 
-**Always confirm before running any `--hard` or destructive command.**
-Show the user what will be lost:
+Before ANY destructive command, preview what would be lost and get an explicit
+yes from the user (see Pitfalls):
 
 ```bash
-# Show what would be discarded
-git diff HEAD
-git stash list
+git status          # untracked and modified files
+git diff HEAD       # everything that would be discarded
+git stash list      # make sure WIP is not only in a stash
 ```
-
----
 
 ### 6 — Stash management
 
 ```bash
-# Save current work with a description
 git stash push -m "WIP: half-done auth refactor"
-
-# List stashes
 git stash list
-
-# Apply latest stash (keep it in the list)
-git stash apply
-
-# Apply and remove from list
-git stash pop
-
-# Apply a specific stash
-git stash apply stash@{2}
-
-# Drop a stash
-git stash drop stash@{0}
-
-# Show what's in a stash
-git stash show -p stash@{0}
+git stash apply             # apply, keep it in the list
+git stash pop               # apply and remove
+git stash show -p stash@{0} # inspect a stash
+git stash drop stash@{0}    # delete a stash
 ```
-
----
 
 ### 7 — Cherry-pick
 
-Move specific commits from one branch to another:
-
 ```bash
-# Find the commit hash
 git log --oneline other-branch
-
-# Cherry-pick it
 git cherry-pick <hash>
-
-# Cherry-pick a range (exclusive..inclusive)
-git cherry-pick a1b2c3..d4e5f6
-
-# Cherry-pick without committing (stage only)
-git cherry-pick --no-commit <hash>
+git cherry-pick a1b2c3..d4e5f6      # a range (exclusive..inclusive)
+git cherry-pick --no-commit <hash>  # stage only
 ```
 
-If conflicts arise: resolve them, `git add`, then `git cherry-pick --continue`.
+On conflict: resolve, `git add`, then `git cherry-pick --continue`.
 
----
-
-### 8 — Push and force-push safely
+### 8 — Push safely
 
 ```bash
-# First push (set upstream)
-git push -u origin feat/my-feature
-
-# Subsequent pushes
-git push
-
-# After a rebase (use --force-with-lease, NOT --force)
-git push --force-with-lease
+git push -u origin feat/my-feature   # first push (set upstream)
+git push                             # later pushes
+git push --force-with-lease          # after a rebase — NOT --force
 ```
 
-**Always use `--force-with-lease` instead of `--force`.** It fails if
-someone else pushed to the branch since your last fetch — preventing
-accidental overwrites. Never force-push to `main` or `master`.
+`--force-with-lease` fails if someone else pushed since your last fetch, so it
+cannot silently clobber their work. Never force-push to `main` or `master`.
 
----
-
-### 9 — Prepare for PR
-
-Run this checklist before pushing for review:
+### 9 — Prepare for a PR
 
 ```bash
-# 1. Make sure you're up to date
-git fetch origin
-git rebase origin/main
-
-# 2. Review your own diff
-git diff origin/main..HEAD
-
-# 3. Check commit count and messages
-git log origin/main..HEAD --oneline
-
-# 4. Run tests (adapt to project)
-# e.g.: pytest, npm test, cargo test, go test ./...
-
-# 5. Check for debug artifacts
-git diff origin/main..HEAD | grep -E "console\.log|debugger|pdb\.set_trace|breakpoint\(\)|TODO.*REMOVE"
-
-# 6. Push
-git push -u origin feat/my-feature
+git fetch origin && git rebase origin/main   # 1. get current
+git diff origin/main..HEAD                    # 2. review your own diff
+git log origin/main..HEAD --oneline           # 3. check commit count/messages
+# 4. run the project's tests (pytest / npm test / cargo test / go test ./...)
+# 5. scan changed files for debug artifacts with the `search_files` tool
+#    (console.log, debugger, pdb.set_trace, breakpoint(), TODO REMOVE)
+git push -u origin feat/my-feature            # 6. push
 ```
 
----
-
-### 10 — Diagnose common problems
+### 10 — Recover from common mistakes
 
 **"My branch has diverged from main"**
+
 ```bash
 git fetch origin
 git log --oneline --graph origin/main HEAD
-# Use rebase, not merge: git rebase origin/main
+git rebase origin/main
 ```
 
-**"I committed to main by accident"**
+**"I committed to main by accident"** — preserve the work first, then reset
+main only after previewing the change and getting an explicit confirmation:
+
 ```bash
-# Move the commit to a new branch
-git branch fix/my-accidental-commit
+git branch fix/my-accidental-commit   # 1. save the commit on a new branch
+git status                            # 2. preview what leaves main
+git log origin/main..HEAD --oneline
+git diff origin/main..HEAD
+# 3. Only after the user confirms the above is safe to drop from main:
 git reset --hard origin/main
-git checkout fix/my-accidental-commit
+git checkout fix/my-accidental-commit # 4. continue on the saved branch
 ```
 
-**"I need to split a commit into two"**
-```bash
-git rebase -i HEAD~1   # mark the commit as 'edit'
-git reset HEAD~1       # unstage everything
-git add -p             # stage the first logical change
-git commit -m "first part"
-git add -p             # stage the second logical change
-git commit -m "second part"
-git rebase --continue
-```
+**"I lost a stash or dropped commits"**
 
-**"I lost my stash / dropped commits"**
 ```bash
-git reflog --all | head -30
-# Find the commit hash and recover:
+git reflog --all
 git checkout -b recovery/<name> <hash>
 ```
 
----
+## Pitfalls
 
-## Safety Rules
+- **Confirm before every hard reset.** A `git reset --hard` (or any other
+  `--hard`/discard) permanently drops uncommitted work. Show `git status` and
+  `git diff HEAD` so the user sees exactly what disappears, and wait for an
+  explicit yes before running it — this includes `git reset --hard origin/main`
+  even when a branch was created first.
+- **Never `--force` push to main/master/develop.** Use `--force-with-lease`,
+  and confirm the target branch before any force operation.
+- **Prefer `revert` over `reset` on shared branches.** `reset` rewrites history
+  others may have pulled; `revert` adds a safe, new commit.
+- **Check `git stash list` before a hard reset** so work that lives only in a
+  stash is not lost.
+- **Dry-run rebases mentally.** Read `git log --oneline origin/main..HEAD`
+  before `git rebase -i` so you know exactly what you are rewriting.
 
-1. **Never `--force` push to main/master/develop** — always confirm the
-   target branch before any force operation.
-2. **Always confirm before `--hard` resets** — show the user what will be
-   discarded.
-3. **Prefer `revert` over `reset` on shared branches** — `reset` rewrites
-   history, `revert` is safe for pushed commits.
-4. **Check `git stash list` before a hard reset** — make sure WIP is stashed.
-5. **Dry-run rebases mentally first** — `git log --oneline origin/main..HEAD`
-   before `git rebase -i`.
+## Verification
+
+- `git status` is clean (or shows only what you expect) after each step.
+- `git log --oneline origin/main..HEAD` lists the intended commits, squashed
+  and messaged as planned.
+- After a rebase, `git diff --diff-filter=U` returns nothing — no unresolved
+  conflicts remain.
+- Force-pushes used `--force-with-lease` and succeeded without overwriting a
+  teammate's commit.
+- No `git reset --hard` ran without a preceding `git status` / `git diff`
+  preview and an explicit user confirmation.

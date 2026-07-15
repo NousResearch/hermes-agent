@@ -471,6 +471,58 @@ describe('applyBackendUpdate recovery', () => {
     expect($backendUpdateApply.get().stage).toBe('idle')
   })
 
+  it('treats a successful dependency repair as complete without waiting for a restart', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: [
+        '=== hermes-update started 2026-07-05 14:48:39 ===',
+        '⚠ Checkout is current, but the venv is unhealthy:',
+        '✓ Dependencies repaired!',
+        '✓ Update complete!'
+      ],
+      name: 'update',
+      pid: 1,
+      running: false
+    })
+    checkHermesUpdateSpy.mockRejectedValue(new Error('ECONNREFUSED'))
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  })
+
+  it('does not classify stale no-op output without the current action marker', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['✓ Already up to date!', '✓ Update complete!'],
+      name: 'update',
+      pid: 1,
+      running: false
+    })
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(6500)
+    const result = await promise
+
+    expect(result.ok).toBe(true)
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
+
   it('surfaces an error when the backend never comes back after the restart', async () => {
     updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
     getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))

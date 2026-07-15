@@ -537,11 +537,15 @@ function currentBackendUpdateLines(status: Awaited<ReturnType<typeof getActionSt
     }
   }
 
-  return start >= 0 ? status.lines.slice(start + 1) : status.lines
+  // Action status buffers can contain output from an older command. Without
+  // the current update marker, none of those lines are safe to classify.
+  return start >= 0 ? status.lines.slice(start + 1) : []
 }
 
-function isNoopBackendUpdate(status: Awaited<ReturnType<typeof getActionStatus>>): boolean {
-  return status.exit_code === 0 && currentBackendUpdateLines(status).some(line => line.includes('Already up to date'))
+function didBackendUpdateCompleteWithoutRestart(status: Awaited<ReturnType<typeof getActionStatus>>): boolean {
+  return status.exit_code === 0 && currentBackendUpdateLines(status).some(line => (
+    line.includes('Already up to date') || line.includes('Dependencies repaired')
+  ))
 }
 
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
@@ -599,7 +603,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
     const ok = !!last && (last.exit_code ?? 1) === 0
 
     if (ok) {
-      if (last && isNoopBackendUpdate(last)) {
+      if (last && didBackendUpdateCompleteWithoutRestart(last)) {
         return finishBackendApply(true)
       }
 

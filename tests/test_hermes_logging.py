@@ -109,6 +109,34 @@ class TestSetupLogging:
         ]
         assert len(agent_handlers) == 1
 
+    def test_concurrent_first_setup_is_atomic(self, hermes_home):
+        workers = 40
+        barrier = threading.Barrier(workers)
+        errors = []
+
+        def initialize():
+            try:
+                barrier.wait(timeout=5)
+                hermes_logging.setup_logging(hermes_home=hermes_home)
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=initialize) for _ in range(workers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads)
+        paths = [Path(h.baseFilename).name for h in hermes_logging.rotating_file_handlers()]
+        assert paths.count("agent.log") == 1
+        assert paths.count("errors.log") == 1
+        assert sum(
+            bool(getattr(handler, "_hermes_queue", False))
+            for handler in logging.getLogger().handlers
+        ) == 1
+
     def test_second_setup_with_different_home_is_still_a_noop(self, hermes_home, tmp_path):
         hermes_logging.setup_logging(hermes_home=hermes_home)
         before = {h.baseFilename for h in hermes_logging.rotating_file_handlers()}

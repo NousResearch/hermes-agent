@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts import run_tests_parallel as runner_module
+
 
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
@@ -185,6 +187,28 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"diag={diag!r} test_pid={test_pid} test_pgid={test_pgid}; "
             f"runner output:\n{proc.stdout}"
         )
+
+
+# ── Discovery contract ───────────────────────────────────────────────────────
+
+
+def test_discovery_returns_every_matching_test_file_and_no_helpers(tmp_path: Path) -> None:
+    root = tmp_path / "suite"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    expected = {
+        root / "test_top.py",
+        nested / "test_nested.py",
+    }
+    for path in expected:
+        path.write_text("def test_contract():\n    assert True\n")
+    (root / "helper.py").write_text("VALUE = 1\n")
+    (nested / "example_test.py").write_text("def test_not_discovered():\n    pass\n")
+
+    discovered = runner_module._discover_files([root])
+
+    assert set(discovered) == expected
+    assert discovered == sorted(discovered)
 
 
 # ── Bare pytest-flag passthrough ─────────────────────────────────────────────

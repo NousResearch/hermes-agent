@@ -393,6 +393,22 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
 
+    yield
+
+    # Any production path imported by the test may have initialized async file
+    # logging against this test's temporary HERMES_HOME. Tear it down before
+    # pytest removes that directory; otherwise stale QueueListener handlers can
+    # retain FDs and repeatedly reopen paths that no longer exist.
+    logging_module = sys.modules.get("hermes_logging")
+    if logging_module is not None:
+        reset = getattr(logging_module, "_reset_queued_handlers", None)
+        if callable(reset):
+            reset()
+        setattr(logging_module, "_logging_initialized", False)
+        clear_context = getattr(logging_module, "clear_session_context", None)
+        if callable(clear_context):
+            clear_context()
+
 
 # Backward-compat alias — old tests reference this fixture name. Keep it
 # as a no-op wrapper so imports don't break.

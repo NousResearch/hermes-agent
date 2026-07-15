@@ -75,6 +75,10 @@ from hermes_constants import get_config_path, get_hermes_home, is_readonly_diagn
 # is idempotent — calling it twice is safe but the second call is a no-op
 # unless ``force=True``.
 _logging_initialized = False
+# Covers the full check/create/register/publish lifecycle. The queue lock only
+# protects listener state; without this outer lock concurrent first callers can
+# each create file handlers before `_logging_initialized` is published.
+_logging_setup_lock = threading.RLock()
 
 # Thread-local storage for per-conversation session context.
 _session_context = threading.local()
@@ -257,6 +261,27 @@ COMPONENT_PREFIXES = {
 # ---------------------------------------------------------------------------
 
 def setup_logging(
+    *,
+    hermes_home: Optional[Path] = None,
+    log_level: Optional[str] = None,
+    max_size_mb: Optional[int] = None,
+    backup_count: Optional[int] = None,
+    mode: Optional[str] = None,
+    force: bool = False,
+) -> Path:
+    """Atomically configure the process-wide Hermes logging subsystem."""
+    with _logging_setup_lock:
+        return _setup_logging_locked(
+            hermes_home=hermes_home,
+            log_level=log_level,
+            max_size_mb=max_size_mb,
+            backup_count=backup_count,
+            mode=mode,
+            force=force,
+        )
+
+
+def _setup_logging_locked(
     *,
     hermes_home: Optional[Path] = None,
     log_level: Optional[str] = None,

@@ -24,13 +24,17 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_add.add_argument(
         "--type",
         dest="auth_type",
-        choices=["oauth", "api-key", "api_key"],
+        choices=["oauth", "api-key", "api_key", "wif"],
         help="Credential type to add",
     )
     auth_add.add_argument("--label", help="Optional display label")
     auth_add.add_argument(
         "--api-key", help="API key value (otherwise prompted securely)"
     )
+    auth_add.add_argument("--federation-rule-id", help="Anthropic WIF federation rule ID (fdrl_...)")
+    auth_add.add_argument("--organization-id", help="Anthropic organization ID for WIF")
+    auth_add.add_argument("--service-account-id", help="Anthropic service account ID for WIF (svac_...)")
+    auth_add.add_argument("--identity-token-file", help="Path to workload identity token file for Anthropic WIF")
     auth_add.add_argument("--portal-url", help="Nous portal base URL")
     auth_add.add_argument("--inference-url", help="Nous inference base URL")
     auth_add.add_argument("--client-id", help="OAuth client id")

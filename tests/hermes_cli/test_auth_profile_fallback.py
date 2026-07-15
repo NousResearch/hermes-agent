@@ -50,6 +50,18 @@ def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2))
 
 
+def _wif_state(identity_token_file: Path) -> dict:
+    return {
+        "auth_type": "wif",
+        "source": "manual:wif",
+        "federation_rule_id": "fdrl_global",
+        "organization_id": "org_global",
+        "service_account_id": "svac_global",
+        "identity_token_file": str(identity_token_file),
+        "api_base_url": "https://api.anthropic.com",
+    }
+
+
 # ---------------------------------------------------------------------------
 # read_credential_pool — provider-slice reads
 # ---------------------------------------------------------------------------
@@ -450,3 +462,98 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Subsequent read returns profile (shadows global).
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+
+
+def test_local_anthropic_credential_shadows_inherited_global_wif(
+    profile_env, monkeypatch
+):
+    token_file = profile_env["global"] / "global.jwt"
+    token_file.write_text("header.payload.signature")
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(providers={"anthropic": _wif_state(token_file)}),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(
+            pool={
+                "anthropic": [
+                    {
+                        "id": "profile-api",
+                        "auth_type": "api_key",
+                        "source": "manual",
+                        "access_token": "profile-key",
+                    }
+                ]
+            },
+            providers={},
+        ),
+    )
+    cleared = []
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.clear_anthropic_wif_token_cache",
+        lambda: cleared.append(True),
+    )
+
+    from agent.anthropic_adapter import read_anthropic_wif_config
+    from hermes_cli.auth import get_provider_auth_state, read_credential_pool
+    from hermes_cli.auth_commands import _remove_anthropic_wif_state
+
+    assert read_anthropic_wif_config()["federation_rule_id"] == "fdrl_global"
+    assert _remove_anthropic_wif_state() is True
+    assert read_anthropic_wif_config() is None
+    assert get_provider_auth_state("anthropic")["auth_type"] == "profile_shadow"
+    assert read_credential_pool("anthropic")[0]["id"] == "profile-api"
+    assert cleared == [True]
+
+
+def test_profile_logout_does_not_resurrect_inherited_global_wif(
+    profile_env, monkeypatch
+):
+    token_file = profile_env["global"] / "global.jwt"
+    token_file.write_text("header.payload.signature")
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(providers={"anthropic": _wif_state(token_file)}),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        {
+            **_make_auth_store(
+                pool={
+                    "anthropic": [
+                        {
+                            "id": "profile-oauth",
+                            "auth_type": "oauth",
+                            "source": "manual:hermes_pkce",
+                            "access_token": "profile-oauth-token",
+                        }
+                    ]
+                },
+                providers={
+                    "anthropic": {
+                        "auth_type": "profile_shadow",
+                        "source": "profile:local-credential",
+                    }
+                },
+            ),
+            "active_provider": "anthropic",
+        },
+    )
+    cleared = []
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.clear_anthropic_wif_token_cache",
+        lambda: cleared.append(True),
+    )
+
+    from agent.anthropic_adapter import read_anthropic_wif_config
+    from hermes_cli.auth import clear_provider_auth, get_provider_auth_state
+
+    assert clear_provider_auth("anthropic") is True
+    assert read_anthropic_wif_config() is None
+    state = get_provider_auth_state("anthropic")
+    assert state == {"auth_type": "profile_shadow", "source": "profile:logout"}
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert "anthropic" not in profile_data.get("credential_pool", {})
+    assert profile_data.get("active_provider") is None
+    assert cleared == [True]

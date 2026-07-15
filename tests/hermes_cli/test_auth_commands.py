@@ -178,6 +178,215 @@ def test_auth_add_qwen_oauth_sets_active_provider(tmp_path, monkeypatch):
     assert entry["access_token"] == "qwen-test-token"
 
 
+def test_auth_add_anthropic_wif_persists_provider_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    cleared = []
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.clear_anthropic_wif_token_cache",
+        lambda: cleared.append(True),
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "wif"
+        label = "prod-wif"
+        federation_rule_id = "fdrl_test123"
+        organization_id = "org_test456"
+        service_account_id = "svac_test789"
+        identity_token_file = "/tmp/anthropic-identity.jwt"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    state = payload["providers"]["anthropic"]
+    assert state["auth_type"] == "wif"
+    assert state["source"] == "manual:wif"
+    assert state["label"] == "prod-wif"
+    assert state["federation_rule_id"] == "fdrl_test123"
+    assert state["organization_id"] == "org_test456"
+    assert state["service_account_id"] == "svac_test789"
+    assert state["identity_token_file"] == "/tmp/anthropic-identity.jwt"
+    assert state["api_base_url"] == "https://api.anthropic.com"
+    assert payload.get("credential_pool", {}).get("anthropic") in (None, [])
+    assert cleared == [True]
+
+
+def test_auth_add_anthropic_api_key_replaces_wif_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "anthropic",
+            "providers": {"anthropic": {"auth_type": "wif"}},
+        },
+    )
+    cleared = []
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.clear_anthropic_wif_token_cache",
+        lambda: cleared.append(True),
+    )
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "api-key"
+        api_key = "sk-ant-replacement"
+        label = "replacement"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "anthropic" not in payload.get("providers", {})
+    assert payload.get("active_provider") != "anthropic"
+    assert cleared == [True]
+    assert any(
+        entry.get("access_token") == "sk-ant-replacement"
+        for entry in payload["credential_pool"]["anthropic"]
+    )
+
+
+def test_auth_add_anthropic_oauth_replaces_wif_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {"version": 1, "providers": {"anthropic": {"auth_type": "wif"}}},
+    )
+    cleared = []
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.clear_anthropic_wif_token_cache",
+        lambda: cleared.append(True),
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.run_hermes_oauth_login_pure",
+        lambda: {
+            "access_token": "oauth-access",
+            "refresh_token": "oauth-refresh",
+            "expires_at_ms": 9_999_999_999_999,
+        },
+    )
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "oauth"
+        label = "oauth replacement"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "anthropic" not in payload.get("providers", {})
+    assert cleared == [True]
+    assert any(
+        entry.get("access_token") == "oauth-access"
+        for entry in payload["credential_pool"]["anthropic"]
+    )
+
+
+def test_auth_add_anthropic_wif_warns_when_file_is_not_jwt(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "hermes"
+    token_file = tmp_path / "test-wif.yml"
+    token_file.write_text("name: not-a-jwt\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "anthropic"
+        auth_type = "wif"
+        label = "prod-wif"
+        federation_rule_id = "fdrl_test123"
+        organization_id = "org_test456"
+        service_account_id = "svac_test789"
+        identity_token_file = str(token_file)
+
+    auth_add_command(_Args())
+    assert "does not look like a JWT" in capsys.readouterr().out
+
+
+def test_auth_list_shows_anthropic_wif_provider_state(tmp_path, monkeypatch, capsys):
+    token_file = tmp_path / "identity.jwt"
+    token_file.write_text("header.payload.signature")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {
+            "anthropic": {
+                "auth_type": "wif",
+                "source": "manual:wif",
+                "label": "prod-wif",
+                "federation_rule_id": "fdrl_test123",
+                "organization_id": "org_test456",
+                "service_account_id": "svac_test789",
+                "identity_token_file": str(token_file),
+                "api_base_url": "https://api.anthropic.com",
+            }
+        },
+        "credential_pool": {},
+    })
+
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Args:
+        provider = "anthropic"
+
+    auth_list_command(_Args())
+    out = capsys.readouterr().out
+    assert "anthropic (1 credentials):" in out
+    assert "prod-wif" in out
+    assert "wif" in out
+    assert "file:ok" in out
+
+
+def test_auth_remove_anthropic_wif_provider_state(tmp_path, monkeypatch, capsys):
+    token_file = tmp_path / "identity.jwt"
+    token_file.write_text("header.payload.signature")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "active_provider": "anthropic",
+        "providers": {
+            "anthropic": {
+                "auth_type": "wif",
+                "source": "manual:wif",
+                "label": "prod-wif",
+                "federation_rule_id": "fdrl_test123",
+                "organization_id": "org_test456",
+                "service_account_id": "svac_test789",
+                "identity_token_file": str(token_file),
+                "api_base_url": "https://api.anthropic.com",
+            }
+        },
+        "credential_pool": {},
+    })
+    from agent import anthropic_adapter
+
+    cache_file = tmp_path / "hermes" / ".anthropic_wif_token_cache.json"
+    cache_file.write_text('{"access_token":"cached-secret"}', encoding="utf-8")
+    anthropic_adapter._WIF_ACCESS_TOKEN_CACHE["test"] = {
+        "access_token": "cached-secret"
+    }
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "anthropic"
+        target = "1"
+
+    auth_remove_command(_Args())
+    out = capsys.readouterr().out
+    assert "Removed anthropic WIF credential" in out
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert "anthropic" not in payload.get("providers", {})
+    assert payload.get("active_provider") is None
+    assert not cache_file.exists()
+    assert anthropic_adapter._WIF_ACCESS_TOKEN_CACHE == {}
+
+
 def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})

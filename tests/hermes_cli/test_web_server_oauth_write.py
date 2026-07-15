@@ -21,6 +21,7 @@ def oauth_file(monkeypatch, tmp_path):
     target = tmp_path / '.anthropic_oauth.json'
     monkeypatch.setattr('agent.anthropic_adapter._get_hermes_oauth_file', lambda: target)
     monkeypatch.setattr('agent.credential_pool.load_pool', lambda _provider: _DummyPool())
+    monkeypatch.setattr('hermes_cli.auth_commands._remove_anthropic_wif_state', lambda: False)
     return target
 
 
@@ -73,3 +74,47 @@ def test_dashboard_oauth_write_uses_atomic_json_write_with_owner_only_mode(oauth
     assert calls.get('mode') == 0o600, \
         'OAuth creds must be written 0o600 atomically (no chmod-after-replace window)'
     assert oauth_file.exists()
+
+
+def test_dashboard_oauth_write_replaces_persisted_wif(oauth_file, monkeypatch):
+    removed = []
+    monkeypatch.setattr(
+        'hermes_cli.auth_commands._remove_anthropic_wif_state',
+        lambda: removed.append(True),
+    )
+
+    _save_anthropic_oauth_creds('access-token', 'refresh-token', 123456)
+
+    assert removed == [True]
+
+
+def test_dashboard_oauth_remains_runtime_usable_when_pool_insert_fails(
+    oauth_file, monkeypatch
+):
+    import time
+
+    class _FailingPool(_DummyPool):
+        def add_entry(self, _entry):
+            raise OSError('simulated pool failure')
+
+        def _available_entries(self, **_kwargs):
+            return []
+
+    failing_pool = _FailingPool()
+    monkeypatch.setattr('agent.credential_pool.load_pool', lambda _provider: failing_pool)
+    monkeypatch.setattr(
+        'agent.anthropic_adapter.read_claude_code_credentials', lambda: None
+    )
+    monkeypatch.delenv('ANTHROPIC_TOKEN', raising=False)
+    monkeypatch.delenv('CLAUDE_CODE_OAUTH_TOKEN', raising=False)
+    monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
+
+    _save_anthropic_oauth_creds(
+        'dashboard-local-token',
+        'dashboard-refresh-token',
+        int(time.time() * 1000) + 3_600_000,
+    )
+
+    from agent.anthropic_adapter import resolve_anthropic_token
+
+    assert resolve_anthropic_token() == 'dashboard-local-token'

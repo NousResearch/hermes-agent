@@ -11,6 +11,7 @@ Auth supports:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -18,10 +19,12 @@ import platform
 import secrets
 import stat
 import subprocess
+import threading
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, secure_parent_dir
 from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, normalize_proxy_env_vars
 
@@ -40,6 +43,7 @@ def _get_anthropic_sdk():
     if _anthropic_sdk is ...:
         try:
             from tools.lazy_deps import ensure as _lazy_ensure
+
             _lazy_ensure("provider.anthropic", prompt=False)
         except ImportError:
             pass
@@ -48,12 +52,21 @@ def _get_anthropic_sdk():
             pass
         try:
             import anthropic as _sdk
+
             _anthropic_sdk = _sdk
         except ImportError:
             _anthropic_sdk = None
     return _anthropic_sdk
 
+
 logger = logging.getLogger(__name__)
+
+_WIF_ACCESS_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_WIF_TOKEN_PROVIDERS: dict[str, "AnthropicWIFTokenProvider"] = {}
+_WIF_PROVIDER_REGISTRY_LOCK = threading.RLock()
+_WIF_PROVIDER_GENERATION = 0
+_WIF_CACHE_SKEW_SECONDS = 60
+_WIF_CACHE_FILE_NAME = ".anthropic_wif_token_cache.json"
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # Hermes effort → Anthropic adaptive-thinking effort (output_config.effort).
@@ -65,12 +78,12 @@ THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # maps to low on every model.  See:
 # https://platform.claude.com/docs/en/about-claude/models/migration-guide
 ADAPTIVE_EFFORT_MAP = {
-    "ultra":   "max",
-    "max":     "max",
-    "xhigh":   "xhigh",
-    "high":    "high",
-    "medium":  "medium",
-    "low":     "low",
+    "ultra": "max",
+    "max": "max",
+    "xhigh": "xhigh",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
     "minimal": "low",
 }
 
@@ -96,21 +109,31 @@ ADAPTIVE_EFFORT_MAP = {
 # Older Claude families that DON'T support adaptive thinking (manual thinking
 # with budget_tokens only). Substring-matched against the model name.
 _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
-    "claude-3",          # 3, 3.5, 3.7
-    "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
-    "claude-sonnet-4-0", "claude-sonnet-4.0",
-    "claude-opus-4-2025", "claude-sonnet-4-2025",  # date-stamped 4.0 IDs
-    "claude-opus-4-5", "claude-opus-4.5",
-    "claude-sonnet-4-5", "claude-sonnet-4.5",
-    "claude-haiku-4-5", "claude-haiku-4.5",
+    "claude-3",  # 3, 3.5, 3.7
+    "claude-opus-4-0",
+    "claude-opus-4.0",
+    "claude-opus-4-1",
+    "claude-opus-4.1",
+    "claude-sonnet-4-0",
+    "claude-sonnet-4.0",
+    "claude-opus-4-2025",
+    "claude-sonnet-4-2025",  # date-stamped 4.0 IDs
+    "claude-opus-4-5",
+    "claude-opus-4.5",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4.5",
+    "claude-haiku-4-5",
+    "claude-haiku-4.5",
 )
 
 # Older Claude families that DON'T accept the "xhigh" effort level (4.6 only
 # supports low/medium/high/max). xhigh arrived with Opus 4.7. Adaptive models
 # not in this list (4.7, 4.8, fable, future) accept xhigh.
 _NO_XHIGH_CLAUDE_SUBSTRINGS = (
-    "claude-opus-4-6", "claude-opus-4.6",
-    "claude-sonnet-4-6", "claude-sonnet-4.6",
+    "claude-opus-4-6",
+    "claude-opus-4.6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4.6",
 )
 
 
@@ -126,35 +149,35 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
     # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
-    "claude-fable":      128_000,
+    "claude-fable": 128_000,
     # Claude 4.8
-    "claude-opus-4-8":   128_000,
+    "claude-opus-4-8": 128_000,
     # Claude 4.7
-    "claude-opus-4-7":   128_000,
+    "claude-opus-4-7": 128_000,
     # Claude 4.6
-    "claude-opus-4-6":   128_000,
-    "claude-sonnet-4-6":  64_000,
+    "claude-opus-4-6": 128_000,
+    "claude-sonnet-4-6": 64_000,
     # Claude 4.5
-    "claude-opus-4-5":    64_000,
-    "claude-sonnet-4-5":  64_000,
-    "claude-haiku-4-5":   64_000,
+    "claude-opus-4-5": 64_000,
+    "claude-sonnet-4-5": 64_000,
+    "claude-haiku-4-5": 64_000,
     # Claude 4
-    "claude-opus-4":      32_000,
-    "claude-sonnet-4":    64_000,
+    "claude-opus-4": 32_000,
+    "claude-sonnet-4": 64_000,
     # Claude 3.7
     "claude-3-7-sonnet": 128_000,
     # Claude 3.5
-    "claude-3-5-sonnet":   8_192,
-    "claude-3-5-haiku":    8_192,
+    "claude-3-5-sonnet": 8_192,
+    "claude-3-5-haiku": 8_192,
     # Claude 3
-    "claude-3-opus":       4_096,
-    "claude-3-sonnet":     4_096,
-    "claude-3-haiku":      4_096,
+    "claude-3-opus": 4_096,
+    "claude-3-sonnet": 4_096,
+    "claude-3-haiku": 4_096,
     # Third-party Anthropic-compatible providers
-    "minimax":            131_072,
+    "minimax": 131_072,
     # Qwen models via DashScope Anthropic-compatible endpoint
     # DashScope enforces max_tokens ∈ [1, 65536]
-    "qwen3":               65_536,
+    "qwen3": 65_536,
 }
 
 # For any model not in the table, assume the highest current limit.
@@ -201,6 +224,7 @@ def _resolve_positive_anthropic_max_tokens(value) -> Optional[int]:
         return None
     try:
         import math
+
         if not math.isfinite(value):
             return None
     except Exception:
@@ -360,7 +384,9 @@ def _detect_claude_code_version() -> str:
         try:
             result = _sp.run(
                 [cmd, "--version"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
                 # Output is like "2.1.74 (Claude Code)" or just "2.1.74"
@@ -454,11 +480,16 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
 # so a caller's ``provider/vendor/model`` slug is handled the same as a
 # bare name.
 _KIMI_FAMILY_MODEL_PREFIXES = (
-    "kimi-", "kimi_",
-    "moonshot-", "moonshot_",
-    "k1.", "k1-",
-    "k2.", "k2-",
-    "k25", "k2.5",
+    "kimi-",
+    "kimi_",
+    "moonshot-",
+    "moonshot_",
+    "k1.",
+    "k1-",
+    "k2.",
+    "k2-",
+    "k25",
+    "k2.5",
 )
 
 
@@ -542,7 +573,10 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
         return False
     normalized = normalized.rstrip("/").lower()
     return (
-        normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+        normalized.startswith((
+            "https://api.minimax.io/anthropic",
+            "https://api.minimaxi.com/anthropic",
+        ))
         or "azure.com" in normalized
     )
 
@@ -565,9 +599,10 @@ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     if not normalized:
         return False
     normalized = normalized.rstrip("/").lower()
-    return normalized.startswith(
-        ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
-    )
+    return normalized.startswith((
+        "https://api.minimax.io/anthropic",
+        "https://api.minimaxi.com/anthropic",
+    ))
 
 
 def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
@@ -660,13 +695,16 @@ def _build_anthropic_client_with_bearer_hook(
     from httpx import Timeout
     from agent.azure_identity_adapter import build_bearer_http_client
 
-    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    _read_timeout = (
+        timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    )
     timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
 
     # Strip any trailing /v1 — the Anthropic SDK appends /v1/messages.
     normalized_base_url = _normalize_base_url_text(base_url)
     if normalized_base_url:
         import re as _re
+
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
 
     http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
@@ -685,7 +723,10 @@ def _build_anthropic_client_with_bearer_hook(
     }
 
     if normalized_base_url:
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
+        if (
+            _is_azure_anthropic_endpoint(normalized_base_url)
+            and "api-version" not in normalized_base_url
+        ):
             kwargs["base_url"] = normalized_base_url
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
@@ -746,7 +787,9 @@ def build_anthropic_client(
     # helper so the existing static-key code below stays unchanged.
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
-            api_key, base_url, timeout,
+            api_key,
+            base_url,
+            timeout,
             drop_context_1m_beta=drop_context_1m_beta,
         )
 
@@ -757,8 +800,11 @@ def build_anthropic_client(
     normalized_base_url = _normalize_base_url_text(base_url)
     if normalized_base_url:
         import re as _re
+
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
-    _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    _read_timeout = (
+        timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    )
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
         # Delegate all rate-limit / 5xx retry to hermes's outer conversation
@@ -773,7 +819,10 @@ def build_anthropic_client(
         # Pass it via default_query so the SDK appends it to every request URL
         # without corrupting the base_url (appending it directly produces
         # malformed paths like /anthropic?api-version=.../v1/messages).
-        if _is_azure_anthropic_endpoint(normalized_base_url) and "api-version" not in normalized_base_url:
+        if (
+            _is_azure_anthropic_endpoint(normalized_base_url)
+            and "api-version" not in normalized_base_url
+        ):
             kwargs["base_url"] = normalized_base_url.rstrip("/")
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
@@ -790,7 +839,7 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
             "User-Agent": "claude-code/0.1.0",
-            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+            **({"anthropic-beta": ",".join(common_betas)} if common_betas else {}),
         }
     elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
@@ -865,7 +914,9 @@ def build_anthropic_bedrock_client(region: str):
         # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
         # default max_retries=2 ignores it and double-retries. (#26293)
         max_retries=0,
-        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+        default_headers={
+            "anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])
+        },
     )
 
 
@@ -887,9 +938,13 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     try:
         # Read the "Claude Code-credentials" generic password entry
         result = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", "Claude Code-credentials",
-             "-w"],
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                "Claude Code-credentials",
+                "-w",
+            ],
             capture_output=True,
             text=True,
             timeout=5,
@@ -1010,7 +1065,9 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     return now_ms < (expires_at - 60_000)
 
 
-def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> Dict[str, Any]:
+def refresh_anthropic_oauth_pure(
+    refresh_token: str, *, use_json: bool = False
+) -> Dict[str, Any]:
     """Refresh an Anthropic OAuth token without mutating local credential files."""
     import time
     import urllib.parse
@@ -1108,7 +1165,9 @@ def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
             logger.debug("Adopted Claude Code's already-refreshed OAuth token")
             return current_token
 
-    refresh_token = (current or {}).get("refreshToken", "") or creds.get("refreshToken", "")
+    refresh_token = (current or {}).get("refreshToken", "") or creds.get(
+        "refreshToken", ""
+    )
     if not refresh_token:
         logger.debug("No refresh token available — cannot refresh")
         return None
@@ -1195,7 +1254,9 @@ def _write_claude_code_credentials(
         logger.debug("Failed to write refreshed credentials: %s", e)
 
 
-def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def _resolve_claude_code_token_from_credentials(
+    creds: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """Resolve a token from Claude Code credential files, refreshing if needed."""
     creds = creds or read_claude_code_credentials()
     if creds and is_claude_code_token_valid(creds):
@@ -1206,11 +1267,15 @@ def _resolve_claude_code_token_from_credentials(creds: Optional[Dict[str, Any]] 
         refreshed = _refresh_oauth_token(creds)
         if refreshed:
             return refreshed
-        logger.debug("Token refresh failed — re-run 'claude setup-token' to reauthenticate")
+        logger.debug(
+            "Token refresh failed — re-run 'claude setup-token' to reauthenticate"
+        )
     return None
 
 
-def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[str, Any]]) -> Optional[str]:
+def _prefer_refreshable_claude_code_token(
+    env_token: str, creds: Optional[Dict[str, Any]]
+) -> Optional[str]:
     """Prefer Claude Code creds when a persisted env OAuth token would shadow refresh.
 
     Hermes historically persisted setup tokens into ANTHROPIC_TOKEN. That makes
@@ -1272,6 +1337,377 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
+def _read_anthropic_provider_state() -> Optional[Dict[str, Any]]:
+    """Return the persisted ``providers.anthropic`` auth state, or None.
+
+    Delegates to ``hermes_cli.auth.get_provider_auth_state`` rather than
+    re-reading ``$HERMES_HOME/auth.json``: that accessor owns the profile →
+    global-root fallback (issue #18594 follow-up), so a profile process that
+    never ran ``hermes auth login anthropic`` locally still sees a WIF
+    identity configured at the global root. It also handles the corrupt-store
+    quarantine path. Imported lazily — ``hermes_cli.auth`` imports this
+    module.
+    """
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+
+        state = get_provider_auth_state("anthropic")
+    except Exception:
+        logger.debug("Failed to read Anthropic provider auth state", exc_info=True)
+        return None
+    return dict(state) if isinstance(state, dict) else None
+
+
+def _complete_wif_config(config: Dict[str, Any]) -> bool:
+    return all(
+        str(config.get(field) or "").strip()
+        for field in (
+            "federation_rule_id",
+            "organization_id",
+            "service_account_id",
+            "identity_token_file",
+        )
+    )
+
+
+def _anthropic_wif_cache_file() -> Path:
+    return get_hermes_home() / _WIF_CACHE_FILE_NAME
+
+
+def clear_anthropic_wif_token_cache() -> None:
+    """Invalidate issued providers and forget cached WIF bearer material."""
+    global _WIF_PROVIDER_GENERATION
+    with _WIF_PROVIDER_REGISTRY_LOCK:
+        _WIF_PROVIDER_GENERATION += 1
+        providers = list(_WIF_TOKEN_PROVIDERS.values())
+        _WIF_TOKEN_PROVIDERS.clear()
+        # Keep provider construction blocked until every issued instance and
+        # both cache layers are gone. This closes the logout/reconfiguration
+        # race where a fresh provider could otherwise appear mid-purge.
+        for provider in providers:
+            provider.invalidate()
+        _WIF_ACCESS_TOKEN_CACHE.clear()
+        try:
+            _anthropic_wif_cache_file().unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Failed to remove Anthropic WIF token cache", exc_info=True)
+
+
+class AnthropicWIFTokenProvider:
+    """Stable, invalidatable per-request WIF bearer provider."""
+
+    def __init__(
+        self, config: Dict[str, Any], *, verify_current_auth_state: bool = False
+    ) -> None:
+        self._config = dict(config)
+        self._verify_current_auth_state = verify_current_auth_state
+        self._lock = threading.RLock()
+        self._active = True
+
+    def __call__(self) -> str:
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("Anthropic WIF credentials have been removed")
+            if self._verify_current_auth_state:
+                current = read_anthropic_wif_config()
+                if (
+                    not current
+                    or _wif_provider_registry_key(current)
+                    != _wif_provider_registry_key(self._config)
+                ):
+                    self._active = False
+                    raise RuntimeError("Anthropic WIF credentials have been removed")
+            # The exchange helper rereads the assertion file and includes its
+            # digest in the cache key, so rotations invalidate immediately.
+            exchanged = exchange_anthropic_wif_for_access_token(self._config)
+            token = str(exchanged.get("access_token") or "").strip()
+            if not token:
+                raise ValueError("Anthropic WIF exchange returned no access token")
+            return token
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._active = False
+
+
+def _wif_provider_registry_key(config: Dict[str, Any]) -> str:
+    normalized = json.dumps(config, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+class AnthropicWIFGenerationChanged(RuntimeError):
+    """The WIF auth state changed while a resolver was reading it."""
+
+
+def get_anthropic_wif_provider_generation() -> int:
+    with _WIF_PROVIDER_REGISTRY_LOCK:
+        return _WIF_PROVIDER_GENERATION
+
+
+def build_anthropic_wif_token_provider(
+    config: Optional[Dict[str, Any]] = None,
+    *,
+    expected_generation: Optional[int] = None,
+) -> AnthropicWIFTokenProvider:
+    """Return the stable per-request provider for a WIF configuration."""
+    resolved = dict(config or read_anthropic_wif_config() or {})
+    managed = expected_generation is not None
+    key = f"{_wif_provider_registry_key(resolved)}:{'managed' if managed else 'direct'}"
+    with _WIF_PROVIDER_REGISTRY_LOCK:
+        if (
+            expected_generation is not None
+            and expected_generation != _WIF_PROVIDER_GENERATION
+        ):
+            raise AnthropicWIFGenerationChanged(
+                "Anthropic WIF auth changed during provider resolution"
+            )
+        provider = _WIF_TOKEN_PROVIDERS.get(key)
+        if provider is None:
+            provider = AnthropicWIFTokenProvider(
+                resolved, verify_current_auth_state=managed
+            )
+            _WIF_TOKEN_PROVIDERS[key] = provider
+        return provider
+
+
+def _read_cached_wif_exchange(cache_key: str) -> Optional[Dict[str, Any]]:
+    cache_file = _anthropic_wif_cache_file()
+    try:
+        link_stat = cache_file.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(link_stat.st_mode):
+        return None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(str(cache_file), flags)
+        with os.fdopen(fd, "r", encoding="utf-8") as handle:
+            opened_stat = os.fstat(handle.fileno())
+            if (
+                not stat.S_ISREG(opened_stat.st_mode)
+                or opened_stat.st_dev != link_stat.st_dev
+                or opened_stat.st_ino != link_stat.st_ino
+            ):
+                return None
+            payload = json.load(handle)
+    except (json.JSONDecodeError, OSError, IOError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if str(payload.get("cache_key") or "") != cache_key:
+        return None
+    return payload if isinstance(payload.get("access_token"), str) else None
+
+
+def _wif_cache_entry_is_fresh(cached: Dict[str, Any], now_ms: int) -> bool:
+    token = str(cached.get("access_token") or "").strip()
+    try:
+        expires_at_ms = int(cached.get("expires_at_ms") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(token) and expires_at_ms - now_ms > (_WIF_CACHE_SKEW_SECONDS * 1000)
+
+
+def _write_cached_wif_exchange(cache_key: str, exchanged: Dict[str, Any]) -> None:
+    """Persist a WIF exchange result — a live bearer token — at 0o600.
+
+    Same TOCTOU-safe recipe as every other credential writer in the tree
+    (``hermes_cli.auth._save_auth_store``, #19673, #21148): the temp file is
+    created 0o600 via ``os.open(O_CREAT|O_EXCL)`` so the token is never on
+    disk at the process umask (typically 0o644) between create and chmod,
+    and its name carries pid + random suffix so concurrent agents refreshing
+    the same identity cannot truncate each other's in-flight write. Failures
+    are non-fatal: the cache is an optimization, and the caller can always
+    re-exchange.
+    """
+    cache_file = _anthropic_wif_cache_file()
+    payload = dict(exchanged)
+    payload["cache_key"] = cache_key
+    tmp_path: Optional[Path] = None
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        # Tighten the parent dir to 0o700 so siblings can't traverse to the token.
+        secure_parent_dir(cache_file)
+        tmp_path = cache_file.with_name(
+            f"{cache_file.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        fd = os.open(
+            str(tmp_path),
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2))
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Replace a destination symlink itself. The generic atomic_replace()
+        # helper intentionally follows symlinks, which is unsafe for a bearer
+        # token cache because it could overwrite an arbitrary target.
+        os.replace(tmp_path, cache_file)
+    except (OSError, IOError):
+        logger.debug(
+            "Failed to persist Anthropic WIF token cache at %s",
+            cache_file,
+            exc_info=True,
+        )
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def read_anthropic_wif_config() -> Optional[Dict[str, Any]]:
+    """Resolve explicit Anthropic WIF configuration from env or auth.json.
+
+    Environment variables are treated as an atomic source: all four WIF
+    variables must be present before they override auth.json.  This avoids
+    accidentally combining a JWT file from one workload with organization or
+    service-account identifiers from a persisted auth store.
+    """
+    env_config = {
+        "auth_type": "wif",
+        "source": "env:wif",
+        "label": "anthropic-wif",
+        "api_base_url": "https://api.anthropic.com",
+        "federation_rule_id": os.getenv("ANTHROPIC_FEDERATION_RULE_ID", "").strip(),
+        "organization_id": os.getenv("ANTHROPIC_ORGANIZATION_ID", "").strip(),
+        "service_account_id": os.getenv("ANTHROPIC_SERVICE_ACCOUNT_ID", "").strip(),
+        "identity_token_file": os.getenv("ANTHROPIC_IDENTITY_TOKEN_FILE", "").strip(),
+    }
+    env_api_base_url = os.getenv("ANTHROPIC_API_BASE_URL", "").strip()
+    if env_api_base_url:
+        env_config["api_base_url"] = env_api_base_url
+    if _complete_wif_config(env_config):
+        return env_config
+
+    auth_state = _read_anthropic_provider_state() or {}
+    if str(auth_state.get("auth_type") or "").strip().lower() != "wif":
+        return None
+
+    auth_config = {
+        "auth_type": "wif",
+        "source": str(auth_state.get("source") or "auth_store:wif").strip()
+        or "auth_store:wif",
+        "label": str(auth_state.get("label") or "anthropic-wif").strip()
+        or "anthropic-wif",
+        "api_base_url": str(
+            auth_state.get("api_base_url") or "https://api.anthropic.com"
+        ).strip()
+        or "https://api.anthropic.com",
+        "federation_rule_id": str(auth_state.get("federation_rule_id") or "").strip(),
+        "organization_id": str(auth_state.get("organization_id") or "").strip(),
+        "service_account_id": str(auth_state.get("service_account_id") or "").strip(),
+        "identity_token_file": str(auth_state.get("identity_token_file") or "").strip(),
+    }
+    return auth_config if _complete_wif_config(auth_config) else None
+
+
+def exchange_anthropic_wif_for_access_token(
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Exchange a workload identity JWT for a short-lived Anthropic access token."""
+    import time
+    import urllib.request
+
+    resolved = dict(config or read_anthropic_wif_config() or {})
+    required_fields = (
+        "federation_rule_id",
+        "organization_id",
+        "service_account_id",
+        "identity_token_file",
+    )
+    missing = [
+        field for field in required_fields if not str(resolved.get(field) or "").strip()
+    ]
+    if missing:
+        raise ValueError(
+            f"Anthropic WIF configuration is incomplete: {', '.join(missing)}"
+        )
+
+    identity_token_path = Path(
+        str(resolved["identity_token_file"]).strip()
+    ).expanduser()
+    try:
+        assertion = identity_token_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError(
+            f"Anthropic WIF identity token file could not be read: {identity_token_path}"
+        ) from exc
+    if not assertion:
+        raise ValueError(
+            f"Anthropic WIF identity token file is empty: {identity_token_path}"
+        )
+
+    api_base_url = (
+        str(resolved.get("api_base_url") or "https://api.anthropic.com")
+        .strip()
+        .rstrip("/")
+    )
+    if not api_base_url.startswith("https://"):
+        raise ValueError("Anthropic WIF api_base_url must use https://")
+
+    cache_key = hashlib.sha256(
+        "\n".join([
+            api_base_url,
+            str(resolved["organization_id"]),
+            str(resolved["service_account_id"]),
+            str(resolved["federation_rule_id"]),
+            assertion,
+        ]).encode("utf-8")
+    ).hexdigest()
+    now_ms = int(time.time() * 1000)
+    cached = _WIF_ACCESS_TOKEN_CACHE.get(cache_key)
+    if cached and _wif_cache_entry_is_fresh(cached, now_ms):
+        return dict(cached)
+
+    cached = _read_cached_wif_exchange(cache_key)
+    if cached and _wif_cache_entry_is_fresh(cached, now_ms):
+        _WIF_ACCESS_TOKEN_CACHE[cache_key] = dict(cached)
+        return dict(cached)
+
+    payload = json.dumps({
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": assertion,
+        "organization_id": resolved["organization_id"],
+        "service_account_id": resolved["service_account_id"],
+        "federation_rule_id": resolved["federation_rule_id"],
+    }).encode("utf-8")
+
+    endpoint = f"{api_base_url}/v1/oauth/token"
+    req = urllib.request.Request(
+        endpoint,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": _OAUTH_TOKEN_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode())
+    except Exception as exc:
+        logger.debug("Anthropic WIF token exchange failed at %s: %s", endpoint, exc)
+        raise
+
+    access_token = str(result.get("access_token") or "").strip()
+    if not access_token:
+        raise ValueError("Anthropic WIF exchange response was missing access_token")
+    expires_in = int(result.get("expires_in") or 3600)
+    exchanged = {
+        "access_token": access_token,
+        "token_type": result.get("token_type") or "Bearer",
+        "scope": result.get("scope"),
+        "expires_in": expires_in,
+        "expires_at_ms": int(time.time() * 1000) + (expires_in * 1000),
+    }
+    _WIF_ACCESS_TOKEN_CACHE[cache_key] = dict(exchanged)
+    _write_cached_wif_exchange(cache_key, exchanged)
+    return exchanged
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1281,7 +1717,9 @@ def resolve_anthropic_token() -> Optional[str]:
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
       4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
-      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      5. Hermes dashboard OAuth file (~/.hermes/.anthropic_oauth.json), used as
+         the durable fallback when best-effort pool registration failed
+      6. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -1313,7 +1751,19 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_pool_token:
         return resolved_pool_token
 
-    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 5. Dashboard PKCE credentials are written to a dedicated profile-scoped
+    # file before the best-effort credential-pool insert. Keep that file as a
+    # real runtime fallback so a transient pool write failure cannot leave the
+    # just-completed login unusable. Expired credentials are not revived here;
+    # the dashboard can reauthenticate, while normal pool entries retain their
+    # existing refresh/rotation path.
+    hermes_creds = read_hermes_oauth_credentials()
+    if hermes_creds and is_claude_code_token_valid(hermes_creds):
+        hermes_token = str(hermes_creds.get("accessToken") or "").strip()
+        if hermes_token:
+            return hermes_token
+
+    # 6. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -1391,6 +1841,8 @@ _OAUTH_TOKEN_URL = _OAUTH_TOKEN_URLS[0]
 _OAUTH_TOKEN_USER_AGENT = "axios/1.7.9"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+
+
 def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
 
@@ -1402,9 +1854,12 @@ def _generate_pkce() -> tuple:
     import secrets
 
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode()).digest()
-    ).rstrip(b"=").decode()
+    challenge = (
+        base64
+        .urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
     return verifier, challenge
 
 
@@ -1515,8 +1970,10 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 continue
 
         if result is None:
-            raise last_error if last_error is not None else ValueError(
-                "Anthropic token exchange failed"
+            raise (
+                last_error
+                if last_error is not None
+                else ValueError("Anthropic token exchange failed")
             )
     except Exception as e:
         print(f"Token exchange failed: {e}")
@@ -1589,7 +2046,7 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
-        model = model[len("anthropic/"):]
+        model = model[len("anthropic/") :]
     if not preserve_dots:
         # Bedrock model IDs use dots as namespace separators
         # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
@@ -1612,6 +2069,7 @@ def _sanitize_tool_id(tool_id: str) -> str:
     characters with underscores and ensure non-empty.
     """
     import re
+
     if not tool_id:
         return "tool_0"
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
@@ -1654,7 +2112,9 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
         normalized = {k: v for k, v in normalized.items() if k not in banned}
         if "type" not in normalized:
             normalized["type"] = "object"
-    if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):
+    if normalized.get("type") == "object" and not isinstance(
+        normalized.get("properties"), dict
+    ):
         normalized = {**normalized, "properties": {}}
     return normalized
 
@@ -1707,7 +2167,7 @@ def _image_source_from_openai_url(url: str) -> Dict[str, str]:
         header, _, data = url.partition(",")
         media_type = "image/jpeg"
         if header.startswith("data:"):
-            mime_part = header[len("data:"):].split(";", 1)[0].strip()
+            mime_part = header[len("data:") :].split(";", 1)[0].strip()
             if mime_part.startswith("image/"):
                 media_type = mime_part
         return {
@@ -1743,7 +2203,11 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
             block["citations"] = cits
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
-        url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
+        url = (
+            image_value.get("url", "")
+            if isinstance(image_value, dict)
+            else str(image_value or "")
+        )
         block = {"type": "image", "source": _image_source_from_openai_url(url)}
     else:
         block = dict(part)
@@ -1779,7 +2243,10 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
         return result
     if isinstance(value, dict):
         _path.add(obj_id)
-        result = {k: _to_plain_data(v, _depth=_depth + 1, _path=_path) for k, v in value.items()}
+        result = {
+            k: _to_plain_data(v, _depth=_depth + 1, _path=_path)
+            for k, v in value.items()
+        }
         _path.discard(obj_id)
         return result
     if isinstance(value, (list, tuple)):
@@ -1888,7 +2355,9 @@ def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return out
     if btype == "redacted_thinking":
         # Only valid with its data payload; drop if missing.
-        return {"type": "redacted_thinking", "data": b["data"]} if b.get("data") else None
+        return (
+            {"type": "redacted_thinking", "data": b["data"]} if b.get("data") else None
+        )
     if btype == "tool_use":
         out = {
             "type": "tool_use",
@@ -1955,7 +2424,9 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             fn = tc.get("function", {}) or {}
             raw_args = fn.get("arguments", "{}")
             try:
-                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                parsed_args = (
+                    json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                )
             except (json.JSONDecodeError, ValueError):
                 parsed_args = {}
             redacted_input_by_id[_sanitize_tool_id(tc.get("id", ""))] = parsed_args
@@ -2053,9 +2524,7 @@ def _convert_tool_message_to_result(
         )
         # Fallback text if the conversion produced nothing usable.
         if not multimodal_blocks and content.get("text_summary"):
-            multimodal_blocks = [
-                {"type": "text", "text": str(content["text_summary"])}
-            ]
+            multimodal_blocks = [{"type": "text", "text": str(content["text_summary"])}]
     elif isinstance(content, list):
         converted = _content_parts_to_anthropic_blocks(content)
         if any(b.get("type") == "image" for b in converted):
@@ -2064,10 +2533,13 @@ def _convert_tool_message_to_result(
     if multimodal_blocks is None:
         stashed = m.get("_anthropic_content_blocks")
         if isinstance(stashed, list) and stashed:
-            text_content = content if isinstance(content, str) and content.strip() else None
+            text_content = (
+                content if isinstance(content, str) and content.strip() else None
+            )
             multimodal_blocks = (
                 [{"type": "text", "text": text_content}] + stashed
-                if text_content else list(stashed)
+                if text_content
+                else list(stashed)
             )
 
     if multimodal_blocks:
@@ -2156,7 +2628,11 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
         kept = [
             b
             for b in m["content"]
-            if not (isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id") in orphaned)
+            if not (
+                isinstance(b, dict)
+                and b.get("type") == "tool_use"
+                and b.get("id") in orphaned
+            )
         ]
         # If stripping an orphaned tool_use mutated a turn that also carries a
         # signed thinking block, that block's Anthropic signature was computed
@@ -2171,7 +2647,9 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             for b in m["content"]
         ):
             m["_thinking_signature_invalidated"] = True
-        m["content"] = kept if kept else [{"type": "text", "text": "(tool call removed)"}]
+        m["content"] = (
+            kept if kept else [{"type": "text", "text": "(tool call removed)"}]
+        )
 
     # Pass 2: Rebuild the set of tool_use IDs that survived pass 1, then
     # strip tool_result blocks that no longer have any matching tool_use
@@ -2193,7 +2671,11 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             or b.get("tool_use_id") in surviving_tool_use_ids
         ]
         if len(new_content) != len(m["content"]):
-            m["content"] = new_content if new_content else [{"type": "text", "text": "(tool result removed)"}]
+            m["content"] = (
+                new_content
+                if new_content
+                else [{"type": "text", "text": "(tool result removed)"}]
+            )
 
 
 def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -2228,8 +2710,12 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
                 # and becomes invalid once merged.
                 if isinstance(m["content"], list):
                     m["content"] = [
-                        b for b in m["content"]
-                        if not (isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"})
+                        b
+                        for b in m["content"]
+                        if not (
+                            isinstance(b, dict)
+                            and b.get("type") in {"thinking", "redacted_thinking"}
+                        )
                     ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]
@@ -2273,10 +2759,9 @@ def _manage_thinking_signatures(
     # Kimi / DeepSeek share a contract: strip signed Anthropic blocks
     # (neither upstream can validate Anthropic signatures), preserve unsigned
     # ones synthesised from reasoning_content.  See #13848, #16748.
-    _preserve_unsigned_thinking = (
-        _is_kimi_family_endpoint(base_url, model)
-        or _is_deepseek_anthropic_endpoint(base_url)
-    )
+    _preserve_unsigned_thinking = _is_kimi_family_endpoint(
+        base_url, model
+    ) or _is_deepseek_anthropic_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -2304,7 +2789,8 @@ def _manage_thinking_signatures(
             # Third-party: strip ALL thinking blocks (signatures are proprietary).
             # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
-                b for b in m["content"]
+                b
+                for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
@@ -2375,16 +2861,19 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
             if not isinstance(inner, list):
                 continue
             has_image = any(
-                isinstance(b, dict) and b.get("type") == "image"
-                for b in inner
+                isinstance(b, dict) and b.get("type") == "image" for b in inner
             )
             if not has_image:
                 continue
             _image_count += 1
             if _image_count > _MAX_KEEP_IMAGES:
                 block["content"] = [
-                    b if b.get("type") != "image"
-                    else {"type": "text", "text": "[screenshot removed to save context]"}
+                    b
+                    if b.get("type") != "image"
+                    else {
+                        "type": "text",
+                        "text": "[screenshot removed to save context]",
+                    }
                     for b in inner
                 ]
 
@@ -2572,7 +3061,7 @@ def build_anthropic_kwargs(
                 return name  # already correct, don't double-prefix
             if name.startswith("mcp_"):
                 # single-underscore native MCP tool -> promote to double
-                return "mcp__" + name[len("mcp_"):]
+                return "mcp__" + name[len("mcp_") :]
             return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
 
         if anthropic_tools:
@@ -2589,7 +3078,10 @@ def build_anthropic_kwargs(
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use" and "name" in block:
                             block["name"] = _to_oauth_wire_name(block["name"])
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
+                        elif (
+                            block.get("type") == "tool_result"
+                            and "tool_use_id" in block
+                        ):
                             pass  # tool_result uses ID, not name
 
     kwargs: Dict[str, Any] = {
@@ -2640,7 +3132,10 @@ def build_anthropic_kwargs(
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if (
+            reasoning_config.get("enabled") is not False
+            and "haiku" not in model.lower()
+        ):
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
@@ -2685,10 +3180,12 @@ def build_anthropic_kwargs(
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
-        betas = list(_common_betas_for_base_url(
-            base_url,
-            drop_context_1m_beta=drop_context_1m_beta,
-        ))
+        betas = list(
+            _common_betas_for_base_url(
+                base_url,
+                drop_context_1m_beta=drop_context_1m_beta,
+            )
+        )
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
@@ -2700,9 +3197,12 @@ def build_anthropic_kwargs(
 # Keys that belong exclusively to the OpenAI Responses / Codex API shape.
 # The Anthropic Messages SDK (``messages.create()`` / ``messages.stream()``)
 # raises ``TypeError: ... got an unexpected keyword argument`` on any of them.
-_RESPONSES_ONLY_KWARGS = frozenset(
-    {"instructions", "input", "store", "parallel_tool_calls"}
-)
+_RESPONSES_ONLY_KWARGS = frozenset({
+    "instructions",
+    "input",
+    "store",
+    "parallel_tool_calls",
+})
 
 
 def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:

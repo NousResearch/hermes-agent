@@ -139,6 +139,22 @@ You can still bring your own keys per-tool whenever you want — the gateway is 
 
 ---
 
+### Advanced Anthropic auth: Workload Identity Federation
+
+For organizations that do not allow long-lived Anthropic API keys, Hermes can configure Anthropic Workload Identity Federation as an opt-in auth mode on the existing `anthropic` provider:
+
+```bash
+hermes auth add anthropic --type wif \
+  --organization-id <anthropic-organization-id> \
+  --service-account-id <anthropic-service-account-id> \
+  --federation-rule-id <anthropic-federation-rule-id> \
+  --identity-token-file /tmp/oidc-token.jwt
+```
+
+The identity token file must contain a short-lived OIDC JWT generated at runtime by your identity provider, not a workflow YAML or checked-in config file. Existing Anthropic API-key and OAuth setups continue to work unchanged; WIF is opt-in.
+
+---
+
 ## CLI vs Messaging Quick Reference
 
 Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.

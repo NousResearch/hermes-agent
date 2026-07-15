@@ -633,6 +633,82 @@ class TestAnthropicOAuthFlag:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+    def test_wif_uses_refresh_callable_without_oauth_identity(self):
+        token_provider = lambda: "fresh-wif-token"
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch(
+                "hermes_cli.runtime_provider.resolve_runtime_provider",
+                return_value={
+                    "api_key": token_provider,
+                    "base_url": "https://api.anthropic.com",
+                },
+            ),
+            patch(
+                "agent.anthropic_adapter.resolve_anthropic_token",
+                side_effect=AssertionError("WIF runtime should win"),
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ) as mock_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            client, _model = _try_anthropic()
+
+        assert client is not None
+        assert mock_build.call_args.args[0] is token_provider
+        assert ("force_bearer_" + "auth") not in mock_build.call_args.kwargs
+        assert client.chat.completions._is_oauth is False
+
+    def test_explicit_wif_bundle_bypasses_stale_pool_url(self):
+        token_provider = lambda: "fresh-wif-token"
+        with (
+            patch(
+                "agent.auxiliary_client._select_pool_entry",
+                side_effect=AssertionError("explicit WIF must bypass the pool"),
+            ),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ) as mock_build,
+        ):
+            from agent.auxiliary_client import _try_anthropic
+
+            client, _model = _try_anthropic(
+                explicit_api_key=token_provider,
+                explicit_base_url="https://wif.example/anthropic",
+            )
+
+        assert client is not None
+        assert mock_build.call_args.args == (
+            token_provider,
+            "https://wif.example/anthropic",
+        )
+
+    def test_resolve_provider_client_forwards_explicit_anthropic_bundle(self):
+        token_provider = lambda: "fresh-wif-token"
+        wrapped = MagicMock()
+        with patch(
+            "agent.auxiliary_client._try_anthropic",
+            return_value=(wrapped, "claude-haiku-4-5-20251001"),
+        ) as try_anthropic:
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, _model = resolve_provider_client(
+                "anthropic",
+                model="claude-haiku-4-5-20251001",
+                explicit_api_key=token_provider,
+                explicit_base_url="https://wif.example/anthropic",
+            )
+
+        assert client is wrapped
+        try_anthropic.assert_called_once_with(
+            explicit_api_key=token_provider,
+            explicit_base_url="https://wif.example/anthropic",
+        )
+
     def test_pool_entry_takes_priority_over_legacy_resolution(self):
         class _Entry:
             access_token = "sk-ant-oat01-pooled"

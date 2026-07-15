@@ -18,7 +18,12 @@ from pathlib import Path
 import pytest
 
 
-def _write_skill(skills_dir: Path, name: str, description: str = "") -> Path:
+def _write_skill(
+    skills_dir: Path,
+    name: str,
+    description: str = "",
+    body: str = "body",
+) -> Path:
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
@@ -28,7 +33,7 @@ def _write_skill(skills_dir: Path, name: str, description: str = "") -> Path:
             name: {name}
             description: {description or f'{name} skill'}
             ---
-            body
+            {body}
             """
         )
     )
@@ -57,6 +62,8 @@ def hermes_home(monkeypatch):
     monkeypatch.setattr(_st, "SKILLS_DIR", home / "skills", raising=False)
     # Reset the in-process slash-command cache so each test starts from zero.
     monkeypatch.setattr(_sc, "_skill_commands", {}, raising=False)
+    monkeypatch.setattr(_sc, "_skill_commands_platform", None, raising=False)
+    monkeypatch.setattr(_sc, "_skill_refresh_fingerprint", None, raising=False)
 
     yield home
 
@@ -70,10 +77,20 @@ class TestReloadSkillsHelper:
         from agent.skill_commands import reload_skills
 
         result = reload_skills()
-        assert set(result) == {"added", "removed", "unchanged", "total", "commands"}
+        assert set(result) == {
+            "added",
+            "removed",
+            "unchanged",
+            "total",
+            "commands",
+            "changed",
+            "changed_components",
+        }
         assert result["total"] == 0
         assert result["added"] == []
         assert result["removed"] == []
+        assert result["changed"] is False
+        assert result["changed_components"] == []
 
     def test_detects_newly_added_skill_with_description(self, hermes_home):
         from agent.skill_commands import reload_skills, get_skill_commands
@@ -88,6 +105,8 @@ class TestReloadSkillsHelper:
         assert result["removed"] == []
         assert result["total"] == 1
         assert result["commands"] == 1
+        assert result["changed"] is True
+        assert "enabled_skill_ids" in result["changed_components"]
 
     def test_detects_removed_skill_carries_description(self, hermes_home):
         from agent.skill_commands import reload_skills
@@ -106,13 +125,15 @@ class TestReloadSkillsHelper:
         assert second["removed"] == [{"name": "demo", "description": "soon to be gone"}]
         assert second["added"] == []
         assert second["total"] == 0
+        assert second["changed"] is True
+        assert "enabled_skill_ids" in second["changed_components"]
 
     def test_description_passes_through_verbatim(self, hermes_home):
         """``description`` must be the full SKILL.md frontmatter string — no
         truncation. The system prompt renders skills as
-        ``    - name: description`` without a length cap, and the reload
-        note mirrors that format, so truncating here would make the diff
-        render differently from the original catalog."""
+        ``    - name: description`` without a length cap, and the gateway
+        reload diff mirrors that value, so truncating here would make the
+        result differ from the original catalog."""
         from agent.skill_commands import reload_skills, get_skill_commands
 
         get_skill_commands()  # prime
@@ -135,6 +156,92 @@ class TestReloadSkillsHelper:
         assert "alpha" in result["unchanged"]
         assert result["added"] == []
         assert result["removed"] == []
+        assert result["changed"] is False
+        assert result["changed_components"] == []
+
+    def test_detects_skill_content_only_change(self, hermes_home):
+        from agent.skill_commands import reload_skills, get_skill_commands
+
+        skill_dir = _write_skill(hermes_home / "skills", "alpha", body="before")
+        get_skill_commands()
+        _write_skill(hermes_home / "skills", "alpha", body="after")
+
+        result = reload_skills()
+
+        assert result["added"] == []
+        assert result["removed"] == []
+        assert result["changed"] is True
+        assert result["changed_components"] == ["skill_contents"]
+        assert skill_dir.exists()
+
+    def test_detects_tool_schema_only_change(self, hermes_home, monkeypatch):
+        import agent.skill_commands as skill_commands
+
+        schema = {"value": "before"}
+        monkeypatch.setattr(
+            skill_commands,
+            "_canonical_tool_schema_json",
+            lambda: schema["value"],
+        )
+        _write_skill(hermes_home / "skills", "alpha")
+        skill_commands.get_skill_commands()
+        schema["value"] = "after"
+
+        result = skill_commands.reload_skills()
+
+        assert result["added"] == []
+        assert result["removed"] == []
+        assert result["changed"] is True
+        assert result["changed_components"] == ["tool_schema"]
+
+    def test_canonical_tool_schema_ignores_tool_and_key_order(
+        self, monkeypatch
+    ):
+        import agent.skill_commands as skill_commands
+        import model_tools
+
+        schemas = {
+            "value": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "beta",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+                {
+                    "function": {
+                        "parameters": {"properties": {}, "type": "object"},
+                        "name": "alpha",
+                    },
+                    "type": "function",
+                },
+            ]
+        }
+        monkeypatch.setattr(
+            model_tools,
+            "get_tool_definitions",
+            lambda quiet_mode=True: schemas["value"],
+        )
+        before = skill_commands._canonical_tool_schema_json()
+        schemas["value"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "alpha",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "function": {
+                    "parameters": {"properties": {}, "type": "object"},
+                    "name": "beta",
+                },
+                "type": "function",
+            },
+        ]
+
+        assert skill_commands._canonical_tool_schema_json() == before
 
     def test_does_not_invalidate_prompt_cache_snapshot(self, hermes_home):
         """reload_skills must NOT delete the skills prompt-cache snapshot.

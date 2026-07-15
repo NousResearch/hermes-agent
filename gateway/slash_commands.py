@@ -4253,19 +4253,13 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
-        """Handle /reload-skills — rescan skills dir, queue a note for next turn.
+        """Handle /reload-skills — rescan skills and report session staleness.
 
-        Skills don't need to be in the system prompt for the model to use
-        them (they're invoked via ``/skill-name``, ``skills_list``, or
-        ``skill_view`` at runtime), so this does NOT clear the prompt cache
-        — prefix caching stays intact.
-
-        If any skills were added or removed, a one-shot note is queued on
-        ``self._pending_skills_reload_notes[session_key]``. The gateway
-        prepends it to the NEXT user message in this session (see the
-        consumer at ~L11025 in ``_run_agent_turn``), then clears it. Nothing
-        is written to the session transcript out-of-band, so message
-        alternation is preserved.
+        Any enabled-skill, SKILL.md-content, or tool-schema change requires a
+        new session because the current session's prompt and schemas are
+        immutable. This handler reports ``SESSION_REFRESH_REQUIRED`` without
+        clearing prompt caches, rebuilding the agent, writing the transcript,
+        or queueing a synthetic note for the next turn.
         """
         loop = asyncio.get_running_loop()
         try:
@@ -4275,6 +4269,7 @@ class GatewaySlashCommandsMixin:
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
+            changed = bool(result.get("changed", bool(added or removed)))
 
             # Let each connected adapter refresh any platform-side state
             # that cached the skill list at startup. Today that's the
@@ -4299,7 +4294,7 @@ class GatewaySlashCommandsMixin:
                     )
 
             lines = [t("gateway.reload_skills.header")]
-            if not added and not removed:
+            if not changed:
                 lines.append(t("gateway.reload_skills.no_new"))
                 lines.append(t("gateway.reload_skills.total", count=total))
                 return "\n".join(lines)
@@ -4319,32 +4314,8 @@ class GatewaySlashCommandsMixin:
                 lines.append(t("gateway.reload_skills.removed_header"))
                 for item in removed:
                     lines.append(_fmt_line(item))
+            lines.append("SESSION_REFRESH_REQUIRED")
             lines.append(t("gateway.reload_skills.total", count=total))
-
-            # Queue the one-shot note for the next user turn in this session.
-            # Format matches how the system prompt renders pre-existing
-            # skills (``    - name: description``) so the model reads the
-            # diff in the same shape as its original skill catalog.
-            sections = ["[USER INITIATED SKILLS RELOAD:"]
-            if added:
-                sections.append("")
-                sections.append("Added Skills:")
-                for item in added:
-                    sections.append(_fmt_line(item))
-            if removed:
-                sections.append("")
-                sections.append("Removed Skills:")
-                for item in removed:
-                    sections.append(_fmt_line(item))
-            sections.append("")
-            sections.append("Use skills_list to see the updated catalog.]")
-            note = "\n".join(sections)
-
-            session_key = self._session_key_for_source(event.source)
-            if not hasattr(self, "_pending_skills_reload_notes"):
-                self._pending_skills_reload_notes = {}
-            if session_key:
-                self._pending_skills_reload_notes[session_key] = note
 
             return "\n".join(lines)
 

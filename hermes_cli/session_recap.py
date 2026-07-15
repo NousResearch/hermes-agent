@@ -293,7 +293,15 @@ def build_recap(
     if files:
         shown = files[:_MAX_FILES_LISTED]
         extra = len(files) - len(shown)
-        entry = ", ".join(shown)
+        # Wrap each path in inline-code backticks. The recap is rendered into
+        # gateway messages (Telegram/Discord/...) whose outbound text is scanned
+        # for bare local file paths and auto-uploaded as native attachments
+        # (see gateway/platforms/base.py). An absolute/``~`` path touched
+        # outside the gateway cwd would otherwise match that detector and leak
+        # the file's contents into the chat. Inline-code spans are explicitly
+        # skipped by the detector's ``_in_code`` filter, so backticks keep the
+        # recap informational instead of triggering an upload.
+        entry = ", ".join(f"`{path}`" for path in shown)
         if extra > 0:
             entry += f" (+{extra} more)"
         lines.append(f"  Files touched: {entry}")

@@ -148,7 +148,7 @@ class KanbanEventBridge:
                 payload = json.loads(r["payload"]) if r["payload"] else None
             except Exception:
                 payload = None
-            run_id = int(r["run_id"] if r["run_id"] is not None else None)
+            run_id = int(r["run_id"]) if r["run_id"] is not None else None
             events.append(Event(
                 id=r["id"],
                 task_id=r["task_id"],

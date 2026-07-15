@@ -181,43 +181,36 @@ def _read_source_dirs_from_config() -> list[Path]:
 def _find_all_skills_dirs() -> list[Path]:
     """Return list of directories to scan for SKILL.md files.
 
-    Always includes:
-      1. The global ~/.hermes/skills/ (Hermes built-in + any PS symlinks)
-      2. The global ~/.hermes/hermes-agent/skills/ (Hermes built-in source)
-      3. The current profile's skills/ dir (via HERMES_HOME)
-      4. Configured source_dirs (user's extra paths, e.g. PS repo)
-      5. Hermes config's external_dirs
+    Scans three tiers:
+      1. Current profile's skills/ dir (profile-specific skills)
+      2. Global ~/.hermes/skills/ (shared across profiles — built-in
+         skills, symlinked suites, etc.)
+      3. External skill dirs from Hermes config + source_dirs
     """
     global_hermes = Path.home() / ".hermes"
     hermes_home = Path(os.environ.get("HERMES_HOME", global_hermes))
     dirs: list[Path] = []
 
-    # 1. Global ~/.hermes/skills/ (always scanned, not profile-relative)
-    global_skills = global_hermes / "skills"
-    if global_skills.exists():
-        dirs.append(global_skills)
-
-    # 2. Hermes Agent built-in skills (global)
-    agent_skills = global_hermes / "hermes-agent" / "skills"
-    if agent_skills.exists():
-        dirs.append(agent_skills)
-
-    # 3. Current profile's skills/ dir (if inside a named profile,
-    #    HERMES_HOME != global_hermes, this picks up profile-specific skills)
+    # 1. Current profile's skills/ dir (profile-local)
     profile_skills = hermes_home / "skills"
-    if profile_skills.exists() and str(profile_skills) != str(global_skills):
+    if profile_skills.exists():
         dirs.append(profile_skills)
 
-    # 4. Hermes-agent-created skills (discoverable via graph, not in prompt)
+    # 2. Global ~/.hermes/skills/ (shared across profiles)
+    global_skills = global_hermes / "skills"
+    if global_skills.exists() and str(global_skills) != str(profile_skills):
+        dirs.append(global_skills)
+
+    # 3. Agent-created skills (discoverable via graph, not in prompt)
     agent_created_dir = hermes_home / "skill-graph" / "agent-created"
     if agent_created_dir.exists():
         dirs.append(agent_created_dir)
 
-    # 5. Configured source dirs (skill-graph's own extra paths)
+    # 4. Configured source dirs (user's extra paths, e.g. PS repo)
     source_dirs = _read_source_dirs_from_config()
     dirs.extend(source_dirs)
 
-    # 6. External skill dirs from Hermes config
+    # 5. External skill dirs from Hermes config
     try:
         from hermes_cli.config import load_config
         config = load_config()
@@ -498,30 +491,6 @@ def _upsert_skill(conn: sqlite3.Connection, name: str, path: Path, now: float) -
             (term_text, name, strength, source),
         )
 
-    # Hook: run optional index_hook.py in the skill directory.
-    # The hook receives (conn, skill_dir_path, skill_name, info, content) and
-    # can either write directly to conn (old style) or return a dict with
-    #       "terms": [(term, strength, source), ...}
-    # for skill-graph to index centrally.
-    _hook_path = path.parent / "index_hook.py"
-    if _hook_path.is_file():
-        try:
-            import importlib.util as _iu
-            _spec = _iu.spec_from_file_location(f"_graph_hook_{name}", str(_hook_path))
-            if _spec and _spec.loader:
-                _mod = _iu.module_from_spec(_spec)
-                _spec.loader.exec_module(_mod)
-                if hasattr(_mod, "on_graph_index"):
-                    _hook_content = path.read_text(encoding="utf-8", errors="replace")
-                    _result = _mod.on_graph_index(conn, path.parent, name, info, _hook_content)
-                    if isinstance(_result, dict):
-                        for _t, _s, _src in _result.get("terms", []):
-                            conn.execute(
-                                "INSERT OR IGNORE INTO skill_terms (term, skill_name, strength, source) VALUES (?, ?, ?, ?)",
-                                (_t.lower(), name, _s, _src),
-                            )
-        except Exception:
-            logger.exception("skill-graph: index_hook failed for '%s'", name)
 
     return info
 
@@ -1751,8 +1720,10 @@ def register(ctx):
             return None
 
         # Check gating: skill-graph mode + restricted tool + not yet searched
+        _graph_mode = getattr(agent, "_skill_graph_mode", False) if agent else False
         if (
-            tool_name in _gated_tools
+            _graph_mode
+            and tool_name in _gated_tools
             and not _graph_searched_turn.get(turn_id, False)
         ):
             return {"action": "block", "message":

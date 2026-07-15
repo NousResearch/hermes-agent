@@ -1166,6 +1166,9 @@ def _normalize_feishu_text(
 
     cleaned = _MENTION_PLACEHOLDER_RE.sub(_sub, text or "")
     cleaned = cleaned.replace("@_all", "@all")
+    # Strip auto-generated Markdown links (e.g. Feishu converts URL-like text
+    # to [label](url) which would otherwise leak into config and commands).
+    cleaned = _MARKDOWN_LINK_RE.sub(r"\1", cleaned)
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = "\n".join(_WHITESPACE_RE.sub(" ", line).strip() for line in cleaned.split("\n"))
     cleaned = "\n".join(line for line in cleaned.split("\n") if line)

@@ -579,6 +579,7 @@ class _CuaDriverSession:
         self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
         self._lifecycle_future = None  # concurrent.futures.Future
         self._setup_error: Optional[BaseException] = None
+        self._declared_session_id: Optional[str] = None
 
     def _require_started(self) -> None:
         if not self._started:
@@ -878,6 +879,22 @@ class _CuaDriverSession:
         self._capability_version = ""
         self._start_lifecycle_locked()
         self._started = True
+        # A daemon restart creates a new MCP child.  Session declarations are
+        # scoped to that child, so restore the run identity before retrying the
+        # interrupted operation.
+        declared_session_id = getattr(self, "_declared_session_id", None)
+        if declared_session_id:
+            self._bridge.run(self._call_tool_async(
+                "start_session", {"session": declared_session_id}
+            ), timeout=30.0)
+
+    @staticmethod
+    def _is_ended_session_error(exc: Exception) -> bool:
+        message = str(exc).casefold()
+        return any(marker in message for marker in (
+            "session ended", "ended session", "session tombstoned",
+            "tombstoned session", "unknown session", "session not found",
+        ))
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a
@@ -1005,6 +1022,20 @@ class _CuaDriverSession:
                     "falling back to CLI transport", name, e,
                 )
                 return self._call_tool_via_cli(name, args, timeout)
+            if self._is_ended_session_error(e):
+                # Explicit daemon tombstones require a fresh declaration, not
+                # a transport reconnect.  Revive and retry once under the same
+                # lock so concurrent calls cannot race the declaration.
+                with self._lock:
+                    declared_session_id = getattr(self, "_declared_session_id", None)
+                    if not declared_session_id:
+                        raise
+                    self._bridge.run(self._call_tool_async(
+                        "start_session", {"session": declared_session_id}
+                    ), timeout=timeout)
+                    return self._bridge.run(
+                        self._call_tool_async(name, args), timeout=timeout
+                    )
             if not self._is_closed_session_error(e):
                 raise
             # Daemon restart closes the cached stdio channel. Reconnect once and
@@ -1140,8 +1171,49 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "off_screen": not w.get("is_on_screen", True),
             "title": w.get("title", ""),
             "z_index": w.get("z_index", 0),
+            "bundle_id": w.get("bundle_id") or w.get("bundleId") or "",
+            "is_minimized": bool(w.get("is_minimized", w.get("minimized", False))),
+            "width": w.get("width", (w.get("bounds") or {}).get("width", 0)),
+            "height": w.get("height", (w.get("bounds") or {}).get("height", 0)),
         })
     return windows
+
+
+def _select_app_windows(app: str, windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Resolve an exact app name, bundle id, or PID without fuzzy targeting."""
+    selector = app.strip().casefold()
+    by_name = [w for w in windows if str(w.get("app_name", "")).casefold() == selector]
+    if by_name:
+        return by_name
+    by_bundle = [w for w in windows if
+                 str(w.get("bundle_id", "")).strip().casefold() == selector]
+    if by_bundle:
+        names = {str(w.get("app_name", "")).casefold() for w in by_bundle}
+        if len(names) == 1:
+            return by_bundle
+    else:
+        by_bundle = []
+    by_pid = [w for w in windows if str(w["pid"]) == selector]
+    matched = by_bundle or by_pid
+    names = {str(w.get("app_name", "")).casefold() for w in matched}
+    if len(names) > 1:
+        names_text = ", ".join(sorted(names))
+        raise ValueError(f"Ambiguous app selector {app!r}; matched: {names_text}")
+    return matched
+
+
+def _window_rank(window: Dict[str, Any]) -> Tuple[int, int, int, int]:
+    """Prefer usable content windows, then preserve driver z-order."""
+    try:
+        area = max(0, int(window.get("width") or 0)) * max(0, int(window.get("height") or 0))
+    except (TypeError, ValueError):
+        area = 0
+    return (
+        1 if window.get("off_screen") else 0,
+        1 if window.get("is_minimized") else 0,
+        1 if area == 0 else 0,
+        int(window.get("z_index") or 0),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1214,7 +1286,10 @@ class CuaDriverBackend(ComputerUseBackend):
         # accept anonymous calls (the cursor just won't render),
         # so we degrade rather than abort.
         try:
+            # Keep call_tool as the compatibility surface for test doubles and
+            # older session wrappers, then remember the id for reconnects.
             self._session.call_tool("start_session", {"session": self._session_id})
+            self._session._declared_session_id = self._session_id
         except Exception as e:
             logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
 
@@ -1280,6 +1355,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 "cua-driver list_windows returned no windows over MCP; "
                 "re-fetching via CLI transport",
             )
+            cli_inventory_failed = False
             try:
                 cli_lw = self._session._call_tool_via_cli(
                     "list_windows",
@@ -1288,18 +1364,40 @@ class CuaDriverBackend(ComputerUseBackend):
                 )
                 windows = _windows_from(cli_lw)
             except Exception as cli_exc:
+                cli_inventory_failed = True
                 logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
+            # Successful empty inventory (MCP+CLI both returned empty) is
+            # legitimate on locked/headless/empty desktops — return a typed
+            # empty CaptureResult. Only treat as transport-unhealthy when the
+            # CLI path failed after an empty MCP inventory.
+            if cli_inventory_failed:
+                raise RuntimeError(
+                    "cua-driver unhealthy: list_windows empty over MCP and CLI "
+                    "inventory transport failed"
+                )
+            return CaptureResult(
+                mode=mode,
+                width=0,
+                height=0,
+                png_b64=None,
+                elements=[],
+                app=(app or "").strip(),
+                window_title=(
+                    "<empty window inventory: no on-screen windows "
+                    "(locked/headless/empty desktop); not a transport failure>"
+                ),
+                png_bytes_len=0,
+            )
 
-        # Filter by app name (case-insensitive substring) if requested.
+        # Filter by exact canonical app name or an advertised bundle/PID alias.
         # When the filter matches nothing, surface that explicitly instead of
         # silently capturing the frontmost window — on macOS the `app_name`
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
+        desktop_target: Optional[Dict[str, Any]] = None
         if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
             # Whole-screen / desktop request. cua-driver has no virtual-desktop
             # capture tool, so resolve to the OS shell/desktop window (the
@@ -1336,9 +1434,9 @@ class CuaDriverBackend(ComputerUseBackend):
                     for n in ("progman", "workerw", "program manager", "finder", "desktop")
                 ) else 1,
             )
+            desktop_target = windows[0]
         elif app:
-            app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            filtered = _select_app_windows(app, windows)
             if not filtered:
                 return CaptureResult(
                     mode=mode, width=0, height=0, png_b64=None,
@@ -1354,7 +1452,7 @@ class CuaDriverBackend(ComputerUseBackend):
             windows = filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
-        target = next((w for w in windows if not w["off_screen"]), windows[0])
+        target = desktop_target or min(windows, key=_window_rank)
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
@@ -1720,6 +1818,9 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
+        structured_apps = (out.get("structuredContent") or {}).get("apps")
+        if isinstance(structured_apps, list):
+            return structured_apps
         data = out["data"]
         if isinstance(data, list):
             return data
@@ -1731,7 +1832,9 @@ class CuaDriverBackend(ComputerUseBackend):
             for line in data.splitlines():
                 m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
                 if m:
-                    apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
+                    name = re.sub(r'^\s*(?:[-*+]\s+|\d+[.)]\s+)', '', m.group(1))
+                    name = re.sub(r'^[`*_]+|[`*_]+$', '', name.strip()).strip()
+                    apps.append({"name": name, "pid": int(m.group(2))})
             return apps
         return []
 
@@ -1756,13 +1859,12 @@ class CuaDriverBackend(ComputerUseBackend):
         windows = _ingest_windows(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
-        app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
+        matched = _select_app_windows(app, windows)
         # Don't silently fall back to the frontmost window when the filter
         # matches nothing — that hides the real failure (often a localized
         # macOS app name mismatch, e.g. caller passed "Calculator" but
         # list_windows returns "計算機").
-        target = matched[0] if matched else None
+        target = min(matched, key=_window_rank) if matched else None
         if target:
             self._active_pid = target["pid"]
             self._active_window_id = target["window_id"]

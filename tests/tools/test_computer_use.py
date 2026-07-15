@@ -2780,7 +2780,8 @@ class TestSessionLifecycle:
             "data": "", "images": [], "image_mime_types": [],
             "structuredContent": {"windows": []}, "isError": False,
         }
-        backend.capture(mode="ax")
+        with pytest.raises(RuntimeError, match="unhealthy"):
+            backend.capture(mode="ax")
         name, args = backend._session.call_tool.call_args.args
         assert name == "list_windows"
         assert args["session"] == backend._session_id

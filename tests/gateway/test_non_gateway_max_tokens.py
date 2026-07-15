@@ -239,7 +239,7 @@ def test_tui_make_agent_passes_max_tokens(isolated_home, monkeypatch):
     monkeypatch.setattr(srv, "_resolve_runtime_with_fallback", lambda kw: _fake_resolve(**kw))
     monkeypatch.setattr(srv, "_load_provider_routing", lambda: {})
     monkeypatch.setattr(srv, "_cfg_max_turns", lambda cfg, default: default)
-    monkeypatch.setattr(srv, "_load_reasoning_config", lambda: None)
+    monkeypatch.setattr(srv, "_load_reasoning_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(srv, "_load_service_tier", lambda: None)
     monkeypatch.setattr(srv, "_load_enabled_toolsets", lambda: None)
     monkeypatch.setattr(srv, "_load_fallback_model", lambda: None)

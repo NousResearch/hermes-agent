@@ -1817,6 +1817,9 @@ DEFAULT_CONFIG = {
         # collapses long thinking to the first 10 lines. Set true to print the
         # complete thinking text uncollapsed (live streaming is always full).
         "reasoning_full": False,
+        # Classic CLI: show inline ghost-text completions from prior submitted
+        # prompts. Does not affect writing history or explicit Up-arrow recall.
+        "cli_history_autosuggest": True,
         # Background self-improvement review notifications surfaced in chat.
         #   "off"     — no chat notification (the review still runs and writes)
         #   "on"      — generic "💾 Memory updated" line (default)

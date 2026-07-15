@@ -715,6 +715,7 @@ class TestResumeDisplayConfig:
         display = DEFAULT_CONFIG.get("display", {})
         assert "resume_display" in display
         assert display["resume_display"] == "full"
+        assert display.get("cli_history_autosuggest") is True
 
     def test_cli_defaults_have_resume_display(self):
         """cli.py load_cli_config defaults include resume_display."""
@@ -728,3 +729,19 @@ class TestResumeDisplayConfig:
 
         display = config.get("display", {})
         assert display.get("resume_display") == "full"
+        assert display.get("cli_history_autosuggest") is True
+
+    def test_cli_history_autosuggest_config_parser(self):
+        """cli_history_autosuggest accepts bools and common off strings."""
+        from cli import _cli_history_autosuggest_enabled
+
+        assert _cli_history_autosuggest_enabled({"display": {}}) is True
+        assert _cli_history_autosuggest_enabled(
+            {"display": {"cli_history_autosuggest": False}}
+        ) is False
+        assert _cli_history_autosuggest_enabled(
+            {"display": {"cli_history_autosuggest": "off"}}
+        ) is False
+        assert _cli_history_autosuggest_enabled(
+            {"display": {"cli_history_autosuggest": "yes"}}
+        ) is True

@@ -1,0 +1,7 @@
+name: web-quota-fallback
+version: 1.0.0
+description: "Quota-fallback search — tries Brave Free → Exa → Tavily → SearXNG in order, falling through on quota/rate-limit/errors. No API key needed on its own; relies on child providers' credentials."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - quota-fallback

@@ -53,7 +53,31 @@ DEFAULT_HOST = "127.0.0.1"
 # Body cap for forwarded requests. Chat-completion payloads with long agent
 # conversations can be large; mirror api_server's MAX_REQUEST_BYTES (10 MB).
 # client_max_size bounds every read path, including chunked bodies.
-MAX_REQUEST_BYTES = 10_000_000
+# Configured via config.yaml gateway.file_upload.proxy_max_request_bytes.
+
+def _resolve_proxy_max_request_bytes() -> int:
+    """Read gateway.file_upload.proxy_max_request_bytes from config.yaml.
+
+    When the value is 0 the limit is disabled (unlimited).
+    Falls back to 10 MB when unset or unreadable.
+    """
+    default = 10_000_000
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        val = raw.get("gateway", {}).get("file_upload", {}).get("proxy_max_request_bytes")
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    except Exception:
+        pass
+    return default
+
+
+MAX_REQUEST_BYTES = _resolve_proxy_max_request_bytes()
 
 
 def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Response":

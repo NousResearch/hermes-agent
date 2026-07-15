@@ -93,9 +93,10 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 
 def _resolve_max_request_bytes() -> int:
-    """Read gateway.file_upload.max_request_bytes from config.yaml, with env-var override.
+    """Read gateway.file_upload.max_request_bytes from config.yaml.
 
-    Priority: config.yaml → API_SERVER_MAX_REQUEST_BYTES → 10 MB default.
+    When the value is 0 the limit is disabled (unlimited).
+    Falls back to 10 MB when unset or unreadable.
     """
     default = 10_000_000
     try:
@@ -110,7 +111,7 @@ def _resolve_max_request_bytes() -> int:
                 pass
     except Exception:
         pass
-    return int(os.environ.get("API_SERVER_MAX_REQUEST_BYTES", str(default)))
+    return default
 
 
 MAX_REQUEST_BYTES = _resolve_max_request_bytes()
@@ -687,7 +688,7 @@ if AIOHTTP_AVAILABLE:
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if MAX_REQUEST_BYTES > 0 and int(cl) > MAX_REQUEST_BYTES:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)

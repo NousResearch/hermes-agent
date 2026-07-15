@@ -17173,9 +17173,17 @@ def _maybe_open_browser(
         return
 
     import webbrowser
+    from hermes_constants import is_wsl
+
+    _is_wsl = False
+    try:
+        _is_wsl = is_wsl()
+    except Exception:
+        pass
 
     _has_display = (
         sys.platform != "linux"
+        or _is_wsl
         or bool(os.environ.get("DISPLAY"))
         or bool(os.environ.get("WAYLAND_DISPLAY"))
     )
@@ -17193,8 +17201,19 @@ def _maybe_open_browser(
         _open_url += f"/?profile={quote(initial_profile)}"
 
     def _open():
+        time.sleep(1.0)
         try:
-            time.sleep(1.0)
+            if _is_wsl:
+                import subprocess
+                subprocess.Popen(
+                    ["powershell.exe", "-NoProfile", "-Command", f"Start-Process '{_open_url}'"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return
+        except Exception:
+            pass  # Fall through to standard webbrowser
+        try:
             webbrowser.open(_open_url)
         except Exception:
             pass

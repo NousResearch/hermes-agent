@@ -200,6 +200,9 @@ export type {
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 export type { Contribution } from '@/contrib/types'
+/** Grab-to-pan for overflow containers (boards, timelines, wide tables) —
+ *  the shared scrub primitive; don't hand-roll drag-to-scroll. */
+export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
 /** Localized copy. `useI18n` reuses the app's strings; `usePluginI18n(id)` +
  *  `ctx.i18n.register` let a plugin ship its OWN locale bundles, scoped like
  *  `ctx.storage` and resolved against the app's active locale — no core edit. */

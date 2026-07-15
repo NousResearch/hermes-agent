@@ -373,7 +373,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Two hook groups' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and the skill lifecycle hooks ([`pre_skill_create`](#pre_skill_create), [`pre_skill_edit`](#pre_skill_edit), [`pre_skill_patch`](#pre_skill_patch), [`pre_skill_write_file`](#pre_skill_write_file), [`pre_skill_remove_file`](#pre_skill_remove_file), [`pre_skill_delete`](#pre_skill_delete)) can **handle**, **redirect**, or **block** skill operations. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference

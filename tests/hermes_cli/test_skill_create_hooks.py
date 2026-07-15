@@ -18,6 +18,10 @@ from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 from tools.skill_manager_tool import (
     _create_skill,
     _edit_skill,
+    _patch_skill,
+    _delete_skill,
+    _write_file,
+    _remove_file,
 )
 
 SKILL_CONTENT = """\
@@ -77,9 +81,16 @@ def captured_hooks():
 
 
 def test_hooks_are_registered_as_valid():
-    """The two skill lifecycle hook names are part of VALID_HOOKS."""
-    assert "pre_skill_create" in VALID_HOOKS
-    assert "post_skill_create" in VALID_HOOKS
+    """All 8 skill lifecycle hook names are part of VALID_HOOKS."""
+    for hook in (
+        "pre_skill_create", "post_skill_create",
+        "pre_skill_edit", "post_skill_edit",
+        "pre_skill_patch",
+        "pre_skill_write_file",
+        "pre_skill_remove_file",
+        "pre_skill_delete",
+    ):
+        assert hook in VALID_HOOKS, f"{hook} not in VALID_HOOKS"
 
 
 # ── Default behavior (no hooks) ──
@@ -435,3 +446,254 @@ def test_post_edit_does_not_fire_on_handled(tmp_path):
     assert result.get("hook_handled") is True
     # No post hook should have been called since the edit was handled by plugin
     assert len(events) == 0
+
+
+# ── pre_skill_edit — old_content payload ──
+
+def test_pre_edit_receives_old_content(tmp_path):
+    """pre_skill_edit receives old_content kwarg when the skill exists."""
+    pre_kwargs: list[dict] = []
+
+    def _on_pre(**kw):
+        pre_kwargs.append(kw)
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(_on_pre)
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            c = _create_skill("editable", SKILL_CONTENT)
+            assert c["success"]
+            e = _edit_skill("editable", SKILL_CONTENT_2)
+            assert e["success"]
+    finally:
+        mgr._hooks = saved
+
+    assert len(pre_kwargs) == 1
+    assert pre_kwargs[0]["name"] == "editable"
+    assert pre_kwargs[0]["content"] == SKILL_CONTENT_2
+    assert pre_kwargs[0]["old_content"] == SKILL_CONTENT
+
+
+def test_pre_edit_old_content_none_when_skill_missing(tmp_path):
+    """pre_skill_edit has old_content=None when the skill doesn't exist yet."""
+    pre_kwargs: list[dict] = []
+
+    def _on_pre(**kw):
+        pre_kwargs.append(kw)
+        return {"action": "handled"}  # avoid "not found" error
+
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_edit", []).append(_on_pre)
+    try:
+        with _isolated_skills(tmp_path):
+            result = _edit_skill("nonexistent", SKILL_CONTENT)
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert pre_kwargs[0]["old_content"] is None
+
+
+# ── pre_skill_patch — block / handle / fallthrough ──
+
+def test_patch_hook_registered():
+    """pre_skill_patch is in VALID_HOOKS."""
+    assert "pre_skill_patch" in VALID_HOOKS
+
+
+def test_patch_block_aborts(tmp_path):
+    """pre_skill_patch returning block aborts the patch."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch", []).append(
+        lambda **kw: {"action": "block", "reason": "no patches allowed"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            c = _create_skill("patched", SKILL_CONTENT)
+            assert c["success"]
+            result = _patch_skill("patched", "# Test", "## Test")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "no patches allowed" in result["error"]
+
+
+def test_patch_handled_skips_hermes_patch(tmp_path):
+    """pre_skill_patch returning handled skips the patch and returns success."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            c = _create_skill("patched", SKILL_CONTENT)
+            assert c["success"]
+            result = _patch_skill("patched", "# Test", "## Test")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+def test_patch_none_falls_through_to_normal_patch(tmp_path):
+    """pre_skill_patch returning None proceeds with normal patch."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_patch", []).append(
+        lambda **kw: None
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            c = _create_skill("patched", SKILL_CONTENT)
+            assert c["success"]
+            result = _patch_skill("patched", "# Test Skill", "## Replaced")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is not True
+
+
+# ── pre_skill_delete — block / handle / fallthrough ──
+
+def test_delete_hook_registered():
+    """pre_skill_delete is in VALID_HOOKS."""
+    assert "pre_skill_delete" in VALID_HOOKS
+
+
+def test_delete_block_aborts(tmp_path):
+    """pre_skill_delete returning block aborts the delete."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_delete", []).append(
+        lambda **kw: {"action": "block", "reason": "do not delete"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            c = _create_skill("todelete", SKILL_CONTENT)
+            assert c["success"]
+            result = _delete_skill("todelete")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "do not delete" in result["error"]
+
+
+def test_delete_handled_skips_hermes_delete(tmp_path):
+    """pre_skill_delete returning handled skips the delete."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_delete", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path):
+            c = _create_skill("todelete", SKILL_CONTENT)
+            assert c["success"]
+            result = _delete_skill("todelete")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+# ── pre_skill_write_file — block / handle ──
+
+def test_write_file_hook_registered():
+    """pre_skill_write_file is in VALID_HOOKS."""
+    assert "pre_skill_write_file" in VALID_HOOKS
+
+
+def test_write_file_block_aborts(tmp_path):
+    """pre_skill_write_file returning block aborts the write."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_write_file", []).append(
+        lambda **kw: {"action": "block", "reason": "no writes"}
+    )
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            c = _create_skill("wf-test", SKILL_CONTENT)
+            assert c["success"]
+            result = _write_file("wf-test", "references/notes.md", "# Notes")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "no writes" in result["error"]
+
+
+def test_write_file_handled_skips_hermes_write(tmp_path):
+    """pre_skill_write_file returning handled skips the write."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_write_file", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            c = _create_skill("wf-test", SKILL_CONTENT)
+            assert c["success"]
+            result = _write_file("wf-test", "references/notes.md", "# Notes")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True
+
+
+# ── pre_skill_remove_file — block / handle ──
+
+def test_remove_file_hook_registered():
+    """pre_skill_remove_file is in VALID_HOOKS."""
+    assert "pre_skill_remove_file" in VALID_HOOKS
+
+
+def test_remove_file_block_aborts(tmp_path):
+    """pre_skill_remove_file returning block aborts the removal."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_remove_file", []).append(
+        lambda **kw: {"action": "block", "reason": "no removals"}
+    )
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            c = _create_skill("rf-test", SKILL_CONTENT)
+            assert c["success"]
+            # Create a file to remove
+            ref = (skills_dir / "rf-test" / "references" / "notes.md")
+            ref.parent.mkdir(parents=True, exist_ok=True)
+            ref.write_text("# Notes")
+            result = _remove_file("rf-test", "references/notes.md")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is False
+    assert "no removals" in result["error"]
+
+
+def test_remove_file_handled_skips_hermes_removal(tmp_path):
+    """pre_skill_remove_file returning handled skips the removal."""
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_skill_remove_file", []).append(
+        lambda **kw: {"action": "handled"}
+    )
+    try:
+        with _isolated_skills(tmp_path) as skills_dir:
+            c = _create_skill("rf-test", SKILL_CONTENT)
+            assert c["success"]
+            result = _remove_file("rf-test", "references/notes.md")
+    finally:
+        mgr._hooks = saved
+
+    assert result["success"] is True
+    assert result.get("hook_handled") is True

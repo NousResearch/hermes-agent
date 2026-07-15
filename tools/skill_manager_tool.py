@@ -940,8 +940,20 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     # ── pre_skill_edit hook (allow plugin handle / block) ──
     from hermes_cli.plugins import has_hook as _has_hook, invoke_hook as _invoke_skill_hook
 
+    # Resolve old content for the hook payload (best-effort, may be None)
+    _old_content = None
+    _existing = _find_skill(name)
+    if _existing:
+        _md = _existing["path"] / "SKILL.md"
+        if _md.exists():
+            try:
+                _old_content = _md.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
     if _has_hook("pre_skill_edit"):
-        for _hr in _invoke_skill_hook("pre_skill_edit", name=name, content=content):
+        for _hr in _invoke_skill_hook("pre_skill_edit", name=name, content=content,
+                                       old_content=_old_content):
             if not isinstance(_hr, dict):
                 continue
             _act = _hr.get("action")

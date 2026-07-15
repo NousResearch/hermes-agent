@@ -1363,7 +1363,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        result = file_ops.read_file(str(_resolved), offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -1993,8 +1993,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
+            pattern=pattern, path=str(resolved_path) if resolved_path else path,
+            target=target, file_glob=file_glob, limit=limit, offset=offset,
+            output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)
         if hasattr(result, 'matches'):

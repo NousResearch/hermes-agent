@@ -1113,6 +1113,30 @@ def _generate_openai_tts(
 
     response_format = _tts_response_format_from_path(output_path)
 
+    # For an .ogg target we normally ask the backend for "opus" directly. But
+    # OpenAI-*compatible* backends (e.g. self-hosted Speaches/Kokoro) may not
+    # encode opus and only support mp3/flac/wav/pcm. Such a backend rejects
+    # response_format="opus" and no voice bubble is delivered (issue #54589).
+    # When the user pins a non-opus format via ``tts.openai.response_format``,
+    # synthesize in that format and transcode to OGG/Opus locally with ffmpeg
+    # — mirroring how the Edge provider produces voice bubbles via
+    # ``_convert_to_opus()``.
+    configured_format = oai_config.get("response_format")
+    transcode_to_opus = False
+    if (
+        output_path.endswith(".ogg")
+        and configured_format
+        and configured_format != "opus"
+    ):
+        response_format = configured_format
+        transcode_to_opus = True
+
+    # When transcoding, synthesize to a temp file in the backend-supported
+    # format, then convert that to the requested .ogg output path.
+    synth_path = output_path
+    if transcode_to_opus:
+        synth_path = output_path[: -len(".ogg")] + "." + response_format
+
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
@@ -1127,7 +1151,24 @@ def _generate_openai_tts(
             create_kwargs["speed"] = max(0.25, min(4.0, speed))
         response = client.audio.speech.create(**create_kwargs)
 
-        response.stream_to_file(output_path)
+        response.stream_to_file(synth_path)
+
+        if transcode_to_opus:
+            opus_path = _convert_to_opus(synth_path)
+            try:
+                if synth_path != output_path and os.path.exists(synth_path):
+                    os.remove(synth_path)
+            except OSError:
+                pass
+            if not opus_path:
+                raise RuntimeError(
+                    "OpenAI-compatible TTS produced "
+                    f"{response_format!r} audio but ffmpeg OGG/Opus "
+                    "transcode failed (is ffmpeg installed?)."
+                )
+            # _convert_to_opus derives the .ogg name from synth_path, which
+            # shares output_path's stem, so opus_path == output_path already.
+            return opus_path
         return output_path
     finally:
         close = getattr(client, "close", None)

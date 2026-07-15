@@ -276,7 +276,9 @@ def test_queued_followup_after_compression_uses_rotated_session(monkeypatch):
         message_id="queued-1",
     )
     runner.adapters[Platform.TELEGRAM]._pending_messages[SESSION_KEY] = queued
-    runner._prepare_inbound_message_text = AsyncMock(return_value="queued follow-up")
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
+        return_value="queued follow-up"
+    )
 
     original_run_agent = runner._run_agent
     followup_session_ids = []
@@ -311,3 +313,4 @@ def test_queued_followup_after_compression_uses_rotated_session(monkeypatch):
 
     assert result["final_response"] == "follow-up done"
     assert followup_session_ids == ["session-after-compression"]
+    runner._prepare_profile_scoped_inbound_message_text.assert_awaited_once()

@@ -151,12 +151,40 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
     real gateway on the same HERMES_HOME — whichever process grabs the lock
     first wins the tick.
+
+    The one-scheduler invariant also has to hold when a live gateway shows up
+    *after* this ticker already started (desktop-first/gateway-second — the
+    startup check in ``_lifespan`` only covers gateway-first/desktop-second).
+    For the built-in provider, re-check gateway liveness via the existing
+    ``can_dispatch`` gate on every tick and stop outright once a gateway is
+    detected, instead of polling forever as a dead-weight thread.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+
+    start_kwargs: dict = {"interval": interval}
+    if isinstance(provider, InProcessCronScheduler):
+        def _can_dispatch() -> bool:
+            try:
+                from gateway.status import is_gateway_running
+                if is_gateway_running():
+                    _log.info(
+                        "Desktop cron scheduler: live gateway detected mid-run — "
+                        "stopping (the gateway is now the sole cron executor for "
+                        "this HERMES_HOME)."
+                    )
+                    stop_event.set()
+                    return False
+            except Exception:
+                # On any error, assume no gateway and keep ticking — a
+                # desktop-only install must keep firing cron.
+                pass
+            return True
+        start_kwargs["can_dispatch"] = _can_dispatch
+
+    provider.start(stop_event, **start_kwargs)
 
 
 def _warm_gateway_module() -> None:

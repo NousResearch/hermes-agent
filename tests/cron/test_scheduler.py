@@ -3903,6 +3903,98 @@ class TestDeliverResultTimeoutCancelsFuture:
         assert not sent_metadata.get("direct_messages_topic_id")
 
 
+class TestStandaloneSendTimeout:
+    """The no-live-adapter (standalone) delivery path bounds every send with a
+    hard timeout so a wedged platform HTTP call cannot hang the tick
+    indefinitely, while still preserving the interpreter-shutdown-graceful-skip
+    and per-target fallback hardening around it (#58720, #55924, #47163)."""
+
+    def _job(self):
+        return {
+            "id": "standalone-timeout-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+    def _mock_gateway_config(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        return mock_cfg
+
+    def test_standalone_send_timeout_is_bounded_and_reported(self):
+        """A standalone send that never resolves must be cut off by the 30s
+        bound (not hang the tick forever) and reported as a delivery error —
+        not silently swallowed and not an unhandled crash."""
+        import asyncio
+
+        async def _never_resolves(*a, **k):
+            await asyncio.sleep(3600)
+
+        async def _fake_wait_for(coro, timeout):
+            # Exercise the real bounded-wait code path (asyncio.wait_for is
+            # called with our 30s bound) without actually waiting 30s in the
+            # test: close the never-resolving coroutine and raise the same
+            # TimeoutError asyncio.wait_for would raise once the bound expires.
+            assert timeout == 30
+            coro.close()
+            raise asyncio.TimeoutError("simulated bound expiry")
+
+        with patch("gateway.config.load_gateway_config", return_value=self._mock_gateway_config()), \
+             patch("tools.send_message_tool._send_to_platform", new=_never_resolves), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.wait_for", side_effect=_fake_wait_for):
+            result = _deliver_result(self._job(), "Hello world", adapters=None, loop=None)
+
+        assert result is not None, "a timed-out standalone send must be reported, not silently dropped"
+        assert "failed" in result
+
+    def test_standalone_send_succeeds_within_bound(self):
+        """Baseline: a normal, fast standalone send is unaffected by the bound
+        and still delivers successfully — the fallback hardening must not
+        regress the common case."""
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=self._mock_gateway_config()), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            result = _deliver_result(self._job(), "Hello world", adapters=None, loop=None)
+
+        assert result is None, f"expected successful standalone delivery, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+    def test_standalone_send_falls_back_to_thread_pool_on_runtime_error(self):
+        """When asyncio.run(coro) raises RuntimeError (e.g. called from inside
+        a running loop), the thread-pool fallback must still carry the same
+        30s bound via _bounded_send, and still deliver successfully — the
+        current-main hardening (per-target try/except, interpreter-shutdown
+        skip) must not have been dropped when the timeout bound was merged in."""
+        import asyncio
+
+        standalone_send = AsyncMock(return_value={"success": True})
+        real_run = asyncio.run
+        call_count = {"n": 0}
+
+        def _run_first_call_raises(coro, *a, **k):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                coro.close()
+                raise RuntimeError("cannot be called from a running event loop")
+            return real_run(coro, *a, **k)
+
+        with patch("gateway.config.load_gateway_config", return_value=self._mock_gateway_config()), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run", side_effect=_run_first_call_raises):
+            result = _deliver_result(self._job(), "Hello world", adapters=None, loop=None)
+
+        assert result is None, f"expected the thread-pool fallback to deliver, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+
 class TestDeliverResultLiveAdapterUnconfirmed:
     """Regression for #47056.
 

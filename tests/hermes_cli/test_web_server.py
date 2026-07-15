@@ -7424,3 +7424,52 @@ class TestDesktopCronTicker:
             assert not called.wait(0.5), (
                 "ticker must not run when a live gateway is already executing cron"
             )
+
+    def test_ticker_stops_when_gateway_becomes_live_mid_run(self, monkeypatch):
+        """The startup check in ``_lifespan`` only covers gateway-first/
+        desktop-second. If the desktop ticker starts *before* a gateway comes
+        up (desktop-first/gateway-second), it must re-check ownership on every
+        tick and stop outright the moment a gateway is detected, instead of
+        both schedulers running forever."""
+        import threading
+        import time
+        import cron.scheduler as sched
+        import gateway.status as gw_status
+        from hermes_cli.web_server import _start_desktop_cron_ticker
+
+        tick_count = threading.Event()
+        calls = []
+        gateway_alive = {"value": False}
+
+        def _fake_tick(*a, **k):
+            calls.append(1)
+            if len(calls) >= 2:
+                tick_count.set()
+
+        monkeypatch.setattr(sched, "tick", _fake_tick)
+        monkeypatch.setattr(gw_status, "is_gateway_running", lambda *a, **k: gateway_alive["value"])
+
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=_start_desktop_cron_ticker,
+            args=(stop_event,),
+            kwargs={"interval": 0.05},
+            daemon=True,
+        )
+        thread.start()
+        try:
+            assert tick_count.wait(3.0), "expected at least 2 ticks while no gateway is live"
+            calls_before_gateway = len(calls)
+
+            gateway_alive["value"] = True
+            # Give the ticker a few intervals to observe the flip and stop.
+            assert stop_event.wait(3.0), "ticker must set stop_event once a gateway is detected"
+            # A tick may already have been in flight when the gateway came up;
+            # allow at most one more, but no unbounded continuation.
+            time.sleep(0.3)
+            assert len(calls) <= calls_before_gateway + 1, (
+                "ticker kept firing after a live gateway was detected"
+            )
+        finally:
+            stop_event.set()
+            thread.join(timeout=2.0)

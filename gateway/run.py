@@ -15079,6 +15079,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
+            # Per-platform proactive-push gate: a restart notice is an
+            # unsolicited push, so honour display.platforms.<p>.proactive_push
+            # (unifies with the existing gateway_restart_notification flag).
+            try:
+                from hermes_cli.config import load_config as _load_push_cfg
+                from gateway.display_config import platform_accepts_proactive_push
+                if not platform_accepts_proactive_push(_load_push_cfg(), _platform_config_key(platform)):
+                    logger.info(
+                        "Restart notification suppressed: %s opted out of proactive push",
+                        platform_str,
+                    )
+                    return None
+            except Exception:
+                pass  # fail-open
+
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -15144,6 +15159,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
+
+            # Per-platform proactive-push gate (startup broadcast is a proactive
+            # push). Unifies with the existing gateway_restart_notification flag.
+            try:
+                from hermes_cli.config import load_config as _load_push_cfg
+                from gateway.display_config import platform_accepts_proactive_push
+                if not platform_accepts_proactive_push(_load_push_cfg(), _platform_config_key(platform)):
+                    logger.info(
+                        "Home-channel startup notification suppressed: %s opted out of proactive push",
+                        platform.value,
+                    )
+                    continue
+            except Exception:
+                pass  # fail-open
 
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
@@ -18955,14 +18984,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _pdc = getattr(_status_adapter, "_post_delivery_callbacks", None)
                     if _pdc is not None:
                         _pdc[session_key] = _release_bg_review_messages
-            # Memory update notifications in chat.  Config: display.memory_notifications
+            # Memory update notifications in chat.
             #   off     — no chat notification (still logged to stdout)
             #   on      — generic "💾 Memory updated" (default)
             #   verbose — content preview: "💾 Memory ➕ Hermes Repo..."
-            _mem_notif = user_config.get("display", {}).get("memory_notifications")
-            if isinstance(_mem_notif, bool):
-                _mem_notif = "on" if _mem_notif else "off"
-            agent.memory_notifications = str(_mem_notif).lower() if _mem_notif else "on"
+            # Resolved PER-PLATFORM (display.platforms.<p>.memory_notifications)
+            # and layered under the proactive-push gate: a platform opted out of
+            # proactive push gets no memory notifications at all. This is a
+            # background/proactive push — interactive replies are never gated.
+            from gateway.display_config import effective_memory_notifications
+            agent.memory_notifications = effective_memory_notifications(
+                user_config, platform_key
+            )
 
             # ------------------------------------------------------------------
             # Clarify callback: present a clarify prompt and block on a response.

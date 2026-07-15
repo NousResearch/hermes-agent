@@ -688,3 +688,24 @@ async def test_restart_shutdown_notification_anchors_telegram_dm_topic():
         "direct_messages_topic_id": "20197",
         "telegram_reply_to_message_id": "462",
     }
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_suppressed_by_proactive_optout(tmp_path, monkeypatch):
+    """A platform opted out of proactive push gets no restart notice."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"display": {"platforms": {"telegram": {"proactive_push": False}}}},
+    )
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({"platform": "telegram", "chat_id": "42"}))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+
+    result = await runner._send_restart_notification()
+
+    assert result is None                # suppressed by the proactive-push gate
+    adapter.send.assert_not_called()     # no unsolicited push to the opted-out platform
+    assert not notify_path.exists()      # marker is still consumed (not replayed)

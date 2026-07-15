@@ -607,3 +607,100 @@ class TestReasoningStyle:
 
         config = {"display": {"reasoning_style": "SUBTEXT"}}
         assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+
+
+# ---------------------------------------------------------------------------
+# proactive_push + memory_notifications (per-platform proactive-push gate)
+# ---------------------------------------------------------------------------
+
+class TestProactivePushSetting:
+    """proactive_push resolves per-platform and defaults on."""
+
+    def test_default_is_true(self):
+        from gateway.display_config import platform_accepts_proactive_push
+        assert platform_accepts_proactive_push({}, "line") is True
+
+    def test_per_platform_optout_isolated(self):
+        from gateway.display_config import platform_accepts_proactive_push
+        config = {"display": {"platforms": {"line": {"proactive_push": False}}}}
+        assert platform_accepts_proactive_push(config, "line") is False
+        # Other platforms unaffected.
+        assert platform_accepts_proactive_push(config, "telegram") is True
+
+    def test_global_optout_all_platforms(self):
+        from gateway.display_config import platform_accepts_proactive_push
+        config = {"display": {"proactive_push": False}}
+        assert platform_accepts_proactive_push(config, "line") is False
+        assert platform_accepts_proactive_push(config, "telegram") is False
+
+    def test_platform_override_beats_global(self):
+        from gateway.display_config import platform_accepts_proactive_push
+        config = {"display": {"proactive_push": False,
+                              "platforms": {"telegram": {"proactive_push": True}}}}
+        assert platform_accepts_proactive_push(config, "telegram") is True
+        assert platform_accepts_proactive_push(config, "line") is False
+
+    def test_yaml_off_string_normalises_to_false(self):
+        from gateway.display_config import platform_accepts_proactive_push
+        for val in ("off", "false", "no", "0"):
+            config = {"display": {"platforms": {"line": {"proactive_push": val}}}}
+            assert platform_accepts_proactive_push(config, "line") is False, val
+
+
+class TestMemoryNotificationsRegistered:
+    """memory_notifications is now a per-platform overrideable key."""
+
+    def test_in_overrideable_keys(self):
+        from gateway.display_config import OVERRIDEABLE_KEYS
+        assert "memory_notifications" in OVERRIDEABLE_KEYS
+        assert "proactive_push" in OVERRIDEABLE_KEYS
+
+    def test_default_on(self):
+        from gateway.display_config import resolve_display_setting
+        assert resolve_display_setting({}, "line", "memory_notifications", "on") == "on"
+
+    def test_per_platform_modes(self):
+        from gateway.display_config import resolve_display_setting
+        config = {"display": {"platforms": {
+            "line": {"memory_notifications": "off"},
+            "discord": {"memory_notifications": "verbose"},
+        }}}
+        assert resolve_display_setting(config, "line", "memory_notifications", "on") == "off"
+        assert resolve_display_setting(config, "discord", "memory_notifications", "on") == "verbose"
+        assert resolve_display_setting(config, "telegram", "memory_notifications", "on") == "on"
+
+    def test_bool_false_normalises_to_off(self):
+        from gateway.display_config import resolve_display_setting
+        config = {"display": {"platforms": {"line": {"memory_notifications": False}}}}
+        assert resolve_display_setting(config, "line", "memory_notifications", "on") == "off"
+
+
+class TestEffectiveMemoryNotifications:
+    """memory_notifications layered under the proactive_push gate."""
+
+    def test_proactive_off_forces_notifications_off(self):
+        from gateway.display_config import effective_memory_notifications
+        cfg = {"display": {"platforms": {"line": {
+            "proactive_push": False, "memory_notifications": "verbose"}}}}
+        # proactive off wins → no memory notifications even if mode=verbose.
+        assert effective_memory_notifications(cfg, "line") == "off"
+
+    def test_proactive_on_respects_mode_off(self):
+        from gateway.display_config import effective_memory_notifications
+        cfg = {"display": {"platforms": {"line": {"memory_notifications": "off"}}}}
+        assert effective_memory_notifications(cfg, "line") == "off"
+
+    def test_proactive_on_respects_mode_verbose(self):
+        from gateway.display_config import effective_memory_notifications
+        cfg = {"display": {"platforms": {"discord": {"memory_notifications": "verbose"}}}}
+        assert effective_memory_notifications(cfg, "discord") == "verbose"
+
+    def test_default_is_on(self):
+        from gateway.display_config import effective_memory_notifications
+        assert effective_memory_notifications({}, "telegram") == "on"
+
+    def test_global_proactive_off_forces_off(self):
+        from gateway.display_config import effective_memory_notifications
+        cfg = {"display": {"proactive_push": False,
+                          "platforms": {"line": {"memory_notifications": "on"}}}}
+        assert effective_memory_notifications(cfg, "line") == "off"

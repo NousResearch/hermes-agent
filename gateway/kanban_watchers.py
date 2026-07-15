@@ -296,11 +296,32 @@ class GatewayKanbanWatchersMixin:
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
+                # Per-platform proactive-push gate: kanban terminal-event
+                # notifications are unsolicited pushes, so honour a platform's
+                # proactive_push opt-out. Loaded once per tick; fail-open.
+                try:
+                    from hermes_cli.config import load_config as _load_push_cfg
+                    from gateway.display_config import platform_accepts_proactive_push
+                    _push_cfg = _load_push_cfg()
+                except Exception:
+                    _push_cfg = None
                 for d in deliveries:
                     sub = d["sub"]
                     task = d["task"]
                     board_slug = d.get("board")
                     platform_str = (sub["platform"] or "").lower()
+                    if (_push_cfg is not None and platform_str
+                            and not platform_accepts_proactive_push(_push_cfg, platform_str)):
+                        logger.info(
+                            "kanban notifier: skipping proactive delivery to %s/%s for %s — "
+                            "platform opted out of proactive push", platform_str,
+                            sub.get("chat_id"), sub["task_id"],
+                        )
+                        # Advance the cursor so the opted-out event isn't replayed forever.
+                        await asyncio.to_thread(
+                            self._kanban_advance, sub, d["cursor"], board_slug,
+                        )
+                        continue
                     try:
                         plat = _Platform(platform_str)
                     except ValueError:

@@ -2616,7 +2616,7 @@ def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", True))
 
 
-def _load_memory_notifications() -> str:
+def _load_memory_notifications(platform_key: str = "cli") -> str:
     """Self-improvement review notification mode from config.yaml.
 
     Parity with the messaging gateway (``gateway/run.py``) and the classic CLI:
@@ -2625,8 +2625,15 @@ def _load_memory_notifications() -> str:
     TUI/desktop backend always behaved as ``"on"`` and silently ignored a user
     who set ``off``. Accepts ``off`` / ``on`` (default) / ``verbose``; a bool is
     normalized for back-compat.
+
+    Resolved through ``resolve_display_setting`` so a per-platform override
+    (``display.platforms.<platform>.memory_notifications``) wins over the global
+    ``display.memory_notifications``, matching the messaging gateway. The TUI is
+    a single ``cli``-tier surface, so ``platform_key`` defaults to ``"cli"``.
     """
-    raw = (_load_cfg().get("display") or {}).get("memory_notifications")
+    from gateway.display_config import resolve_display_setting
+
+    raw = resolve_display_setting(_load_cfg(), platform_key, "memory_notifications", "on")
     if isinstance(raw, bool):
         return "on" if raw else "off"
     return str(raw).lower() if raw else "on"

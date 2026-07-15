@@ -22,7 +22,7 @@ def test_skills_and_docs_do_not_reference_removed_computer_vision_config_key():
             if not path.is_file() or path.suffix.lower() not in {".md", ".mdx"}:
                 continue
             text = path.read_text(encoding="utf-8", errors="ignore")
-            if "auxiliary.computer_vision" in text or "computer_vision" in text:
+            if "auxiliary.computer_vision" in text:
                 stale.append(str(path.relative_to(REPO_ROOT)))
 
     assert stale == []

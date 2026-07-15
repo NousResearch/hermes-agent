@@ -186,7 +186,8 @@ api_key = 'hsk_full_key_here'  # pass the real key, not shell-interpolated
 with open(env_path, 'r') as f:
     lines = f.readlines()
 lines = [l for l in lines if not l.startswith('HINDSIGHT_')]
-lines.append(f'HINDSIGHT_API_KEY={api_k...lines.append(f'HINDSIGHT_BANK_ID=hermes\n')
+lines.append(f'HINDSIGHT_API_KEY={api_key}\n')
+lines.append(f'HINDSIGHT_BANK_ID=hermes\n')
 with open(env_path, 'w') as f:
     f.writelines(lines)
 ```

@@ -347,6 +347,81 @@ class TestGatewaySurfacesNullResponse:
         assert response != "", "Null response with api_calls>0 must be surfaced"
         assert "nonexistent_tool" in response
 
+    # Runtime-produced error shape for a Codex app-server thread/start
+    # startup timeout (see _format_error_with_stderr): base error + the
+    # deliberately retained redacted stderr tail.
+    _CODEX_STARTUP_TIMEOUT_ERROR = (
+        "codex app-server startup failed: codex method 'thread/start' timed "
+        "out after 45s\n"
+        "codex stderr (last 3 lines):\n"
+        "WARN codex_core::config: profile fallback engaged\n"
+        "ERROR codex_app_server: handshake stalled\n"
+        "thread 'main' waiting on thread/start"
+    )
+
+    def test_failed_codex_startup_timeout_is_compacted(self):
+        """A positively identified thread/start timeout gets the one-liner,
+        not the multi-line transport dump."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 0,
+            "failed": True,
+            "partial": False,
+            "interrupted": False,
+            "error": self._CODEX_STARTUP_TIMEOUT_ERROR,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert "startup timed out while starting a thread" in response
+        assert "/codex-runtime auto" in response
+        assert "codex stderr" not in response
+
+    def test_partial_codex_startup_timeout_is_compacted(self):
+        """Same timeout surfacing through the partial path (api_calls > 0)."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 2,
+            "failed": False,
+            "partial": True,
+            "interrupted": False,
+            "error": self._CODEX_STARTUP_TIMEOUT_ERROR,
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert "startup timed out while starting a thread" in response
+        assert "codex stderr" not in response
+
+    def test_other_codex_failures_keep_their_stderr_diagnostics(self):
+        """Generic Codex failures keep the transport's diagnostic text —
+        compaction is limited to the identified startup-timeout case."""
+        from gateway.run import _normalize_empty_agent_response
+
+        agent_result = {
+            "final_response": None,
+            "api_calls": 1,
+            "failed": True,
+            "partial": False,
+            "interrupted": False,
+            "error": (
+                "codex turn failed: Internal error\n"
+                "codex stderr (last 2 lines):\n"
+                "ERROR codex_core::auth: credential refresh rejected"
+            ),
+        }
+
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10)
+
+        assert "The request failed:" in response
+        assert "codex stderr" in response
+        assert "credential refresh rejected" in response
+        assert "startup timed out while starting a thread" not in response
+
     def test_interrupted_response_stays_empty(self):
         """Interrupted agent → response stays empty (platform handles UX)."""
         from gateway.run import _normalize_empty_agent_response

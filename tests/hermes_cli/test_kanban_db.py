@@ -1862,6 +1862,30 @@ def test_respawn_guard_same_second_event_order_controls_rearm(kanban_home):
         assert kb.is_block_loop_frozen(conn, t) is False
 
 
+def test_unblock_rechecks_frozen_triage_inside_write_transaction(
+    kanban_home, monkeypatch,
+):
+    """Unblock must not reuse a frozen-state snapshot read before its txn."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping", assignee="alice", triage=True)
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        calls = []
+        original = kb.is_block_loop_frozen
+
+        def observed(c, task_id):
+            calls.append(c.in_transaction)
+            return original(c, task_id)
+
+        monkeypatch.setattr(kb, "is_block_loop_frozen", observed)
+        assert kb.unblock_task(conn, t) is True
+
+    assert calls == [True]
+
+
 def test_respawn_guard_worker_cannot_self_rearm_block_loop(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="looping", assignee="dev")

@@ -5174,8 +5174,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     now = int(time.time())
-    frozen_triage = is_block_loop_frozen(conn, task_id)
     with write_txn(conn):
+        # The circuit-breaker state and the transition must share one SQLite
+        # write snapshot. Reading it before BEGIN IMMEDIATE lets a newer loop
+        # event land while this call is waiting and then be released by stale
+        # state from the previous generation.
+        frozen_triage = is_block_loop_frozen(conn, task_id)
         stale = conn.execute(
             "SELECT current_run_id FROM tasks WHERE id = ? "
             "AND (status IN ('blocked', 'scheduled') OR (status = 'triage' AND ?))",

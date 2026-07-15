@@ -855,7 +855,7 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             elif s == "ready":
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
-                if current and current.status in ("blocked", "scheduled"):
+                if current and current.status in ("blocked", "scheduled", "triage"):
                     ok = kanban_db.unblock_task(conn, task_id)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).

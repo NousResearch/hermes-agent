@@ -553,9 +553,9 @@ fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
         ]
     } else if cfg!(target_os = "macos") {
         let mac_arches = if cfg!(target_arch = "x86_64") {
-            ["mac-x64", "mac-arm64", "mac"]
+            ["mac-x64", "mac"]
         } else {
-            ["mac-arm64", "mac-x64", "mac"]
+            ["mac-arm64", "mac"]
         };
         mac_arches
             .into_iter()

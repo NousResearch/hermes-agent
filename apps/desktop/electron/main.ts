@@ -107,7 +107,7 @@ import {
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
-import { runRebuildWithRetry } from './update-rebuild'
+import { macRebuiltBundleCandidates, runRebuildWithRetry } from './update-rebuild'
 import {
   buildRelaunchScript,
   collectRelaunchArgs,
@@ -2906,13 +2906,7 @@ async function applyUpdatesPosixInApp(opts: any) {
     }
   }
 
-  const macArch = process.arch === 'x64' ? 'mac-x64' : 'mac-arm64'
-  const alternateMacArch = macArch === 'mac-x64' ? 'mac-arm64' : 'mac-x64'
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', macArch, 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', alternateMacArch, 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
+  const rebuiltApp = macRebuiltBundleCandidates(updateRoot, process.arch).find(directoryExists)
 
   const targetApp = runningAppBundle()
 

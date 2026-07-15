@@ -2876,8 +2876,6 @@ install_desktop() {
         local cand
         for cand in \
             "$desktop_dir/release/mac-$(uname -m | sed 's/aarch64/arm64/; s/x86_64/x64/')/Hermes.app" \
-            "$desktop_dir/release/mac-arm64/Hermes.app" \
-            "$desktop_dir/release/mac-x64/Hermes.app" \
             "$desktop_dir/release/mac/Hermes.app"; do
             if [ -d "$cand" ]; then
                 app="$cand"

@@ -16,7 +16,18 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { runRebuildWithRetry, shouldRetryRebuild } from './update-rebuild'
+import { macRebuiltBundleCandidates, runRebuildWithRetry, shouldRetryRebuild } from './update-rebuild'
+
+test('mac rebuilt bundle candidates exclude the opposite architecture', () => {
+  assert.deepEqual(macRebuiltBundleCandidates('/update', 'x64'), [
+    '/update/apps/desktop/release/mac-x64/Hermes.app',
+    '/update/apps/desktop/release/mac/Hermes.app'
+  ])
+  assert.deepEqual(macRebuiltBundleCandidates('/update', 'arm64'), [
+    '/update/apps/desktop/release/mac-arm64/Hermes.app',
+    '/update/apps/desktop/release/mac/Hermes.app'
+  ])
+})
 
 test('shouldRetryRebuild retries only on a non-success exit', () => {
   assert.equal(shouldRetryRebuild(0), false)

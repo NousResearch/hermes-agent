@@ -219,5 +219,40 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertFalse(self._run_filter(msg, "None"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+
+class TestTrustedBotRelayGuards(unittest.TestCase):
+    """Tests for explicit bot allowlisting and the relay circuit breaker."""
+
+    def test_trusted_bot_ids_are_explicit(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        os.environ["DISCORD_TRUSTED_BOT_IDS"] = "111, 222"
+        try:
+            self.assertEqual(adapter._discord_trusted_bot_ids(), {"111", "222"})
+        finally:
+            os.environ.pop("DISCORD_TRUSTED_BOT_IDS", None)
+
+    def test_trusted_bot_ids_accept_json_list_string(self):
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        os.environ["DISCORD_TRUSTED_BOT_IDS"] = '["111", "222"]'
+        try:
+            self.assertEqual(adapter._discord_trusted_bot_ids(), {"111", "222"})
+        finally:
+            os.environ.pop("DISCORD_TRUSTED_BOT_IDS", None)
+
+    def test_relay_circuit_breaker_allows_bounded_burst_then_blocks(self):
+        from gateway.platforms.base import Platform
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        adapter = object.__new__(DiscordAdapter)
+        adapter.platform = Platform.DISCORD
+        adapter._bot_relay_events = {}
+        adapter._bot_relay_cooldown = 0
+        adapter._bot_relay_window = 60
+        adapter._bot_relay_max = 2
+        self.assertTrue(adapter._accept_bot_relay("bot", "channel"))
+        self.assertTrue(adapter._accept_bot_relay("bot", "channel"))
+        self.assertFalse(adapter._accept_bot_relay("bot", "channel"))

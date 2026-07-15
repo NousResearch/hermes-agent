@@ -8604,6 +8604,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "ollama":
+            self._handle_ollama_command(cmd_original)
         elif canonical == "credits":
             self._show_credits()
         elif canonical == "billing":
@@ -9677,6 +9679,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"  Top-up URL: {view.topup_url}")
         else:
             print("  🟡 Cancelled. No credits added.")
+
+    # ------------------------------------------------------------------
+    # /ollama — Ollama Cloud usage
+    # ------------------------------------------------------------------
+
+    def _handle_ollama_command(self, cmd_original: str):
+        """Handle /ollama -- show Ollama Cloud usage (session + weekly quotas)."""
+        from hermes_cli.ollama_cli import _fetch_usage, _render_usage
+
+        data = _fetch_usage()
+        for line in _render_usage(data):
+            print(line)
 
     # ------------------------------------------------------------------
     # /billing — Phase 2b terminal billing (CLI surface, all 5 screens)

@@ -3865,7 +3865,7 @@ class GatewaySlashCommandsMixin:
             return (
                 "Ollama Cloud usage: unavailable.\n"
                 "To set up, save your session cookie:\n"
-                "  echo '__Secure-session=<value>' > ~/.hermes/ollama_cookie.txt\n"
+                "  echo '__Secure-session=<value>' > $HERMES_HOME/ollama_cookie.txt\n"
                 "Get the value from ollama.com/settings while logged in."
             )
 

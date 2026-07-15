@@ -16,7 +16,9 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-COOKIE_FILE = Path.home() / ".hermes" / "ollama_cookie.txt"
+from hermes_constants import get_hermes_home
+
+COOKIE_FILE = get_hermes_home() / "ollama_cookie.txt"
 
 
 def _fetch_usage() -> dict | None:
@@ -109,8 +111,9 @@ def add_parser(subparsers) -> None:
         help="Show Ollama Cloud usage (session + weekly quotas)",
         description=(
             "Show Ollama Cloud usage quotas by scraping the settings page "
-            "with a session cookie. Requires ~/.hermes/ollama_cookie.txt "
-            "containing '__Secure-session=<value>' from ollama.com/settings."
+            "with a session cookie. Requires the ollama_cookie.txt file "
+            "in your Hermes home directory, containing "
+            "'__Secure-session=<value>' from ollama.com/settings."
         ),
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")

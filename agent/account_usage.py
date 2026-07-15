@@ -637,7 +637,9 @@ def _fetch_ollama_cloud_usage() -> Optional[AccountUsageSnapshot]:
     Fail-open: returns None when the cookie is missing, expired, or the
     page structure changes.
     """
-    cookie_file = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "ollama_cookie.txt"
+    from hermes_constants import get_hermes_home
+
+    cookie_file = get_hermes_home() / "ollama_cookie.txt"
     if not cookie_file.exists():
         return None
     try:

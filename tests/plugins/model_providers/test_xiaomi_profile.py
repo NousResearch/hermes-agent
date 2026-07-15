@@ -53,3 +53,60 @@ class TestXiaomiReasoningWireShape:
         )
         assert extra_body == {}
         assert top_level == {}
+
+
+class TestXiaomiFullKwargsIntegration:
+    """End-to-end: the transport's full kwargs carry the reasoning wiring.
+
+    The wire shape tests above call ``build_api_kwargs_extras`` in isolation;
+    these drive the real profile-to-transport merge in
+    ``ChatCompletionsTransport.build_kwargs`` so a regression in the merge (not
+    just the profile) is caught. Mirrors ``TestZaiFullKwargsIntegration`` in
+    ``tests/plugins/model_providers/test_zai_profile.py``.
+    """
+
+    def test_disabled_reaches_the_wire(self, xiaomi_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="mimo",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=xiaomi_profile,
+            reasoning_config={"enabled": False},
+            base_url="https://api.xiaomimimo.com/v1",
+            provider_name="xiaomi",
+        )
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_no_preference_keeps_wire_clean(self, xiaomi_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="mimo",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=xiaomi_profile,
+            reasoning_config=None,
+            base_url="https://api.xiaomimimo.com/v1",
+            provider_name="xiaomi",
+        )
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    @pytest.mark.parametrize("effort", ["low", "high", "xhigh"])
+    def test_enabled_keeps_wire_clean(self, xiaomi_profile, effort):
+        # MiMo has no effort granularity (rejects top-level reasoning_effort with
+        # HTTP 400), so any enabled level must leave the server default untouched.
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="mimo",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=xiaomi_profile,
+            reasoning_config={"enabled": True, "effort": effort},
+            base_url="https://api.xiaomimimo.com/v1",
+            provider_name="xiaomi",
+        )
+        assert "thinking" not in kwargs.get("extra_body", {})
+        assert "reasoning_effort" not in kwargs

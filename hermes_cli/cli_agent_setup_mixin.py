@@ -15,8 +15,14 @@ loaded) so this module never imports ``cli`` at import time -> no import cycle.
 from __future__ import annotations
 
 import sys
+import time
 
 from rich.markup import escape as _escape
+
+# Record process start time for session-resume detection.
+# Compared against the last message timestamp in a resumed session
+# to determine whether the conversation history predates this process.
+_PROCESS_START: float = time.time()
 
 
 class CLIAgentSetupMixin:
@@ -372,7 +378,7 @@ class CLIAgentSetupMixin:
                     break
             if (
                 _last_message_ts is not None
-                and _last_message_ts < self.session_start.timestamp()
+                and _last_message_ts < _PROCESS_START
             ):
                 _resume_note = (
                     "\n\n[Session resumed after a process restart. "

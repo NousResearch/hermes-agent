@@ -599,13 +599,114 @@ def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
     return any(p in lower for p in patterns)
 
 
+def _strip_jsonc_constructs(content: str) -> str:
+    """Reduce JSONC to plain JSON: drop comments and trailing commas.
+
+    Used by ``_lint_json_inproc`` to decide whether a strict-parse failure
+    is real corruption or merely JSONC.  String-aware: ``//`` inside a
+    string value (URLs), ``/*`` inside a glob pattern, and comma/bracket
+    sequences inside strings are left untouched.  Newlines inside dropped
+    comments are preserved so line numbers in a subsequent strict-parse
+    error still point at the right line.  An unterminated block comment is
+    left in place so the strict parse rejects it — a comment that never
+    closes is truncation, not a JSONC convention.
+    """
+    out: list = []
+    i, n = 0, len(content)
+    in_string = False
+    while i < n:
+        ch = content[i]
+        if in_string:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(content[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and content.startswith("//", i):
+            eol = content.find("\n", i)
+            if eol == -1:
+                break  # line comment runs to EOF — valid JSONC, just drop it
+            i = eol  # keep the newline itself (appended on the next pass)
+            continue
+        if ch == "/" and content.startswith("/*", i):
+            end = content.find("*/", i + 2)
+            if end == -1:
+                out.append(content[i:])  # unterminated — let strict parse reject it
+                break
+            out.append("\n" * content.count("\n", i, end + 2))
+            i = end + 2
+            continue
+        out.append(ch)
+        i += 1
+
+    text = "".join(out)
+    out2: list = []
+    i, n = 0, len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out2.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out2.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out2.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1  # trailing comma — drop from the validation copy
+                continue
+        out2.append(ch)
+        i += 1
+    return "".join(out2)
+
+
 def _lint_json_inproc(content: str) -> tuple[bool, str]:
-    """In-process JSON syntax check.  Returns (ok, error_message)."""
+    """In-process JSON syntax check.  Returns (ok, error_message).
+
+    Accepts the JSONC superset — ``//`` and ``/* */`` comments plus
+    trailing commas — on top of strict JSON.  Plenty of ``.json`` files
+    are JSONC by their consumer's documented convention (``tsconfig.json``,
+    VS Code ``settings.json`` / ``launch.json``, ``devcontainer.json``);
+    comments there are a feature of the format, not a syntax error, and
+    this linter's verdict is used as a fail-closed WRITE gate in
+    ``write_file`` — a false positive here refuses a legitimate write
+    outright (the same reasoning that keeps ``_lint_yaml_inproc`` below
+    syntax-only for multi-document/tagged YAML).  Real corruption
+    (truncated generation, mashed quotes) still fails after the JSONC
+    constructs are stripped, so the gate keeps catching what it was built
+    to catch.
+    """
     import json as _json
     try:
         _json.loads(content)
         return True, ""
     except _json.JSONDecodeError as e:
+        try:
+            _json.loads(_strip_jsonc_constructs(content))
+            return True, ""
+        except Exception:  # noqa: BLE001 — not JSONC either; report the strict error
+            pass
         return False, f"JSONDecodeError: {e.msg} (line {e.lineno}, column {e.colno})"
     except Exception as e:  # noqa: BLE001 — any parse failure is a lint failure
         return False, f"{type(e).__name__}: {e}"

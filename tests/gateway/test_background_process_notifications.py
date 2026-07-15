@@ -556,3 +556,72 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+# ---------------------------------------------------------------------------
+# api_server (stateless) wake routing — gateway/wake.py self-post path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_raw_session_key_self_posts(monkeypatch, tmp_path):
+    """An event whose session_key is a RAW api_server session id (not an
+    agent:main:... structured key) must wake the real session via the
+    /v1/chat/completions self-post instead of being dropped for missing
+    routing metadata."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append({"text": text, "session_id": session_id})
+
+    import gateway.wake as wake_mod
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "raw-hq-session-id",  # no agent:main:... structure
+    }
+    result = await runner._inject_watch_notification("[SYSTEM: subagent finished]", evt)
+
+    assert result is True
+    api_adapter.handle_message.assert_not_awaited()
+    assert posts == [
+        {"text": "[SYSTEM: subagent finished]", "session_id": "raw-hq-session-id"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_inject_watch_notification_origin_session_id_wins(monkeypatch, tmp_path):
+    """origin_session_id (stamped at dispatch time by async_delegation) takes
+    precedence as the wake target."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+        _host="127.0.0.1", _port=8642, _api_key="k", _model_name="m",
+    )
+    runner.adapters[Platform.API_SERVER] = api_adapter
+
+    posts = []
+
+    async def fake_self_post(adapter, *, text, session_id):
+        posts.append(session_id)
+
+    import gateway.wake as wake_mod
+    monkeypatch.setattr(wake_mod, "_self_post_chat_completion", fake_self_post)
+
+    evt = {
+        "session_id": "proc_watch",
+        "session_key": "",
+        "origin_session_id": "raw-origin-sid",
+    }
+    result = await runner._inject_watch_notification("[SYSTEM: done]", evt)
+    assert result is True
+    assert posts == ["raw-origin-sid"]

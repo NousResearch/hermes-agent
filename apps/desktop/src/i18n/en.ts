@@ -455,7 +455,9 @@ export const en: Translations = {
         exportFailed: slug => `Could not export ${slug}`,
         noneAvailable: 'No pets available to turn on right now.',
         turnOnFailed: 'Could not turn the pet on.',
-        turnOffFailed: 'Could not turn the pet off.'
+        turnOffFailed: 'Could not turn the pet off.',
+        bubbleTitle: 'Activity bubble',
+        bubbleDesc: 'Shows a bubble indicating the pet\'s current activity state.'
       }
     },
     fieldLabels: FIELD_LABELS,

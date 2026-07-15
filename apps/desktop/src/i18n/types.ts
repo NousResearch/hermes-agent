@@ -372,6 +372,7 @@ export interface Translations {
         turnOnFailed: string
         turnOffFailed: string
         bubbleTitle: string
+        bubbleDesc: string
       }
     }
     fieldLabels: Record<string, string>

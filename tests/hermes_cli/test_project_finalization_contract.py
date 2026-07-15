@@ -25,6 +25,7 @@ import pytest
 from hermes_cli.project_finalization_contract import (
     ensure_project_finalization_schema,
     create_project_finalization,
+    reopen_project_finalization,
     get_project_finalization,
     list_project_finalizations,
     acquire_finalization_lock,
@@ -547,5 +548,111 @@ def test_delivery_failure_cleanup_boundaries_persist():
             status="done", deleted_task_count=5,
         )
         assert cj.status == "done"
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_reopen_rejects_a_latest_generation_without_terminal_outcome():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(
+            conn, board_id="board", root_task_id="root", final_checker_task_id="checker"
+        )
+
+        with pytest.raises(ValueError, match="latest generation is not terminal"):
+            reopen_project_finalization(conn, board_id="board", root_task_id="root")
+
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_reopen_creates_next_generation_and_preserves_completed_generation():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(
+            conn,
+            board_id="board",
+            root_task_id="root",
+            final_checker_task_id="checker",
+            notification_policy="verbose",
+            retention_days=7,
+            repair_budget=0,
+        )
+        terminal = record_terminal_outcome(
+            conn, board_id="board", root_task_id="root", generation=1, outcome="COMPLETE"
+        )
+
+        reopened = reopen_project_finalization(conn, board_id="board", root_task_id="root")
+
+        assert reopened.generation == 2
+        assert reopened.state == "open"
+        assert reopened.terminal_outcome is None
+        assert reopened.final_checker_task_id == "checker"
+        assert reopened.notification_policy == "verbose"
+        assert reopened.retention_days == 7
+        assert reopened.repair_budget == 0
+        assert get_project_finalization(
+            conn, board_id="board", root_task_id="root", generation=1
+        ) == terminal
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_reopen_is_deterministically_rejected_while_an_active_generation_exists():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(
+            conn, board_id="board", root_task_id="root", final_checker_task_id="checker"
+        )
+        record_terminal_outcome(
+            conn, board_id="board", root_task_id="root", generation=1, outcome="FAILED"
+        )
+        assert reopen_project_finalization(conn, board_id="board", root_task_id="root").generation == 2
+
+        with pytest.raises(ValueError, match="latest generation is not terminal"):
+            reopen_project_finalization(conn, board_id="board", root_task_id="root")
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM project_finalizations "
+            "WHERE board_id='board' AND root_task_id='root' AND terminal_outcome IS NULL"
+        ).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 2
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_reopen_preserves_board_and_root_isolation():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(
+            conn, board_id="board-a", root_task_id="root-a", final_checker_task_id="checker-a"
+        )
+        create_project_finalization(
+            conn, board_id="board-b", root_task_id="root-a", final_checker_task_id="checker-b"
+        )
+        create_project_finalization(
+            conn, board_id="board-a", root_task_id="root-b", final_checker_task_id="checker-c"
+        )
+        record_terminal_outcome(
+            conn, board_id="board-a", root_task_id="root-a", generation=1, outcome="BLOCKED"
+        )
+
+        reopened = reopen_project_finalization(conn, board_id="board-a", root_task_id="root-a")
+
+        assert reopened.generation == 2
+        assert get_project_finalization(
+            conn, board_id="board-b", root_task_id="root-a"
+        ).generation == 1
+        assert get_project_finalization(
+            conn, board_id="board-a", root_task_id="root-b"
+        ).generation == 1
+        assert create_project_finalization(
+            conn, board_id="board-a", root_task_id="root-a", final_checker_task_id="ignored"
+        ).generation == 1
     finally:
         _close_and_unlink(conn, path)

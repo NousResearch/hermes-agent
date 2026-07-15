@@ -846,7 +846,7 @@ def create_project_finalization(
 ) -> ProjectFinalization:
     """Create (or return existing) project finalization for generation 1.
 
-    Idempotent on (board, root, gen=1). Generation 2+ via explicit reopen (future).
+    Idempotent on (board, root, gen=1). Generation 2+ use explicit reopen.
     """
     validate_notification_policy(notification_policy)
     validate_retention_days(retention_days)
@@ -884,6 +884,78 @@ def create_project_finalization(
                 final_checker_task_id, None,
                 0, repair_budget,
                 notification_policy, retention_days,
+                None, None, None, None, None, None,
+                now, now, None, None, None, None, None, None, 1,
+            ),
+        )
+        row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
+        assert row is not None
+        return _row_to_project_finalization(row)
+
+
+def reopen_project_finalization(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+) -> ProjectFinalization:
+    """Create the next generation from a latest terminal finalization.
+
+    Reopen is deliberately not idempotent: after it succeeds, the new latest
+    generation is active and a repeated call deterministically rejects it.
+    The new row inherits only creation configuration; terminal evidence and
+    mutable runtime fields remain on the prior generation.
+    """
+    if not board_id or not root_task_id:
+        raise ValueError("board_id and root_task_id are required")
+
+    now = int(time.time())
+    with write_txn(conn):
+        latest = conn.execute(
+            """
+            SELECT * FROM project_finalizations
+            WHERE board_id = ? AND root_task_id = ?
+            ORDER BY generation DESC LIMIT 1
+            """,
+            (board_id, root_task_id),
+        ).fetchone()
+        if latest is None:
+            raise ValueError("project finalization does not exist")
+        if latest["terminal_outcome"] is None:
+            raise ValueError("latest generation is not terminal")
+
+        active_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM project_finalizations
+            WHERE board_id = ? AND root_task_id = ? AND terminal_outcome IS NULL
+            """,
+            (board_id, root_task_id),
+        ).fetchone()[0]
+        if active_count:
+            raise ValueError("project finalization already has an active generation")
+
+        generation = int(latest["generation"]) + 1
+        conn.execute(
+            """
+            INSERT INTO project_finalizations (
+                board_id, root_task_id, generation, state, terminal_outcome,
+                final_checker_task_id, checker_verdict,
+                repair_generation, repair_budget,
+                notification_policy, retention_days,
+                final_report_path, final_report_sha256,
+                manifest_path, manifest_sha256,
+                usage_summary_json, blocker_json,
+                created_at, updated_at,
+                evaluated_at, finalized_at,
+                cleanup_after, cleaned_at,
+                lock_owner, lock_expires_at, version
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                board_id, root_task_id, generation, "open", None,
+                latest["final_checker_task_id"], None,
+                0, latest["repair_budget"],
+                latest["notification_policy"], latest["retention_days"],
                 None, None, None, None, None, None,
                 now, now, None, None, None, None, None, None, 1,
             ),

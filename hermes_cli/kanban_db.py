@@ -89,10 +89,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.kanban_status_timing import (
+    STATUS_SURFACE_REFRESH_SECONDS,
+    status_surface_refresh_period,
+)
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_cli.kanban_status_timing import status_surface_refresh_period
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
+_logged_malformed_notify_subs: set[tuple[str, str, str, str]] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +107,23 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+_FLOOD_CONTROL_DELAY_RE = re.compile(
+    r"(?:flood_control\s*:\s*|retry\s+(?:after|in)\s+)(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def _notification_retry_delay(error: str, *, base_seconds: int, cap_seconds: int) -> tuple[int, bool]:
+    """Return durable retry delay and whether Telegram supplied a cooldown."""
+    default_delay = min(
+        max(1, int(cap_seconds)),
+        max(1, int(base_seconds)),
+    )
+    match = _FLOOD_CONTROL_DELAY_RE.search(error or "")
+    if match is None:
+        return default_delay, False
+    # Honour Telegram's RetryAfter verbatim (plus a one-second boundary buffer).
+    return max(default_delay, int(float(match.group(1))) + 1), True
 
 # Typed block reasons. Distinguishes the two fundamentally different things a
 # worker (or human) means by "blocked", so each can be routed differently
@@ -400,6 +423,21 @@ def boards_root() -> Path:
     used by :func:`list_boards` to enumerate them.
     """
     return kanban_home() / "kanban" / "boards"
+
+
+def active_task_index_registry_path() -> Path:
+    """Return the shared receipt DB for chat-wide Telegram overviews.
+
+    Board databases deliberately keep task data isolated. A Telegram overview
+    is keyed by the destination container, so its send/edit receipt must be
+    shared by every board contributing subscriptions to that container.
+    """
+    return kanban_home() / "kanban" / "active-task-indexes.db"
+
+
+def connect_active_task_index_registry() -> sqlite3.Connection:
+    """Open the durable cross-board overview receipt registry."""
+    return connect(db_path=active_task_index_registry_path())
 
 
 def current_board_path() -> Path:
@@ -908,6 +946,9 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Stable identifier of the user intent that originated this task. NULL on
+    # legacy tasks and creation paths that do not provide an intent id.
+    origin_intent_id: Optional[str] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -990,6 +1031,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            origin_intent_id=(
+                row["origin_intent_id"] if "origin_intent_id" in keys else None
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1089,6 +1133,34 @@ class Event:
     run_id: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class CurrentRunProgress:
+    """Durable live-run clock projection for status-card and overview renderers."""
+
+    run_id: Optional[int]
+    started_at: Optional[int]
+    events: tuple[Event, ...] = ()
+
+    def latest_at(self, kind: str) -> Optional[int]:
+        """Return the latest current-run event timestamp for ``kind``.
+
+        Keep the clock definition on the shared live-run projection instead
+        of reimplementing it in cards, dispatcher watchdogs, and other
+        consumers.  In particular, ``progress`` is the sole substantive-work
+        signal; a heartbeat only proves that the worker process is alive.
+        """
+        timestamps = [event.created_at for event in self.events if event.kind == kind]
+        return max(timestamps) if timestamps else None
+
+    @property
+    def heartbeat_at(self) -> Optional[int]:
+        return self.latest_at("heartbeat")
+
+    @property
+    def substantive_progress_at(self) -> Optional[int]:
+        return self.latest_at("progress")
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -1164,6 +1236,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Stable identifier for the user intent that originated this task. NULL
+    -- preserves the deliberately ambiguous lineage of legacy tasks.
+    origin_intent_id     TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1231,6 +1306,23 @@ CREATE TABLE IF NOT EXISTS task_runs (
     error               TEXT
 );
 
+-- A review handoff keeps its task in the immutable ``review`` lane. The
+-- auditor's execution has its own durable lease, never tasks.claim_lock.
+CREATE TABLE IF NOT EXISTS kanban_review_jobs (
+    task_id          TEXT PRIMARY KEY,
+    handoff_event_id INTEGER NOT NULL UNIQUE,
+    profile          TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    claim_lock       TEXT,
+    claim_expires    INTEGER,
+    worker_pid       INTEGER,
+    next_retry_at    INTEGER,
+    last_error       TEXT,
+    created_at       INTEGER NOT NULL,
+    updated_at       INTEGER NOT NULL
+);
+
 -- Files attached to a task (PDFs, images, source documents). The blob
 -- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
 -- this row carries metadata + the absolute ``stored_path`` so the
@@ -1272,8 +1364,100 @@ CREATE INDEX IF NOT EXISTS idx_comments_task         ON task_comments(task_id, c
 CREATE INDEX IF NOT EXISTS idx_events_task           ON task_events(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
+CREATE INDEX IF NOT EXISTS idx_review_jobs_ready ON kanban_review_jobs(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
+-- Durable receipt for the single status card in a task/origin lane. The
+-- notification cursor and the remote-message identity intentionally live in
+-- different rows: advancing a cursor is not proof that Telegram accepted an
+-- edit or send.
+CREATE TABLE IF NOT EXISTS kanban_status_surfaces (
+    task_id            TEXT NOT NULL,
+    platform           TEXT NOT NULL,
+    chat_id            TEXT NOT NULL,
+    thread_id          TEXT NOT NULL DEFAULT '',
+    message_id         TEXT,
+    sender_profile     TEXT,
+    delivered_event_id INTEGER NOT NULL DEFAULT 0,
+    pending_event_id   INTEGER NOT NULL DEFAULT 0,
+    lease_owner        TEXT,
+    lease_generation   INTEGER NOT NULL DEFAULT 0,
+    lease_expires      INTEGER,
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    last_error         TEXT,
+    next_retry_at      INTEGER,
+    dead_lettered_at   INTEGER,
+    -- The ``message_id`` that was stuck when a one-shot recover-and-resume
+    -- claim was last taken (see claim_status_surface(recover_parked=True)).
+    -- Compared against the live ``message_id`` so a second loss of the
+    -- freshly recreated message is not auto-recovered again.
+    recovered_message_id TEXT,
+    renderer_version   TEXT NOT NULL DEFAULT '',
+    render_hash        TEXT,
+    last_rendered_at   INTEGER,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY (task_id, platform, chat_id, thread_id)
+);
+
+-- One compact active-task index per exact notification lane. This projection
+-- is independent of per-task status cards and never drives task lifecycle.
+CREATE TABLE IF NOT EXISTS kanban_active_task_indexes (
+    platform           TEXT NOT NULL,
+    chat_id            TEXT NOT NULL,
+    thread_id          TEXT NOT NULL DEFAULT '',
+    notifier_profile   TEXT NOT NULL DEFAULT '',
+    message_id         TEXT,
+    sender_profile     TEXT,
+    pinned             INTEGER NOT NULL DEFAULT 0,
+    pin_attempted_at   INTEGER,
+    lease_owner        TEXT,
+    lease_generation   INTEGER NOT NULL DEFAULT 0,
+    lease_expires      INTEGER,
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    last_error         TEXT,
+    next_retry_at      INTEGER,
+    renderer_version   TEXT NOT NULL DEFAULT '',
+    render_hash        TEXT,
+    last_rendered_at   INTEGER,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY (platform, chat_id, thread_id, notifier_profile)
+);
+
+-- A completed status card is an edit to the live surface. Keep the one
+-- additional final-ready message in its own durable lane so its retry state
+-- can never roll back the already confirmed card receipt.
+CREATE TABLE IF NOT EXISTS kanban_terminal_notifications (
+    task_id            TEXT NOT NULL,
+    platform           TEXT NOT NULL,
+    chat_id            TEXT NOT NULL,
+    thread_id          TEXT NOT NULL DEFAULT '',
+    notifier_profile   TEXT,
+    event_id           INTEGER NOT NULL,
+    title              TEXT NOT NULL,
+    outcome_key         TEXT,
+    outcome_summary     TEXT,
+    message_id         TEXT,
+    lease_owner        TEXT,
+    lease_generation   INTEGER NOT NULL DEFAULT 0,
+    lease_expires      INTEGER,
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    last_error         TEXT,
+    next_retry_at      INTEGER,
+    dead_lettered_at   INTEGER,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    PRIMARY KEY (task_id, platform, chat_id, thread_id, event_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_terminal_notification_lease
+    ON kanban_terminal_notifications(lease_expires);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_terminal_notification_outcome
+    ON kanban_terminal_notifications(platform, chat_id, thread_id, outcome_key)
+    WHERE outcome_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_active_task_index_lease
+    ON kanban_active_task_indexes(lease_expires);
 """
 
 
@@ -1771,6 +1955,33 @@ def connect(
                 conn.execute("PRAGMA cell_size_check=ON")
                 needs_init = resolved not in _INITIALIZED_PATHS
                 if needs_init:
+                    # ``SCHEMA_SQL`` creates the terminal-notification outcome
+                    # index. On a legacy database the table already exists but
+                    # lacks those columns, so SQLite aborts the script before
+                    # the normal additive migration below gets a chance to run.
+                    # Bring this one index dependency forward first.
+                    terminal_exists = conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='kanban_terminal_notifications'"
+                    ).fetchone() is not None
+                    if terminal_exists:
+                        terminal_cols = {
+                            row["name"]
+                            for row in conn.execute(
+                                "PRAGMA table_info(kanban_terminal_notifications)"
+                            )
+                        }
+                        for name, definition in (
+                            ("outcome_key", "outcome_key TEXT"),
+                            ("outcome_summary", "outcome_summary TEXT"),
+                        ):
+                            if name not in terminal_cols:
+                                _add_column_if_missing(
+                                    conn,
+                                    "kanban_terminal_notifications",
+                                    name,
+                                    definition,
+                                )
                     # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive
                     # migrations. Cached so subsequent connect() calls in the same
                     # process are cheap. The lock prevents same-process dispatcher
@@ -1971,6 +2182,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "origin_intent_id" not in cols:
+        # Intent lineage is unavailable for historical tasks, so leave every
+        # existing row NULL rather than inferring an ambiguous origin.
+        _add_column_if_missing(
+            conn, "tasks", "origin_intent_id", "origin_intent_id TEXT"
+        )
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -2026,6 +2244,77 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         if "notifier_profile" not in notify_cols:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
+            )
+
+    # Status-card surfaces shipped before the lease/receipt model used a
+    # smaller table with ``last_event_id`` / ``last_sent_at``. Add the new
+    # durable state before creating its lease index: an existing table makes
+    # CREATE TABLE IF NOT EXISTS a no-op, and creating the index in SCHEMA_SQL
+    # would otherwise fail before this additive migration can run.
+    surface_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='kanban_status_surfaces'"
+    ).fetchone() is not None
+    if surface_table_exists:
+        surface_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_status_surfaces)")
+        }
+        surface_additions = (
+            ("delivered_event_id", "delivered_event_id INTEGER NOT NULL DEFAULT 0"),
+            ("pending_event_id", "pending_event_id INTEGER NOT NULL DEFAULT 0"),
+            ("lease_owner", "lease_owner TEXT"),
+            ("lease_generation", "lease_generation INTEGER NOT NULL DEFAULT 0"),
+            ("lease_expires", "lease_expires INTEGER"),
+            ("attempts", "attempts INTEGER NOT NULL DEFAULT 0"),
+            ("next_retry_at", "next_retry_at INTEGER"),
+            ("dead_lettered_at", "dead_lettered_at INTEGER"),
+            ("recovered_message_id", "recovered_message_id TEXT"),
+            ("renderer_version", "renderer_version TEXT NOT NULL DEFAULT ''"),
+            ("render_hash", "render_hash TEXT"),
+            ("last_rendered_at", "last_rendered_at INTEGER"),
+            ("sender_profile", "sender_profile TEXT"),
+            ("updated_at", "updated_at INTEGER NOT NULL DEFAULT 0"),
+        )
+        for name, definition in surface_additions:
+            if name not in surface_cols:
+                _add_column_if_missing(
+                    conn, "kanban_status_surfaces", name, definition
+                )
+        # Preserve prior confirmed cards without treating a mere cursor as a
+        # new delivery. Old rows stored the last rendered event separately.
+        legacy_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_status_surfaces)")
+        }
+        if "last_event_id" in legacy_cols:
+            conn.execute(
+                "UPDATE kanban_status_surfaces "
+                "SET delivered_event_id = last_event_id "
+                "WHERE delivered_event_id = 0 AND last_event_id > 0"
+            )
+        timestamp_column = "last_sent_at" if "last_sent_at" in legacy_cols else "created_at"
+        conn.execute(
+            f"UPDATE kanban_status_surfaces SET updated_at = {timestamp_column} "
+            "WHERE updated_at = 0"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_status_surface_lease "
+            "ON kanban_status_surfaces(lease_expires)"
+        )
+
+    index_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='kanban_active_task_indexes'"
+    ).fetchone() is not None
+    if index_table_exists:
+        index_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_active_task_indexes)")
+        }
+        if "sender_profile" not in index_cols:
+            _add_column_if_missing(
+                conn, "kanban_active_task_indexes", "sender_profile", "sender_profile TEXT"
             )
 
     # One-shot backfill: any task that is 'running' before runs existed
@@ -2098,7 +2387,69 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             (new, old),
         )
 
+    # Before the explicit review lifecycle, a worker's `completed` event could
+    # enqueue an unsent final-ready ping. It has no proof of auditor acceptance,
+    # so suppress it once; already receipted historical messages are untouched.
+    terminal_table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kanban_terminal_notifications'"
+    ).fetchone() is not None
+    if terminal_table_exists:
+        terminal_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(kanban_terminal_notifications)")
+        }
+        for name, definition in (
+            ("outcome_key", "outcome_key TEXT"),
+            ("outcome_summary", "outcome_summary TEXT"),
+        ):
+            if name not in terminal_cols:
+                _add_column_if_missing(
+                    conn, "kanban_terminal_notifications", name, definition
+                )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_terminal_notification_outcome "
+            "ON kanban_terminal_notifications(platform, chat_id, thread_id, outcome_key) "
+            "WHERE outcome_key IS NOT NULL"
+        )
+        conn.execute(
+            "DELETE FROM kanban_terminal_notifications AS n WHERE n.message_id IS NULL "
+            "AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.id=n.event_id "
+            "AND e.task_id=n.task_id AND e.kind='review_accepted')"
+        )
+
     _rebuild_drifted_tables(conn)
+
+
+_LEGACY_THREADED_ACTIVE_INDEX_CLEANUP_LIMIT = 500
+
+
+def _retire_legacy_threaded_active_task_indexes(conn: sqlite3.Connection) -> int:
+    """Retire a bounded batch of obsolete per-topic active-index receipts.
+
+    ``thread_id`` is the durable scope discriminator: old exact-topic receipts
+    are non-empty, while the current per-chat overview identity is the empty
+    thread lane.  The cleanup intentionally touches only the projection table;
+    task subscriptions, task-card status surfaces, and terminal notifications
+    use separate durable tables and are not routing state here.
+
+    The finite batch keeps startup migration work bounded.  Re-running
+    ``init_db`` after a restart is idempotent and drains a later batch without
+    ever deleting the current empty-thread overview receipt.
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kanban_active_task_indexes'"
+    ).fetchone() is not None
+    if not table_exists:
+        return 0
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_active_task_indexes WHERE rowid IN ("
+            "SELECT rowid FROM kanban_active_task_indexes "
+            "WHERE thread_id != '' ORDER BY rowid LIMIT ?"
+            ")",
+            (_LEGACY_THREADED_ACTIVE_INDEX_CLEANUP_LIMIT,),
+        )
+    return cur.rowcount
 
 
 # Legacy DBs defined these tables with a ``TEXT PRIMARY KEY`` id (or, for
@@ -2406,6 +2757,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    origin_intent_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
 ) -> str:
@@ -2611,6 +2963,12 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                effective_origin_intent_id = origin_intent_id
+                if effective_origin_intent_id is None:
+                    effective_origin_intent_id = _inherit_unambiguous_parent_origin_intent_id(
+                        conn, parents
+                    )
+
                 # Project-linked worktree: a fresh worktree dir under the repo
                 # plus a deterministic branch (project slug + task id). Together
                 # these kill the random ``wt/<task-id>`` worker fallback and the
@@ -2636,8 +2994,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        origin_intent_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2660,6 +3019,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        effective_origin_intent_id,
                     ),
                 )
                 for pid in parents:
@@ -2667,6 +3027,9 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                _inherit_unambiguous_parent_telegram_subscription(
+                    conn, task_id=task_id, parents=parents, now=now,
+                )
                 _append_event(
                     conn,
                     task_id,
@@ -2688,6 +3051,75 @@ def create_task(
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+def _inherit_unambiguous_parent_origin_intent_id(
+    conn: sqlite3.Connection, parents: tuple[str, ...],
+) -> Optional[str]:
+    """Return one non-legacy parent intent id, otherwise fail closed.
+
+    This runs in the same write transaction as child insertion.  A child can
+    inherit only when every direct parent belongs to the same known intent;
+    a legacy NULL or different parent intent is intentionally left NULL.
+    """
+    if not parents:
+        return None
+    parent_ids = tuple(dict.fromkeys(parents))
+    placeholders = ",".join("?" * len(parent_ids))
+    rows = conn.execute(
+        f"SELECT origin_intent_id FROM tasks WHERE id IN ({placeholders})",
+        parent_ids,
+    ).fetchall()
+    if len(rows) != len(parent_ids):
+        return None
+    intent_ids = {row["origin_intent_id"] for row in rows}
+    if len(intent_ids) != 1:
+        return None
+    intent_id = next(iter(intent_ids))
+    return intent_id if intent_id is not None else None
+
+
+def _inherit_unambiguous_parent_telegram_subscription(
+    conn: sqlite3.Connection, *, task_id: str, parents: tuple[str, ...], now: int,
+) -> bool:
+    """Copy one checked Telegram origin from parents into a child task.
+
+    A child status card belongs to its own task/origin lane, but delegated
+    children should continue in the parent's exact Telegram topic. Only one
+    profile-stamped Telegram origin is safe to inherit; conflicting origins or
+    legacy rows without notifier ownership fail closed instead of guessing.
+    """
+    if not parents:
+        return False
+    placeholders = ",".join("?" * len(parents))
+    rows = conn.execute(
+        "SELECT platform, chat_id, thread_id, user_id, notifier_profile "
+        "FROM kanban_notify_subs "
+        f"WHERE task_id IN ({placeholders}) AND platform = 'telegram' "
+        "AND notifier_profile IS NOT NULL AND notifier_profile != ''",
+        parents,
+    ).fetchall()
+    origins = {
+        (row["platform"], row["chat_id"], row["thread_id"], row["notifier_profile"])
+        for row in rows
+    }
+    if len(origins) != 1:
+        return False
+    platform, chat_id, thread_id, notifier_profile = next(iter(origins))
+    source = next(
+        row for row in rows
+        if (row["platform"], row["chat_id"], row["thread_id"], row["notifier_profile"])
+        == (platform, chat_id, thread_id, notifier_profile)
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (task_id, platform, chat_id, thread_id, source["user_id"], notifier_profile, now),
+    )
+    return True
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -3098,6 +3530,29 @@ def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return out
 
 
+def current_run_progress(conn: sqlite3.Connection, task_id: str) -> CurrentRunProgress:
+    """Return the authoritative current-run events for live status projections.
+
+    ``tasks.current_run_id`` is the only live-attempt pointer. Historical events
+    are deliberately excluded, so a retry cannot display stale heartbeat or
+    progress from an already-ended run.
+    """
+    row = conn.execute(
+        """
+        SELECT t.current_run_id, r.started_at
+          FROM tasks AS t
+          LEFT JOIN task_runs AS r ON r.id = t.current_run_id AND r.ended_at IS NULL
+         WHERE t.id = ?
+        """,
+        (task_id,),
+    ).fetchone()
+    if row is None or row["current_run_id"] is None or row["started_at"] is None:
+        return CurrentRunProgress(run_id=None, started_at=None)
+    run_id = int(row["current_run_id"])
+    events = tuple(event for event in list_events(conn, task_id) if event.run_id == run_id)
+    return CurrentRunProgress(run_id=run_id, started_at=int(row["started_at"]), events=events)
+
+
 def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3105,7 +3560,7 @@ def _append_event(
     payload: Optional[dict] = None,
     *,
     run_id: Optional[int] = None,
-) -> None:
+) -> int:
     """Record an event row.  Called from within an already-open txn.
 
     ``run_id`` is optional: pass the current run id so UIs can group
@@ -3115,11 +3570,14 @@ def _append_event(
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+    if cursor.lastrowid is None:
+        raise RuntimeError("failed to capture inserted task_event id")
+    return int(cursor.lastrowid)
 
 
 def _end_run(
@@ -3499,72 +3957,8 @@ def claim_review_task(
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
 ) -> Optional[Task]:
-    """Atomically transition ``review -> running``.
-
-    Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``review`` status).
-
-    Unlike ``claim_task`` (which handles ``ready -> running``), this
-    does NOT check parent dependencies — the task already passed that
-    gate on its original ``todo -> ready -> running`` transition.
-
-    Creates a new run entry so the review agent's lifecycle is tracked
-    independently from the original worker run.
-    """
-    now = int(time.time())
-    lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
-    with write_txn(conn):
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status        = 'running',
-                   claim_lock    = ?,
-                   claim_expires = ?,
-                   started_at    = COALESCE(started_at, ?)
-             WHERE id = ?
-               AND status = 'review'
-               AND claim_lock IS NULL
-            """,
-            (lock, expires, now, task_id),
-        )
-        if cur.rowcount != 1:
-            return None
-        trow = conn.execute(
-            "SELECT assignee, max_runtime_seconds, current_step_key "
-            "FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        run_cur = conn.execute(
-            """
-            INSERT INTO task_runs (
-                task_id, profile, step_key, status,
-                claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                trow["assignee"] if trow else None,
-                trow["current_step_key"] if trow else None,
-                lock,
-                expires,
-                trow["max_runtime_seconds"] if trow else None,
-                now,
-            ),
-        )
-        run_id = run_cur.lastrowid
-        conn.execute(
-            "UPDATE tasks SET current_run_id = ? WHERE id = ?",
-            (run_id, task_id),
-        )
-        _append_event(
-            conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
-            run_id=run_id,
-        )
-        return get_task(conn, task_id)
+    """Legacy guard: review handoffs are audited, never dispatched as work."""
+    return None
 
 
 def heartbeat_claim(
@@ -4129,13 +4523,13 @@ def complete_task(
         }
         if verified_cards:
             completed_payload["verified_cards"] = verified_cards
-        # Carry artifact paths in the event payload so the gateway
-        # notifier can upload them as native attachments alongside the
-        # completion message. Workers pass these via
-        # ``kanban_complete(artifacts=[...])`` which stashes the list in
-        # ``metadata["artifacts"]`` — we promote it onto the event so
-        # consumers don't have to fetch the run row to find it.
+        # Carry artifact paths for reviewers and downstream workers. They are
+        # never automatic chat attachments unless explicit user intent was
+        # preserved as metadata.deliver_artifacts.
         if isinstance(metadata, dict):
+            user_facing_title = metadata.get("user_facing_title") or metadata.get("display_title")
+            if isinstance(user_facing_title, str) and user_facing_title.strip():
+                completed_payload["user_facing_title"] = user_facing_title.strip()[:140]
             md_artifacts = metadata.get("artifacts")
             if isinstance(md_artifacts, (list, tuple)):
                 cleaned_artifacts = [
@@ -4143,6 +4537,8 @@ def complete_task(
                 ]
                 if cleaned_artifacts:
                     completed_payload["artifacts"] = cleaned_artifacts
+            if metadata.get("deliver_artifacts") is True:
+                completed_payload["deliver_artifacts"] = True
         _append_event(
             conn, task_id, "completed",
             completed_payload,
@@ -4187,6 +4583,273 @@ def complete_task(
         run_id=run_id,
         summary=(summary if summary is not None else result),
     )
+    return True
+
+
+def request_review(
+    conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
+    summary: str, metadata: Optional[dict] = None,
+    created_cards: Optional[list[str]] = None, expected_run_id: Optional[int] = None,
+) -> bool:
+    """Atomically hand worker evidence to audit without completing the task."""
+    if not summary or not summary.strip():
+        raise ValueError("review summary is required")
+    if created_cards:
+        verified_cards, phantom_cards = _verify_created_cards(conn, task_id, created_cards)
+        if phantom_cards:
+            with write_txn(conn):
+                _append_event(conn, task_id, "completion_blocked_hallucination", {
+                    "phantom_cards": phantom_cards, "verified_cards": verified_cards,
+                    "summary_preview": summary.strip().splitlines()[0][:200],
+                })
+            raise HallucinatedCardsError(phantom_cards, task_id)
+    else:
+        verified_cards = []
+
+    # Preserve managed scratch deliverables before converting the worker run
+    # into a review handoff.  The upstream artifact contract originally ran
+    # only through complete_task(); review lifecycle keeps the worker task
+    # non-terminal, so it needs the same fail-closed staging path here.
+    metadata = _merge_completion_prose_artifacts(
+        conn, task_id, metadata, summary=summary, result=result,
+    )
+    with write_txn(conn):
+        task_row = conn.execute(
+            "SELECT status, current_run_id FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        if task_row is None:
+            return False
+        if task_row["status"] not in ("running", "ready", "blocked"):
+            return False
+        if expected_run_id is not None and task_row["current_run_id"] != int(expected_run_id):
+            return False
+
+        review_job_row = conn.execute(
+            "SELECT handoff_event_id, status FROM kanban_review_jobs WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+
+        sql = (
+            "UPDATE tasks SET status='review', result=?, completed_at=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "block_kind=NULL, block_recurrences=0 "
+            "WHERE id=? AND status IN ('running', 'ready', 'blocked')"
+        )
+        params: tuple[Any, ...] = (result, task_id)
+        if expected_run_id is not None:
+            sql += " AND current_run_id=?"
+            params = (result, task_id, int(expected_run_id))
+        if conn.execute(sql, params).rowcount != 1:
+            return False
+
+        if isinstance(metadata, dict):
+            _persist_scratch_completion_artifacts(conn, task_id, metadata)
+            for stored_path in metadata.pop("_staged_artifacts", []):
+                path = Path(stored_path)
+                _insert_completion_attachment(
+                    conn,
+                    task_id,
+                    filename=path.name,
+                    stored_path=str(path),
+                    size=path.stat().st_size,
+                    created_at=int(time.time()),
+                )
+
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="review_requested",
+            status="review",
+            summary=summary,
+            metadata=metadata,
+        )
+        if run_id is None:
+            run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="review_requested",
+                summary=summary,
+                metadata=metadata,
+            )
+
+        payload: dict[str, Any] = {
+            "summary": summary.strip().splitlines()[0][:400],
+            "task_previous_status": task_row["status"],
+            "task_next_status": "review",
+            "review_job_previous_handoff_event_id": review_job_row["handoff_event_id"] if review_job_row else None,
+            "review_job_previous_status": review_job_row["status"] if review_job_row else None,
+        }
+        if verified_cards:
+            payload["verified_cards"] = verified_cards
+        if isinstance(metadata, dict):
+            title = metadata.get("user_facing_title") or metadata.get("display_title")
+            if isinstance(title, str) and title.strip():
+                payload["user_facing_title"] = title.strip()[:140]
+            artifacts = metadata.get("artifacts")
+            if isinstance(artifacts, (list, tuple)):
+                payload["artifacts"] = [str(p).strip() for p in artifacts if isinstance(p, str) and p.strip()]
+            if metadata.get("deliver_artifacts") is True:
+                payload["deliver_artifacts"] = True
+            outcome_key = metadata.get("notification_key")
+            outcome_summary = metadata.get("notification_summary")
+            if (
+                isinstance(outcome_key, str) and outcome_key.strip()
+                and isinstance(outcome_summary, str) and outcome_summary.strip()
+            ):
+                payload["notification_key"] = outcome_key.strip()[:160]
+                payload["notification_summary"] = outcome_summary.strip()[:1200]
+
+        handoff_event_id = _append_event(
+            conn,
+            task_id,
+            "review_requested",
+            payload,
+            run_id=run_id,
+        )
+        changed = _upsert_review_job_receipt(
+            conn, task_id, handoff_event_id, now=int(time.time())
+        )
+        payload.update(
+            {
+                "handoff_event_id": handoff_event_id,
+                "review_job_status_after": "queued",
+                "review_job_recreated": changed,
+                "recovery_reason": "request_review",
+            }
+        )
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload, ensure_ascii=False), handoff_event_id),
+        )
+    _clear_failure_counter(conn, task_id)
+    return True
+
+def reject_review(conn: sqlite3.Connection, task_id: str, *, reason: str) -> bool:
+    """Atomically return a review handoff to its existing implementer."""
+    if not reason or not reason.strip():
+        raise ValueError("review rejection reason is required")
+    with write_txn(conn):
+        job_row = conn.execute(
+            "SELECT status, handoff_event_id FROM kanban_review_jobs WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        cur = conn.execute(
+            "UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL, completed_at=NULL WHERE id=? AND status='review'",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='rejected', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, updated_at=? WHERE task_id=?",
+            (int(time.time()), task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "review_rejected",
+            {
+                "reason": reason.strip()[:1000],
+                "task_previous_status": "review",
+                "task_next_status": "ready",
+                "review_job_previous_status": job_row["status"] if job_row else None,
+                "review_job_status_after": "rejected",
+                "handoff_event_id": int(job_row["handoff_event_id"]) if job_row and job_row["handoff_event_id"] is not None else None,
+            },
+        )
+    return True
+
+
+def recover_review(conn: sqlite3.Connection, task_id: str, *, reason: str) -> bool:
+    """Restore an accidentally blocked review handoff without rerunning work.
+
+    A prior ``review_requested`` event is required, so the recovery action
+    cannot promote an unrelated blocked task into the audit lane.
+    """
+    if not reason or not reason.strip():
+        raise ValueError("review recovery reason is required")
+    with write_txn(conn):
+        handoff = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id=? AND kind='review_requested' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if handoff is None:
+            return False
+        cur = conn.execute(
+            "UPDATE tasks SET status='review', claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL, completed_at=NULL WHERE id=? AND status='blocked'",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        job_row = conn.execute(
+            "SELECT status, handoff_event_id FROM kanban_review_jobs WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        _append_event(
+            conn,
+            task_id,
+            "review_recovered",
+            {
+                "reason": reason.strip()[:1000],
+                "task_previous_status": "blocked",
+                "task_next_status": "review",
+                "review_job_previous_status": job_row["status"] if job_row else None,
+                "review_job_status_after": job_row["status"] if job_row else None,
+                "handoff_event_id": int(job_row["handoff_event_id"]) if job_row and job_row["handoff_event_id"] is not None else None,
+                "recovery_result": "review_recover",
+            },
+        )
+    return True
+
+
+def accept_review(conn: sqlite3.Connection, task_id: str, *, summary: Optional[str] = None) -> bool:
+    """Atomically accept a review handoff; this is the sole final transition."""
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='review_requested' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            handoff = json.loads(row["payload"] or "{}")
+        except (TypeError, ValueError):
+            handoff = {}
+        cur = conn.execute(
+            "UPDATE tasks SET status='done', completed_at=?, claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL WHERE id=? AND status='review'", (now, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='accepted', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, updated_at=? WHERE task_id=?",
+            (now, task_id),
+        )
+        payload: dict[str, Any] = {
+            "summary": (summary or handoff.get("summary") or "Результат принят после проверки.").strip()[:400],
+            "task_previous_status": "review",
+            "task_next_status": "done",
+            "review_job_previous_status": handoff.get("review_job_previous_status"),
+            "review_job_status_after": "accepted",
+            "handoff_event_id": handoff.get("handoff_event_id"),
+        }
+        if isinstance(handoff.get("artifacts"), list):
+            payload["artifacts"] = handoff["artifacts"]
+        if handoff.get("deliver_artifacts") is True:
+            payload["deliver_artifacts"] = True
+        if isinstance(handoff.get("user_facing_title"), str):
+            payload["user_facing_title"] = handoff["user_facing_title"]
+        if isinstance(handoff.get("notification_key"), str) and isinstance(handoff.get("notification_summary"), str):
+            payload["notification_key"] = handoff["notification_key"]
+            payload["notification_summary"] = handoff["notification_summary"]
+        _append_event(conn, task_id, "review_accepted", payload)
+    _clear_failure_counter(conn, task_id)
+    recompute_ready(conn)
+    _cleanup_workspace(conn, task_id)
     return True
 
 
@@ -5438,6 +6101,15 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
+        # An archived review handoff is intentionally terminal.  Keep its
+        # receipt for audit history, but make it ineligible for future retry
+        # or dispatch so archiving cannot resurrect an auditor worker.
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='cancelled', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, next_retry_at=NULL, "
+            "updated_at=? WHERE task_id=? AND status IN ('queued', 'retry', 'running')",
+            (int(time.time()), task_id),
+        )
         # If archive happened while a run was still in flight (e.g. user
         # archived a running task from the dashboard), close that run with
         # outcome='reclaimed' so attempt history isn't orphaned.
@@ -5476,6 +6148,7 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
         conn.execute("DELETE FROM task_events WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_runs WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM kanban_notify_subs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM kanban_review_jobs WHERE task_id = ?", (task_id,))
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         return cur.rowcount == 1
 
@@ -5962,6 +6635,9 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    auditor_spawned: list[str] = field(default_factory=list)
+    auditor_retrying: list[str] = field(default_factory=list)
+    needs_auditor: list[str] = field(default_factory=list)
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -6004,6 +6680,58 @@ def _record_worker_exit(pid: int, raw_status: int) -> None:
         ordered = sorted(_recent_worker_exits.items(), key=lambda kv: kv[1][1])
         for _pid, _ in ordered[: len(ordered) // 2]:
             _recent_worker_exits.pop(_pid, None)
+
+
+_WORKER_EXIT_LOG_TAIL_BYTES = 16 * 1024
+_PROTOCOL_NUDGE_MARKER = "protocol_nudge_pending:"
+
+
+def _redact_worker_exit_excerpt(text: str, *, limit: int = 500) -> str:
+    """Return a durable, compact, secret-redacted worker-log excerpt."""
+    from agent.redact import redact_sensitive_text
+
+    normalized = " ".join(str(text or "").replace("\r", "\n").split())
+    return redact_sensitive_text(normalized, force=True)[:limit]
+
+
+def _worker_exit_log_details(task_id: str) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(startup_error, prose_excerpt)`` from the latest worker run."""
+    log = read_worker_log(task_id, tail_bytes=_WORKER_EXIT_LOG_TAIL_BYTES)
+    if not log:
+        return (None, None)
+    latest = log.rsplit("Query:", 1)[-1]
+    startup = re.search(
+        r"Failed to initialize agent:\s*(.*?)(?:\s*Goodbye!|$)",
+        latest,
+        flags=re.DOTALL,
+    )
+    if startup:
+        excerpt = _redact_worker_exit_excerpt(startup.group(1))
+        return (excerpt or None, None)
+
+    prose_lines: list[str] = []
+    for line in latest.replace("\r", "\n").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith((
+            "work kanban task ", "Initializing agent", "Goodbye!", "─", "┊",
+        )):
+            continue
+        prose_lines.append(stripped)
+    excerpt = _redact_worker_exit_excerpt(" ".join(prose_lines))
+    return (None, excerpt or None)
+
+
+def _worker_prompt_for(task: Task) -> str:
+    """Build the next worker prompt, including one protocol-only nudge."""
+    if (task.last_failure_error or "").startswith(_PROTOCOL_NUDGE_MARKER):
+        return (
+            f"Continue kanban task {task.id}. Your previous worker process "
+            "returned prose but did not record a terminal lifecycle action. "
+            "Inspect the current task state, then call exactly one of "
+            "kanban_complete or kanban_block before exiting. Do not claim "
+            "success in prose without the lifecycle tool."
+        )
+    return f"work kanban task {task.id}"
 
 
 def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
@@ -6261,6 +6989,8 @@ def heartbeat_worker(
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    worktree_fingerprint: Optional[str] = None,
+    worktree_has_tracked_changes: bool = False,
 ) -> bool:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
@@ -6298,11 +7028,79 @@ def heartbeat_worker(
                 "UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?",
                 (now, run_id),
             )
-        _append_event(
-            conn, task_id, "heartbeat",
-            {"note": note} if note else None,
-            run_id=run_id,
+        # Explicit worker checkpoints and automatic worktree state are both
+        # deliberately compact: task_events are a durable notification surface,
+        # not a place for command output, file contents, or credentials.
+        from agent.redact import redact_sensitive_text
+
+        checkpoint = redact_sensitive_text(
+            " ".join(str(note or "").split()), force=True,
+        )[:240]
+        fingerprint = (
+            str(worktree_fingerprint or "").lower()
+            if re.fullmatch(r"[0-9a-f]{16,64}", str(worktree_fingerprint or "").lower())
+            else ""
         )
+        heartbeat_payload: dict[str, object] = {}
+        if checkpoint:
+            heartbeat_payload["note"] = checkpoint
+        if fingerprint:
+            heartbeat_payload["worktree"] = {
+                "fingerprint": fingerprint,
+                "tracked_changes": bool(worktree_has_tracked_changes),
+            }
+        previous_worktree_state = None
+        if fingerprint:
+            rows = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='heartbeat' "
+                "ORDER BY id DESC LIMIT 128",
+                (task_id,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload"] or "{}")
+                    candidate = payload.get("worktree") or {}
+                    previous_worktree_state = str(candidate.get("fingerprint") or "") or None
+                except (AttributeError, TypeError, ValueError):
+                    previous_worktree_state = None
+                if previous_worktree_state:
+                    break
+        _append_event(
+            conn, task_id, "heartbeat", heartbeat_payload or None, run_id=run_id,
+        )
+
+        # Worker liveness and meaningful progress are separate durable signals.
+        # An explicit checkpoint is scoped to a run: a fresh attempt can report
+        # the same intentional milestone again. A worktree state transition is
+        # scoped to the task so an unchanged dirty tree cannot look fresh again
+        # merely because the dispatcher spawned another run.
+        generic = {"working", "still working", "работаю", "в работе", "продолжаю работу"}
+        if checkpoint and checkpoint.casefold() not in generic:
+            previous = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND run_id IS ? "
+                "AND kind='progress' ORDER BY id DESC LIMIT 1",
+                (task_id, run_id),
+            ).fetchone()
+            try:
+                previous_payload = json.loads(previous["payload"] or "{}") if previous else {}
+            except (TypeError, ValueError):
+                previous_payload = {}
+            if checkpoint != str(previous_payload.get("checkpoint") or ""):
+                _append_event(
+                    conn, task_id, "progress", {"checkpoint": checkpoint}, run_id=run_id,
+                )
+        elif fingerprint:
+            # A dirty tracked tree is useful even on the first observation;
+            # a pristine initial checkout is merely a baseline. Once a baseline
+            # exists, a new fingerprint also captures a verifiable commit.
+            if previous_worktree_state != fingerprint and (
+                bool(worktree_has_tracked_changes) or previous_worktree_state is not None
+            ):
+                _append_event(
+                    conn, task_id, "progress",
+                    {"checkpoint": f"worktree:{fingerprint[:16]}", "source": "worktree"},
+                    run_id=run_id,
+                )
     return True
 
 
@@ -6420,11 +7218,10 @@ def enforce_max_runtime(
     return timed_out
 
 
-# Heartbeat staleness heartbeat gap — if a running task hasn't sent a
-# heartbeat in this many seconds it's considered inactive regardless of
-# the ``dispatch_stale_timeout_seconds`` threshold.  Hardcoded at 1 hour
-# to match the original spec (">4h started + no commits in 1h").
-_STALE_HEARTBEAT_GAP_SECONDS = 3600
+# A live process that only sends keep-alives can still be wedged.  The
+# dispatcher therefore shares the status-card definition of substantive work:
+# only a durable ``progress`` event resets this clock, never a heartbeat.
+_STALE_SUBSTANTIVE_PROGRESS_GAP_SECONDS = 3600
 
 
 def detect_stale_running(
@@ -6433,7 +7230,7 @@ def detect_stale_running(
     stale_timeout_seconds: int = 0,
     signal_fn=None,
 ) -> list[str]:
-    """Reclaim ``running`` tasks that show no progress (heartbeat) within the
+    """Reclaim ``running`` tasks with no substantive progress within the
     staleness window.
 
     A task is considered stale when BOTH of these hold:
@@ -6441,8 +7238,10 @@ def detect_stale_running(
     1. It has been running for longer than ``stale_timeout_seconds``
        (measured from the active run's ``started_at``, falling back to
        ``tasks.started_at`` on older runs).
-    2. Its ``last_heartbeat_at`` is older than
-       ``_STALE_HEARTBEAT_GAP_SECONDS`` (or NULL — never sent a heartbeat).
+    2. Its latest current-run ``progress`` event is older than
+       ``_STALE_SUBSTANTIVE_PROGRESS_GAP_SECONDS`` (or no such event exists).
+       Heartbeats intentionally do not reset this age: they prove liveness,
+       not completed or verifiable work.
 
     On reclaim the task is reset to ``ready``, the run is closed with
     ``outcome='stale'``, and the host-local worker (if still running) is
@@ -6464,7 +7263,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.current_run_id, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -6480,10 +7279,15 @@ def detect_stale_running(
         if elapsed < stale_timeout_seconds:
             continue  # not old enough to check
 
+        run_progress = current_run_progress(conn, row["id"])
+        last_progress = run_progress.substantive_progress_at
+        progress_anchor = last_progress or int(row["active_started_at"])
+        progress_age = now - int(progress_anchor)
+        if progress_age < _STALE_SUBSTANTIVE_PROGRESS_GAP_SECONDS:
+            continue
+
         last_hb = row["last_heartbeat_at"]
         hb_age = (now - int(last_hb)) if last_hb is not None else None
-        if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
-            continue  # recent heartbeat → still alive
 
         pid = row["worker_pid"]
         tid = row["id"]
@@ -6499,7 +7303,7 @@ def detect_stale_running(
         if _worker_survived_termination(termination):
             _defer_reclaim_for_live_worker(
                 conn, tid, lock, now, termination,
-                reason="heartbeat_stale_worker_alive",
+                reason="substantive_progress_stale_worker_alive",
             )
             continue
 
@@ -6523,6 +7327,10 @@ def detect_stale_running(
                 "heartbeat_age_seconds": (
                     int(hb_age) if hb_age is not None else None
                 ),
+                "last_substantive_progress_at": (
+                    int(last_progress) if last_progress is not None else None
+                ),
+                "substantive_progress_age_seconds": int(progress_age),
                 "timeout_seconds": stale_timeout_seconds,
                 "pid": int(pid) if pid else None,
             }
@@ -6532,9 +7340,7 @@ def detect_stale_running(
                 conn, tid,
                 outcome="stale", status="stale",
                 error=(
-                    f"no heartbeat for {int(hb_age)}s "
-                    if hb_age is not None
-                    else "no heartbeat ever"
+                    f"no substantive progress for {int(progress_age)}s"
                 ) + f" after {int(elapsed)}s running",
                 metadata=payload,
             )
@@ -6544,7 +7350,7 @@ def detect_stale_running(
             reclaimed.append(tid)
 
         # Intentionally NOT calling _record_task_failure here. Stale reclaim
-        # is dispatcher-side detection of an absent heartbeat; the task is
+        # is dispatcher-side detection of absent substantive progress; the task is
         # going straight back to ``ready`` for re-dispatch. Counting it as
         # a worker failure would let two legitimately-long-running tasks
         # (>4h without explicit heartbeat) trip the circuit breaker and
@@ -6678,7 +7484,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, last_failure_error FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6701,33 +7507,63 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            initialization_failure = False
+            protocol_nudge = False
             if kind == "clean_exit":
-                # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
-                # work itself succeeded and only the paperwork was skipped, so
-                # a retry usually completes; the corrective sentence below is
-                # surfaced to the retry worker via the prior-attempt error in
-                # ``build_worker_context`` (guidance approach from #61817).
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation. "
-                    "If the prior run already did the work, verify it and "
-                    "report the result via kanban_complete; a run that ends "
-                    "without a terminal kanban call counts as failed no "
-                    "matter what it did."
-                )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                    # Durable marker for _protocol_violation_streak: _end_run
-                    # copies this payload into the run metadata, which is how
-                    # the violation-only retry budget is derived later.
-                    "protocol_violation": True,
-                }
+                startup_error, prose_excerpt = _worker_exit_log_details(row["id"])
+                if startup_error:
+                    protocol_violation = False
+                    initialization_failure = True
+                    error_text = startup_error
+                    event_kind = "initialization_failed"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "diagnostic": startup_error,
+                    }
+                elif (
+                    prose_excerpt
+                    and not (row["last_failure_error"] or "").startswith(
+                        _PROTOCOL_NUDGE_MARKER
+                    )
+                ):
+                    protocol_violation = False
+                    protocol_nudge = True
+                    error_text = (
+                        f"{_PROTOCOL_NUDGE_MARKER} worker exited cleanly (rc=0) "
+                        f"without lifecycle call; final output: {prose_excerpt}"
+                    )
+                    event_kind = "protocol_nudge"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "final_output": prose_excerpt,
+                    }
+                else:
+                    # A clean worker exit without a lifecycle call is retryable,
+                    # but only within the bounded protocol-violation budget.
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation. "
+                        "If the prior run already did the work, verify it and "
+                        "report the result via kanban_complete; a run that ends "
+                        "without a terminal kanban call counts as failed no "
+                        "matter what it did."
+                    )
+                    if prose_excerpt:
+                        error_text += f"; final output: {prose_excerpt}"
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        "protocol_violation": True,
+                    }
+                    if prose_excerpt:
+                        event_payload["final_output"] = prose_excerpt
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
@@ -6762,18 +7598,35 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
-            )
+            task_status = "blocked" if initialization_failure else "ready"
+            if initialization_failure:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_failure_error = ?, block_kind = 'capability' "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (task_status, error_text[:500], row["id"], pid, row["claim_lock"]),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = ?, claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_failure_error = ? WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (task_status, error_text[:500], row["id"], pid, row["claim_lock"]),
+                )
             if cur.rowcount == 1:
-                # Rate-limited requeues are a clean release, not a crash —
-                # record the run outcome as ``rate_limited`` so the board
-                # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                if initialization_failure:
+                    _run_outcome = "initialization_failed"
+                elif protocol_nudge:
+                    _run_outcome = "protocol_nudge"
+                elif rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                elif protocol_violation:
+                    _run_outcome = "crashed"
+                else:
+                    _run_outcome = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -6785,6 +7638,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
+                if initialization_failure or protocol_nudge:
+                    continue
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
@@ -7301,34 +8156,290 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """Return True iff there is at least one review+assigned+unclaimed task
-    whose assignee maps to a real Hermes profile.
-
-    Mirror of :func:`has_spawnable_ready` for the review column —
-    used by the health telemetry to decide whether the dispatcher
-    should have spawned a review agent.
-    """
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = 'review' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
-    ).fetchall()
-    if not rows:
-        return False
-    try:
-        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-    except Exception:
-        return True
-    for row in rows:
-        if profile_exists(row["assignee"]):
-            return True
+    """Review handoffs are auditor-owned and never dispatcher-spawnable."""
     return False
+
+
+_AUDITOR_REVIEW_PROFILE = "auditor"
+_AUDITOR_REVIEW_TTL_SECONDS = 15 * 60
+_AUDITOR_REVIEW_MAX_ATTEMPTS = 2
+
+
+def _reconcile_review_jobs(conn: sqlite3.Connection) -> list[str]:
+    """Backfill/repair review receipts for review tasks that are not dispatchable.
+
+    ``request_review`` normally writes the receipt atomically. Older DB states,
+    process crashes, and manual DB edits can still leave ``status='review'``
+    without a healthy ``kanban_review_jobs`` row, or with a stale terminal row
+    from an earlier handoff. This routine reconciles these cases on every
+    dispatcher tick.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT t.id AS task_id, t.status AS task_status, "
+            "  (SELECT e.id FROM task_events e "
+            "   WHERE e.task_id=t.id AND e.kind='review_requested' "
+            "   ORDER BY e.id DESC LIMIT 1) AS handoff_event_id, "
+            "  j.handoff_event_id AS current_handoff_event_id, j.status AS current_status, "
+            "  j.worker_pid AS current_worker_pid, j.claim_expires AS current_claim_expires, "
+            "  j.attempts AS current_attempts "
+            "FROM tasks t "
+            "LEFT JOIN kanban_review_jobs j ON j.task_id=t.id "
+            "WHERE t.status='review'"
+        ).fetchall()
+
+        reconciled: list[str] = []
+        for row in rows:
+            handoff_event_id = row["handoff_event_id"]
+            if handoff_event_id is None:
+                continue
+
+            terminal_job_status = {"accepted", "rejected", "needs_auditor"}
+            must_recreate = (
+                row["current_handoff_event_id"] is None
+                or row["current_status"] in terminal_job_status
+                or int(row["current_handoff_event_id"]) != int(handoff_event_id)
+            )
+            if not must_recreate and row["current_status"] in {"queued", "retry", "running"}:
+                continue
+
+            previous_status = row["current_status"]
+            changed = _upsert_review_job_receipt(conn, row["task_id"], int(handoff_event_id), now=now)
+            if changed and previous_status != "queued":
+                payload = {
+                    "handoff_event_id": int(handoff_event_id),
+                    "previous_review_job_status": previous_status,
+                    "new_review_job_status": "queued",
+                    "recovery_reason": "reconcile_review_job",
+                    "task_status_before": row["task_status"],
+                }
+                if row["current_attempts"] is not None:
+                    payload["attempts"] = int(row["current_attempts"])
+                _append_event(conn, row["task_id"], "review_job_reconciled", payload)
+            reconciled.append(row["task_id"])
+    return reconciled
+
+
+def _upsert_review_job_receipt(
+    conn: sqlite3.Connection,
+    task_id: str,
+    handoff_event_id: int,
+    *,
+    now: Optional[int] = None,
+) -> bool:
+    """Create or reset a reviewer lease row for a review handoff.
+
+    Returns ``True`` when the row was created or reset for a new/obsolete
+    handoff and ``False`` when an active identical handoff lease is already
+    present.
+    """
+    now = int(time.time()) if now is None else int(now)
+    row = conn.execute(
+        "SELECT handoff_event_id, status FROM kanban_review_jobs WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+
+    if row is not None and int(row["handoff_event_id"]) == int(handoff_event_id):
+        if row["status"] in {"queued", "retry", "running"}:
+            return False
+
+    # Replace stale/terminal/obsolete rows with a fresh, dispatchable lease.
+    payload = (
+        task_id,
+        handoff_event_id,
+        _AUDITOR_REVIEW_PROFILE,
+        now,
+        now,
+    )
+    try:
+        conn.execute(
+            "INSERT INTO kanban_review_jobs "
+            "(task_id, handoff_event_id, profile, status, attempts, claim_lock, "
+            "claim_expires, worker_pid, next_retry_at, last_error, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'queued', 0, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+            payload,
+        )
+        return True
+    except sqlite3.IntegrityError:
+        # ``handoff_event_id`` is globally unique, but legacy rows may retain
+        # the same event id during recovery tests that rebuild state in-place.
+        # Reclaim that stale row so the latest task can progress.
+        conn.execute(
+            "DELETE FROM kanban_review_jobs WHERE handoff_event_id=? AND task_id != ?",
+            (handoff_event_id, task_id),
+        )
+        updated = conn.execute(
+            "UPDATE kanban_review_jobs SET handoff_event_id=?, profile=?, status='queued', "
+            "attempts=0, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "next_retry_at=NULL, last_error=NULL, created_at=?, updated_at=? WHERE task_id=?",
+            (handoff_event_id, _AUDITOR_REVIEW_PROFILE, now, now, task_id),
+        )
+        if updated.rowcount == 0:
+            conn.execute(
+                "INSERT INTO kanban_review_jobs "
+                "(task_id, handoff_event_id, profile, status, attempts, claim_lock, "
+                "claim_expires, worker_pid, next_retry_at, last_error, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'queued', 0, NULL, NULL, NULL, NULL, NULL, ?, ?)",
+                payload,
+            )
+    return True
+
+
+
+def _finish_auditor_review_attempt(conn: sqlite3.Connection, task_id: str, error: str, *, within_transaction: bool = False) -> str:
+    """Release a failed review receipt with bounded backoff or typed escalation."""
+    now = int(time.time())
+    with (write_txn(conn) if not within_transaction else contextlib.nullcontext()):
+        row = conn.execute(
+            "SELECT attempts, status, handoff_event_id FROM kanban_review_jobs WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return "missing"
+        attempts = int(row["attempts"] or 0)
+        attempts_before = attempts
+        if attempts >= _AUDITOR_REVIEW_MAX_ATTEMPTS:
+            conn.execute(
+                "UPDATE kanban_review_jobs SET status='needs_auditor', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL, last_error=?, updated_at=? WHERE task_id=?",
+                (error[:500], now, task_id),
+            )
+            _append_event(conn, task_id, "needs_auditor", {
+                "reason": error[:500],
+                "attempts": attempts,
+                "attempts_before": attempts_before,
+                "handoff_event_id": int(row["handoff_event_id"]) if row["handoff_event_id"] is not None else None,
+                "review_job_previous_status": row["status"],
+                "review_job_status_after": "needs_auditor",
+            })
+            return "needs_auditor"
+        retry_at = now + (60 * attempts)
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='retry', claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL, next_retry_at=?, last_error=?, updated_at=? WHERE task_id=?",
+            (retry_at, error[:500], now, task_id),
+        )
+        _append_event(conn, task_id, "review_retry_scheduled", {
+            "reason": error[:500],
+            "attempts": attempts,
+            "attempts_before": attempts_before,
+            "retry_at": retry_at,
+            "handoff_event_id": int(row["handoff_event_id"]) if row["handoff_event_id"] is not None else None,
+            "review_job_previous_status": row["status"],
+            "review_job_status_after": "retry",
+        })
+        return "retry"
+
+
+def _mark_needs_auditor(conn: sqlite3.Connection, task_id: str, error: str) -> bool:
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, handoff_event_id FROM kanban_review_jobs WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        changed = conn.execute(
+            "UPDATE kanban_review_jobs SET status='needs_auditor', claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, last_error=?, updated_at=? "
+            "WHERE task_id=? AND status!='needs_auditor'",
+            (error[:500], now, task_id),
+        ).rowcount
+        if changed:
+            _append_event(
+                conn,
+                task_id,
+                "needs_auditor",
+                {
+                    "reason": error[:500],
+                    "review_job_previous_status": row["status"],
+                    "review_job_status_after": "needs_auditor",
+                    "handoff_event_id": int(row["handoff_event_id"]) if row["handoff_event_id"] is not None else None,
+                },
+            )
+        return bool(changed)
+
+
+def _dispatch_auditor_reviews(
+    conn: sqlite3.Connection, *, spawn_fn, board: Optional[str], result: DispatchResult, dry_run: bool,
+) -> None:
+    """Run review receipts without changing ``tasks.status='review'``."""
+    # A dry run must not create durable receipts; normal ticks reconcile
+    # legacy review handoffs before attempting any auditor claim.
+    if not dry_run:
+        _reconcile_review_jobs(conn)
+    for row in conn.execute(
+        "SELECT task_id, worker_pid FROM kanban_review_jobs WHERE status='running'"
+    ).fetchall():
+        if row["worker_pid"] and not _pid_alive(int(row["worker_pid"])):
+            state = _finish_auditor_review_attempt(
+                conn, row["task_id"], "auditor review process exited before a decision"
+            )
+            (result.needs_auditor if state == "needs_auditor" else result.auditor_retrying).append(row["task_id"])
+
+    now = int(time.time())
+    jobs = conn.execute(
+        "SELECT j.task_id, j.profile, t.workspace_path FROM kanban_review_jobs j "
+        "JOIN tasks t ON t.id=j.task_id WHERE t.status='review' "
+        "AND j.status IN ('queued', 'retry') AND (j.next_retry_at IS NULL OR j.next_retry_at <= ?) "
+        "ORDER BY j.created_at ASC",
+        (now,),
+    ).fetchall()
+    for job in jobs:
+        task_id, profile, workspace = job["task_id"], job["profile"], job["workspace_path"]
+        if dry_run:
+            result.auditor_spawned.append(task_id)
+            continue
+        try:
+            from hermes_cli.profiles import profile_exists
+            available = profile_exists(profile)
+        except Exception:
+            available = True
+        if not available:
+            if _mark_needs_auditor(conn, task_id, f"auditor profile '{profile}' is unavailable"):
+                result.needs_auditor.append(task_id)
+            continue
+        if not workspace or not os.path.isdir(workspace):
+            if _mark_needs_auditor(conn, task_id, "review source workspace is unavailable"):
+                result.needs_auditor.append(task_id)
+            continue
+        lock = _claimer_id()
+        with write_txn(conn):
+            claimed = conn.execute(
+                "UPDATE kanban_review_jobs SET status='running', attempts=attempts+1, "
+                "claim_lock=?, claim_expires=?, next_retry_at=NULL, updated_at=? "
+                "WHERE task_id=? AND status IN ('queued', 'retry') "
+                "AND (next_retry_at IS NULL OR next_retry_at <= ?)",
+                (lock, now + _AUDITOR_REVIEW_TTL_SECONDS, now, task_id, now),
+            ).rowcount
+            if claimed:
+                _append_event(conn, task_id, "auditor_review_claimed", {"profile": profile})
+        if not claimed:
+            continue
+        try:
+            task = get_task(conn, task_id)
+            pid = spawn_fn(task, str(workspace), board=board)
+            if not pid:
+                raise RuntimeError("auditor review spawn returned no pid")
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE kanban_review_jobs SET worker_pid=?, updated_at=? WHERE task_id=? AND status='running'",
+                    (int(pid), int(time.time()), task_id),
+                )
+                _append_event(conn, task_id, "auditor_review_spawned", {"profile": profile, "pid": int(pid)})
+            result.auditor_spawned.append(task_id)
+        except Exception as exc:
+            state = _finish_auditor_review_attempt(conn, task_id, f"auditor review spawn: {exc}")
+            (result.needs_auditor if state == "needs_auditor" else result.auditor_retrying).append(task_id)
 
 
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
+    auditor_spawn_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -7363,6 +8474,7 @@ def dispatch_once(
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
+            auditor_spawn_fn=auditor_spawn_fn,
             ttl_seconds=ttl_seconds,
             dry_run=dry_run,
             max_spawn=max_spawn,
@@ -7379,6 +8491,7 @@ def dispatch_once(
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
+            auditor_spawn_fn=auditor_spawn_fn,
             ttl_seconds=ttl_seconds,
             dry_run=dry_run,
             max_spawn=max_spawn,
@@ -7395,6 +8508,7 @@ def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
+    auditor_spawn_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -7438,6 +8552,13 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    _dispatch_auditor_reviews(
+        conn,
+        spawn_fn=auditor_spawn_fn or _default_auditor_review_spawn,
+        board=board,
+        result=result,
+        dry_run=dry_run,
+    )
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7710,86 +8831,6 @@ def _dispatch_once_locked(
             if auto:
                 result.auto_blocked.append(claimed.id)
 
-    # ---- review column dispatch ----
-    # Review tasks are tasks that a worker moved to 'review' after
-    # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
-    #
-    # Same concurrency model as ready dispatch: review spawns count
-    # against max_spawn alongside ready tasks, so the total number of
-    # running workers stays bounded.
-    review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
-        "WHERE status = 'review' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
-    ).fetchall()
-    for row in review_rows:
-        if max_spawn is not None and running_count + spawned >= max_spawn:
-            break
-        if not row["assignee"]:
-            result.skipped_unassigned.append(row["id"])
-            continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
-            result.skipped_nonspawnable.append(row["id"])
-            continue
-        if dry_run:
-            result.spawned.append((row["id"], row["assignee"], ""))
-            continue
-        claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
-        if claimed is None:
-            continue
-        try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
-            else:
-                workspace = resolve_workspace(claimed, board=board)
-        except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, f"workspace: {exc}",
-                failure_limit=failure_limit,
-            )
-            if auto:
-                result.auto_blocked.append(claimed.id)
-            continue
-        # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
-        if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
-        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load the sdlc-review skill for review agents — it carries
-        # the review logic (AC verification, merge, etc.). The mandatory
-        # kanban lifecycle is already injected into every worker's system
-        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
-        # review agent needs.
-        claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
-        try:
-            import inspect
-            try:
-                sig = inspect.signature(_spawn)
-                if "board" in sig.parameters:
-                    pid = _spawn(claimed, str(workspace), board=board)
-                else:
-                    pid = _spawn(claimed, str(workspace))
-            except (TypeError, ValueError):
-                pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
-            result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
-            spawned += 1
-        except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, str(exc),
-                failure_limit=failure_limit,
-            )
-            if auto:
-                result.auto_blocked.append(claimed.id)
     return result
 
 
@@ -8060,6 +9101,9 @@ def _default_spawn(
     workspace: str,
     *,
     board: Optional[str] = None,
+    profile_override: Optional[str] = None,
+    prompt_override: Optional[str] = None,
+    review_only: bool = False,
 ) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -8079,9 +9123,9 @@ def _default_spawn(
 
     from hermes_cli.profiles import normalize_profile_name
 
-    profile_arg = normalize_profile_name(task.assignee)
+    profile_arg = normalize_profile_name(profile_override or task.assignee)
 
-    prompt = f"work kanban task {task.id}"
+    prompt = prompt_override or _worker_prompt_for(task)
     env = dict(os.environ)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
@@ -8122,8 +9166,10 @@ def _default_spawn(
         env["TERMINAL_CWD"] = workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
-    if task.current_run_id is not None:
+    if task.current_run_id is not None and not review_only:
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if review_only:
+        env["HERMES_KANBAN_REVIEW_ONLY"] = "1"
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Goal-loop mode: the worker reads these and wraps its run in the
@@ -8193,7 +9239,14 @@ def _default_spawn(
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
-    worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    # Automatic audit runs need to inspect the handed-off source, but never
+    # mutate it or use the implementer/orchestrator tool surface. Keep their
+    # CLI pin deliberately tiny; model_tools appends the scoped Kanban review
+    # decision tools because HERMES_KANBAN_TASK is present.
+    worker_toolsets = (
+        ["kanban-review-readonly", "kanban"]
+        if review_only else _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
+    )
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend([
@@ -8242,6 +9295,23 @@ def _default_spawn(
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
     return proc.pid
+
+
+def _default_auditor_review_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
+    """Start an auditor-only review against the worker's existing workspace."""
+    return _default_spawn(
+        task,
+        workspace,
+        board=board,
+        profile_override=_AUDITOR_REVIEW_PROFILE,
+        review_only=True,
+        prompt_override=(
+            f"Audit kanban task {task.id}. Read its worker handoff, metadata, tests, "
+            f"and source in the supplied workspace. Do not modify product code or files. "
+            f"Use only kanban_accept_review, kanban_reject_review, or kanban_recover_review "
+            f"to record the audit result."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -8659,7 +9729,7 @@ def add_notify_sub(
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
     now = int(time.time())
     with write_txn(conn):
-        conn.execute(
+        inserted = conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
                 (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
@@ -8667,6 +9737,20 @@ def add_notify_sub(
             """,
             (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
         )
+        if inserted.rowcount:
+            # A deliberately re-created subscription is the only supported
+            # operator action that un-parks a dead-lettered status lane. Keep
+            # a confirmed message id so recovery still edits, rather than
+            # silently replacing, the original card.
+            conn.execute(
+                """
+                UPDATE kanban_status_surfaces
+                   SET attempts=0, last_error=NULL, next_retry_at=NULL,
+                       dead_lettered_at=NULL, updated_at=?
+                 WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?
+                """,
+                (now, task_id, platform, chat_id, thread_id or ""),
+            )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by
             # backfilling only when the existing value is unset.
@@ -8681,6 +9765,835 @@ def add_notify_sub(
             )
 
 
+def claim_status_surface(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    owner: str,
+    event_id: int,
+    lease_seconds: int = 60,
+    recover_parked: bool = False,
+) -> Optional[dict]:
+    """Claim one status-card render under a durable, expiring DB lease.
+
+    A surface is keyed by the exact origin lane, never by task alone. A claim
+    succeeds only when no live owner holds the lease; the winner increments a
+    generation so stale workers cannot later record a receipt after recovery.
+    ``None`` means another gateway owns the active render attempt, a durable
+    backoff has not elapsed, or the lane is parked. ``recover_parked`` is only
+    for a verified exact-lane recovery signal.
+    """
+    now = int(time.time())
+    lane = (task_id, platform, chat_id, thread_id or "")
+    with write_txn(conn):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_status_surfaces
+                (task_id, platform, chat_id, thread_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (*lane, now, now),
+        )
+        row = conn.execute(
+            "SELECT * FROM kanban_status_surfaces WHERE task_id=? AND platform=? "
+            "AND chat_id=? AND thread_id=?", lane,
+        ).fetchone()
+        if row is None:
+            return None
+        if row["dead_lettered_at"] is not None and not recover_parked:
+            return None
+        # A one-shot recovery already attempted this exact stuck message; a
+        # second loss of the recreated message must not auto-recover again.
+        if (
+            recover_parked
+            and row["message_id"] is not None
+            and row["recovered_message_id"] == row["message_id"]
+        ):
+            return None
+        if row["next_retry_at"] and int(row["next_retry_at"]) > now and not recover_parked:
+            return None
+        # A process can race with itself through overlapping notifier ticks;
+        # lease ownership must serialize those writes too, not only distinct
+        # gateway processes.
+        if row["lease_expires"] and int(row["lease_expires"]) > now:
+            return None
+        generation = int(row["lease_generation"] or 0) + 1
+        cur = conn.execute(
+            """
+            UPDATE kanban_status_surfaces
+               SET pending_event_id=?, lease_owner=?, lease_generation=?,
+                   lease_expires=?, dead_lettered_at=CASE WHEN ? THEN NULL ELSE dead_lettered_at END,
+                   recovered_message_id=CASE WHEN ? THEN message_id ELSE recovered_message_id END,
+                   updated_at=?
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?
+               AND lease_generation=?
+            """,
+            (int(event_id), owner, generation, now + max(1, int(lease_seconds)), int(recover_parked),
+             int(recover_parked), now, *lane, int(row["lease_generation"] or 0)),
+        )
+        if cur.rowcount != 1:
+            return None
+        claimed = conn.execute(
+            "SELECT * FROM kanban_status_surfaces WHERE task_id=? AND platform=? "
+            "AND chat_id=? AND thread_id=?", lane,
+        ).fetchone()
+        return dict(claimed) if claimed is not None else None
+
+
+def list_due_status_surface_refreshes(
+    conn: sqlite3.Connection, *, renderer_version: str, now: Optional[int] = None,
+) -> list[dict]:
+    """Return existing active cards due for a same-message refresh.
+
+    Pulse age is derived exclusively from real lifecycle event timestamps; this
+    query never appends an event or touches a subscriber cursor. A renderer
+    version mismatch produces one migration refresh, then the receipt records
+    that version durably so restarting again does not edit the message.
+    """
+    now = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        """
+        SELECT s.*, n.user_id,
+               n.notifier_profile AS subscription_notifier_profile,
+               t.status, t.created_at, t.started_at,
+               r.started_at AS current_run_started_at,
+               MAX(CASE WHEN e.kind = 'heartbeat' THEN e.created_at END) AS heartbeat_at,
+               MAX(CASE WHEN e.kind = 'progress' THEN e.created_at END) AS progress_at,
+               MAX(CASE WHEN e.kind = 'review_requested' THEN e.created_at END) AS review_at,
+               MAX(CASE WHEN e.kind IN ('blocked', 'dependency_wait') THEN e.created_at END) AS wait_at
+          FROM kanban_status_surfaces AS s
+          JOIN kanban_notify_subs AS n
+            ON (n.task_id, n.platform, n.chat_id, n.thread_id) =
+               (s.task_id, s.platform, s.chat_id, s.thread_id)
+          JOIN tasks AS t ON t.id = s.task_id
+          LEFT JOIN task_runs AS r ON r.id = t.current_run_id AND r.ended_at IS NULL
+          LEFT JOIN task_events AS e ON e.task_id = s.task_id AND e.run_id = t.current_run_id
+         WHERE s.message_id IS NOT NULL
+           AND s.dead_lettered_at IS NULL
+           AND (s.lease_expires IS NULL OR s.lease_expires <= ?)
+           AND t.status NOT IN ('archived', 'done')
+         GROUP BY s.task_id, s.platform, s.chat_id, s.thread_id
+        """,
+        (now,),
+    ).fetchall()
+    due: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        run_progress = current_run_progress(conn, item["task_id"])
+        # The pulse scheduler shares CurrentRunProgress with the status-card
+        # renderer and stale watchdog. Heartbeats remain a liveness cadence;
+        # only substantive_progress_at is the durable work clock.
+        item["heartbeat_at"] = run_progress.heartbeat_at
+        item["progress_at"] = run_progress.substantive_progress_at
+        # Old databases may retain ``s.notifier_profile`` from the period when
+        # surface receipts owned routing.  Do not let sqlite3.Row's first-name
+        # wins behavior shadow the subscription, which is now authoritative.
+        item["notifier_profile"] = item.pop("subscription_notifier_profile")
+        if item.get("renderer_version") != renderer_version:
+            item["refresh_reason"] = "migration"
+            due.append(item)
+            continue
+        status = str(item["status"] or "")
+        if status == "running":
+            timestamps = (
+                item.get("heartbeat_at"),
+                item.get("progress_at") or item.get("current_run_started_at") or item.get("created_at"),
+                item.get("current_run_started_at") or item.get("created_at"),
+            )
+        elif status == "review":
+            timestamps = (item.get("review_at") or item.get("created_at"),)
+        elif status in {"todo", "blocked"}:
+            timestamps = (item.get("wait_at") or item.get("created_at"),)
+        else:
+            timestamps = (item.get("created_at"),)
+        ages = [now - int(timestamp) for timestamp in timestamps if timestamp is not None]
+        period = status_surface_refresh_period(ages)
+        last_rendered = int(item.get("last_rendered_at") or item.get("updated_at") or 0)
+        if period and now - last_rendered >= period:
+            item["refresh_reason"] = "pulse"
+            due.append(item)
+    return due
+
+
+def list_recoverable_edit_missing_status_surfaces(
+    conn: sqlite3.Connection,
+) -> list[dict]:
+    """Return exact-origin cards parked after Telegram lost their edit
+    target (``Message to edit not found``).
+
+    Each row is eligible for exactly one recreate-and-resume attempt: the
+    caller claims it via ``claim_status_surface(recover_parked=True)``,
+    which records the stuck ``message_id`` in ``recovered_message_id`` so a
+    second loss of the freshly recreated message is not auto-recovered
+    again — it stays parked for an operator.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.*, n.notifier_profile AS subscription_notifier_profile
+          FROM kanban_status_surfaces AS s
+          JOIN kanban_notify_subs AS n
+            ON (n.task_id, n.platform, n.chat_id, n.thread_id) =
+               (s.task_id, s.platform, s.chat_id, s.thread_id)
+          JOIN tasks AS t ON t.id = s.task_id
+         WHERE s.dead_lettered_at IS NOT NULL
+           AND lower(s.last_error) LIKE '%message to edit not found%'
+           AND (s.recovered_message_id IS NULL OR s.recovered_message_id != s.message_id)
+           AND t.status NOT IN ('archived', 'done')
+        """
+    ).fetchall()
+    due: list[dict] = []
+    for row in rows:
+        item = dict(row)
+        item["notifier_profile"] = item.pop("subscription_notifier_profile")
+        due.append(item)
+    return due
+
+
+def record_status_surface_delivery(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    owner: str,
+    generation: int,
+    event_id: int,
+    message_id: Optional[str],
+    renderer_version: Optional[str] = None,
+    render_hash: Optional[str] = None,
+    sender_profile: Optional[str] = None,
+) -> bool:
+    """Persist a verified adapter receipt and release the matching lease."""
+    now = int(time.time())
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE kanban_status_surfaces
+               SET message_id=COALESCE(?, message_id),
+                   sender_profile=COALESCE(?, sender_profile),
+                   delivered_event_id=MAX(delivered_event_id, ?),
+                   pending_event_id=0, lease_owner=NULL, lease_expires=NULL,
+                   attempts=0, last_error=NULL, next_retry_at=NULL,
+                   dead_lettered_at=NULL, renderer_version=COALESCE(?, renderer_version),
+                   render_hash=COALESCE(?, render_hash), last_rendered_at=?, updated_at=?
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?
+               AND lease_owner=? AND lease_generation=? AND pending_event_id=?
+            """,
+            (message_id, sender_profile, int(event_id), renderer_version, render_hash, now, now,
+             task_id, platform, chat_id, thread_id or "",
+             owner, int(generation), int(event_id)),
+        )
+    return cur.rowcount == 1
+
+
+def record_status_surface_failure(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    owner: str,
+    generation: int,
+    error: str,
+    dead_letter: bool = False,
+    retry_base_seconds: int = 30,
+    retry_cap_seconds: int = 300,
+    retry_budget: int = 3,
+) -> Optional[dict]:
+    """Record a bounded retry or parked exact-origin render failure."""
+    now = int(time.time())
+    lane = (task_id, platform, chat_id, thread_id or "")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT attempts FROM kanban_status_surfaces WHERE task_id=? AND platform=? "
+            "AND chat_id=? AND thread_id=? AND lease_owner=? AND lease_generation=?",
+            (*lane, owner, int(generation)),
+        ).fetchone()
+        if row is None:
+            return None
+        attempts = int(row["attempts"] or 0) + 1
+        normal_delay = min(
+            max(1, int(retry_cap_seconds)),
+            max(1, int(retry_base_seconds)) * (2 ** max(0, attempts - 1)),
+        )
+        delay, provider_cooldown = _notification_retry_delay(
+            error, base_seconds=normal_delay, cap_seconds=normal_delay,
+        )
+        parked = bool(dead_letter) or (
+            not provider_cooldown and attempts >= max(1, int(retry_budget))
+        )
+        cur = conn.execute(
+            """
+            UPDATE kanban_status_surfaces
+               SET lease_owner=NULL, lease_expires=NULL, attempts=?, last_error=?,
+                   next_retry_at=?, dead_lettered_at=CASE WHEN ? THEN ? ELSE dead_lettered_at END,
+                   updated_at=?
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?
+               AND lease_owner=? AND lease_generation=?
+            """,
+            (attempts, error[:1000], now + delay, int(parked), now, now, task_id, platform, chat_id,
+             thread_id or "", owner, int(generation)),
+        )
+        if cur.rowcount != 1:
+            return None
+        state = conn.execute(
+            "SELECT attempts, next_retry_at, dead_lettered_at FROM kanban_status_surfaces "
+            "WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?", lane,
+        ).fetchone()
+    return dict(state) if state is not None else None
+
+
+def notification_flood_cooldown_until(
+    conn: sqlite3.Connection, *, now: Optional[int] = None,
+) -> int:
+    """Return the active Telegram flood-control horizon for this board.
+
+    A Bot API flood limit applies to the bot, not merely to the exact card
+    that happened to receive the first 429.  The notifier uses this durable
+    horizon to avoid turning one rejected edit into a fan-out over every
+    subscribed lane after a gateway restart.
+    """
+    now = int(time.time()) if now is None else int(now)
+    row = conn.execute(
+        """
+        SELECT MAX(next_retry_at) AS cooldown_until
+          FROM kanban_status_surfaces
+         WHERE next_retry_at > ?
+           AND (
+               lower(COALESCE(last_error, '')) LIKE '%flood_control%'
+               OR lower(COALESCE(last_error, '')) LIKE '%flood control%'
+               OR lower(COALESCE(last_error, '')) LIKE '%retry after%'
+               OR lower(COALESCE(last_error, '')) LIKE '%rate limit%'
+           )
+        """,
+        (now,),
+    ).fetchone()
+    return int((row["cooldown_until"] if row is not None else 0) or 0)
+
+
+def _origin_intent_can_enqueue_terminal_notification(
+    conn: sqlite3.Connection, *, task_id: str, event_id: int,
+) -> tuple[bool, Optional[str]]:
+    """Return whether an accepted task is the final member of its intent.
+
+    Legacy tasks intentionally retain the parent-link fallback: they predate
+    durable intent lineage, so grouping them by chat/topic would guess. Tasks
+    with an explicit ``origin_intent_id`` are grouped only by that stored id;
+    an active/review/rework member keeps the whole intent silent until its last
+    auditor acceptance. Once every member is terminal, only the canonical
+    latest ``review_accepted`` event may enqueue. This prevents a delayed
+    watcher/replay for an earlier accepted member from taking the durable
+    intent dedupe key before the final audited member is processed.
+    """
+    task = conn.execute(
+        "SELECT origin_intent_id FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if task is None:
+        return False, None
+    intent_id = task["origin_intent_id"]
+    if intent_id is None:
+        parent = conn.execute(
+            "SELECT 1 FROM task_links WHERE child_id=? LIMIT 1", (task_id,)
+        ).fetchone()
+        return parent is None, None
+    active = conn.execute(
+        "SELECT 1 FROM tasks WHERE origin_intent_id=? "
+        "AND status NOT IN ('done', 'archived', 'failed', 'cancelled') LIMIT 1",
+        (intent_id,),
+    ).fetchone()
+    if active is not None:
+        return False, str(intent_id)
+    latest_accepted = conn.execute(
+        """
+        SELECT e.id, e.task_id
+          FROM task_events AS e
+          JOIN tasks AS t ON t.id = e.task_id
+         WHERE t.origin_intent_id=? AND e.kind='review_accepted'
+         ORDER BY e.id DESC
+         LIMIT 1
+        """,
+        (intent_id,),
+    ).fetchone()
+    return (
+        latest_accepted is not None
+        and latest_accepted["task_id"] == task_id
+        and int(latest_accepted["id"]) == int(event_id),
+        str(intent_id),
+    )
+def _active_index_lane(platform: str, chat_id: str, thread_id: Optional[str], notifier_profile: Optional[str]) -> tuple[str, str, str, str]:
+    """Return the durable overview identity for a chat or its source topic."""
+    return platform, chat_id, str(thread_id or ""), notifier_profile or ""
+
+
+def claim_active_task_index(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str, thread_id: Optional[str],
+    notifier_profile: Optional[str], owner: str, lease_seconds: int = 60,
+) -> Optional[dict]:
+    """Claim one exact-lane active-task index render under a durable lease."""
+    now = int(time.time())
+    lane = _active_index_lane(platform, chat_id, thread_id, notifier_profile)
+    with write_txn(conn):
+        conn.execute(
+            "INSERT OR IGNORE INTO kanban_active_task_indexes "
+            "(platform, chat_id, thread_id, notifier_profile, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (*lane, now, now),
+        )
+        row = conn.execute(
+            "SELECT * FROM kanban_active_task_indexes WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=?",
+            lane,
+        ).fetchone()
+        if row is None or (row["next_retry_at"] and int(row["next_retry_at"]) > now):
+            return None
+        if row["lease_expires"] and int(row["lease_expires"]) > now and row["lease_owner"] != owner:
+            return None
+        generation = int(row["lease_generation"] or 0) + 1
+        cur = conn.execute(
+            "UPDATE kanban_active_task_indexes SET lease_owner=?, lease_generation=?, lease_expires=?, updated_at=? "
+            "WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=? AND lease_generation=?",
+            (owner, generation, now + max(1, int(lease_seconds)), now, *lane, int(row["lease_generation"] or 0)),
+        )
+        if cur.rowcount != 1:
+            return None
+        claimed = conn.execute(
+            "SELECT * FROM kanban_active_task_indexes WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=?",
+            lane,
+        ).fetchone()
+    return dict(claimed) if claimed is not None else None
+
+
+def record_active_task_index_delivery(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str, thread_id: Optional[str],
+    notifier_profile: Optional[str], owner: str, generation: int, message_id: str,
+    renderer_version: str, render_hash: str, pin_attempted: bool = False, pinned: bool = False,
+    sender_profile: Optional[str] = None,
+) -> bool:
+    """Store a confirmed exact-message receipt and release its lease."""
+    now = int(time.time())
+    lane = _active_index_lane(platform, chat_id, thread_id, notifier_profile)
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_active_task_indexes SET message_id=?, sender_profile=COALESCE(?, sender_profile), pinned=?, "
+            "pin_attempted_at=CASE WHEN ? THEN ? ELSE pin_attempted_at END, lease_owner=NULL, lease_expires=NULL, "
+            "attempts=0, last_error=NULL, next_retry_at=NULL, renderer_version=?, render_hash=?, last_rendered_at=?, updated_at=? "
+            "WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=? AND lease_owner=? AND lease_generation=?",
+            (message_id, sender_profile, int(pinned), int(pin_attempted), now, renderer_version, render_hash, now, now,
+             *lane, owner, int(generation)),
+        )
+    return cur.rowcount == 1
+
+
+def record_active_task_index_failure(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str, thread_id: Optional[str],
+    notifier_profile: Optional[str], owner: str, generation: int, error: str,
+) -> Optional[dict]:
+    """Apply bounded backoff to an index send/edit failure."""
+    now = int(time.time())
+    lane = _active_index_lane(platform, chat_id, thread_id, notifier_profile)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT attempts FROM kanban_active_task_indexes WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=? "
+            "AND lease_owner=? AND lease_generation=?", (*lane, owner, int(generation)),
+        ).fetchone()
+        if row is None:
+            return None
+        attempts = int(row["attempts"] or 0) + 1
+        normal_delay = min(300, 30 * (2 ** max(0, attempts - 1)))
+        delay, _ = _notification_retry_delay(
+            error, base_seconds=normal_delay, cap_seconds=normal_delay,
+        )
+        cur = conn.execute(
+            "UPDATE kanban_active_task_indexes SET lease_owner=NULL, lease_expires=NULL, attempts=?, last_error=?, next_retry_at=?, updated_at=? "
+            "WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=? AND lease_owner=? AND lease_generation=?",
+            (attempts, error[:1000], now + delay, now, *lane, owner, int(generation)),
+        )
+        if cur.rowcount != 1:
+            return None
+        state = conn.execute(
+            "SELECT attempts, next_retry_at FROM kanban_active_task_indexes WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=?",
+            lane,
+        ).fetchone()
+    return dict(state) if state is not None else None
+
+
+def forget_active_task_index_message(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str, thread_id: Optional[str],
+    notifier_profile: Optional[str], owner: str, generation: int,
+) -> bool:
+    """Clear a deleted/unavailable index message while retaining its lease."""
+    lane = _active_index_lane(platform, chat_id, thread_id, notifier_profile)
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE kanban_active_task_indexes SET message_id=NULL, pinned=0, pin_attempted_at=NULL, updated_at=? "
+            "WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=? AND lease_owner=? AND lease_generation=?",
+            (int(time.time()), *lane, owner, int(generation)),
+        )
+    return cur.rowcount == 1
+
+
+def active_task_ids_for_index(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str, thread_id: Optional[str], notifier_profile: Optional[str],
+) -> list[str]:
+    """Return active task ids subscribed to one platform/chat/profile overview."""
+    lane = _active_index_lane(platform, chat_id, thread_id, notifier_profile)
+    rows = conn.execute(
+        """
+        SELECT DISTINCT t.id FROM tasks AS t
+          JOIN kanban_notify_subs AS n ON n.task_id = t.id
+         WHERE n.platform=? AND n.chat_id=?
+           AND COALESCE(n.notifier_profile, '')=?
+           AND t.status NOT IN ('done', 'archived')
+           AND NOT EXISTS (
+                SELECT 1 FROM task_events AS e
+                 WHERE e.task_id=t.id AND e.kind IN ('superseded', 'replaced')
+           )
+         ORDER BY t.created_at, t.id
+        """,
+        (lane[0], lane[1], lane[3]),
+    ).fetchall()
+    return [str(row["id"]) for row in rows]
+
+
+def active_task_index_topic_ids(
+    conn: sqlite3.Connection, *, platform: str, chat_id: str, notifier_profile: Optional[str],
+) -> dict[str, list[str]]:
+    """Return active overview task ids grouped by their durable source topic."""
+    rows = conn.execute(
+        """
+        SELECT n.thread_id, t.id FROM tasks AS t
+          JOIN kanban_notify_subs AS n ON n.task_id = t.id
+         WHERE n.platform=? AND n.chat_id=? AND COALESCE(n.notifier_profile, '')=?
+           AND t.status NOT IN ('done', 'archived')
+           AND NOT EXISTS (
+                SELECT 1 FROM task_events AS e
+                 WHERE e.task_id=t.id AND e.kind IN ('superseded', 'replaced')
+           )
+         ORDER BY n.thread_id, t.created_at, t.id
+        """,
+        (platform, chat_id, notifier_profile or ""),
+    ).fetchall()
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["thread_id"] or ""), []).append(str(row["id"]))
+    return grouped
+
+
+def list_due_active_task_indexes(
+    conn: sqlite3.Connection, *, renderer_version: str, now: Optional[int] = None,
+) -> list[dict]:
+    """Return established index lanes due for an age-bucket or migration refresh."""
+    now = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        "SELECT * FROM kanban_active_task_indexes WHERE message_id IS NOT NULL "
+        "AND (lease_expires IS NULL OR lease_expires <= ?) "
+        "AND (renderer_version != ? OR last_rendered_at IS NULL OR last_rendered_at <= ?)",
+        (now, renderer_version, now - STATUS_SURFACE_REFRESH_SECONDS),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_uninitialized_active_task_index_lanes(
+    conn: sqlite3.Connection, *, now: Optional[int] = None,
+) -> list[dict]:
+    """Discover the shared-chat and exact-topic overview lanes once after restart."""
+    now = int(time.time()) if now is None else int(now)
+    rows = conn.execute(
+        """
+        SELECT DISTINCT n.platform, n.chat_id, '' AS thread_id,
+               COALESCE(n.notifier_profile, '') AS notifier_profile
+          FROM kanban_notify_subs AS n
+          JOIN tasks AS t ON t.id = n.task_id
+         WHERE t.status NOT IN ('done', 'archived')
+           AND NOT EXISTS (
+                SELECT 1 FROM task_events AS e
+                 WHERE e.task_id=t.id AND e.kind IN ('superseded', 'replaced')
+           )
+           AND NOT EXISTS (
+                SELECT 1 FROM kanban_active_task_indexes AS i
+                 WHERE (i.platform, i.chat_id, i.thread_id, i.notifier_profile) =
+                       (n.platform, n.chat_id, '', COALESCE(n.notifier_profile, ''))
+                   AND (i.message_id IS NOT NULL OR (i.next_retry_at IS NOT NULL AND i.next_retry_at > ?))
+           )
+        UNION
+        SELECT DISTINCT n.platform, n.chat_id, COALESCE(n.thread_id, '') AS thread_id,
+               COALESCE(n.notifier_profile, '') AS notifier_profile
+          FROM kanban_notify_subs AS n
+          JOIN tasks AS t ON t.id = n.task_id
+         WHERE COALESCE(n.thread_id, '') != ''
+           AND t.status NOT IN ('done', 'archived')
+           AND NOT EXISTS (
+                SELECT 1 FROM task_events AS e
+                 WHERE e.task_id=t.id AND e.kind IN ('superseded', 'replaced')
+           )
+           AND NOT EXISTS (
+                SELECT 1 FROM kanban_active_task_indexes AS i
+                 WHERE (i.platform, i.chat_id, i.thread_id, i.notifier_profile) =
+                       (n.platform, n.chat_id, COALESCE(n.thread_id, ''), COALESCE(n.notifier_profile, ''))
+                   AND (i.message_id IS NOT NULL OR (i.next_retry_at IS NOT NULL AND i.next_retry_at > ?))
+           )
+        """
+        , (now, now)
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_legacy_active_task_index_receipts(conn: sqlite3.Connection) -> list[dict]:
+    """Return chat-wide Telegram receipts that predate the shared registry.
+
+    The original empty-thread receipt lived in each board DB. It is a remote
+    message identity, not board-owned task state, so callers must adopt it into
+    the shared registry before attempting the first cross-board refresh.
+    """
+    rows = conn.execute(
+        """
+        SELECT i.*
+          FROM kanban_active_task_indexes AS i
+         WHERE i.platform='telegram' AND i.thread_id='' AND i.message_id IS NOT NULL
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def adopt_active_task_index_receipts(
+    conn: sqlite3.Connection, receipts: list[dict],
+) -> list[dict]:
+    """Idempotently preserve board-local overview receipts in the registry.
+
+    If several old board databases contain different receipts for the same
+    chat/profile, choose the lexicographically smallest existing message id.
+    This deterministic fail-closed policy never sends a replacement overview;
+    it only permits a later edit of an already-existing remote message.
+    """
+    candidates: dict[tuple[str, str, str, str], list[dict]] = {}
+    for receipt in receipts:
+        message_id = str(receipt.get("message_id") or "").strip()
+        if not message_id:
+            continue
+        lane = _active_index_lane(
+            str(receipt.get("platform") or ""), str(receipt.get("chat_id") or ""),
+            receipt.get("thread_id"), receipt.get("notifier_profile"),
+        )
+        candidates.setdefault(lane, []).append(receipt)
+
+    results: list[dict] = []
+    now = int(time.time())
+    with write_txn(conn):
+        for lane, lane_receipts in candidates.items():
+            chosen = min(lane_receipts, key=lambda receipt: str(receipt["message_id"]))
+            message_ids = {str(receipt["message_id"]) for receipt in lane_receipts}
+            row = conn.execute(
+                "SELECT * FROM kanban_active_task_indexes "
+                "WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=?",
+                lane,
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO kanban_active_task_indexes
+                        (platform, chat_id, thread_id, notifier_profile, message_id, pinned,
+                         pin_attempted_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (*lane, str(chosen["message_id"]), int(bool(chosen.get("pinned"))),
+                     chosen.get("pin_attempted_at"), now, now),
+                )
+                adopted_message_id = str(chosen["message_id"])
+            else:
+                adopted_message_id = str(row["message_id"] or "")
+                if not adopted_message_id:
+                    conn.execute(
+                        """
+                        UPDATE kanban_active_task_indexes
+                           SET message_id=?, pinned=?, pin_attempted_at=?, updated_at=?
+                         WHERE platform=? AND chat_id=? AND thread_id=? AND notifier_profile=?
+                           AND message_id IS NULL
+                        """,
+                        (str(chosen["message_id"]), int(bool(chosen.get("pinned"))),
+                         chosen.get("pin_attempted_at"), now, *lane),
+                    )
+                    adopted_message_id = str(chosen["message_id"])
+            results.append({
+                "lane": lane,
+                "message_id": adopted_message_id,
+                "conflicted": len(message_ids | ({adopted_message_id} if adopted_message_id else set())) > 1,
+            })
+    return results
+
+
+def enqueue_terminal_notification(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str],
+    notifier_profile: Optional[str],
+    event_id: int,
+    title: str,
+    outcome_key: str,
+    outcome_summary: str,
+) -> bool:
+    """Queue one accepted outcome after the final card receipt for its intent.
+
+    Explicit origin-intent lineage groups workers, helpers, and auditor
+    retries without guessing from a Telegram topic. The final accepted member
+    owns the one durable notification row; a stable intent-derived outcome key
+    makes replay/restart inserts idempotent. Legacy NULL-lineage tasks retain
+    the old parentless fallback rather than being heuristically grouped.
+    """
+    required_handoff_sections = ("Что сделали:", "Что работает:", "Можно проверить:")
+    if not outcome_key.strip() or not all(section in outcome_summary for section in required_handoff_sections):
+        return False
+    now = int(time.time())
+    lane = (task_id, platform, chat_id, thread_id or "")
+    with write_txn(conn):
+        accepted = conn.execute(
+            "SELECT 1 FROM task_events WHERE id=? AND task_id=? AND kind='review_accepted'",
+            (int(event_id), task_id),
+        ).fetchone()
+        if accepted is None:
+            return False
+        is_final, intent_id = _origin_intent_can_enqueue_terminal_notification(
+            conn, task_id=task_id, event_id=event_id,
+        )
+        if not is_final:
+            return False
+        surface = conn.execute(
+            "SELECT message_id, delivered_event_id FROM kanban_status_surfaces "
+            "WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=?", lane,
+        ).fetchone()
+        if surface is None or not surface["message_id"] or int(surface["delivered_event_id"] or 0) < int(event_id):
+            return False
+        dedupe_key = (
+            f"origin-intent:{intent_id}" if intent_id is not None else outcome_key[:160]
+        )
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_terminal_notifications
+                (task_id, platform, chat_id, thread_id, notifier_profile, event_id,
+                 title, outcome_key, outcome_summary, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (*lane, notifier_profile, int(event_id), title[:140], dedupe_key, outcome_summary[:1200], now, now),
+        )
+    return cur.rowcount == 1
+
+
+def list_pending_terminal_notifications(conn: sqlite3.Connection) -> list[dict]:
+    """Return receipt-less terminal pings whose independent retry lease is due."""
+    now = int(time.time())
+    rows = conn.execute(
+        """
+        SELECT * FROM kanban_terminal_notifications
+         WHERE message_id IS NULL AND dead_lettered_at IS NULL
+           AND (next_retry_at IS NULL OR next_retry_at <= ?)
+           AND (lease_expires IS NULL OR lease_expires <= ?)
+         ORDER BY created_at, event_id
+        """,
+        (now, now),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def claim_terminal_notification(
+    conn: sqlite3.Connection, *, notification: dict, owner: str, lease_seconds: int = 60,
+) -> Optional[dict]:
+    """Claim an unsent final-ready message under its own durable lease."""
+    now = int(time.time())
+    key = (notification["task_id"], notification["platform"], notification["chat_id"], notification.get("thread_id") or "", int(notification["event_id"]))
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM kanban_terminal_notifications WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=?", key,
+        ).fetchone()
+        if row is None or row["message_id"] or row["dead_lettered_at"] is not None:
+            return None
+        if row["next_retry_at"] and int(row["next_retry_at"]) > now:
+            return None
+        if row["lease_expires"] and int(row["lease_expires"]) > now and row["lease_owner"] != owner:
+            return None
+        generation = int(row["lease_generation"] or 0) + 1
+        cur = conn.execute(
+            """
+            UPDATE kanban_terminal_notifications
+               SET lease_owner=?, lease_generation=?, lease_expires=?, updated_at=?
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=?
+               AND lease_generation=? AND message_id IS NULL
+            """,
+            (owner, generation, now + max(1, int(lease_seconds)), now, *key, int(row["lease_generation"] or 0)),
+        )
+        if cur.rowcount != 1:
+            return None
+        claimed = conn.execute(
+            "SELECT * FROM kanban_terminal_notifications WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=?", key,
+        ).fetchone()
+    return dict(claimed) if claimed is not None else None
+
+
+def record_terminal_notification_delivery(
+    conn: sqlite3.Connection, *, notification: dict, owner: str, generation: int, message_id: str,
+) -> bool:
+    """Persist the final-message receipt without mutating the status-card row."""
+    now = int(time.time())
+    key = (notification["task_id"], notification["platform"], notification["chat_id"], notification.get("thread_id") or "", int(notification["event_id"]))
+    with write_txn(conn):
+        cur = conn.execute(
+            """
+            UPDATE kanban_terminal_notifications
+               SET message_id=?, lease_owner=NULL, lease_expires=NULL, attempts=0,
+                   last_error=NULL, next_retry_at=NULL, dead_lettered_at=NULL, updated_at=?
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=?
+               AND lease_owner=? AND lease_generation=? AND message_id IS NULL
+            """,
+            (message_id, now, *key, owner, int(generation)),
+        )
+    return cur.rowcount == 1
+
+
+def record_terminal_notification_failure(
+    conn: sqlite3.Connection, *, notification: dict, owner: str, generation: int, error: str,
+    retry_base_seconds: int = 30, retry_cap_seconds: int = 300, retry_budget: int = 3,
+) -> Optional[dict]:
+    """Record bounded final-message retry state without rewinding the card."""
+    now = int(time.time())
+    key = (notification["task_id"], notification["platform"], notification["chat_id"], notification.get("thread_id") or "", int(notification["event_id"]))
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT attempts FROM kanban_terminal_notifications WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=? AND lease_owner=? AND lease_generation=?", (*key, owner, int(generation)),
+        ).fetchone()
+        if row is None:
+            return None
+        attempts = int(row["attempts"] or 0) + 1
+        normal_delay = min(
+            max(1, int(retry_cap_seconds)),
+            max(1, int(retry_base_seconds)) * (2 ** (attempts - 1)),
+        )
+        delay, provider_cooldown = _notification_retry_delay(
+            error, base_seconds=normal_delay, cap_seconds=normal_delay,
+        )
+        parked = not provider_cooldown and attempts >= max(1, int(retry_budget))
+        cur = conn.execute(
+            """
+            UPDATE kanban_terminal_notifications
+               SET lease_owner=NULL, lease_expires=NULL, attempts=?, last_error=?,
+                   next_retry_at=?, dead_lettered_at=CASE WHEN ? THEN ? ELSE dead_lettered_at END,
+                   updated_at=?
+             WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=?
+               AND lease_owner=? AND lease_generation=? AND message_id IS NULL
+            """,
+            (attempts, error[:1000], now + delay, int(parked), now, now, *key, owner, int(generation)),
+        )
+        if cur.rowcount != 1:
+            return None
+        state = conn.execute(
+            "SELECT attempts, next_retry_at, dead_lettered_at FROM kanban_terminal_notifications WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? AND event_id=?", key,
+        ).fetchone()
+    return dict(state) if state is not None else None
+
+
 def list_notify_subs(
     conn: sqlite3.Connection, task_id: Optional[str] = None,
 ) -> list[dict]:
@@ -8690,7 +10603,36 @@ def list_notify_subs(
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM kanban_notify_subs").fetchall()
-    return [dict(r) for r in rows]
+    subs: list[dict] = []
+    for row in rows:
+        sub = dict(row)
+        if _notify_cursor(sub.get("last_event_id")) is None:
+            # A malformed legacy/imported row must not stop the whole
+            # notification sweep. Keep it intact for operator diagnosis.
+            key = (
+                str(sub.get("task_id") or ""), str(sub.get("platform") or ""),
+                str(sub.get("chat_id") or ""), str(sub.get("thread_id") or ""),
+            )
+            if key not in _logged_malformed_notify_subs:
+                _logged_malformed_notify_subs.add(key)
+                _log.warning(
+                    "skipping malformed kanban notification subscription: task_id=%r",
+                    sub.get("task_id"),
+                )
+            continue
+        subs.append(sub)
+    return subs
+
+
+def _notify_cursor(value: Any) -> Optional[int]:
+    """Return a valid notification event cursor, or ``None`` for bad DB data."""
+    if isinstance(value, bool):
+        return None
+    try:
+        cursor = int(value)
+    except (TypeError, ValueError):
+        return None
+    return cursor if cursor >= 0 else None
 
 
 def remove_notify_sub(
@@ -8732,7 +10674,13 @@ def unseen_events_for_sub(
     ).fetchone()
     if row is None:
         return 0, []
-    cursor = int(row["last_event_id"])
+    cursor = _notify_cursor(row["last_event_id"])
+    if cursor is None:
+        _log.warning(
+            "ignoring malformed kanban notification cursor: task_id=%r",
+            task_id,
+        )
+        return 0, []
     kind_list = list(kinds) if kinds else None
     q = (
         "SELECT * FROM task_events WHERE task_id = ? AND id > ? "
@@ -8790,7 +10738,13 @@ def claim_unseen_events_for_sub(
         ).fetchone()
         if row is None:
             return 0, 0, []
-        old_cursor = int(row["last_event_id"])
+        old_cursor = _notify_cursor(row["last_event_id"])
+        if old_cursor is None:
+            _log.warning(
+                "cannot claim malformed kanban notification cursor: task_id=%r",
+                task_id,
+            )
+            return 0, 0, []
         new_cursor, events = unseen_events_for_sub(
             conn,
             task_id=task_id,

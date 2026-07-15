@@ -37,6 +37,37 @@ def _redact_telegram_error_text(error: object) -> str:
         return "<telegram error redacted>"
 
 
+def _telegram_rate_limit_result(error: Exception) -> Optional["SendResult"]:
+    """Preserve Telegram flood-control failures without attempting a fallback send."""
+    error_text = str(error)
+    error_lower = error_text.lower()
+    retry_after = getattr(error, "retry_after", None)
+    if retry_after is None:
+        match = re.search(r"(?:retry\s+(?:in\s+)?|flood_control:)(\d+(?:\.\d+)?)", error_lower)
+        if match:
+            retry_after = float(match.group(1))
+
+    is_rate_limited = (
+        retry_after is not None
+        or classify_send_error(error) == "rate_limited"
+        or any(marker in error_lower for marker in ("too many requests", "rate limit", "flood control"))
+    )
+    if not is_rate_limited:
+        return None
+
+    try:
+        retry_after = float(retry_after) if retry_after is not None else None
+    except (TypeError, ValueError):
+        retry_after = None
+    return SendResult(
+        success=False,
+        error=_redact_telegram_error_text(error),
+        error_kind="rate_limited",
+        retryable=True,
+        retry_after=retry_after,
+    )
+
+
 def _consume_abandoned_task(task: asyncio.Task) -> None:
     """Observe a detached task's terminal exception to avoid noisy loop logs."""
     try:
@@ -206,7 +237,7 @@ async def _shutdown_abandoned_app(app) -> None:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Update, Bot, Message, MessageEntity, InlineKeyboardButton, InlineKeyboardMarkup
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -227,6 +258,7 @@ except ImportError:
     Update = Any
     Bot = Any
     Message = Any
+    MessageEntity = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
     LinkPreviewOptions = None
@@ -303,7 +335,7 @@ def check_telegram_requirements() -> bool:
     install, re-imports the SDK and flips ``TELEGRAM_AVAILABLE`` to True
     so the adapter's class-level type aliases get rebound.
     """
-    global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
+    global TELEGRAM_AVAILABLE, Update, Bot, Message, MessageEntity, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
@@ -315,7 +347,7 @@ def check_telegram_requirements() -> bool:
     except Exception:
         return False
     try:
-        from telegram import Update as _Update, Bot as _Bot, Message as _Message
+        from telegram import Update as _Update, Bot as _Bot, Message as _Message, MessageEntity as _MessageEntity
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
         try:
             from telegram import LinkPreviewOptions as _LPO
@@ -334,6 +366,7 @@ def check_telegram_requirements() -> bool:
     Update = _Update
     Bot = _Bot
     Message = _Message
+    MessageEntity = _MessageEntity
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
     LinkPreviewOptions = _LPO
@@ -731,6 +764,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # A rejected custom emoji id is permanent for this process. Remember it
+        # so a busy live-card does not turn one configuration error into log spam.
+        self._rejected_custom_emoji_ids: set[str] = set()
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 4096 preview cap,
         # every subsequent progressive edit truncates to the SAME text; sending
@@ -780,6 +816,174 @@ class TelegramAdapter(BasePlatformAdapter):
         if (metadata or {}).get("notify"):
             return {}
         return {"disable_notification": True}
+
+    @staticmethod
+    def _telegram_custom_emoji_metadata(message: Message) -> list[dict[str, Any]]:
+        """Capture incoming custom emoji entities without changing user text."""
+        captured: list[dict[str, Any]] = []
+        for source, entities in (
+            ("text", getattr(message, "entities", None) or []),
+            ("caption", getattr(message, "caption_entities", None) or []),
+        ):
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+                custom_emoji_id = getattr(entity, "custom_emoji_id", None)
+                if entity_type != "custom_emoji" or not custom_emoji_id:
+                    continue
+                try:
+                    offset = int(getattr(entity, "offset"))
+                    length = int(getattr(entity, "length"))
+                except (TypeError, ValueError):
+                    continue
+                if offset >= 0 and length > 0:
+                    captured.append({
+                        "source": source, "offset": offset, "length": length,
+                        "custom_emoji_id": str(custom_emoji_id),
+                    })
+        return captured
+
+    def custom_emoji_diagnostic(self, message: Message) -> str:
+        """Return a deliberately invoked, bounded diagnostic for one message."""
+        captured = self._telegram_custom_emoji_metadata(message)
+        if not captured:
+            return "В сообщении нет Telegram Custom Emoji."
+        rows = ["Telegram Custom Emoji в текущем сообщении:"]
+        for item in captured[:20]:
+            rows.append(f"- {item['source']} offset={item['offset']} length={item['length']} id={item['custom_emoji_id']}")
+        if len(captured) > 20:
+            rows.append(f"- … ещё {len(captured) - 20}")
+        return "\n".join(rows)
+
+    async def _try_handle_custom_emoji_diagnostic(self, message: Message) -> bool:
+        """Handle an explicit ``/customemoji`` request without entering the agent.
+
+        The command inspects the message it replies to when present, otherwise
+        its own entities. It intentionally returns the ids only to the
+        authorized caller in the same chat/topic; regular inbound event text
+        and log records continue to omit them.
+        """
+        command = str(getattr(message, "text", "") or "").split(maxsplit=1)[0]
+        command = command.split("@", 1)[0].lower()
+        if command != "/customemoji":
+            return False
+        inspected = getattr(message, "reply_to_message", None) or message
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        if chat_id is None:
+            return True
+        metadata: dict[str, Any] = {}
+        thread_id = getattr(message, "message_thread_id", None)
+        if thread_id is not None:
+            metadata["thread_id"] = str(thread_id)
+        await self.send(
+            str(chat_id),
+            self.custom_emoji_diagnostic(inspected),
+            reply_to=str(getattr(message, "message_id", "") or "") or None,
+            metadata=metadata,
+        )
+        return True
+
+    def kanban_status_metadata(self, status: str) -> dict[str, Any]:
+        """Return presentation-only custom-emoji metadata for a Kanban card.
+
+        ``kanban_status_custom_emoji.<status>`` is retained for existing
+        configurations.  ``glyphs`` additionally lets a profile replace every
+        distinct card-state marker (for example ``🤷‍♂️`` and ``🔐``), rather
+        than incorrectly forcing all of them through one task-status icon.
+        """
+        configured = self.config.extra.get("kanban_status_custom_emoji", {})
+        if not isinstance(configured, dict):
+            return {}
+
+        mapping: dict[str, str] = {}
+
+        glyphs = configured.get("glyphs", {})
+        if isinstance(glyphs, dict):
+            for fallback, value in glyphs.items():
+                if isinstance(value, str):
+                    custom_emoji_id = value.strip()
+                elif isinstance(value, dict):
+                    custom_emoji_id = str(value.get("id") or value.get("custom_emoji_id") or "").strip()
+                elif isinstance(value, (list, tuple)):
+                    custom_emoji_id = [str(item).strip() for item in value if str(item).strip()]
+                else:
+                    continue
+                if (
+                    fallback
+                    and custom_emoji_id
+                    and (
+                        isinstance(custom_emoji_id, list)
+                        or custom_emoji_id not in self._rejected_custom_emoji_ids
+                    )
+                ):
+                    mapping[str(fallback)] = custom_emoji_id
+
+        entry = configured.get(str(status).lower())
+        if isinstance(entry, str):
+            custom_emoji_id, fallback = entry.strip(), ""
+        elif isinstance(entry, dict):
+            custom_emoji_id = str(entry.get("id") or entry.get("custom_emoji_id") or "").strip()
+            fallback = str(entry.get("fallback") or "")
+        else:
+            custom_emoji_id, fallback = "", ""
+        defaults = {"running": "🔄", "review": "🔎", "done": "✅", "blocked": "⏸", "ready": "⏳", "todo": "⏳", "triage": "⏳", "scheduled": "⏳", "archived": "📦"}
+        fallback = fallback or defaults.get(str(status).lower(), "")
+        if fallback and custom_emoji_id and custom_emoji_id not in self._rejected_custom_emoji_ids:
+            mapping[fallback] = custom_emoji_id
+        return {"telegram_custom_emoji": mapping} if mapping else {}
+
+    def _custom_emoji_entities(self, content: str, metadata: Optional[Dict[str, Any]]) -> list[Any]:
+        """Build UTF-16-safe PTB entities for a presentation-only mapping."""
+        mapping = (metadata or {}).get("telegram_custom_emoji")
+        entities: list[Any] = []
+        for fallback, custom_emoji_ids in (mapping.items() if isinstance(mapping, dict) else ()):
+            fallback_text = str(fallback)
+            if isinstance(custom_emoji_ids, (list, tuple)):
+                emoji_ids = [str(value or "").strip() for value in custom_emoji_ids]
+            else:
+                emoji_ids = [str(custom_emoji_ids or "").strip()]
+            offset = 0
+            for emoji_id in emoji_ids:
+                offset = content.find(fallback_text, offset)
+                if not fallback_text or not emoji_id or offset < 0:
+                    break
+                if emoji_id not in self._rejected_custom_emoji_ids:
+                    entities.append(MessageEntity(type="custom_emoji", offset=utf16_len(content[:offset]), length=utf16_len(fallback_text), custom_emoji_id=emoji_id))
+                offset += len(fallback_text)
+        text_links = (metadata or {}).get("telegram_text_links")
+        if isinstance(text_links, dict):
+            for label, url in text_links.items():
+                label_text, target = str(label or ""), str(url or "")
+                offset = content.find(label_text)
+                if label_text and target.startswith("https://") and offset >= 0:
+                    entities.append(MessageEntity(type="text_link", offset=utf16_len(content[:offset]), length=utf16_len(label_text), url=target))
+        return entities
+
+    def _remember_custom_emoji_rejection(self, metadata: Optional[Dict[str, Any]]) -> None:
+        mapping = (metadata or {}).get("telegram_custom_emoji")
+        if not isinstance(mapping, dict):
+            return
+        for custom_emoji_ids in mapping.values():
+            values = custom_emoji_ids if isinstance(custom_emoji_ids, (list, tuple)) else [custom_emoji_ids]
+            for custom_emoji_id in values:
+                emoji_id = str(custom_emoji_id or "").strip()
+                if emoji_id and emoji_id not in self._rejected_custom_emoji_ids:
+                    self._rejected_custom_emoji_ids.add(emoji_id)
+                    logger.warning("[%s] Telegram rejected configured Kanban custom emoji; using Unicode fallback", self.name)
+
+    @staticmethod
+    def _is_custom_emoji_rejection(exc: Exception) -> bool:
+        """True only when Telegram rejected the custom-emoji entity itself.
+
+        A Unicode retry is useful for an unavailable emoji id, but retrying on
+        flood-control or a network failure only doubles the pressure on the
+        same bot.  Keep that distinction at the adapter boundary so callers
+        retain the provider error and can apply their durable backoff.
+        """
+        error = str(exc).lower()
+        return any(marker in error for marker in (
+            "custom emoji", "custom_emoji", "customemoji", "emoji_id",
+            "emoji id", "custom emoji identifier",
+        ))
 
     def _is_callback_user_authorized(
         self,
@@ -1969,62 +2173,34 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count = 0
         self._send_path_degraded = False
 
-    def _observe_polling_request_result(self, request, generation, result):
-        """Record getUpdates progress from an observed do_request result.
-
-        Purely observational: PTB still parses the untouched payload and owns
-        any resulting exception. Kept as its own method so the observation
-        logic is shared and independently testable.
-        """
-        status_code, payload = result
-        if generation is None or not (200 <= status_code < 300):
-            return
-        try:
-            # Use the request's own parser so health observation agrees
-            # exactly with PTB's authoritative response handling (e.g.
-            # UTF-8 replacement decoding and BOM rejection).
-            envelope = request.parse_json_payload(payload)
-        except Exception:
-            return
-        if (
-            isinstance(envelope, dict)
-            and envelope.get("ok") is True
-            and "result" in envelope
-        ):
-            self._record_polling_progress(generation)
-
     def _instrument_polling_request(self, request):
-        """Instrument one dedicated PTB getUpdates request with progress tracking.
+        """Wrap one dedicated PTB getUpdates request with progress tracking."""
+        do_request = request.do_request
 
-        PTB's request classes (``BaseRequest`` / ``HTTPXRequest``) use
-        ``__slots__``. On Python 3.13 their instances no longer carry a
-        ``__dict__`` (the ``AbstractAsyncContextManager`` MRO stopped yielding
-        one), so ``request.do_request = wrapper`` raises
-        ``AttributeError: 'HTTPXRequest' object attribute 'do_request' is
-        read-only`` and the whole Telegram connect fails (#64482). It only
-        appeared to work on Python 3.12, where those instances still had a
-        ``__dict__``.
+        async def _do_request(*args, **kwargs):
+            generation = _POLLING_GENERATION_CONTEXT.get()
+            result = await do_request(*args, **kwargs)
+            status_code, payload = result
+            if generation is not None and 200 <= status_code < 300:
+                try:
+                    # Use the request's own parser so health observation agrees
+                    # exactly with PTB's authoritative response handling (e.g.
+                    # UTF-8 replacement decoding and BOM rejection).
+                    envelope = request.parse_json_payload(payload)
+                except Exception:
+                    # Instrumentation is observational: PTB still parses the
+                    # untouched payload and owns the resulting exception.
+                    pass
+                else:
+                    if (
+                        isinstance(envelope, dict)
+                        and envelope.get("ok") is True
+                        and "result" in envelope
+                    ):
+                        self._record_polling_progress(generation)
+            return result
 
-        Instead of monkey-patching the instance, re-tag it to a thin subclass
-        that overrides ``do_request``. This is portable across Python versions
-        and works for both the real request and the test doubles. The subclass
-        declares ``__slots__ = ()`` so its instance layout stays identical to
-        the base, which is what makes the ``__class__`` swap legal on a slotted
-        instance.
-        """
-        adapter = self
-        base_cls = type(request)
-
-        class _InstrumentedPollingRequest(base_cls):
-            __slots__ = ()
-
-            async def do_request(self, *args, **kwargs):
-                generation = _POLLING_GENERATION_CONTEXT.get()
-                result = await super().do_request(*args, **kwargs)
-                adapter._observe_polling_request_result(self, generation, result)
-                return result
-
-        request.__class__ = _InstrumentedPollingRequest
+        request.do_request = _do_request
         return request
 
     async def _start_polling_once(
@@ -3881,7 +4057,43 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        custom_entities = self._custom_emoji_entities(content, metadata)
+        if custom_entities:
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
+            thread_kwargs = self._thread_kwargs_for_send(
+                chat_id, thread_id, metadata, reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode,
+            )
+            try:
+                msg = await self._send_message_with_thread_fallback(
+                    chat_id=normalize_telegram_chat_id(chat_id), text=content, entities=custom_entities,
+                    reply_to_message_id=reply_to_id, **thread_kwargs,
+                    **self._link_preview_kwargs(), **self._notification_kwargs(metadata),
+                )
+                return SendResult(success=True, message_id=str(msg.message_id))
+            except Exception as emoji_error:
+                # A bad or unauthorized emoji must not prevent the card itself
+                # from arriving. Retry exactly once with its Unicode fallback;
+                # all other provider failures must retain their normal retry
+                # semantics and must not cause a second Bot API request.
+                if not self._is_custom_emoji_rejection(emoji_error):
+                    return SendResult(
+                        success=False,
+                        error=_redact_telegram_error_text(emoji_error),
+                    )
+                self._remember_custom_emoji_rejection(metadata)
+                try:
+                    msg = await self._send_message_with_thread_fallback(
+                        chat_id=normalize_telegram_chat_id(chat_id), text=content,
+                        reply_to_message_id=reply_to_id, **thread_kwargs,
+                        **self._link_preview_kwargs(), **self._notification_kwargs(metadata),
+                    )
+                    return SendResult(success=True, message_id=str(msg.message_id))
+                except Exception as fallback_error:
+                    return SendResult(success=False, error=_redact_telegram_error_text(fallback_error))
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -4130,6 +4342,19 @@ class TelegramAdapter(BasePlatformAdapter):
                                     wait,
                                     safe_send_error,
                                 )
+                                # A long Telegram cooldown is not a transient
+                                # send delay.  Sleeping here keeps the whole
+                                # conversation turn alive and makes later
+                                # inbound messages wait behind it for hours.
+                                # Return the provider deadline so the caller
+                                # can defer delivery while the gateway remains
+                                # free to process the next user message.
+                                if wait > 5.0:
+                                    return SendResult(
+                                        success=False,
+                                        error=f"flood_control:{wait}",
+                                        retry_after=wait,
+                                    )
                                 await asyncio.sleep(wait)
                                 continue
                         raise
@@ -4224,6 +4449,22 @@ class TelegramAdapter(BasePlatformAdapter):
             self._status_message_ids[key] = str(result.message_id)
         return result
 
+    async def pin_message(
+        self, chat_id: str, message_id: str, *, disable_notification: bool = True,
+    ) -> SendResult:
+        """Pin one existing message without creating a second Telegram update."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            await self._bot.pin_chat_message(
+                chat_id=normalize_telegram_chat_id(chat_id),
+                message_id=int(message_id),
+                disable_notification=disable_notification,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            return SendResult(success=False, error=_redact_telegram_error_text(exc))
+
     async def edit_message(
         self,
         chat_id: str,
@@ -4245,6 +4486,44 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        custom_entities = self._custom_emoji_entities(content, metadata)
+        if custom_entities:
+            try:
+                await self._bot.edit_message_text(
+                    chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id),
+                    text=content, entities=custom_entities,
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception as emoji_error:
+                if not self._is_custom_emoji_rejection(emoji_error):
+                    error_text = str(emoji_error).lower()
+                    return SendResult(
+                        success=False,
+                        error=_redact_telegram_error_text(emoji_error),
+                        error_kind=(
+                            "edit_message_not_found"
+                            if "message to edit not found" in error_text
+                            else classify_send_error(emoji_error)
+                        ),
+                    )
+                self._remember_custom_emoji_rejection(metadata)
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), text=content,
+                    )
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as fallback_error:
+                    fallback_error_text = str(fallback_error).lower()
+                    return SendResult(
+                        success=False,
+                        error=_redact_telegram_error_text(fallback_error),
+                        error_kind=(
+                            "edit_message_not_found"
+                            if "message to edit not found" in fallback_error_text
+                            else classify_send_error(fallback_error)
+                        ),
+                    )
 
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
@@ -4429,7 +4708,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 message_id,
                 safe_error,
             )
-            return SendResult(success=False, error=safe_error)
+            return SendResult(
+                success=False,
+                error=safe_error,
+                error_kind=(
+                    "edit_message_not_found"
+                    if "message to edit not found" in err_str
+                    else classify_send_error(e)
+                ),
+            )
 
     def _truncate_stream_overflow_preview(self, content: str) -> str:
         """Return a one-message preview for oversized streaming edits.
@@ -6216,6 +6503,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            rate_limited = _telegram_rate_limit_result(e)
+            if rate_limited is not None:
+                return rate_limited
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s",
                 self.name,
@@ -6343,6 +6633,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     reset_media=_reset_opened_files,
                 )
             except Exception as e:
+                if _telegram_rate_limit_result(e) is not None:
+                    logger.warning(
+                        "[%s] send_media_group rate-limited (chunk %d/%d); skipping fallback",
+                        self.name, chunk_idx + 1, len(chunks),
+                    )
+                    return
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e,
@@ -6403,7 +6699,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            rate_limited = _telegram_rate_limit_result(e)
+            if rate_limited is not None:
+                return rate_limited
             error_str = str(e)
+            # Topic rejected explicit thread routing (e.g. General topic
+            # id 1): retry the photo once without message_thread_id, same
+            # self-heal text sends already have. Do this BEFORE the document
+            # fallback so the image still arrives as a photo.
+            if self._is_thread_not_found_error(e):
+                try:
+                    with open(image_path, "rb") as image_file:
+                        msg = await self._bot.send_photo(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            photo=image_file,
+                            caption=caption[:1024] if caption else None,
+                            **self._notification_kwargs(metadata),
+                        )
+                    logger.info(
+                        "[%s] Photo sent without message_thread_id after thread-not-found",
+                        self.name,
+                    )
+                    return SendResult(success=True, message_id=str(msg.message_id))
+                except Exception as retry_err:
+                    e = retry_err
+                    error_str = str(e)
             # Dimension-related errors are the expected case for valid image
             # files that Telegram just refuses as photos (screenshots, extreme
             # aspect ratios). Log at INFO because the document fallback is
@@ -6431,26 +6751,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
             # Fallback to sending as document (file) — no dimension limit,
-            # only 50MB size limit. If even that fails, fall back to the
-            # base adapter's text-only "Image: /path" rendering.
-            try:
-                return await self.send_document(
-                    chat_id=chat_id,
-                    file_path=image_path,
-                    caption=caption,
-                    file_name=os.path.basename(image_path),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
-            except Exception as doc_err:
-                logger.error(
-                    "[%s] Failed to send Telegram local image as document, "
-                    "falling back to base adapter: %s",
-                    self.name,
-                    doc_err,
-                    exc_info=True,
-                )
-                return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
+            # only 50MB size limit. send_document reports failure as a
+            # SendResult instead of raising or degrading to a raw-path text
+            # message, so no further fallback here.
+            return await self.send_document(
+                chat_id=chat_id,
+                file_path=image_path,
+                caption=caption,
+                file_name=os.path.basename(image_path),
+                reply_to=reply_to,
+                metadata=metadata,
+            )
 
     async def send_document(
         self,
@@ -6500,11 +6811,39 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            rate_limited = _telegram_rate_limit_result(e)
+            if rate_limited is not None:
+                return rate_limited
+            # Topic rejected explicit thread routing (e.g. General topic
+            # id 1): retry the document once without message_thread_id, same
+            # self-heal text sends already have. Never degrade to the base
+            # adapter's raw-path text fallback ("📎 File: /path" is noise
+            # the user can't open) — report failure instead so the caller
+            # (e.g. the kanban notifier) can retry.
+            if self._is_thread_not_found_error(e):
+                try:
+                    with open(file_path, "rb") as f:
+                        msg = await self._bot.send_document(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            document=f,
+                            filename=file_name or os.path.basename(file_path),
+                            caption=caption[:1024] if caption else None,
+                            **self._notification_kwargs(metadata),
+                        )
+                    logger.info(
+                        "[%s] Document sent without message_thread_id after thread-not-found",
+                        self.name,
+                    )
+                    return SendResult(success=True, message_id=str(msg.message_id))
+                except Exception as retry_err:
+                    e = retry_err
             logger.warning(
                 "[%s] Failed to send document: %s",
                 self.name, _redact_telegram_error_text(e),
             )
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
+            return SendResult(
+                success=False, error=str(e), error_kind=classify_send_error(e),
+            )
 
     async def send_video(
         self,
@@ -6550,11 +6889,35 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            rate_limited = _telegram_rate_limit_result(e)
+            if rate_limited is not None:
+                return rate_limited
+            # Same self-heal as send_document: retry once without thread
+            # routing, and report failure instead of the raw-path text
+            # fallback (see comment there).
+            if self._is_thread_not_found_error(e):
+                try:
+                    with open(video_path, "rb") as f:
+                        msg = await self._bot.send_video(
+                            chat_id=normalize_telegram_chat_id(chat_id),
+                            video=f,
+                            caption=caption[:1024] if caption else None,
+                            **self._notification_kwargs(metadata),
+                        )
+                    logger.info(
+                        "[%s] Video sent without message_thread_id after thread-not-found",
+                        self.name,
+                    )
+                    return SendResult(success=True, message_id=str(msg.message_id))
+                except Exception as retry_err:
+                    e = retry_err
             logger.warning(
                 "[%s] Failed to send video: %s",
                 self.name, _redact_telegram_error_text(e),
             )
-            return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
+            return SendResult(
+                success=False, error=str(e), error_kind=classify_send_error(e),
+            )
 
     async def send_image(
         self,
@@ -6604,6 +6967,9 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            rate_limited = _telegram_rate_limit_result(e)
+            if rate_limited is not None:
+                return rate_limited
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s",
                 self.name,
@@ -6641,6 +7007,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
+                rate_limited = _telegram_rate_limit_result(e2)
+                if rate_limited is not None:
+                    return rate_limited
                 logger.error(
                     "[%s] File upload send_photo also failed: %s",
                     self.name,
@@ -6688,6 +7057,9 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            rate_limited = _telegram_rate_limit_result(e)
+            if rate_limited is not None:
+                return rate_limited
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s",
                 self.name,
@@ -7853,6 +8225,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+        if await self._try_handle_custom_emoji_diagnostic(msg):
+            return
         await self._ensure_forum_commands(msg)
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
@@ -7925,7 +8299,6 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -8794,6 +9167,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            metadata={"telegram_custom_emoji": self._telegram_custom_emoji_metadata(message)},
             timestamp=message.date,
         )
 

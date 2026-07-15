@@ -63,17 +63,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
-    metadata = {"thread_id": thread_id} if thread_id is not None else {}
-    # Slack workspace identity is durable routing state, not ephemeral event
-    # metadata. Carry it on every outbound path (including unthreaded sends)
-    # so a multi-workspace Socket Mode gateway never falls back to its primary
-    # WebClient after an async, stream, or recovery boundary.
-    if _platform_name(getattr(source, "platform", None)) == "slack":
-        scope_id = getattr(source, "scope_id", None)
-        if scope_id:
-            metadata["slack_team_id"] = str(scope_id)
-    if not metadata:
+    if thread_id is None:
         return None
+    metadata = {"thread_id": thread_id}
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
@@ -1912,7 +1904,10 @@ class SendResult:
     # consumers branch deterministically instead of substring-matching the raw
     # provider message.  One of the values in :data:`SEND_ERROR_KINDS` or
     # ``None`` (unset / not classified).  Producers should set this via
-    # :func:`classify_send_error`.
+    # :func:`classify_send_error`. ``"edit_message_not_found"`` is the
+    # narrower edit-target discriminator: adapters set it only when a stored
+    # message id is gone, so durable projections can recreate that message
+    # once without treating a missing chat/thread as recoverable.
     error_kind: Optional[str] = None
 
 
@@ -2352,16 +2347,6 @@ class BasePlatformAdapter(ABC):
     # False)`` — no per-platform branching at the call site (the key stays a
     # generic seam; Slack is merely the first consumer).
     supports_inchannel_continuable: bool = False
-
-    # Back-reference to the running ``GatewayRunner``, injected by
-    # ``gateway/run.py`` after the adapter is created. Adapters consume it via
-    # ``getattr(self, "gateway_runner", None)`` for cross-platform delivery and
-    # — critically — for inbound profile routing: ``build_source`` resolves the
-    # target profile through ``runner._profile_name_for_source(...)``. Declaring
-    # it on the base (rather than only on adapters that happen to pre-declare
-    # it) means EVERY platform adapter receives the injection, so profile
-    # routing is platform-generic instead of Discord-only.
-    gateway_runner = None  # type: ignore[assignment]  # set by gateway/run.py
 
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -3220,30 +3205,6 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
-    async def _stop_typing_with_metadata(self, chat_id: str, metadata=None) -> None:
-        """Stop typing while preserving platform-specific routing metadata.
-
-        Most adapters key typing state by chat and retain the historical
-        ``stop_typing(chat_id)`` signature. Slack AI status is per thread and
-        workspace, however, so losing metadata can clear a sibling thread or
-        leave the current one active. Introspect at this shared chokepoint so
-        existing adapters remain source-compatible.
-        """
-        if metadata:
-            try:
-                params = inspect.signature(self.stop_typing).parameters
-                accepts_metadata = "metadata" in params or any(
-                    param.kind is inspect.Parameter.VAR_KEYWORD
-                    for param in params.values()
-                )
-            except (TypeError, ValueError):
-                accepts_metadata = False
-            if accepts_metadata:
-                stop_typing = getattr(self, "stop_typing")
-                await stop_typing(chat_id, metadata=metadata)
-                return
-        await self.stop_typing(chat_id)
-
     async def send_multiple_images(
         self,
         chat_id: str,
@@ -3921,7 +3882,7 @@ class BasePlatformAdapter(ABC):
             # Cancelling _keep_typing alone won't clean that up.
             if hasattr(self, "stop_typing"):
                 try:
-                    await self._stop_typing_with_metadata(chat_id, metadata)
+                    await self.stop_typing(chat_id)
                 except Exception:
                     pass
             self._typing_paused.discard(chat_id)
@@ -3931,7 +3892,6 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         typing_task: asyncio.Task | None = None,
         *,
-        metadata=None,
         timeout: float = 0.5,
         stop_attempts: int = 2,
     ) -> None:
@@ -3951,7 +3911,7 @@ class BasePlatformAdapter(ABC):
             attempts = max(1, stop_attempts)
             for attempt in range(attempts):
                 try:
-                    await self._stop_typing_with_metadata(chat_id, metadata)
+                    await self.stop_typing(chat_id)
                 except Exception:
                     pass
                 if attempt < attempts - 1:
@@ -3971,14 +3931,14 @@ class BasePlatformAdapter(ABC):
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
 
-    async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Signal the active session loop to stop and clear typing immediately."""
         if session_key:
             interrupt_event = self._active_sessions.get(session_key)
             if interrupt_event is not None:
                 interrupt_event.set()
         try:
-            await self._stop_typing_with_metadata(chat_id, metadata)
+            await self.stop_typing(chat_id)
         except Exception:
             pass
 
@@ -4165,6 +4125,17 @@ class BasePlatformAdapter(ABC):
             return result
 
         error_str = result.error or ""
+        # A provider-issued flood deadline is authoritative.  Retrying a
+        # differently formatted version below would still be the same Bot API
+        # write, so it only extends the cooldown and turns one response into a
+        # burst.  Some adapter paths only preserve the provider's textual 429
+        # error, so recognise both the explicit receipt and its canonical
+        # classification instead of falling through to a plain-text resend.
+        # The caller can defer the delivery using ``retry_after`` when present.
+        if (
+            result.retry_after is not None and result.retry_after > 5.0
+        ) or result.error_kind == "rate_limited" or classify_send_error(error_str) == "rate_limited":
+            return result
         is_network = result.retryable or self._is_retryable_error(error_str)
 
         # Timeout errors are not safe to retry (message may have been
@@ -4198,6 +4169,10 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
                     return result
                 error_str = result.error or ""
+                if (
+                    result.retry_after is not None and result.retry_after > 5.0
+                ) or result.error_kind == "rate_limited" or classify_send_error(error_str) == "rate_limited":
+                    return result
                 if result.retry_after is not None:
                     server_retry_after = result.retry_after
                 if not (result.retryable or self._is_retryable_error(error_str)):
@@ -4916,7 +4891,6 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
-                metadata=_thread_metadata,
             )
         
         try:
@@ -4981,16 +4955,10 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
+                # Bare paths are prose, not an attachment command. Requiring
+                # an explicit MEDIA: directive prevents internal manifests,
+                # JSON, and Markdown working files from being sent to chat.
                 local_files = []
-                if not is_ephemeral_response:
-                    # Auto-detect bare local file paths for native media delivery
-                    # (helps small models that don't use MEDIA: syntax). Skip
-                    # system/command notices so config paths stay visible text
-                    # instead of becoming native uploads.
-                    local_files, text_content = self.extract_local_files(text_content)
-                    local_files = self.filter_local_delivery_paths(local_files)
-                    if local_files:
-                        logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
 
                 # A2 (#29346): extraction can reduce a non-empty response to
                 # empty text with no attachment, and the `if text_content` guard
@@ -5340,7 +5308,6 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 None,
-                metadata=_thread_metadata,
                 stop_attempts=1,
             )
             # Final drain/release boundary: force-flush any timer that missed
@@ -5509,7 +5476,6 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
-        scope_id: Optional[str] = None,
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
@@ -5517,47 +5483,10 @@ class BasePlatformAdapter(ABC):
         auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None,
     ) -> SessionSource:
-        """Helper to build a SessionSource for this platform.
-
-        When ``gateway.profile_routes`` is configured, the routing engine
-        resolves the matching profile from guild/chat/thread and stamps it on
-        ``source.profile``. Downstream code (``_resolve_profile_home_for_source``
-        in run.py) reads that field to enter ``_profile_runtime_scope`` for
-        per-profile HERMES_HOME isolation.
-        """
+        """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
         if chat_topic is not None and not chat_topic.strip():
             chat_topic = None
-
-        # Resolve profile from configured routes (None when no match / no routes)
-        profile = None
-        runner = getattr(self, "gateway_runner", None)
-        if runner is not None:
-            try:
-                profile = runner._profile_name_for_source(
-                    SessionSource(
-                        platform=self.platform,
-                        chat_id=str(chat_id),
-                        chat_name=chat_name,
-                        chat_type=chat_type,
-                        user_id=str(user_id) if user_id else None,
-                        user_name=user_name,
-                        thread_id=str(thread_id) if thread_id else None,
-                        chat_topic=chat_topic.strip() if chat_topic else None,
-                        user_id_alt=user_id_alt,
-                        chat_id_alt=chat_id_alt,
-                        is_bot=is_bot,
-                        guild_id=str(guild_id) if guild_id else None,
-                        parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
-                        message_id=str(message_id) if message_id else None,
-                    )
-                )
-            except Exception:
-                logger.warning(
-                    "Profile resolution failed for %s/%s, defaulting to active profile",
-                    self.platform, chat_id, exc_info=True,
-                )
-
         return SessionSource(
             platform=self.platform,
             chat_id=str(chat_id),
@@ -5570,11 +5499,9 @@ class BasePlatformAdapter(ABC):
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,
-            scope_id=str(scope_id) if scope_id else None,
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
-            profile=profile,
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,
             auto_thread_initial_name=auto_thread_initial_name,

@@ -1,5 +1,7 @@
 """Tests for agent/skill_utils.py."""
 
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 from agent.skill_utils import (
@@ -166,10 +168,130 @@ def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch
     assert get_disabled_skill_names() == {"old-skill"}
 
     config_path.write_text("skills:\n  disabled: [new-skill]\n", encoding="utf-8")
-    import os
-    os.utime(config_path, None)
+    updated_stat = config_path.stat()
+    os.utime(
+        config_path,
+        ns=(updated_stat.st_atime_ns, updated_stat.st_mtime_ns + 1_000_000_000),
+    )
 
     assert get_disabled_skill_names() == {"new-skill"}
+
+
+def _replace_preserving_size_and_mtime(path: Path, content: str) -> None:
+    """Atomically replace *path* while preserving its weak cache metadata."""
+    original_stat = path.stat()
+    assert len(content.encode()) == original_stat.st_size
+    replacement = path.with_suffix(".tmp")
+    replacement.write_text(content, encoding="utf-8")
+    replacement.replace(path)
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    replaced_stat = path.stat()
+    assert (replaced_stat.st_size, replaced_stat.st_mtime_ns) == (
+        original_stat.st_size,
+        original_stat.st_mtime_ns,
+    )
+    assert (replaced_stat.st_dev, replaced_stat.st_ino) != (
+        original_stat.st_dev,
+        original_stat.st_ino,
+    )
+
+
+def test_skill_config_cache_invalidates_after_same_stat_replacement(
+    tmp_path, monkeypatch
+):
+    """Replacing config content must invalidate every skill config consumer."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    external_a = tmp_path / "skills-a"
+    external_b = tmp_path / "skills-b"
+    external_a.mkdir()
+    external_b.mkdir()
+    config_path = hermes_home / "config.yaml"
+    before = (
+        "skills:\n"
+        "  disabled: [skill-a]\n"
+        f"  external_dirs: [{external_a}]\n"
+        "  config:\n"
+        "    demo:\n"
+        "      value: value-a\n"
+    )
+    after = (
+        "skills:\n"
+        "  disabled: [skill-b]\n"
+        f"  external_dirs: [{external_b}]\n"
+        "  config:\n"
+        "    demo:\n"
+        "      value: value-b\n"
+    )
+    assert len(before.encode()) == len(after.encode())
+    config_path.write_text(before, encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+    assert get_disabled_skill_names() == {"skill-a"}
+    assert get_external_skills_dirs() == [external_a.resolve()]
+    assert resolve_skill_config_values([{"key": "demo.value"}]) == {
+        "demo.value": "value-a"
+    }
+    _replace_preserving_size_and_mtime(config_path, after)
+
+    assert get_disabled_skill_names() == {"skill-b"}
+    assert get_external_skills_dirs() == [external_b.resolve()]
+    assert resolve_skill_config_values([{"key": "demo.value"}]) == {
+        "demo.value": "value-b"
+    }
+
+
+def test_skill_config_cache_invalidates_with_future_coarse_mtime(
+    tmp_path, monkeypatch
+):
+    """Invalidation must not depend on comparing mtime with wall-clock time."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    before = "skills:\n  disabled: [skill-a]\n"
+    after = "skills:\n  disabled: [skill-b]\n"
+    assert len(before) == len(after)
+    config_path.write_text(before, encoding="utf-8")
+    initial_stat = config_path.stat()
+    two_seconds_ns = 2_000_000_000
+    future_mtime_ns = (
+        (initial_stat.st_mtime_ns + 86_400_000_000_000) // two_seconds_ns
+    ) * two_seconds_ns
+    os.utime(config_path, ns=(initial_stat.st_atime_ns, future_mtime_ns))
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._raw_config_cache_clear()
+    assert get_disabled_skill_names() == {"skill-a"}
+    _replace_preserving_size_and_mtime(config_path, after)
+
+    assert get_disabled_skill_names() == {"skill-b"}
+
+
+def test_skill_config_cache_stable_file_avoids_repeated_reads(tmp_path, monkeypatch):
+    """An unchanged config keeps the stat-only fast path after the first read."""
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text("skills:\n  disabled: [skill-a]\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._raw_config_cache_clear()
+    assert get_disabled_skill_names() == {"skill-a"}
+
+    with patch.object(
+        Path,
+        "read_text",
+        side_effect=AssertionError("stable config should not be read again"),
+    ):
+        assert get_disabled_skill_names() == {"skill-a"}
+        assert resolve_skill_config_values([]) == {}
 
 
 def test_is_external_skill_path_matches_configured_external_dir(tmp_path, monkeypatch):

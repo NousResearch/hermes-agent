@@ -311,7 +311,21 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_ConfigStatKey = Tuple[str, int, int, int, int, int]
+
+
+def _config_stat_key(config_path: Path, stat: os.stat_result) -> _ConfigStatKey:
+    return (
+        str(config_path),
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+
+
+_RAW_CONFIG_CACHE: Dict[_ConfigStatKey, Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -320,18 +334,20 @@ def _raw_config_cache_clear() -> None:
 
 
 def _load_raw_config() -> Dict[str, Any]:
-    """Read config.yaml with a shared mtime+size keyed cache.
+    """Read config.yaml with a shared filesystem-metadata keyed cache.
 
     This module intentionally avoids importing ``hermes_cli.config`` on the
     skill prompt/build path. A tiny local cache gives the same repeated-read
-    win without pulling the heavier CLI config stack into startup.
+    win without pulling the heavier CLI config stack into startup. File
+    identity and change time supplement mtime and size so atomic replacements
+    cannot reuse the previous cache entry merely by preserving those values.
     """
     config_path = get_config_path()
     if not config_path.exists():
         return {}
     try:
         stat = config_path.stat()
-        cache_key = (str(config_path), stat.st_mtime_ns, stat.st_size)
+        cache_key = _config_stat_key(config_path, stat)
     except OSError:
         cache_key = None
 
@@ -402,13 +418,14 @@ def _normalize_string_set(values) -> Set[str]:
 
 # ── External skills directories ──────────────────────────────────────────
 
-# (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
-# mtime_ns so a config.yaml edit mid-run is picked up automatically;
+# Filesystem metadata key -> resolved external dirs list.  Keyed consistently
+# with the shared raw config cache so a config.yaml edit or replacement is
+# picked up automatically;
 # otherwise every call would re-read + re-YAML-parse the 15KB config,
 # which becomes the dominant cost of ``hermes`` startup when ~120 skills
 # each trigger a category lookup during banner construction (10+ seconds
 # of pure waste).
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[_ConfigStatKey, List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -424,20 +441,20 @@ def get_external_skills_dirs() -> List[Path]:
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
 
-    Cached in-process, keyed on ``config.yaml`` mtime — the function is
-    called once per skill during banner / tool-registry scans, and YAML
-    parsing a non-trivial config dominates ``hermes`` cold-start time
-    when the cache is absent.
+    Cached in-process, keyed on ``config.yaml`` filesystem metadata — the
+    function is called once per skill during banner / tool-registry scans, and
+    YAML parsing a non-trivial config dominates ``hermes`` cold-start time when
+    the cache is absent.
     """
     config_path = get_config_path()
     if not config_path.exists():
         return []
 
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
+    # stat() is ~2us vs ~85ms for the full YAML parse, so the fast path is
+    # nearly free.
     try:
         stat = config_path.stat()
-        cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
+        cache_key: _ConfigStatKey = _config_stat_key(config_path, stat)
     except OSError:
         cache_key = None  # type: ignore[assignment]
 

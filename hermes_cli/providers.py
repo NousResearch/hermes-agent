@@ -212,6 +212,18 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://ollama.com/v1",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    "openmodel": HermesOverlay(
+        transport="anthropic_messages",
+        base_url_override="https://api.openmodel.ai/v1",
+        base_url_env_var="OPENMODEL_BASE_URL",
+        extra_env_vars=("OPENMODEL_API_KEY",),
+    ),
+    "meta": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.meta.ai/v1",
+        base_url_env_var="META_BASE_URL",
+        extra_env_vars=("META_API_KEY", "META_SPARK_API_KEY", "LLM_API_KEY"),
+    ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
     # The transport is determined at runtime from config.yaml model.api_mode.
     "azure-foundry": HermesOverlay(

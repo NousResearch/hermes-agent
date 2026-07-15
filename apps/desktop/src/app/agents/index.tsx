@@ -272,7 +272,19 @@ function StreamLine({
   const { t } = useI18n()
   const enterRef = useEnterAnimation(parentRunning, `subagent-stream:${rowKey}`)
   const isMono = entry.kind === 'tool'
-  const tone = entry.isError ? 'text-destructive' : STREAM_TONE[entry.kind]
+
+  // Search/info tool entries shouldn't be red. The subagent payload sets
+  // isError=true when the parent turn's error field is set, but
+  // successful web_search/web_extract/session_search_recall/search_files
+  // subentries get false positives from result dicts that contain any "error"
+  // key. Force them to a neutral tone so a successful search doesn't render red.
+  const text = entry.text || ''
+  const isSearchEntry =
+    /^Searched \b/i.test(text) ||
+    /^Did \d+ searches?/i.test(text) ||
+    /^Extracted \d+/i.test(text) ||
+    /^Searched past sessions?/i.test(text)
+  const tone = entry.isError && !isSearchEntry ? 'text-destructive' : STREAM_TONE[entry.kind]
 
   return (
     <div className="flex min-w-0 items-baseline gap-2 text-[0.72rem] leading-relaxed" ref={enterRef}>

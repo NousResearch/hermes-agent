@@ -1066,6 +1066,18 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    # Validate-then-repair: run JSON Schema validation and apply targeted
+    # repairs (null stripping, {}→[], markdown autolink unwrap) only on
+    # fields the schema actually rejected.  Valid inputs pass through
+    # untouched — no silent pre-processing corruption.
+    try:
+        schema = registry.get_schema(function_name)
+        if schema:
+            from tools.tool_input_repair import repair_tool_args
+            params = schema.get("parameters", schema)
+            function_args = repair_tool_args(function_name, function_args, params)
+    except Exception:
+        pass  # repair layer is best-effort; never block dispatch
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────

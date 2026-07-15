@@ -13,6 +13,7 @@ import re
 import ssl
 import time
 from email.utils import formatdate
+from typing import Any, Awaitable, Callable
 
 from agent.redact import redact_sensitive_text
 
@@ -80,6 +81,32 @@ _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {
 # more generous, so a conservative shared ceiling keeps behavior predictable.
 _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
+
+# ---------------------------------------------------------------------------
+# Plugin enricher registry for send_message
+# ---------------------------------------------------------------------------
+
+SendMessageEnricher = Callable[[dict, str, str, Any], Awaitable[dict]]
+"""Callable receiving (args, chat_id, platform_name, pconfig) -> dict result."""
+
+_SEND_MESSAGE_ENRICHERS: dict[str, SendMessageEnricher] = {}
+"""platform_name -> enricher handler."""
+
+
+def register_send_message_enricher(
+    platform_name: str,
+    handler: SendMessageEnricher,
+    schema_fragment: dict | None = None,
+) -> None:
+    """Register a platform-specific enricher for the send_message tool.
+
+    Enrichers let plugin platforms extend send_message with custom target
+    parsing, schema fields, and send logic without modifying core code.
+    """
+    _SEND_MESSAGE_ENRICHERS[platform_name] = handler
+    if schema_fragment:
+        for key, spec in schema_fragment.items():
+            SEND_MESSAGE_SCHEMA["parameters"]["properties"][key] = spec
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -402,7 +429,10 @@ def _handle_send(args):
     try:
         platform = Platform(platform_name)
     except (ValueError, KeyError):
-        return tool_error(f"Unknown platform: {platform_name}")
+        if platform_name in _SEND_MESSAGE_ENRICHERS:
+            platform = platform_name
+        else:
+            return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
@@ -497,6 +527,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                args=args,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -613,6 +644,11 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # XMPP JIDs (user@server or room@conference.server) are explicit
     if platform_name == "xmpp" and "@" in target_ref:
         return target_ref, None, True
+    # Plugin-enriched platforms
+    if platform_name in _SEND_MESSAGE_ENRICHERS:
+        if target_ref:
+            return target_ref, None, True
+        return None, None, False
     return None, None, False
 
 
@@ -776,7 +812,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -784,6 +820,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
 
     media_files = media_files or []
 
@@ -1081,6 +1119,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
+            enricher = _SEND_MESSAGE_ENRICHERS.get(platform_name)
+            if enricher:
+                if args is None:
+                    args = {}
+                try:
+                    return await enricher(args, chat_id, platform_name, pconfig)
+                except Exception as e:
+                    return {"error": f"Enricher send failed: {e}"}
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
             result = await _send_via_adapter(

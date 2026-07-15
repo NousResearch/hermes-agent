@@ -926,6 +926,38 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- send_message enricher registration ---------------------------------
+
+    def register_send_message_enricher(
+        self,
+        platform_name: str,
+        handler: Callable,
+        schema_fragment: dict | None = None,
+    ) -> None:
+        """Register a send_message enricher for a plugin messaging platform.
+
+        Lets plugin platforms extend ``send_message`` with custom target
+        prefixes, schema fields, and send handlers without modifying core code.
+
+        Args:
+            platform_name: Platform key used in target strings
+                (e.g. ``"myplatform"`` → ``myplatform:chat_id``).
+            handler: Async or sync callable receiving
+                ``(args, chat_id, platform_name, pconfig)`` and returning
+                a dict like ``{"success": True, "message_id": "..."}``
+                or ``{"error": "..."}``.
+            schema_fragment: Optional dict of JSON-schema properties to merge
+                into ``send_message``'s parameter schema so the LLM sees the
+                custom fields.
+        """
+        from tools.send_message_tool import register_send_message_enricher as _register_enricher
+        _register_enricher(platform_name, handler, schema_fragment=schema_fragment)
+        logger.debug(
+            "Plugin %s registered send_message enricher: %s",
+            self.manifest.name,
+            platform_name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(

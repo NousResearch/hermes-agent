@@ -39,15 +39,32 @@ def _codex_turn_started_callback_from_environment():
     url = os.environ.get("HERMES_CODEX_TURN_STARTED_URL", "").strip()
     if not url:
         return None
+    callback_environment = {
+        "hermes_task_id": os.environ.get("HERMES_KANBAN_TASK", "").strip(),
+        "hermes_run_id": os.environ.get("HERMES_KANBAN_RUN_ID", "").strip(),
+        "hermes_profile": os.environ.get("HERMES_PROFILE", "").strip(),
+    }
+    token = os.environ.get("HERMES_CODEX_TURN_STARTED_TOKEN", "").strip()
+    if not token or not all(callback_environment.values()):
+        raise RuntimeError(
+            "HERMES_CODEX_TURN_STARTED_URL requires a token and Kanban worker identity"
+        )
 
     def notify(thread_id: str, turn_id: str) -> None:
         request = Request(
             url,
             data=json.dumps(
-                {"codex_thread_id": thread_id, "codex_turn_id": turn_id},
+                {
+                    **callback_environment,
+                    "codex_thread_id": thread_id,
+                    "codex_turn_id": turn_id,
+                },
                 separators=(",", ":"),
             ).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
             method="POST",
         )
         with urlopen(request, timeout=5) as response:

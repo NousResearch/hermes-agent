@@ -462,6 +462,7 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     "EMAIL_PASSWORD",
     "HERMES_DASHBOARD_SESSION_TOKEN",
     "HERMES_CODEX_TURN_STARTED_URL",
+    "HERMES_CODEX_TURN_STARTED_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID",
     "MODAL_TOKEN_SECRET",

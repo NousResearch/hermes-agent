@@ -1,6 +1,7 @@
 """Tests for credential file passthrough and skills directory mounting."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -211,6 +212,10 @@ class TestSkillsDirectoryMount:
             "container_path": "/sandbox/.hermes/external_skills/0",
         }]
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
     def test_symlink_safe_copy_is_rebuilt_on_next_call(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         skills_dir = hermes_home / "skills"
@@ -231,6 +236,10 @@ class TestSkillsDirectoryMount:
 
 
 class TestIterSkillsFiles:
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
     def test_returns_files_skipping_symlinks(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         skills_dir = hermes_home / "skills"

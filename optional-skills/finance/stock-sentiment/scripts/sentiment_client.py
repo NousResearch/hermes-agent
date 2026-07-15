@@ -29,7 +29,7 @@ def get(path, **params):
     key = os.environ.get("SENTISENSE_API_KEY")
     if not key:
         sys.exit("SENTISENSE_API_KEY is not set "
-                 "(free key: https://app.sentisense.ai/settings/developer)")
+                 "(free key: https://app.sentisense.ai/get-api-key)")
     req = urllib.request.Request(url, headers={"X-SentiSense-API-Key": key})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -116,7 +116,11 @@ def cmd_holders(a):
     quarters = get("/api/v1/institutional/quarters")  # bare array, [0] is latest
     if not quarters:
         sys.exit("no institutional quarters available")
-    q = quarters[0].get("reportDate")
+    # The most-recent quarter is often still filing (pending:true) and holds
+    # almost no holders; use the newest settled quarter, falling back to the
+    # latest only if every quarter is still pending.
+    latest = next((x for x in quarters if not x.get("pending")), quarters[0])
+    q = latest.get("reportDate")
     out(shaped(get(f"/api/v1/institutional/holders/{urllib.parse.quote(a.ticker.upper(), safe='')}", reportDate=q)))
 
 

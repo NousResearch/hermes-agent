@@ -2,7 +2,7 @@
 name: stock-sentiment
 description: "Sentiment and smart-money positioning for US stocks."
 version: 0.1.0
-author: SentiSense
+author: TheSentiTrader (TheSentiTrader), SentiSense
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -51,7 +51,7 @@ Tiers:
 | Free | 1,000 requests/month | 30 requests/min |
 | PRO ($15/mo) | Unlimited | 300 requests/min |
 
-The free tier exercises every workflow below. Preview-gated endpoints return a truncated but real slice on a free key (for example the top 3 insights); PRO removes the monthly cap and returns full history and full lists.
+The free tier exercises every recipe below. Preview-gated endpoints return a truncated but real slice on a free key (for example the top 3 insights); PRO removes the monthly cap and returns full history and full lists.
 
 ## How to Run
 
@@ -172,7 +172,7 @@ SUPPORTING  (price, prices, chart are real-time; profile, popular, calendar, mar
 
 Sentiment is polarity: a float in [-1, 1] where the sign is the direction (negative is bearish and meaningful, positive is bullish) and the magnitude is conviction. Represent the sign unmistakably; do not map it onto a 0-100 scale. The SentiSense Score is a separate, unbounded composite; report it as-is. Mentions and social dominance are their own metric series on the same `/metric/{metricType}` endpoint (`mentions` for talk volume, `social_dominance` for share of the conversation); all four series (`sentiment`, `sentisense`, `mentions`, `social_dominance`) are Public with no quota cost. A separate `/api/v2/metrics/entity/{T}/distribution/{metricType}` endpoint breaks a metric down by source (share of voice, a "where this signal came from" view, not per-source sentiment values).
 
-## Workflows
+## Procedure
 
 Opinionated recipes. Each fans out its independent calls in parallel, then synthesizes; none recommends buying or selling. Frame every result as educational context on positioning and mood.
 

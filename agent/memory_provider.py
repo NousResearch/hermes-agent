@@ -296,6 +296,34 @@ class MemoryProvider(ABC):
         Use to mirror built-in memory writes to your backend.
         """
 
+    def prepare_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        old_text: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Pre-commit hook: classify and potentially reroute a memory write.
+
+        Called BEFORE the built-in memory tool writes to the native store.
+        Return ``None`` to allow the native write to proceed unchanged. Return
+        ``{"handled": True, "result": <str|dict>}`` to intercept the write —
+        the native store is NOT touched and ``result`` is returned to the
+        agent as the tool output.
+
+        Parameters mirror ``on_memory_write`` with the addition of
+        ``old_text`` (the before-text for replace/remove operations). The
+        default implementation is a no-op (returns ``None``) so existing
+        providers are unaffected — override to opt in.
+
+        This is the pre-commit counterpart of ``on_memory_write``: use
+        ``prepare_memory_write`` to *intercept and reroute* (e.g. send
+        operational doctrine to CCA/MemPalace instead of native memory), and
+        ``on_memory_write`` to *mirror* a write that did go through.
+        """
+        return None
+
     def backup_paths(self) -> List[str]:
         """Return extra on-disk paths this provider stores OUTSIDE HERMES_HOME.
 

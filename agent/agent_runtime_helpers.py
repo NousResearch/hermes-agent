@@ -2308,6 +2308,40 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         def _execute(next_args: dict) -> Any:
             target = next_args.get("target", "memory")
             operations = next_args.get("operations")
+            # Pre-commit routing: check if any memory provider wants to
+            # intercept this write and reroute it (e.g. to CCA/MemPalace)
+            # before it hits the native store. If a provider returns
+            # {handled: True}, skip the native write entirely.
+            if agent._memory_manager:
+                for provider in agent._memory_manager.providers:
+                    try:
+                        reroute = provider.prepare_memory_write(
+                            action=next_args.get("action"),
+                            target=target,
+                            content=next_args.get("content") or "",
+                            metadata=agent._build_memory_write_metadata(
+                                task_id=effective_task_id,
+                                tool_call_id=tool_call_id,
+                            ),
+                            old_text=next_args.get("old_text"),
+                        )
+                    except Exception:
+                        logger.debug(
+                            "prepare_memory_write failed for provider %s",
+                            getattr(provider, "name", "?"),
+                            exc_info=True,
+                        )
+                        continue
+                    if reroute and reroute.get("handled"):
+                        result = reroute.get("result")
+                        if isinstance(result, str):
+                            return _finish_agent_tool(result, next_args)
+                        if isinstance(result, dict):
+                            return _finish_agent_tool(
+                                json.dumps(result, ensure_ascii=False), next_args
+                            )
+                        return _finish_agent_tool("OK", next_args)
+            # No provider intercepted — proceed with the native write.
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=next_args.get("action"),

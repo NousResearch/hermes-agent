@@ -1172,26 +1172,21 @@ class HonchoSessionManager:
             return False
 
         try:
-            target_peer_id = self._resolve_peer_id(session, peer)
-            if target_peer_id is None:
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
+            if observer_peer_id is None:
                 logger.warning("Could not resolve conclusion peer '%s' for session '%s'", peer, session_key)
                 return False
-
-            if target_peer_id == session.assistant_peer_id:
-                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-                conclusions_scope = assistant_peer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
-                assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
-                conclusions_scope = assistant_peer.conclusions_of(target_peer_id)
-            else:
-                target_peer = self._get_or_create_peer(target_peer_id)
-                conclusions_scope = target_peer.conclusions_of(target_peer_id)
+            observer_peer = self._get_or_create_peer(observer_peer_id)
+            conclusions_scope = observer_peer.conclusions_of(
+                target_peer_id if target_peer_id is not None else observer_peer_id,
+            )
 
             conclusions_scope.create([{
                 "content": content.strip(),
                 "session_id": session.honcho_session_id,
             }])
-            logger.info("Created conclusion about %s for %s: %s", target_peer_id, session_key, content[:80])
+            logger.info("Created conclusion about %s for %s: %s",
+                        target_peer_id or observer_peer_id, session_key, content[:80])
             return True
         except Exception as e:
             logger.error("Failed to create conclusion: %s", e)
@@ -1212,16 +1207,13 @@ class HonchoSessionManager:
         if not session:
             return False
         try:
-            target_peer_id = self._resolve_peer_id(session, peer)
-            if target_peer_id == session.assistant_peer_id:
-                observer = self._get_or_create_peer(session.assistant_peer_id)
-                scope = observer.conclusions_of(session.assistant_peer_id)
-            elif self._ai_observe_others:
-                observer = self._get_or_create_peer(session.assistant_peer_id)
-                scope = observer.conclusions_of(target_peer_id)
-            else:
-                target_peer = self._get_or_create_peer(target_peer_id)
-                scope = target_peer.conclusions_of(target_peer_id)
+            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
+            if observer_peer_id is None:
+                return False
+            observer_peer = self._get_or_create_peer(observer_peer_id)
+            scope = observer_peer.conclusions_of(
+                target_peer_id if target_peer_id is not None else observer_peer_id,
+            )
             scope.delete(conclusion_id)
             logger.info("Deleted conclusion %s for %s", conclusion_id, session_key)
             return True

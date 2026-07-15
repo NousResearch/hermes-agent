@@ -6446,6 +6446,24 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     key_source = ""
     api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
+    # Fallback: read api_key from config.yaml model section when env vars
+    # and credential pool come up empty.  Mirrors the cfg_api_key logic in
+    # _resolve_openrouter_runtime and _resolve_azure_foundry_runtime.
+    # Fixes #55539 — Kanban worker subprocess sends Bearer None because
+    # _default_spawn doesn't pass --api-key, so the secret resolver can
+    # only check env vars / credential pool.  Reading config.yaml ensures
+    # the profile's model.api_key is still picked up.
+    if not api_key:
+        from hermes_cli.config import load_config
+        _model_cfg = (load_config() or {}).get("model")
+        if isinstance(_model_cfg, dict):
+            for _k in ("api_key", "api"):
+                _v = _model_cfg.get(_k)
+                if isinstance(_v, str) and _v.strip():
+                    api_key = _v.strip()
+                    key_source = "config:model.api_key"
+                    break
+
     # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
     # see the local server as configured. doctor still reports unconfigured
     # because get_api_key_provider_status uses the raw secret resolver.

@@ -62,11 +62,17 @@ def get_config(self, key: str, default: Any = None) -> Any:
         return default
 
 def set_config(self, key: str, value: Any) -> None:
-    from hermes_cli.config import load_config, save_config, cfg_set
-    config = load_config() or {}
-    cfg_set(config, key, value)
-    save_config(config)  # handles atomic write + schema validation
+    # Deferred to #64227 implementation.
+    # When delivered, writes through the config manager with namespace jail
+    # enforcement (see § Namespace jail below).
+    raise NotImplementedError(
+        "ctx.set_config is pending implementation per #64227"
+    )
 ```
+
+> **Note:** `cfg_set` does not exist in the current codebase. The read path
+> (`cfg_get` at `hermes_cli/config.py:6627`) is available. `set_config` will be
+> delivered by #64227's implementation with the namespace jail described below.
 
 ### Concrete use case (kanban-advanced)
 Our `config_overlay.py` currently does:
@@ -88,6 +94,27 @@ On Windows, our config writes hit `re.sub` backslash escape bugs because
 paths like `C:\Users\Owner` contain `\U` which Python interprets as a
 Unicode escape in replacement strings. Going through Hermes' own config
 manager eliminates this class of bug.
+
+### Namespace jail
+
+`set_config` keys are strictly namespaced to `plugins.entries.<id>.config.*`.
+A plugin may not read or write config outside its own entry. Enforcement rules:
+
+- **Key prefix:** all writes must start with `plugins.entries.<plugin_id>.config.`
+- **Cross-plugin rejection:** writing another plugin's config subtree is rejected
+  with a logged error
+- **Path-traversal rejection:** `../../security.approval_mode` and similar
+  escape attempts are rejected with a logged error
+- **Read allow-list:** `ctx.get_config` can only read from
+  `plugins.entries.<id>.config.*` plus a small read-only allow-list
+  (e.g. active profile name, already available via `ctx.profile_name`)
+
+Acceptance criteria (from #64227):
+- Fixture plugin round-trips config + state through the bridge on a temp
+  `HERMES_HOME` (real file I/O, no mocks)
+- Namespace-escape attempt (`../../security.*`, cross-plugin key, path
+  traversal) rejected with a logged error
+- `hermes doctor` reports a plugin config value violating its registered schema
 
 ---
 
@@ -161,15 +188,22 @@ class PluginContext:
 
 
 class PluginCronFacade:
-    def create(self, name: str, schedule: str, command: str, *,
+    def create(self, name: str, schedule: str, *,
+               prompt: str | None = None,
+               script: str | None = None,
                deliver: str = "local", skills: list[str] | None = None,
                idempotency_key: str | None = None) -> str:
         """Create a cron job. Returns the job ID.
-        When idempotency_key is set, returns existing job ID if a match exists.
+
+        Uses the live ``cron/jobs.py:create_job()`` API (L1039-1234).
+        Pass ``prompt`` for LLM-driven jobs, ``script`` for shell-script
+        watchdog jobs (``no_agent=True``). When idempotency_key is set,
+        returns existing job ID if a match exists.
         """
 
-    def list(self) -> list[dict]:
-        """List all cron jobs owned by this plugin."""
+    def list(self, mine: bool = True) -> list[dict]:
+        """List cron jobs. When ``mine=True``, returns only jobs tagged
+        with this plugin's id."""
 
     def remove(self, job_id: str) -> bool:
         """Remove a cron job by ID."""
@@ -183,10 +217,9 @@ class PluginCronFacade:
 
 ### Implementation sketch
 
-The `PluginCronFacade` delegates to the existing `CronManager` that powers
-`hermes cron` CLI — same validation, same scheduler integration. It adds
-plugin-namespacing via a `plugin_id` column on the jobs table (or a
-`plugin_id` tag in the job metadata).
+The `PluginCronFacade` delegates to `cron/jobs.py:create_job()` — the same
+function that powers `hermes cron create`. It adds plugin-namespacing via the
+`name` prefix convention (`{plugin_id}:job-name`) and bulk cleanup on uninstall.
 
 ### Concrete use case (kanban-advanced)
 Our `kanban_handoff.py` currently does:
@@ -198,9 +231,9 @@ hermes cron create "30s" --name "auto_unblock" \
 With this API:
 ```python
 ctx.cron.create(
-    name="auto_unblock",
+    name="kanban-advanced:auto_unblock",
     schedule="30s",
-    command="bash scripts/auto_unblock.sh",
+    script="scripts/auto_unblock.sh",
     deliver="local",
     idempotency_key="kanban-advanced-auto_unblock",
 )
@@ -269,6 +302,7 @@ All four additions are purely additive:
 
 ## Related
 
+- [#64227](https://github.com/NousResearch/hermes-agent/issues/64227) — upstream implementation issue adopting this RFC as its design basis
 - kanban-advanced planned features: `plugin/data/references/planned-features.md`
 - Hermes AGENTS.md: "The core is a narrow waist; capability lives at the edges"
 - Discord plugin interface expansion discussion

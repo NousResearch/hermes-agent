@@ -381,10 +381,11 @@ def register(ctx):
 
 **General rules for all hooks:**
 
-- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
-- Callback exceptions are logged and skipped; later callbacks continue.
+- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
+- If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
-- Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
+- Two hook groups' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and the skill lifecycle hooks ([`pre_skill_create`](#pre_skill_create), [`pre_skill_edit`](#pre_skill_edit), [`pre_skill_patch`](#pre_skill_patch), [`pre_skill_write_file`](#pre_skill_write_file), [`pre_skill_remove_file`](#pre_skill_remove_file), [`pre_skill_delete`](#pre_skill_delete)) can **handle**, **redirect**, or **block** skill operations. All other hooks are fire-and-forget observers.
+- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat IDs as opaque; do not parse their string format.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
 
 ### Cache-safe system prompt sections

@@ -15135,6 +15135,29 @@ _CONSOLE_OUTPUT_LIMIT = 50000
 _CONSOLE_EXECUTOR_MAX_WORKERS = 4
 _console_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _console_executor_lock = threading.Lock()
+# Count of in-flight submissions that outlived _CONSOLE_COMMAND_TIMEOUT_SECONDS
+# without returning -- i.e. permanently leaked workers, since a stuck Python
+# thread can't be killed. If every worker in the pool leaks this way, new
+# submissions would just queue behind threads that will never return, hanging
+# the console for every dashboard session/profile until process restart.
+# Tracked so the pool can heal itself instead (see _note_console_submission_outcome).
+_console_executor_stuck_count = 0
+_console_executor_stuck_lock = threading.Lock()
+
+
+def _new_console_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Build a fresh bounded console worker pool.
+
+    Ensure the pool is torn down on interpreter exit. Don't wait on in-flight
+    workers: a stuck 60s console command must not block shutdown
+    (cancel_futures drops anything not yet started).
+    """
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=_CONSOLE_EXECUTOR_MAX_WORKERS,
+        thread_name_prefix="hermes-console",
+    )
+    atexit.register(lambda: executor.shutdown(wait=False, cancel_futures=True))
+    return executor
 
 
 def _get_console_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -15143,18 +15166,37 @@ def _get_console_executor() -> concurrent.futures.ThreadPoolExecutor:
     if _console_executor is None:
         with _console_executor_lock:
             if _console_executor is None:
-                _console_executor = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=_CONSOLE_EXECUTOR_MAX_WORKERS,
-                    thread_name_prefix="hermes-console",
-                )
-                # Ensure the pool is torn down on interpreter exit. Don't wait on
-                # in-flight workers: a stuck 60s console command must not block
-                # shutdown (cancel_futures drops anything not yet started).
-                atexit.register(
-                    lambda: _console_executor
-                    and _console_executor.shutdown(wait=False, cancel_futures=True)
-                )
+                _console_executor = _new_console_executor()
     return _console_executor
+
+
+def _note_console_submission_outcome(*, stuck: bool) -> None:
+    """Record a timeout (``stuck=True``) or an eventual completion (``stuck=False``).
+
+    Replaces the pool once every worker is wedged, so new console commands get
+    a live thread instead of queuing forever behind ones that will never
+    return. The old pool's stuck threads are simply abandoned -- there is no
+    way to kill a running Python thread, only to stop routing new work to it.
+    A submission that eventually completes (merely slow, not truly stuck)
+    decrements the count back so it doesn't count against the pool.
+    """
+    global _console_executor, _console_executor_stuck_count
+    with _console_executor_stuck_lock:
+        if stuck:
+            _console_executor_stuck_count += 1
+            if _console_executor_stuck_count < _CONSOLE_EXECUTOR_MAX_WORKERS:
+                return
+            with _console_executor_lock:
+                stale, _console_executor = _console_executor, _new_console_executor()
+            _console_executor_stuck_count = 0
+            _log.warning(
+                "Console executor fully stuck (%d workers leaked) -- replaced with a fresh pool",
+                _CONSOLE_EXECUTOR_MAX_WORKERS,
+            )
+            if stale is not None:
+                stale.shutdown(wait=False, cancel_futures=True)
+        elif _console_executor_stuck_count > 0:
+            _console_executor_stuck_count -= 1
 
 
 def _dashboard_console_context() -> str:
@@ -15432,23 +15474,31 @@ async def console_ws(ws: WebSocket) -> None:
     async def run_command(line: str, *, confirmed: bool, command_id: int) -> None:
         nonlocal active_task, pending_confirmation, command_generation
         try:
-            loop = asyncio.get_running_loop()
+            # Submit directly (rather than loop.run_in_executor) so we keep a
+            # handle on the raw concurrent.futures.Future: asyncio.wait_for can
+            # only abandon the *await* on timeout, not the worker thread, so we
+            # need a done-callback that still fires later if the thread
+            # eventually returns (see _note_console_submission_outcome).
+            cf_future = _get_console_executor().submit(
+                _execute_console_line,
+                engine,
+                line,
+                confirmed=confirmed,
+                profile=profile,
+            )
+            cf_future.add_done_callback(
+                lambda f: None
+                if f.cancelled()
+                else _note_console_submission_outcome(stuck=False)
+            )
             result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _get_console_executor(),
-                    functools.partial(
-                        _execute_console_line,
-                        engine,
-                        line,
-                        confirmed=confirmed,
-                        profile=profile,
-                    ),
-                ),
+                asyncio.wrap_future(cf_future),
                 timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
+            _note_console_submission_outcome(stuck=True)
             if command_id == command_generation:
                 pending_confirmation = None
                 await _console_send(

@@ -1531,6 +1531,16 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _bypass_user_systemd_preflight(self, monkeypatch):
+        # These routing tests mock systemctl via subprocess but exercise
+        # systemd_restart(), which first runs _preflight_user_systemd() to
+        # confirm the user D-Bus session bus. That bus is absent on non-Linux
+        # dev hosts (macOS), so the preflight raises UserSystemdUnavailableError
+        # before the routing logic under test runs. Neutralize it here, matching
+        # the per-test `_preflight_user_systemd` mocks used elsewhere in this file.
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 

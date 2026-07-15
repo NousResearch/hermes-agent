@@ -3049,6 +3049,10 @@ def run_job(
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
+            # An explicitly pinned provider can require an API surface derived
+            # from the effective job model (not config.yaml's stale default).
+            if model and job.get("provider"):
+                runtime_kwargs["target_model"] = model
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)

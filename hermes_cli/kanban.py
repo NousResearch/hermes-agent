@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import shlex
 import sys
@@ -1230,6 +1231,10 @@ def _parse_duration(val) -> Optional[int]:
             n = float(s[:-1])
         except ValueError as exc:
             raise ValueError(f"malformed duration {val!r}") from exc
+        # float() accepts huge strings as +inf; int(inf * k) raises
+        # OverflowError which the CLI caller only catches ValueError for.
+        if not math.isfinite(n):
+            raise ValueError(f"malformed duration {val!r}: value too large")
         return int(n * units[s[-1]])
     raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
 

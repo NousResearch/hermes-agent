@@ -1375,6 +1375,16 @@ def test_parse_duration_rejects_garbage():
         _parse_duration("fish")
 
 
+def test_parse_duration_rejects_huge_value_as_value_error():
+    """A value that float() turns into +inf must raise ValueError, not
+    OverflowError — the CLI caller only catches ValueError (#_parse_duration)."""
+    from hermes_cli.kanban import _parse_duration
+    import pytest as _p
+    with _p.raises(ValueError):
+        _parse_duration("9" * 310 + "d")
+
+
+
 def test_cli_create_max_runtime_via_duration(kanban_home):
     """`hermes kanban create --max-runtime 2h` should persist 7200 seconds."""
     out = run_slash("create 'long task' --max-runtime 2h --json")

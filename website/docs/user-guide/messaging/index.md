@@ -375,7 +375,12 @@ When enabled, the bot sends status messages as it works:
 🐍 execute_code...
 ```
 
-For long-running gateway status updates, Hermes can use generic status phrase catalogs instead of relaying raw tool details. Configure them with `display.status_phrases` globally or `display.platforms.<platform>.status_phrases` per channel; see [Gateway status phrases](/user-guide/configuration#gateway-status-phrases).
+For periodic long-running heartbeat updates, Hermes can use generic status
+phrase catalogs instead of the default raw heartbeat. Enable the generic mode
+with `display.long_running_notifications: generic` globally, or with
+`display.platforms.<platform>.long_running_notifications: generic` per
+channel, then configure the matching `status_phrases` catalog; see
+[Gateway status phrases](/user-guide/configuration#gateway-status-phrases).
 
 ## Background Sessions
 

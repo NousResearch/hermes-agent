@@ -3101,7 +3101,7 @@ class GatewaySlashCommandsMixin:
         Session-scoped by default; ``--global`` persists agent.service_tier
         to config.yaml (parity with /model and /reasoning).
         """
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from gateway.run import _load_gateway_config
         from hermes_cli.models import model_supports_fast_mode
 
         raw_args = event.get_command_args().strip().lower()
@@ -3114,7 +3114,23 @@ class GatewaySlashCommandsMixin:
         )
 
         user_config = _load_gateway_config()
-        model = _resolve_gateway_model(user_config)
+        # Determine fast-mode eligibility against the model this session will
+        # actually use, not the global config default.  A session-scoped
+        # ``/model`` override (or a channel override) can select a model whose
+        # fast-mode support differs from ``model.default`` — resolving through
+        # the canonical session runtime resolver keeps ``/fast`` eligibility in
+        # sync with the model the next agent turn routes to.  Normalize the
+        # command source exactly like ``/model`` does (Telegram DM topic
+        # recovery, #30479) so the override is read under the same key it was
+        # stored, and let ``_resolve_session_agent_runtime`` rehydrate any
+        # persisted override that a gateway restart cleared from memory.
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
+        model, _ = self._resolve_session_agent_runtime(
+            source=source,
+            user_config=user_config,
+        )
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
 

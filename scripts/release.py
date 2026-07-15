@@ -702,6 +702,7 @@ AUTHOR_MAP = {
     "170458616+ghostmfr@users.noreply.github.com": "ghostmfr",
     "1848670+mewwts@users.noreply.github.com": "mewwts",
     "1930707+haru398801@users.noreply.github.com": "haru398801",
+    "DavidMetcalfe@users.noreply.github.com": "DavidMetcalfe",
     "rapabelias@gmail.com": "badgerbees",
     "xnb888@proton.me": "xnbi",
     "xiahu889889@proton.me": "xiahu88988",

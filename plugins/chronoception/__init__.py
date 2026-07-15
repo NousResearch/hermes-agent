@@ -46,6 +46,24 @@ def _pre_llm_call(**kwargs: Any) -> Optional[dict]:
         return None
 
 
+def _post_llm_call(**kwargs: Any) -> None:
+    """Record turn completion; time spent executing the turn is not idle."""
+    try:
+        from plugins.chronoception.settings import get_settings
+
+        if not get_settings()["enabled"]:
+            return
+        from plugins.chronoception.sense import record_completion
+
+        session_id = str(kwargs.get("session_id") or "")
+        if not session_id:
+            session_id = f"no-session-{threading.get_ident()}"
+        record_completion(session_id)
+    except Exception:
+        logger.debug("chronoception completion stamp failed", exc_info=True)
+
+
 def register(ctx) -> None:
     """Called once by the plugin loader."""
     ctx.register_hook("pre_llm_call", _pre_llm_call)
+    ctx.register_hook("post_llm_call", _post_llm_call)

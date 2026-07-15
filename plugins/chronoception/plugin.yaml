@@ -4,3 +4,4 @@ description: "A sense of elapsed time between turns: a compact per-turn clock pl
 author: "Hermes contributors"
 hooks:
   - pre_llm_call
+  - post_llm_call

@@ -37,15 +37,20 @@ def _humanize(seconds: float) -> str:
     return f"{hours / 24.0:.1f} days"
 
 
-def _prev_wall(session_id: str, wall_now: float) -> Optional[float]:
-    """Return the session's previous wall stamp and record the current one."""
+def _last_completion(session_id: str) -> Optional[float]:
+    """Return the previous completed-turn wall stamp without modifying it."""
     with _LOCK:
-        prev = _LAST_WALL.get(session_id)
-        _LAST_WALL[session_id] = wall_now
+        return _LAST_WALL.get(session_id)
+
+
+def record_completion(session_id: str, wall_now: Optional[float] = None) -> None:
+    """Record when a turn finished so agent runtime is not counted as idle."""
+    stamp = time.time() if wall_now is None else wall_now
+    with _LOCK:
+        _LAST_WALL[session_id] = stamp
         _LAST_WALL.move_to_end(session_id)
         while len(_LAST_WALL) > _MAX_SESSIONS:
             _LAST_WALL.popitem(last=False)
-        return prev
 
 
 def _wrap(body: str, max_chars: int) -> str:
@@ -60,7 +65,7 @@ def _wrap(body: str, max_chars: int) -> str:
 def build(session_id: str, settings: Dict[str, Any]) -> Optional[str]:
     """Return the fenced timing block for this turn, or ``None`` to stay silent."""
     wall_now = time.time()
-    prev = _prev_wall(session_id, wall_now)
+    prev = _last_completion(session_id)
     delta = (wall_now - prev) if prev is not None else None
 
     parts = []

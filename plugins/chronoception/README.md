@@ -23,6 +23,14 @@ time-sensitive state may have moved on.
 
 ## Enable
 
+First enable the bundled plugin:
+
+```bash
+hermes plugins enable chronoception
+```
+
+Then configure the feature in `config.yaml`:
+
 ```yaml
 chronoception:
   enabled: true             # opt-in; absent/false = inert

@@ -3355,6 +3355,13 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 3
 
 
+def _queue_info(agent) -> list:
+    """Return the agent's turn queue as a list of dicts (for session.info)."""
+    if agent is not None and hasattr(agent, "turn_queue"):
+        return agent.turn_queue.to_list()
+    return []
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -3411,6 +3418,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
+        "queue": _queue_info(agent),
         "title": _session_live_title(session or {}, session_key) if session_key else "",
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "",
@@ -5101,15 +5109,35 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _emit_queue_update(sid: str, session: dict) -> None:
+    """Emit a ``queue.updated`` event so clients can mirror queue state.
+
+    Called after every mutation (enqueue, drain, remove, clear, promote).
+    The desktop renderer subscribes to this instead of managing its own
+    localStorage-backed queue.
+    """
+    agent = session.get("agent")
+    if agent is None or not hasattr(agent, "turn_queue"):
+        return
+    _emit("queue.updated", sid, {"entries": agent.turn_queue.to_list()})
+
+
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     """Stash a message to run as the very next turn once the live one ends.
 
-    Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
-    slot is kept; a second arrival is merged (lossless, mirroring the
-    consecutive-user merge in ``repair_message_sequence``) so nothing the user
-    typed is dropped. ``transport`` is pinned so the drained turn streams back to
-    the client that sent it even if the session transport is rebound meanwhile.
+    Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). The
+    message is appended to the agent's :class:`TurnQueue` — the queue lives
+    on the agent so it drains even when no client window is open.
+    ``transport`` is pinned so the drained turn streams back to the client
+    that sent it even if the session transport is rebound meanwhile.
     """
+    agent = session.get("agent")
+    if agent is not None and hasattr(agent, "turn_queue"):
+        agent.turn_queue.enqueue(text=str(text), transport=transport, source="busy_submit")
+        return
+    # Fallback: the legacy single-slot session dict, for sessions without a
+    # built agent yet (shouldn't happen in normal flow — prompt.submit builds
+    # the agent before any busy-submit can occur — but keeps the contract safe).
     existing = session.get("queued_prompt")
     if (
         existing
@@ -5152,6 +5180,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
             pass
     _enqueue_prompt(session, text, transport)
     session["last_active"] = time.time()
+    _emit_queue_update(sid, session)
     return _ok(rid, {"status": "queued"})
 
 
@@ -5162,14 +5191,45 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     lower-priority follow-ups this cycle — the user's message wins). Mirrors the
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
+    agent = session.get("agent")
     with session["history_lock"]:
-        queued = session.get("queued_prompt")
-        if not queued or session.get("running"):
+        if session.get("running"):
             return False
-        session["queued_prompt"] = None
+        # Drain from the agent's TurnQueue (preferred), falling back to the
+        # legacy session-dict slot (populated only when no agent existed at
+        # enqueue time).
+        queued = None
+        if agent is not None and hasattr(agent, "turn_queue"):
+            entry = agent.turn_queue.drain()
+            if entry is not None:
+                queued = {
+                    "text": entry.text,
+                    "transport": entry.transport,
+                    "source": entry.source,
+                }
+        if queued is None:
+            legacy = session.get("queued_prompt")
+            if not legacy:
+                return False
+            session["queued_prompt"] = None
+            queued = {
+                "text": legacy.get("text"),
+                "transport": legacy.get("transport"),
+                "source": "busy_submit",
+            }
         session["running"] = True
         if queued.get("transport") is not None:
             session["transport"] = queued["transport"]
+    _emit_queue_update(sid, session)
+    # Tell clients the drained text is becoming the next user turn so they
+    # can move it from their queue panel into the transcript. `source` lets
+    # them skip painting text they already echoed optimistically
+    # (busy_submit) vs panel-queued entries that were never in the transcript.
+    _emit(
+        "queue.drained",
+        sid,
+        {"text": queued.get("text") or "", "source": queued.get("source") or "queue"},
+    )
     try:
         _run_prompt_submit(rid, sid, session, queued["text"])
     except Exception as exc:
@@ -8174,7 +8234,17 @@ def _(rid, params: dict) -> dict:
         session["agent"].interrupt()
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
+        # Stop discards pending next-turn prompts too (they'd otherwise fire
+        # the instant the turn unwinds — the opposite of what Stop means).
+        # `keep_queue` opts out for the promote-then-interrupt "send queued
+        # entry now" flow, where the queued entry must survive to be drained
+        # as the next turn.
+        if not params.get("keep_queue"):
+            agent = (session or {}).get("agent")
+            if agent is not None and hasattr(agent, "turn_queue"):
+                agent.turn_queue.clear()
         session["queued_prompt"] = None
+    _emit_queue_update(str(params.get("session_id", "")), session or {})
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
@@ -8447,6 +8517,144 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:
         return _err(rid, 5000, f"steer failed: {exc}")
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+
+
+# ── Methods: session.queue ────────────────────────────────────────────
+#
+# The turn queue lives on the agent (agent.turn_queue) — see
+# agent/turn_queue.py. These RPCs let clients manipulate it without owning
+# it; the gateway drains automatically at the end of every turn
+# (_drain_queued_prompt), so queued messages fire even when no client
+# window is open. Every mutation emits queue.updated so clients mirror
+# state instead of persisting their own copy.
+
+
+@method("session.queue.add")
+def _(rid, params: dict) -> dict:
+    """Add a prompt to the session's turn queue.
+
+    The prompt runs as the next turn once the current one finishes. When the
+    session is already idle, the entry is drained immediately — the gateway
+    owns all drain paths, so clients never need a "send it myself" fallback.
+    """
+    text = str(params.get("text") or "")
+    if not text.strip():
+        return _err(rid, 4002, "text is required")
+    session, err = _sess_nowait(params, rid)
+    if err or session is None:
+        return err or _err(rid, 4001, "session not found")
+    sid = str(params.get("session_id", ""))
+    agent = session.get("agent")
+    if agent is None or not hasattr(agent, "turn_queue"):
+        return _err(rid, 4010, "session has no turn queue")
+    entry = agent.turn_queue.enqueue(text=text)
+    session["last_active"] = time.time()
+    _emit_queue_update(sid, session)
+    # Idle session → drain right away (in a thread; the drain runs a whole
+    # turn and this RPC must return promptly).
+    if not session.get("running"):
+        threading.Thread(
+            target=_drain_queued_prompt,
+            args=(rid, sid, session),
+            daemon=True,
+        ).start()
+    return _ok(rid, {"status": "queued", "entry_id": entry.id})
+
+
+@method("session.queue.list")
+def _(rid, params: dict) -> dict:
+    """List pending queued prompts for the session."""
+    session, err = _sess_nowait(params, rid)
+    if err or session is None:
+        return err or _err(rid, 4001, "session not found")
+    agent = session.get("agent")
+    return _ok(rid, {"entries": _queue_info(agent)})
+
+
+@method("session.queue.remove")
+def _(rid, params: dict) -> dict:
+    """Remove a specific queued entry by id."""
+    entry_id = str(params.get("entry_id") or "")
+    if not entry_id:
+        return _err(rid, 4002, "entry_id is required")
+    session, err = _sess_nowait(params, rid)
+    if err or session is None:
+        return err or _err(rid, 4001, "session not found")
+    sid = str(params.get("session_id", ""))
+    agent = session.get("agent")
+    removed = False
+    if agent is not None and hasattr(agent, "turn_queue"):
+        removed = agent.turn_queue.remove(entry_id)
+        _emit_queue_update(sid, session)
+    return _ok(rid, {"removed": removed})
+
+
+@method("session.queue.clear")
+def _(rid, params: dict) -> dict:
+    """Clear all queued entries for the session."""
+    session, err = _sess_nowait(params, rid)
+    if err or session is None:
+        return err or _err(rid, 4001, "session not found")
+    sid = str(params.get("session_id", ""))
+    agent = session.get("agent")
+    count = 0
+    if agent is not None and hasattr(agent, "turn_queue"):
+        count = agent.turn_queue.clear()
+    session["queued_prompt"] = None
+    _emit_queue_update(sid, session)
+    return _ok(rid, {"cleared": count})
+
+
+@method("session.queue.promote")
+def _(rid, params: dict) -> dict:
+    """Move a queued entry to the front of the queue (send-next priority).
+
+    With ``interrupt=True``, also interrupts the live turn (keeping the
+    queue intact) so the promoted entry fires as soon as the turn unwinds —
+    the "send now" gesture.
+    """
+    entry_id = str(params.get("entry_id") or "")
+    if not entry_id:
+        return _err(rid, 4002, "entry_id is required")
+    session, err = _sess_nowait(params, rid)
+    if err or session is None:
+        return err or _err(rid, 4001, "session not found")
+    sid = str(params.get("session_id", ""))
+    agent = session.get("agent")
+    promoted = False
+    if agent is not None and hasattr(agent, "turn_queue"):
+        # promote() returns False for an entry already at the head — that
+        # still counts as "it will go next", so verify membership instead.
+        promoted = agent.turn_queue.promote(entry_id) or any(
+            e.id == entry_id for e in agent.turn_queue.peek()
+        )
+        _emit_queue_update(sid, session)
+    if promoted and params.get("interrupt") and session.get("running"):
+        if hasattr(agent, "interrupt"):
+            try:
+                agent.interrupt()
+            except Exception:
+                pass
+    return _ok(rid, {"promoted": promoted})
+
+
+@method("session.queue.update")
+def _(rid, params: dict) -> dict:
+    """Update the text of a queued entry."""
+    entry_id = str(params.get("entry_id") or "")
+    text = str(params.get("text") or "")
+    if not entry_id or not text.strip():
+        return _err(rid, 4002, "entry_id and text are required")
+    session, err = _sess_nowait(params, rid)
+    if err or session is None:
+        return err or _err(rid, 4001, "session not found")
+    sid = str(params.get("session_id", ""))
+    agent = session.get("agent")
+    updated = False
+    if agent is not None and hasattr(agent, "turn_queue"):
+        updated = agent.turn_queue.update_text(entry_id, text)
+        _emit_queue_update(sid, session)
+    return _ok(rid, {"updated": updated})
 
 
 @method("terminal.resize")
@@ -8964,6 +9172,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             agent.clear_interrupt()
         except Exception:
             pass
+    # Steer lifecycle → client events. A steer is accepted instantly by the
+    # RPC but only *lands* when the agent loop injects it into a tool result
+    # (or drops it on interrupt). Clients render the steer as pending until
+    # steer.applied arrives, so the transcript reflects what the model
+    # actually saw, when it saw it.
+    try:
+        agent._on_steer_event = lambda kind, text: _emit(
+            f"steer.{kind}", sid, {"text": text}
+        )
+    except Exception:
+        pass
     _emit("message.start", sid)
 
     def run():
@@ -9150,6 +9369,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             last_reasoning = None
             status_note = None
             if isinstance(result, dict):
+                # A /steer that landed after the final assistant message has
+                # no tool batch left to inject into — run_conversation hands
+                # it back as pending_steer. Queue it as the next user turn
+                # (the post-turn drain below fires it) instead of silently
+                # dropping it.
+                _leftover_steer = result.get("pending_steer")
+                if _leftover_steer and hasattr(agent, "turn_queue"):
+                    agent.turn_queue.enqueue(text=str(_leftover_steer))
+                    _emit_queue_update(sid, session)
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))

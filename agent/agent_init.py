@@ -597,6 +597,21 @@ def init_agent(
     agent._pending_steer: Optional[str] = None
     agent._pending_steer_lock = threading.Lock()
 
+    # Steer lifecycle observer — set by the gateway/CLI to learn when a
+    # pending steer is actually injected into the conversation ("applied")
+    # or discarded by a hard interrupt ("dropped"). Lets clients render the
+    # steer in the transcript at the moment it really lands instead of
+    # optimistically painting it the instant the RPC returns.
+    # Signature: callback(kind: str, text: str) — kind is "applied"|"dropped".
+    agent._on_steer_event = None
+
+    # Turn queue — prompts to run as the next turn(s) after the current one
+    # finishes.  Replaces the ad-hoc session["queued_prompt"] dict slot in the
+    # TUI gateway and the localStorage-backed queue in the desktop renderer.
+    # Lives on the agent so it drains even when no client window is open.
+    from agent.turn_queue import TurnQueue
+    agent.turn_queue = TurnQueue()
+
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
     # threads have tids distinct from `_execution_thread_id`, so

@@ -59,10 +59,7 @@ interface SlashCommandDeps {
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   startFreshSessionDraft: () => void
-  submitPromptText: (
-    rawText: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean>
+  submitPromptText: (rawText: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean>
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */

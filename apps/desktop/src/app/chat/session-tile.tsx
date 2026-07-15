@@ -149,6 +149,7 @@ function TileChat({
           onPickFiles={() => void composer.pickContextPaths('file')}
           onPickFolders={() => void composer.pickContextPaths('folder')}
           onPickImages={() => void composer.pickImages()}
+          onQueue={actions.queuePromptText}
           onReload={actions.reloadFromMessage}
           onRemoveAttachment={id => void composer.removeAttachment(id)}
           onRestoreToMessage={actions.restoreToMessage}

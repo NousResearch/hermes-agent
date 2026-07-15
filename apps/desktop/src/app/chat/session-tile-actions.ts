@@ -15,11 +15,11 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { textPart } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
+import { addPendingSteer, enqueueQueuedPrompt } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
@@ -170,19 +170,6 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     [scope.attachments.$attachments, submitPromptText]
   )
 
-  const appendSystemNote = useCallback(
-    (text: string) => {
-      update(state => ({
-        ...state,
-        messages: [
-          ...state.messages,
-          { id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role: 'system', parts: [textPart(text)] }
-        ]
-      }))
-    },
-    [update]
-  )
-
   const cancelRun = useCallback(async () => {
     const sessionId = runtimeIdRef.current
 
@@ -226,7 +213,10 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
         if (result?.status === 'queued') {
           triggerHaptic('submit')
-          appendSystemNote(`steer:${text}`)
+          // Pending until the gateway's steer.applied event lands — the
+          // transcript row is appended there (use-message-stream), when the
+          // model actually saw the nudge.
+          addPendingSteer(runtimeIdRef.current, text)
 
           return true
         }
@@ -236,8 +226,20 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return false
     },
-    [appendSystemNote, requestGateway]
+    [requestGateway]
   )
+
+  // Queue on the gateway's agent-side turn queue (the tile equivalent of the
+  // primary queuePromptText, minus attachment sync — tiles queue text-only).
+  const queuePromptText = useCallback(async (rawText: string): Promise<boolean> => {
+    const text = rawText.trim()
+
+    if (!text) {
+      return false
+    }
+
+    return (await enqueueQueuedPrompt(runtimeIdRef.current, { text })) !== null
+  }, [])
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with
   // the primary chat so the two can't diverge.
@@ -349,11 +351,22 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       dismissError,
       editMessage,
       handleThreadMessagesChange,
+      queuePromptText,
       reloadFromMessage,
       restoreToMessage,
       steerPrompt,
       submitText
     }),
-    [cancelRun, dismissError, editMessage, handleThreadMessagesChange, reloadFromMessage, restoreToMessage, steerPrompt, submitText]
+    [
+      cancelRun,
+      dismissError,
+      editMessage,
+      handleThreadMessagesChange,
+      queuePromptText,
+      reloadFromMessage,
+      restoreToMessage,
+      steerPrompt,
+      submitText
+    ]
   )
 }

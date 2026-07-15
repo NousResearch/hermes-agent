@@ -59,7 +59,7 @@ interface HarnessHandle {
   cancelRun: () => Promise<void>
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
-  submitText: (text: string, options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }) => Promise<boolean>
+  submitText: (text: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean>
 }
 
 function Harness({
@@ -505,40 +505,11 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
-  it('a fromQueue drain sends even when busyRef is still true on the settle edge', async () => {
-    // busyRef lags $busy by one effect tick on the busy→false settle edge, so a
-    // drained queue send would otherwise hit the busy guard and silently no-op.
-    const busyRef = { current: true }
-    const requestGateway = vi.fn(async () => ({}) as never)
-
-    let handle: HarnessHandle | null = null
-    await actRender(
-      <Harness
-        busyRef={busyRef}
-        onReady={h => (handle = h)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
-    )
-
-    const accepted = await handle!.submitText('queued message', { fromQueue: true })
-
-    expect(accepted).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith(
-      'prompt.submit',
-      {
-        session_id: RUNTIME_SESSION_ID,
-        text: 'queued message'
-      },
-      1_800_000
-    )
-  })
-
-  it('a rejected fromQueue drain returns false (entry stays queued) and a later retry sends it', async () => {
-    // A stale-session 404 must not strand the queued entry: submitPrompt returns
-    // false on failure so the composer keeps it, and the edge-independent
-    // auto-drain re-attempts once the session is idle again. storedSessionId is
-    // null so the session.resume recovery path is skipped and the error surfaces.
+  it('a failed submit returns false and a later retry sends it', async () => {
+    // A stale-session 404 must not strand the user's words: submitPrompt
+    // returns false on failure so the composer keeps the draft for a retry.
+    // storedSessionId is null so the session.resume recovery path is skipped
+    // and the error surfaces.
     let attempt = 0
 
     const requestGateway = vi.fn(async (method: string) => {
@@ -563,10 +534,10 @@ describe('usePromptActions submit / queue drain semantics', () => {
       />
     )
 
-    const first = await handle!.submitText('please send me', { fromQueue: true })
+    const first = await handle!.submitText('please send me')
     expect(first).toBe(false)
 
-    const second = await handle!.submitText('please send me', { fromQueue: true })
+    const second = await handle!.submitText('please send me')
     expect(second).toBe(true)
     expect(requestGateway).toHaveBeenCalledWith(
       'prompt.submit',

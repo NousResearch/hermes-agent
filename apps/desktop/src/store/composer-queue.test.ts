@@ -1,170 +1,167 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ComposerAttachment } from './composer'
 import {
+  $pendingSteersBySession,
   $queuedPromptsBySession,
+  addPendingSteer,
   clearQueuedPrompts,
-  dequeueQueuedPrompt,
   enqueueQueuedPrompt,
+  getPendingSteers,
   getQueuedPrompts,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   removeQueuedPrompt,
-  shouldAutoDrain,
-  updateQueuedPrompt,
+  setGatewayRequester,
+  setSessionQueue,
+  settlePendingSteer,
   updateQueuedPromptText
 } from './composer-queue'
 
-const SESSION_KEY = 'session-abc'
-const QUEUE_STORAGE_KEY = 'hermes.desktop.composerQueue.v1'
+const SESSION_KEY = 'session-1'
 
-function attachment(id: string, kind: ComposerAttachment['kind'] = 'file'): ComposerAttachment {
-  return {
-    id,
-    kind,
-    label: id,
-    refText: `@file:${id}`
-  }
-}
+describe('composer-queue (gateway-backed)', () => {
+  const requester = vi.fn()
 
-describe('composer queue store', () => {
   beforeEach(() => {
-    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
     $queuedPromptsBySession.set({})
+    $pendingSteersBySession.set({})
+    requester.mockReset()
+    requester.mockResolvedValue({ entry_id: 'gw-1', status: 'queued' })
+    setGatewayRequester(requester as never)
   })
 
-  it('queues prompts in FIFO order', () => {
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
-
-    expect(dequeueQueuedPrompt(SESSION_KEY)?.text).toBe('first')
-    expect(dequeueQueuedPrompt(SESSION_KEY)?.text).toBe('second')
-    expect(dequeueQueuedPrompt(SESSION_KEY)).toBeNull()
+  afterEach(() => {
+    setGatewayRequester(null)
   })
 
-  it('clones attachments when queueing', () => {
-    const source = [attachment('a-1')]
-    const queued = enqueueQueuedPrompt(SESSION_KEY, { attachments: source, text: 'check clones' })
+  it('enqueue fires session.queue.add and mirrors the entry locally', async () => {
+    const entry = await enqueueQueuedPrompt(SESSION_KEY, { text: 'queued draft' })
 
-    expect(queued).not.toBeNull()
-    expect(getQueuedPrompts(SESSION_KEY)[0]?.attachments[0]).toEqual(source[0])
-    expect(getQueuedPrompts(SESSION_KEY)[0]?.attachments[0]).not.toBe(source[0])
+    expect(requester).toHaveBeenCalledWith('session.queue.add', { session_id: SESSION_KEY, text: 'queued draft' })
+    expect(entry?.id).toBe('gw-1')
+    expect(getQueuedPrompts(SESSION_KEY).map(e => e.text)).toEqual(['queued draft'])
   })
 
-  it('updates and removes queued entries by id', () => {
-    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'draft one' })
-    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'draft two' })
+  it('enqueue returns null (and keeps the mirror empty) when the gateway rejects', async () => {
+    requester.mockRejectedValue(new Error('gateway down'))
 
-    expect(first).not.toBeNull()
-    expect(second).not.toBeNull()
+    const entry = await enqueueQueuedPrompt(SESSION_KEY, { text: 'lost?' })
 
-    expect(updateQueuedPromptText(SESSION_KEY, first!.id, 'draft one edited')).toBe(true)
-    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['draft one edited', 'draft two'])
-
-    expect(removeQueuedPrompt(SESSION_KEY, first!.id)).toBe(true)
-    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['draft two'])
+    expect(entry).toBeNull()
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 
-  it('promotes a queued entry to the front', () => {
-    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
-    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
-    const third = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'third' })
+  it('enqueue returns null with no requester wired', async () => {
+    setGatewayRequester(null)
 
-    expect(first).not.toBeNull()
-    expect(second).not.toBeNull()
-    expect(third).not.toBeNull()
-
-    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(true)
-    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['third', 'first', 'second'])
-    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(false)
+    expect(await enqueueQueuedPrompt(SESSION_KEY, { text: 'no gateway' })).toBeNull()
   })
 
-  it('updates queued text and attachment snapshot', () => {
-    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('f-1')], text: 'draft one' })
-    const editedAttachments = [attachment('f-2'), attachment('f-3', 'image')]
+  it('setSessionQueue replaces the mirror with the gateway entry list', () => {
+    setSessionQueue(SESSION_KEY, [
+      { id: 'a', text: 'first', queued_at: 1700000000.5 },
+      { id: 'b', text: 'second' }
+    ])
 
-    expect(first).not.toBeNull()
-    expect(
-      updateQueuedPrompt(SESSION_KEY, first!.id, {
-        attachments: editedAttachments,
-        text: 'edited text'
-      })
-    ).toBe(true)
+    const entries = getQueuedPrompts(SESSION_KEY)
+    expect(entries.map(e => e.text)).toEqual(['first', 'second'])
+    expect(entries[0]?.queuedAt).toBe(1700000000500)
 
-    const queue = getQueuedPrompts(SESSION_KEY)
-    expect(queue[0]?.text).toBe('edited text')
-    expect(queue[0]?.attachments).toEqual(editedAttachments)
-    expect(queue[0]?.attachments[0]).not.toBe(editedAttachments[0])
+    setSessionQueue(SESSION_KEY, [])
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
   })
 
-  it('clears queue state for a session', () => {
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('img-1', 'image')], text: 'queued' })
+  it('removeQueuedPrompt updates the mirror optimistically and fires the RPC', () => {
+    setSessionQueue(SESSION_KEY, [
+      { id: 'a', text: 'first' },
+      { id: 'b', text: 'second' }
+    ])
+
+    expect(removeQueuedPrompt(SESSION_KEY, 'a')).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(e => e.id)).toEqual(['b'])
+    expect(requester).toHaveBeenCalledWith('session.queue.remove', { session_id: SESSION_KEY, entry_id: 'a' })
+
+    expect(removeQueuedPrompt(SESSION_KEY, 'missing')).toBe(false)
+  })
+
+  it('promoteQueuedPrompt moves the entry to the head and forwards interrupt', () => {
+    setSessionQueue(SESSION_KEY, [
+      { id: 'a', text: 'first' },
+      { id: 'b', text: 'second' },
+      { id: 'c', text: 'third' }
+    ])
+
+    expect(promoteQueuedPrompt(SESSION_KEY, 'c', { interrupt: true })).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(e => e.id)).toEqual(['c', 'a', 'b'])
+    expect(requester).toHaveBeenCalledWith('session.queue.promote', {
+      session_id: SESSION_KEY,
+      entry_id: 'c',
+      interrupt: true
+    })
+
+    // Head entry: still accepted (fires the RPC so an idle gateway can drain).
+    expect(promoteQueuedPrompt(SESSION_KEY, 'c')).toBe(true)
+    expect(promoteQueuedPrompt(SESSION_KEY, 'missing')).toBe(false)
+  })
+
+  it('updateQueuedPromptText edits in place and fires the RPC', () => {
+    setSessionQueue(SESSION_KEY, [{ id: 'a', text: 'before' }])
+
+    expect(updateQueuedPromptText(SESSION_KEY, 'a', 'after')).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY)[0]?.text).toBe('after')
+    expect(requester).toHaveBeenCalledWith('session.queue.update', {
+      session_id: SESSION_KEY,
+      entry_id: 'a',
+      text: 'after'
+    })
+
+    expect(updateQueuedPromptText(SESSION_KEY, 'a', 'after')).toBe(false)
+  })
+
+  it('clearQueuedPrompts wipes the mirror and fires the RPC', () => {
+    setSessionQueue(SESSION_KEY, [{ id: 'a', text: 'first' }])
+    addPendingSteer(SESSION_KEY, 'nudge')
 
     clearQueuedPrompts(SESSION_KEY)
 
     expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
-    expect($queuedPromptsBySession.get()[SESSION_KEY]).toBeUndefined()
-    expect(window.localStorage.getItem(QUEUE_STORAGE_KEY)).toBeNull()
+    expect(getPendingSteers(SESSION_KEY)).toEqual([])
+    expect(requester).toHaveBeenCalledWith('session.queue.clear', { session_id: SESSION_KEY })
   })
 
-  it('persists queue entries into local storage', () => {
-    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'persist me' })
-
-    const raw = window.localStorage.getItem(QUEUE_STORAGE_KEY)
-    expect(raw).toBeTruthy()
-
-    const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
-    expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
-  })
-})
-
-describe('migrateQueuedPrompts', () => {
-  beforeEach(() => {
-    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
-    $queuedPromptsBySession.set({})
-  })
-
-  it('moves entries from a dead runtime key onto the live one', () => {
-    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'stranded' })
+  it('migrateQueuedPrompts re-keys the local mirror on a runtime id change', () => {
+    setSessionQueue('rt-old', [{ id: 'a', text: 'stranded' }])
+    setSessionQueue('rt-new', [{ id: 'b', text: 'already here' }])
 
     expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(true)
     expect(getQueuedPrompts('rt-old')).toEqual([])
-    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['stranded'])
-    // The dead key is dropped from the store entirely.
-    expect($queuedPromptsBySession.get()['rt-old']).toBeUndefined()
+    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['already here', 'stranded'])
+
+    expect(migrateQueuedPrompts('rt-new', 'rt-new')).toBe(false)
+    expect(migrateQueuedPrompts('rt-empty', 'rt-new')).toBe(false)
   })
 
-  it('appends after existing target entries (FIFO preserved)', () => {
-    enqueueQueuedPrompt('rt-new', { attachments: [], text: 'already here' })
-    enqueueQueuedPrompt('rt-old', { attachments: [], text: 'migrated' })
+  describe('pending steers', () => {
+    it('tracks a steer until steer.applied settles it', () => {
+      addPendingSteer(SESSION_KEY, 'go left')
+      addPendingSteer(SESSION_KEY, 'then right')
 
-    migrateQueuedPrompts('rt-old', 'rt-new')
+      expect(getPendingSteers(SESSION_KEY).map(s => s.text)).toEqual(['go left', 'then right'])
 
-    expect(getQueuedPrompts('rt-new').map(e => e.text)).toEqual(['already here', 'migrated'])
-  })
+      // The agent concatenates queued steers with newlines before injecting —
+      // one applied event can cover both.
+      settlePendingSteer(SESSION_KEY, 'go left\nthen right')
 
-  it('is a no-op when source is empty or keys match', () => {
-    expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
-    expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
-  })
-})
+      expect(getPendingSteers(SESSION_KEY)).toEqual([])
+    })
 
-describe('shouldAutoDrain', () => {
-  it('drains whenever idle with a non-empty queue', () => {
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
-  })
+    it('settles only matching entries', () => {
+      addPendingSteer(SESSION_KEY, 'go left')
+      addPendingSteer(SESSION_KEY, 'stay')
 
-  it('drains on mount/reconnect with no observed busy edge', () => {
-    // The whole point of dropping the edge: a remount resets the busy ref, so an
-    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
-  })
+      settlePendingSteer(SESSION_KEY, 'go left')
 
-  it('does not drain mid-turn', () => {
-    expect(shouldAutoDrain({ isBusy: true, queueLength: 1 })).toBe(false)
-  })
-
-  it('does not drain an empty queue', () => {
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 0 })).toBe(false)
+      expect(getPendingSteers(SESSION_KEY).map(s => s.text)).toEqual(['stay'])
+    })
   })
 })

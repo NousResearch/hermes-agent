@@ -152,6 +152,7 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
       onPickFiles={actions.onPickFiles}
       onPickFolders={actions.onPickFolders}
       onPickImages={actions.onPickImages}
+      onQueue={actions.onQueue}
       onReload={actions.onReload}
       onRemoveAttachment={actions.onRemoveAttachment}
       onRestoreToMessage={actions.onRestoreToMessage}

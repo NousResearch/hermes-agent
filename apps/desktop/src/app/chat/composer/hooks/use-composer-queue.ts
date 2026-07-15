@@ -1,22 +1,16 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 
-import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment } from '@/store/composer'
-import { resetBrowseState } from '@/store/composer-input-history'
 import {
+  $pendingSteersBySession,
   $queuedPromptsBySession,
-  enqueueQueuedPrompt,
-  MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
-  removeQueuedPrompt,
-  shouldAutoDrain,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { notify } from '@/store/notifications'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { useComposerScope } from '../scope'
@@ -30,21 +24,18 @@ interface UseComposerQueueArgs {
   draftRef: RefObject<string>
   focusInput: () => void
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
-  onCancel: ChatBarProps['onCancel']
-  onSubmit: ChatBarProps['onSubmit']
+  onQueue: ChatBarProps['onQueue']
   queueEditRef: RefObject<QueueEditState | null>
   queueSessionKey: ChatBarProps['queueSessionKey']
   sessionId: string | null | undefined
 }
 
 /**
- * The composer's queue engine — everything about queued turns: the per-session
- * queue store binding, in-place queued-prompt editing (begin/step/exit), the
- * shared drain lock + send-then-remove sequence, manual send-now, and the
- * edge-independent auto-drain with bounded retries. It consumes the draft API
- * (draftRef/clearDraft/loadIntoComposer/focusInput) and writes the
- * coordinator-owned `queueEditRef` so the draft engine can read the edit state
- * without a back-reference. Behaviour-identical to the inline original.
+ * The composer's queue view — the gateway owns the queue (agent.turn_queue)
+ * and drains it at the end of every turn, so there is NO auto-drain here and
+ * no drain lock. This hook covers what's left client-side: the per-session
+ * mirror binding, in-place queued-prompt editing (begin/step/exit), enqueueing
+ * the current draft, and "send now" (promote + interrupt on the gateway).
  */
 export function useComposerQueue({
   activeQueueSessionKey,
@@ -54,19 +45,20 @@ export function useComposerQueue({
   draftRef,
   focusInput,
   loadIntoComposer,
-  onCancel,
-  onSubmit,
+  onQueue,
   queueEditRef,
   queueSessionKey,
-  sessionId
+  sessionId: _sessionId
 }: UseComposerQueueArgs) {
-  const { t } = useI18n()
   const scope = useComposerScope()
 
   // Per-session slice (edge): re-renders only when THIS session's queue changes,
   // not on cross-session queue churn (the plain atom's map ref changes on every
   // write; the keyed array does not).
   const queuedPrompts = useSessionSlice($queuedPromptsBySession, activeQueueSessionKey)
+
+  // Steers accepted by the gateway but not yet injected into the live turn.
+  const pendingSteers = useSessionSlice($pendingSteersBySession, activeQueueSessionKey)
 
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   queueEditRef.current = queueEdit
@@ -82,8 +74,6 @@ export function useComposerQueue({
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
 
   const prevQueueKeyRef = useRef(activeQueueSessionKey)
-  const drainingQueueRef = useRef(false)
-  const drainFailuresRef = useRef(new Map<string, number>())
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
@@ -117,7 +107,6 @@ export function useComposerQueue({
     }
 
     const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
-      attachments: cloneAttachments(attachments),
       text: draftRef.current
     })
 
@@ -144,13 +133,12 @@ export function useComposerQueue({
 
     if (action === 'save') {
       const text = draftRef.current
-      const next = cloneAttachments(attachments)
 
-      if (!text.trim() && next.length === 0) {
+      if (!text.trim() && attachments.length === 0) {
         return false
       }
 
-      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { attachments: next, text })
+      const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, { text })
       triggerHaptic(saved ? 'success' : 'selection')
     } else {
       triggerHaptic('cancel')
@@ -163,14 +151,21 @@ export function useComposerQueue({
     return true
   }
 
-  const queueCurrentDraft = useCallback(() => {
+  // Queue the current draft on the gateway. onQueue (use-prompt-actions'
+  // queuePromptText) resolves attachments into refs and fires
+  // session.queue.add; the gateway drains it as the next turn, so nothing
+  // more happens client-side. Clears the draft only after the gateway
+  // accepts — a rejected enqueue keeps the words in the composer.
+  const queueCurrentDraft = useCallback(async () => {
     const text = draftRef.current
 
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+    if (!activeQueueSessionKey || !onQueue || (!text.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
+    const accepted = await Promise.resolve(onQueue(text, { attachments: cloneAttachments(attachments) }))
+
+    if (!accepted) {
       return false
     }
 
@@ -179,124 +174,41 @@ export function useComposerQueue({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments])
+  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, onQueue, scope.attachments])
 
-  // All queue drain paths share one lock + send-then-remove sequence.
-  // `pickEntry` lets each caller choose head, by-id, or skip-edited.
-  const runDrain = useCallback(
-    async (pickEntry: (entries: QueuedPromptEntry[]) => QueuedPromptEntry | undefined): Promise<boolean> => {
-      if (drainingQueueRef.current || !activeQueueSessionKey) {
-        return false
-      }
-
-      const entry = pickEntry(queuedPrompts)
-
-      if (!entry) {
-        return false
-      }
-
-      drainingQueueRef.current = true
-
-      try {
-        const accepted = await Promise.resolve(
-          onSubmit(entry.text, { attachments: entry.attachments, fromQueue: true })
-        )
-
-        if (accepted === false) {
-          return false
-        }
-
-        drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(activeQueueSessionKey, entry.id)
-        resetBrowseState(sessionId)
-
-        return true
-      } finally {
-        drainingQueueRef.current = false
-      }
-    },
-    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
-  )
-
-  const pickDrainHead = useCallback(
-    (entries: QueuedPromptEntry[]) => {
-      const skip = queueEditRef.current?.entryId
-
-      return skip ? entries.find(e => e.id !== skip) : entries[0]
-    },
-    [queueEditRef] // reads the edit id off a ref so the lock-holder always sees the latest
-  )
-
-  const drainNextQueued = useCallback(() => runDrain(pickDrainHead), [pickDrainHead, runDrain])
-
+  // "Send now": promote the entry to the queue head and interrupt the live
+  // turn on the gateway (queue preserved). The gateway drains the promoted
+  // entry the moment the turn unwinds — no client-side send at all. When
+  // idle the gateway drains promoted entries on the same RPC.
   const sendQueuedNow = useCallback(
     (id: string) => {
       if (!activeQueueSessionKey || id === queueEdit?.entryId) {
         return false
       }
 
-      if (busy) {
-        // Promote to the head, then interrupt. The gateway always emits a
-        // settle (message.complete + session.info running:false) when the
-        // turn unwinds, and the busy→false auto-drain below sends this entry.
-        promoteQueuedPrompt(activeQueueSessionKey, id)
-        triggerHaptic('selection')
-        void Promise.resolve(onCancel())
+      triggerHaptic('selection')
 
-        return true
-      }
-
-      // A manual send clears the auto-drain backoff so a stuck entry the user
-      // taps gets a fresh attempt (and re-enables auto-retry on success).
-      drainFailuresRef.current.delete(id)
-
-      return runDrain(entries => entries.find(e => e.id === id))
+      return promoteQueuedPrompt(activeQueueSessionKey, id, { interrupt: busy })
     },
-    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
+    [activeQueueSessionKey, busy, queueEdit]
   )
 
-  // Edge-independent auto-drain: send the head whenever the session is idle and
-  // the queue is non-empty, bounding retries so a thrown/rejected onSubmit (e.g.
-  // a stale-session 404) can't strand the entry permanently nor spin-loop. The
-  // drain lock serializes sends; a remount/reconnect resets the failure counts.
-  const autoDrainNext = useCallback(() => {
-    if (busy || drainingQueueRef.current || !activeQueueSessionKey) {
-      return
-    }
+  // Manual "fire the next queued turn" gesture (Cmd/Ctrl+Shift+K, empty
+  // Enter). The gateway normally drains on its own the moment the session
+  // idles; this nudges a head entry that got stuck (e.g. its idle-drain
+  // attempt failed while the backend was restarting).
+  const drainNextQueued = useCallback(() => {
+    const head = queuedPrompts.find(e => e.id !== queueEditRef.current?.entryId)
 
-    const entry = pickDrainHead(queuedPrompts)
-
-    if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
-      return
-    }
-
-    const onFail = () => {
-      const fails = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
-      drainFailuresRef.current.set(entry.id, fails)
-
-      if (fails >= MAX_AUTO_DRAIN_ATTEMPTS) {
-        notify({
-          id: 'composer-queue-stuck',
-          kind: 'error',
-          title: t.composer.queueStuckTitle,
-          message: t.composer.queueStuckBody
-        })
-      }
-    }
-
-    void runDrain(() => entry)
-      .then(sent => {
-        if (!sent) {
-          onFail()
-        }
-      })
-      .catch(onFail)
-  }, [activeQueueSessionKey, busy, pickDrainHead, queuedPrompts, runDrain, t])
+    return head ? sendQueuedNow(head.id) : false
+  }, [queueEditRef, queuedPrompts, sendQueuedNow])
 
   // Re-key on a runtime session-id change. A stable stored id (queueSessionKey)
   // never churns, so a change there is a real session switch and must NOT
   // migrate; only the runtime-derived key (queueSessionKey falsy → key is
   // sessionId) churns on a backend bounce/resume of the same conversation.
+  // Local-mirror-only: the gateway re-syncs authoritative state via
+  // session.info/queue.updated after the resume.
   useEffect(() => {
     const prev = prevQueueKeyRef.current
     prevQueueKeyRef.current = activeQueueSessionKey
@@ -307,15 +219,6 @@ export function useComposerQueue({
 
     migrateQueuedPrompts(prev, activeQueueSessionKey)
   }, [activeQueueSessionKey, queueSessionKey])
-
-  // Queued turns flow whenever the session is idle — on the busy→false settle
-  // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't
-  // strand them. To cancel queued turns, the user deletes them from the panel.
-  useEffect(() => {
-    if (shouldAutoDrain({ isBusy: busy, queueLength: queuedPrompts.length })) {
-      autoDrainNext()
-    }
-  }, [autoDrainNext, busy, queuedPrompts.length])
 
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
@@ -343,6 +246,7 @@ export function useComposerQueue({
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    pendingSteers,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,

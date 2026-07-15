@@ -74,10 +74,8 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
   onSteer: (text: string) => Promise<boolean> | boolean
-  onSubmit: (
-    text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean> | boolean
+  onQueue?: (text: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean> | boolean
+  onSubmit: (text: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
@@ -223,6 +221,7 @@ export function ChatView({
   onPickImages,
   onRemoveAttachment,
   onSteer,
+  onQueue,
   onSubmit,
   onThreadMessagesChange,
   onEdit,
@@ -515,6 +514,7 @@ export function ChatView({
               onPickFiles={onPickFiles}
               onPickFolders={onPickFolders}
               onPickImages={onPickImages}
+              onQueue={onQueue}
               onRemoveAttachment={onRemoveAttachment}
               onSteer={onSteer}
               onSubmit={onSubmit}

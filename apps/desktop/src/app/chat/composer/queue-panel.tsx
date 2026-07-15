@@ -6,12 +6,13 @@ import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { ArrowUp, iconSize, Pencil, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import type { QueuedPromptEntry } from '@/store/composer-queue'
+import type { PendingSteerEntry, QueuedPromptEntry } from '@/store/composer-queue'
 
 interface QueuePanelProps {
   busy: boolean
   editingId: null | string
   entries: QueuedPromptEntry[]
+  pendingSteers?: PendingSteerEntry[]
   onDelete: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
   onSendNow: (id: string) => void
@@ -20,19 +21,39 @@ interface QueuePanelProps {
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
   entry.text.trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
-export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
+export function QueuePanel({
+  busy,
+  editingId,
+  entries,
+  onDelete,
+  onEdit,
+  onSendNow,
+  pendingSteers = []
+}: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && pendingSteers.length === 0) {
     return null
   }
 
   return (
     <StatusSection
       icon={<Codicon className="text-muted-foreground/70" name="layers" size="0.8rem" />}
-      label={c.queued(entries.length)}
+      label={c.queued(entries.length + pendingSteers.length)}
     >
+      {/* Steers accepted by the gateway but not yet injected into the live
+          turn — they land in the transcript on the steer.applied event. */}
+      {pendingSteers.map(steer => (
+        <StatusRow key={steer.id}>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{steer.text}</p>
+            <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
+              <span>{c.steerPending}</span>
+            </div>
+          </div>
+        </StatusRow>
+      ))}
       {entries.map(entry => {
         const isEditing = editingId === entry.id
         const attachmentsCount = entry.attachments.length

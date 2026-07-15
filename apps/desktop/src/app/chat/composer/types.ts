@@ -52,10 +52,10 @@ export interface ChatBarProps {
   onPickImages?: () => void
   onRemoveAttachment?: (id: string) => void
   onSteer?: (text: string) => Promise<boolean> | boolean
-  onSubmit: (
-    value: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
-  ) => Promise<boolean> | boolean
+  /** Queue text on the gateway's agent-side turn queue (session.queue.add).
+   *  The gateway drains it as the next turn — even with the tab closed. */
+  onQueue?: (text: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean> | boolean
+  onSubmit: (value: string, options?: { attachments?: ComposerAttachment[] }) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }
 

@@ -752,6 +752,11 @@ def run_conversation(
                         _si,
                     )
                     break
+            if _injected:
+                try:
+                    agent._emit_steer_event("applied", _pre_api_steer)
+                except Exception:
+                    pass
             if not _injected:
                 # No tool message to inject into — put it back so
                 # the post-tool-execution drain picks it up later.

@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { setGatewayRequester } from '@/store/composer-queue'
 import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
@@ -133,6 +134,14 @@ export function useGatewayRequest() {
     },
     [ensureGatewayOpen]
   )
+
+  // Give the gateway-backed composer-queue store a way to fire RPCs without
+  // being a React component (module-level seam, set once per mount).
+  useEffect(() => {
+    setGatewayRequester(requestGateway)
+
+    return () => setGatewayRequester(null)
+  }, [requestGateway])
 
   return { connectionRef, gatewayRef, requestGateway }
 }

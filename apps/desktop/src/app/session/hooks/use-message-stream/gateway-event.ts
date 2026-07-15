@@ -15,6 +15,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
+import { setSessionQueue, settlePendingSteer } from '@/store/composer-queue'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -136,11 +137,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // model output or tool event proves summarization has finished and the
       // turn has resumed, so retire the phase label without waiting for the
       // whole turn to complete.
-      if (
-        sessionId &&
-        COMPACTION_RESUME_EVENT_TYPES.has(event.type) &&
-        compactedTurnRef.current.has(sessionId)
-      ) {
+      if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
         setSessionCompacting(sessionId, false)
       }
 
@@ -273,6 +270,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)
+        }
+
+        if (sessionId && Array.isArray(payload?.queue)) {
+          setSessionQueue(sessionId, payload.queue)
         }
 
         void refreshHermesConfig()
@@ -534,7 +535,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
-          choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
+          choices: Array.isArray(payload?.choices)
+            ? payload.choices.filter(choice => typeof choice === 'string')
+            : undefined,
           command,
           description,
           sessionId: sessionId ?? null,
@@ -657,6 +660,62 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
             ]
           }))
+        }
+      } else if (event.type === 'queue.updated') {
+        // Agent-side turn queue changed (enqueue/drain/remove/clear/promote).
+        // The gateway owns the queue; this mirror only feeds the panel UI.
+        if (sessionId && Array.isArray(payload?.entries)) {
+          setSessionQueue(sessionId, payload.entries)
+        }
+      } else if (event.type === 'queue.drained') {
+        // A queued entry just became the next user turn. Entries queued from
+        // the panel (source "queue") were never in the transcript — paint them
+        // now. Busy-submit entries ("busy_submit") were already echoed
+        // optimistically at submit time; painting again would duplicate them.
+        if (sessionId && payload?.source !== 'busy_submit') {
+          const text = coerceGatewayText(payload?.text).trim()
+
+          if (text) {
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: [
+                ...state.messages,
+                {
+                  id: `queued-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  role: 'user',
+                  parts: [textPart(text)]
+                }
+              ]
+            }))
+          }
+        }
+      } else if (event.type === 'steer.applied') {
+        // The steer text actually reached the model (injected into a tool
+        // result). NOW it belongs in the transcript — painting it at RPC-accept
+        // time would show a nudge the model hadn't seen yet (and might never
+        // see, e.g. when an interrupt drops it).
+        if (sessionId) {
+          const text = coerceGatewayText(payload?.text).trim()
+
+          if (text) {
+            settlePendingSteer(sessionId, text)
+            updateSessionState(sessionId, state => ({
+              ...state,
+              messages: [
+                ...state.messages,
+                {
+                  id: `steer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  role: 'system',
+                  parts: [textPart(`steer:${text}`)]
+                }
+              ]
+            }))
+          }
+        }
+      } else if (event.type === 'steer.dropped') {
+        // An interrupt discarded the pending steer before the model saw it.
+        if (sessionId) {
+          settlePendingSteer(sessionId, coerceGatewayText(payload?.text))
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

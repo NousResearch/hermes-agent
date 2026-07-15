@@ -4,7 +4,7 @@ import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { type QueuedPromptEntry } from '@/store/composer-queue'
 
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
@@ -21,16 +21,17 @@ interface UseComposerSubmitArgs {
   clearDraft: () => void
   disabled: boolean
   draftRef: RefObject<string>
-  drainNextQueued: () => Promise<boolean>
+  drainNextQueued: () => boolean
   editorRef: RefObject<HTMLDivElement | null>
   exitQueuedEdit: (action: 'cancel' | 'save') => boolean
   focusInput: () => void
   inputDisabled: boolean
   loadIntoComposer: (text: string, attachments: ComposerAttachment[]) => void
   onCancel: ChatBarProps['onCancel']
+  onQueue: ChatBarProps['onQueue']
   onSteer: ChatBarProps['onSteer']
   onSubmit: ChatBarProps['onSubmit']
-  queueCurrentDraft: () => boolean
+  queueCurrentDraft: () => Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
@@ -63,6 +64,7 @@ export function useComposerSubmit({
   inputDisabled,
   loadIntoComposer,
   onCancel,
+  onQueue,
   onSteer,
   onSubmit,
   queueCurrentDraft,
@@ -152,7 +154,7 @@ export function useComposerSubmit({
         clearDraft()
         dispatchSubmit(text)
       } else if (payloadPresent) {
-        queueCurrentDraft()
+        void queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).
@@ -175,7 +177,8 @@ export function useComposerSubmit({
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
-  // are re-queued so nothing is lost — same safety net as a plain queue.
+  // are re-queued on the gateway so nothing is lost — same safety net as a
+  // plain queue.
   const steerDraft = () => {
     if (!onSteer || !canSteer) {
       return
@@ -187,8 +190,8 @@ export function useComposerSubmit({
     clearDraft()
 
     void Promise.resolve(onSteer(text)).then(accepted => {
-      if (!accepted && activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      if (!accepted && onQueue) {
+        void Promise.resolve(onQueue(text))
       }
     })
   }

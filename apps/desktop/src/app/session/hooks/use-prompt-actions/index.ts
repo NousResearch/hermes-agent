@@ -18,6 +18,7 @@ import {
   setComposerAttachmentUploadState,
   updateComposerAttachment
 } from '@/store/composer'
+import { addPendingSteer, enqueueQueuedPrompt } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
@@ -594,8 +595,13 @@ export function usePromptActions({
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
   // text to the next tool result so the model reads it on its next iteration
-  // (desktop parity with `/steer`). Returns false on reject (no live tool
-  // window) so the caller can fall back to queueing the words for the next turn.
+  // (desktop parity with `/steer`). The RPC accepting the steer does NOT mean
+  // the model saw it yet — that happens at the next tool-batch boundary, and
+  // the gateway announces it with a `steer.applied` event. We track the steer
+  // as *pending* here; the transcript row is appended by the steer.applied
+  // handler in use-message-stream, so the chat log reflects when the nudge
+  // actually landed. Returns false on reject so the caller can fall back to
+  // queueing the words for the next turn.
   const steerPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
@@ -610,10 +616,7 @@ export function usePromptActions({
 
         if (result?.status === 'queued') {
           triggerHaptic('submit')
-          // Inline note (not a toast) so the nudge lives in the transcript next
-          // to the turn it steered. The `steer:` prefix is rendered as a codicon
-          // row by SystemMessage (see STEER_NOTE_RE), same style as slash output.
-          appendSessionTextMessage(sessionId, 'system', `steer:${text}`)
+          addPendingSteer(sessionId, text)
 
           return true
         }
@@ -623,7 +626,7 @@ export function usePromptActions({
 
       return false
     },
-    [activeSessionId, activeSessionIdRef, appendSessionTextMessage, requestGateway]
+    [activeSessionId, activeSessionIdRef, requestGateway]
   )
 
   const reloadFromMessage = useCallback(
@@ -789,6 +792,55 @@ export function usePromptActions({
     [activeSessionIdRef, updateSessionState]
   )
 
+  // Queue a prompt on the gateway's agent-side turn queue. Attachments are
+  // synced (uploaded / rewritten to @file: refs) NOW, at enqueue time — the
+  // drain happens later in the gateway process where no attachment bytes
+  // exist, so the queued text must already be self-contained.
+  const queuePromptText = useCallback(
+    async (rawText: string, options?: { attachments?: ComposerAttachment[] }): Promise<boolean> => {
+      const visibleText = sanitizeComposerInput(rawText).trim()
+      const sessionId = activeSessionId || activeSessionIdRef.current
+      const attachments = (options?.attachments ?? []).filter((a): a is ComposerAttachment => Boolean(a))
+
+      if ((!visibleText && attachments.length === 0) || !sessionId) {
+        return false
+      }
+
+      let text = visibleText
+
+      if (attachments.length > 0) {
+        try {
+          const synced = await syncAttachmentsForSubmit(sessionId, attachments, {
+            updateComposerAttachments: false
+          })
+
+          const contextRefs = synced
+            .filter((a): a is ComposerAttachment => Boolean(a))
+            .map(a => a.refText)
+            .filter(Boolean)
+            .join('\n')
+
+          text =
+            [contextRefs, visibleText].filter(Boolean).join('\n\n') ||
+            (synced.some(a => a?.kind === 'image') ? 'What do you see in this image?' : '')
+        } catch (err) {
+          notifyError(err, copy.promptFailed)
+
+          return false
+        }
+      }
+
+      if (!text) {
+        return false
+      }
+
+      const entry = await enqueueQueuedPrompt(sessionId, { text })
+
+      return entry !== null
+    },
+    [activeSessionId, activeSessionIdRef, copy.promptFailed, syncAttachmentsForSubmit]
+  )
+
   return {
     cancelRun,
     editMessage,
@@ -797,6 +849,7 @@ export function usePromptActions({
     executeSlashCommand,
     handleThreadMessagesChange,
     handoffSession,
+    queuePromptText,
     reloadFromMessage,
     restoreToMessage,
     steerPrompt,

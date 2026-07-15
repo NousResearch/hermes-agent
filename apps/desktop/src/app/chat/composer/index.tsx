@@ -81,6 +81,7 @@ export function ChatBar({
   onPickImages,
   onRemoveAttachment,
   onSteer,
+  onQueue,
   onSubmit: onSubmitProp,
   onTranscribeAudio
 }: ChatBarProps) {
@@ -180,13 +181,14 @@ export function ChatBar({
     onAddUrl
   })
 
-  // The queue engine — queued turns, in-place editing, the shared drain lock,
-  // and bounded auto-drain. Consumes the draft API and writes `queueEditRef`.
+  // The queue view — queued turns + in-place editing. The gateway owns the
+  // queue and drains it (agent.turn_queue); there is no client auto-drain.
   const {
     beginQueuedEdit,
     drainNextQueued,
     editingQueuedPrompt,
     exitQueuedEdit,
+    pendingSteers,
     queueCurrentDraft,
     queueEdit,
     queuedPrompts,
@@ -200,8 +202,7 @@ export function ChatBar({
     draftRef,
     focusInput,
     loadIntoComposer,
-    onCancel,
-    onSubmit,
+    onQueue,
     queueEditRef,
     queueSessionKey,
     sessionId
@@ -236,6 +237,7 @@ export function ChatBar({
     inputDisabled,
     loadIntoComposer,
     onCancel,
+    onQueue,
     onSteer,
     onSubmit,
     queueCurrentDraft,
@@ -883,7 +885,7 @@ export function ChatBar({
               accounts for it. Collapses to nothing when every status is empty. */}
           <ComposerStatusStack
             queue={
-              activeQueueSessionKey && queuedPrompts.length > 0 ? (
+              activeQueueSessionKey && (queuedPrompts.length > 0 || pendingSteers.length > 0) ? (
                 <QueuePanel
                   busy={busy}
                   editingId={queueEdit?.entryId ?? null}
@@ -895,6 +897,7 @@ export function ChatBar({
                   }}
                   onEdit={beginQueuedEdit}
                   onSendNow={id => void sendQueuedNow(id)}
+                  pendingSteers={pendingSteers}
                 />
               ) : null
             }

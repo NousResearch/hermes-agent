@@ -24,7 +24,6 @@ import {
   inlineErrorMessage,
   isGatewayTimeoutError,
   isProviderSetupError,
-  isSessionBusyError,
   isSessionNotFoundError,
   type SubmitTextOptions,
   withSessionBusyRetry
@@ -127,13 +126,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         )
       }
 
-      // Queue drains fire on the busy→false settle edge, where busyRef (synced
-      // from $busy by a separate effect) may still read true — honoring it would
-      // bounce the drained send. The drain lock serializes them; the user path
-      // keeps the guard so a stray Enter mid-turn can't double-submit.
       const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
 
-      if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
+      if (!hasSendable || busyRef.current) {
         return false
       }
 
@@ -147,8 +142,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -366,10 +360,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
-          if (
-            (isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) &&
-            startingStoredSessionId
-          ) {
+          if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && startingStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
             // Timeouts recover the same way as "session not found": a starved
             // backend loop (#55578 symptom d) rejects the submit even though
@@ -414,13 +405,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         return true
       } catch (err) {
         releaseBusy()
-
-        // A queued drain that raced a not-yet-settled turn gets a transient
-        // "session busy" (4009). Don't surface an error bubble/toast — the entry
-        // stays queued and the composer's bounded auto-drain retries when idle.
-        if (options?.fromQueue && isSessionBusyError(err)) {
-          return false
-        }
 
         const message = inlineErrorMessage(err, copy.promptFailed)
 

@@ -2829,8 +2829,28 @@ class AIAgent:
         # late injection on the post-interrupt turn.
         _steer_lock = getattr(self, "_pending_steer_lock", None)
         if _steer_lock is not None:
+            _dropped = None
             with _steer_lock:
+                _dropped = self._pending_steer
                 self._pending_steer = None
+            if _dropped:
+                self._emit_steer_event("dropped", _dropped)
+
+    def _emit_steer_event(self, kind: str, text: str) -> None:
+        """Notify the steer lifecycle observer (if any).
+
+        ``kind`` is ``"applied"`` when the steer text was really injected
+        into the conversation (the model will see it), or ``"dropped"`` when
+        a hard interrupt discarded it. Never raises — the observer is a
+        client-side courtesy, not part of the turn's control flow.
+        """
+        callback = getattr(self, "_on_steer_event", None)
+        if callback is None:
+            return
+        try:
+            callback(kind, text)
+        except Exception:
+            pass
 
     def steer(self, text: str) -> bool:
         """

@@ -83,6 +83,11 @@ export type GatewayEventPayload = {
   label?: string
   index?: number
   aggregator?: string
+  // queue.updated (agent-side turn queue mirror) + session.info.queue
+  entries?: unknown[]
+  queue?: unknown[]
+  // queue.drained — where the drained entry came from ("queue" | "busy_submit")
+  source?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

@@ -200,6 +200,17 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _cron_memory_provider_tools_only(job: dict) -> bool:
+    """Whether this job explicitly requested provider tools without lifecycle hooks."""
+    toolsets = job.get("enabled_toolsets")
+    if not isinstance(toolsets, list) or not toolsets or not all(
+        isinstance(name, str) for name in toolsets
+    ):
+        return False
+    from agent.memory_manager import memory_provider_tools_enabled
+    return memory_provider_tools_enabled(toolsets)
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -3168,6 +3179,8 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        _cron_toolsets = _resolve_cron_enabled_toolsets(job, _cfg)
+        _memory_tools_only = _cron_memory_provider_tools_only(job)
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3186,7 +3199,7 @@ def run_job(
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
             openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
-            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            enabled_toolsets=_cron_toolsets,
             disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
             quiet_mode=True,
             # Cron jobs should always inherit the user's SOUL.md identity from
@@ -3196,6 +3209,7 @@ def run_job(
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            memory_provider_tools_only=_memory_tools_only,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

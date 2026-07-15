@@ -10,6 +10,13 @@ class RecordingMemoryProvider:
     def __init__(self):
         self.init_kwargs = None
         self.init_session_id = None
+        self.system_prompt_calls = 0
+        self.turn_start_calls = 0
+        self.prefetch_calls = 0
+        self.sync_calls = 0
+        self.session_end_calls = 0
+        self.shutdown_calls = 0
+        self.tool_calls = 0
 
     def is_available(self):
         return True
@@ -19,10 +26,35 @@ class RecordingMemoryProvider:
         self.init_kwargs = dict(kwargs)
 
     def get_tool_schemas(self):
-        return []
+        return [{
+            "name": "recording_recall",
+            "description": "Recall recorded memory",
+            "parameters": {"type": "object", "properties": {}},
+        }]
+
+    def system_prompt_block(self):
+        self.system_prompt_calls += 1
+        return "RECORDING_PROVIDER_CONTEXT"
+
+    def on_turn_start(self, *_args, **_kwargs):
+        self.turn_start_calls += 1
+
+    def prefetch(self, *_args, **_kwargs):
+        self.prefetch_calls += 1
+        return "RECORDING_PREFETCH"
+
+    def sync_turn(self, *_args, **_kwargs):
+        self.sync_calls += 1
+
+    def on_session_end(self, *_args, **_kwargs):
+        self.session_end_calls += 1
+
+    def handle_tool_call(self, *_args, **_kwargs):
+        self.tool_calls += 1
+        return {"ok": True}
 
     def shutdown(self):
-        pass
+        self.shutdown_calls += 1
 
 
 def test_blank_memory_provider_does_not_auto_enable_honcho():
@@ -165,3 +197,81 @@ def test_aiagent_forwards_warning_callback_to_cli_memory_provider():
     assert provider.init_kwargs["platform"] == "cli"
     assert provider.init_kwargs["warning_callback"] == agent._emit_warning
     assert provider.init_kwargs["status_callback"] == agent._emit_status
+
+
+def test_cron_memory_toolset_is_provider_tools_only():
+    provider = RecordingMemoryProvider()
+    cfg = {
+        "memory": {
+            "provider": "recording",
+            "memory_enabled": True,
+            "user_profile_enabled": True,
+        },
+        "agent": {},
+    }
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from agent.system_prompt import build_system_prompt_parts
+        from agent.turn_context import build_turn_context
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            memory_provider_tools_only=True,
+            enabled_toolsets=["memory"],
+            session_id="cron-memory-tools",
+            platform="cron",
+        )
+
+        prompt_parts = build_system_prompt_parts(agent)
+        turn_context = build_turn_context(
+            agent,
+            "recall only when called",
+            None,
+            [],
+            "cron-task",
+            None,
+            None,
+            restore_or_build_system_prompt=lambda *_args, **_kwargs: "",
+            install_safe_stdio=lambda: None,
+            sanitize_surrogates=lambda value: value,
+            summarize_user_message_for_log=lambda value: str(value),
+            set_session_context=lambda _session_id: None,
+            set_current_write_origin=lambda _origin: None,
+            ra=lambda: SimpleNamespace(_set_interrupt=lambda *_args, **_kwargs: None),
+        )
+        tool_result = agent._memory_manager.handle_tool_call("recording_recall", {})
+        agent._sync_external_memory_for_turn(
+            original_user_message="remember nothing",
+            final_response="done",
+            interrupted=False,
+            messages=[],
+        )
+        agent.commit_memory_session([])
+        agent.shutdown_memory_provider([])
+
+    assert agent._memory_store is None
+    assert agent._memory_manager.tools_only is True
+    assert provider.init_kwargs["agent_context"] == "cron"
+    assert provider.init_kwargs["tools_only"] is True
+    assert "recording_recall" in agent.valid_tool_names
+    assert tool_result == {"ok": True}
+    assert provider.tool_calls == 1
+    assert turn_context.ext_prefetch_cache == ""
+    assert "RECORDING_PROVIDER_CONTEXT" not in prompt_parts["volatile"]
+    assert provider.system_prompt_calls == 0
+    assert provider.prefetch_calls == 0
+    assert provider.sync_calls == 0
+    assert provider.session_end_calls == 0
+    assert provider.shutdown_calls == 1

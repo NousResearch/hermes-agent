@@ -336,6 +336,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    memory_provider_tools_only: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1371,12 +1372,14 @@ def init_agent(
     agent._memory_store = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
+    mem_config = _agent_cfg.get("memory", {})
+    if not isinstance(mem_config, dict):
+        mem_config = {}
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
     if not skip_memory:
         try:
-            mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -1395,14 +1398,17 @@ def init_agent(
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
     agent._memory_manager = None
-    if not skip_memory:
+    _provider_tools_only = bool(
+        memory_provider_tools_only and skip_memory and platform == "cron"
+    )
+    if not skip_memory or _provider_tools_only:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
             if _mem_provider_name and _mem_provider_name.strip():
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
-                agent._memory_manager = _MemoryManager()
+                agent._memory_manager = _MemoryManager(tools_only=_provider_tools_only)
                 _mp = _load_mem(_mem_provider_name)
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
@@ -1411,7 +1417,8 @@ def init_agent(
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
                         "hermes_home": str(get_hermes_home()),
-                        "agent_context": "primary",
+                        "agent_context": "cron" if _provider_tools_only else "primary",
+                        "tools_only": _provider_tools_only,
                     }
                     if _init_kwargs["platform"] == "cli":
                         _init_kwargs["warning_callback"] = agent._emit_warning

@@ -301,7 +301,8 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
-            if agent_context in {"cron", "flush"} or platform == "cron":
+            tools_only = bool(kwargs.get("tools_only", False))
+            if (agent_context in {"cron", "flush"} or platform == "cron") and not tools_only:
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
                 self._cron_skipped = True
@@ -318,7 +319,7 @@ class HonchoMemoryProvider(MemoryProvider):
             self._config = cfg
 
             # ----- B1: recall_mode from config -----
-            self._recall_mode = cfg.recall_mode  # "context", "tools", or "hybrid"
+            self._recall_mode = "tools" if tools_only else cfg.recall_mode
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
             # ----- B5: cost-awareness config -----

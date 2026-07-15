@@ -357,10 +357,11 @@ class MemoryManager:
     provider is allowed.  Failures in one provider never block the other.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, tools_only: bool = False) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
         self._has_external: bool = False  # True once a non-builtin provider is added
+        self.tools_only = bool(tools_only)
         # Background executor for end-of-turn sync/prefetch. Lazily created on
         # first use so the common builtin-only path spawns no extra threads.
         # A single worker serializes a provider's writes (turn N must land
@@ -459,6 +460,8 @@ class MemoryManager:
         Returns combined text, or empty string if no providers contribute.
         Each non-empty block is labeled with the provider name.
         """
+        if self.tools_only:
+            return ""
         blocks = []
         for provider in self._providers:
             try:
@@ -498,6 +501,8 @@ class MemoryManager:
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
         """
+        if self.tools_only:
+            return ""
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
@@ -521,6 +526,8 @@ class MemoryManager:
         wedged provider can never block the caller. See ``sync_all`` for
         the full rationale (agent stuck "running" minutes after a turn).
         """
+        if self.tools_only:
+            return
         providers = list(self._providers)
         if not providers:
             return
@@ -580,6 +587,8 @@ class MemoryManager:
         before turn N+1; provider implementations don't need their own
         ordering guarantees.
         """
+        if self.tools_only:
+            return
         providers = list(self._providers)
         if not providers:
             return
@@ -762,6 +771,8 @@ class MemoryManager:
 
         kwargs may include: remaining_tokens, model, platform, tool_count.
         """
+        if self.tools_only:
+            return
         for provider in self._providers:
             try:
                 provider.on_turn_start(turn_number, message, **kwargs)
@@ -773,6 +784,8 @@ class MemoryManager:
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Notify all providers of session end."""
+        if self.tools_only:
+            return
         for provider in self._providers:
             try:
                 provider.on_session_end(messages)
@@ -811,7 +824,7 @@ class MemoryManager:
         ``_submit_background`` degrades to inline execution — the pre-#16454
         synchronous behavior, slow but correct.
         """
-        if not self._providers:
+        if self.tools_only or not self._providers:
             return
         snapshot = list(messages or [])
 
@@ -856,7 +869,7 @@ class MemoryManager:
         transcript was truncated; providers caching per-turn document
         state should invalidate.
         """
-        if not new_session_id:
+        if self.tools_only or not new_session_id:
             return
         # Only forward ``rewound`` when it's actually set. Passing it
         # unconditionally would inject ``rewound=False`` into every
@@ -886,6 +899,8 @@ class MemoryManager:
         Returns combined text from providers to include in the compression
         summary prompt. Empty string if no provider contributes.
         """
+        if self.tools_only:
+            return ""
         parts = []
         for provider in self._providers:
             try:
@@ -936,6 +951,8 @@ class MemoryManager:
 
         Skips the builtin provider itself (it's the source of the write).
         """
+        if self.tools_only:
+            return
         for provider in self._providers:
             if provider.name == "builtin":
                 continue
@@ -1039,6 +1056,8 @@ class MemoryManager:
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
         """Notify all providers that a subagent completed."""
+        if self.tools_only:
+            return
         for provider in self._providers:
             try:
                 provider.on_delegation(

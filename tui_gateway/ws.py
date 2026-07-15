@@ -89,10 +89,21 @@ class WSTransport:
         loop: asyncio.AbstractEventLoop,
         *,
         peer: str = "unknown",
+        authenticated_principal: tuple[str, str] | None = None,
+        desktop_bridge_profile: str | None = None,
+        allow_desktop_bridge_profile_override: bool = False,
     ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
+        # Set only by hermes_cli.web_server after consuming a verified WS
+        # ticket (or checking the process-local dashboard token). RPC payloads
+        # cannot mutate it.
+        self.authenticated_principal = authenticated_principal
+        self.desktop_bridge_profile = desktop_bridge_profile
+        self.allow_desktop_bridge_profile_override = bool(
+            allow_desktop_bridge_profile_override
+        )
         self._closed = False
         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
         # short timer flushes the batch. The lock guards the buffer + the
@@ -280,7 +291,13 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
+async def handle_ws(
+    ws: Any,
+    *,
+    authenticated_principal: tuple[str, str] | None = None,
+    desktop_bridge_profile: str | None = None,
+    allow_desktop_bridge_profile_override: bool = False,
+) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
@@ -298,7 +315,16 @@ async def handle_ws(ws: Any) -> None:
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport = WSTransport(
+            ws,
+            asyncio.get_running_loop(),
+            peer=peer,
+            authenticated_principal=authenticated_principal,
+            desktop_bridge_profile=desktop_bridge_profile,
+            allow_desktop_bridge_profile_override=(
+                allow_desktop_bridge_profile_override
+            ),
+        )
 
         # The desktop app and dashboard chat reach the agent through this WS
         # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that

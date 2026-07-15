@@ -133,29 +133,89 @@ def _is_blocked_type(text: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Backend selection — env-swappable for tests
+# Backend selection — structured config, patchable seam for tests
 # ---------------------------------------------------------------------------
 
 # Per-process cached backend; lazily instantiated on first call.
 _backend_lock = threading.Lock()
 _backend: Optional[ComputerUseBackend] = None
+_backend_scope_key: Optional[Tuple[str, str]] = None
 # Session-scoped approval state.
 _session_auto_approve = False
 _always_allow: set = set()  # action names the user unlocked for the session
 
 
+def configured_computer_use_backend() -> str:
+    """Read behavioral backend selection from the active profile config."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        computer_use = cfg.get("computer_use") or {}
+        value = str(computer_use.get("backend") or "cua").strip().lower()
+        return value or "cua"
+    except Exception:
+        return "cua"
+
+
 def _get_backend() -> ComputerUseBackend:
-    global _backend
+    global _backend, _backend_scope_key
+    backend_name = configured_computer_use_backend()
+
+    # The Desktop reverse bridge is selected per call because its socket is
+    # scoped by the current verified principal + profile. Never cache the fact
+    # that *some* Desktop is connected as a process-global routing decision.
+    if backend_name in {"cua", "cua-driver", ""}:
+        try:
+            from tools.computer_use.desktop_bridge import (
+                DesktopComputerUseBridgeBackend,
+                desktop_bridge_connected,
+            )
+
+            if desktop_bridge_connected():
+                desktop_backend = DesktopComputerUseBridgeBackend()
+                desktop_backend.start()
+                return desktop_backend
+        except ImportError:
+            pass
+
     with _backend_lock:
+        try:
+            from hermes_constants import get_hermes_home
+
+            scope_key = (str(get_hermes_home().resolve()), backend_name)
+        except Exception:
+            scope_key = ("", backend_name)
+        # A None key is retained for backward-compatible test/integration
+        # injection that assigns `_backend` directly. Backends constructed by
+        # this resolver always receive a key and are profile-isolated.
+        if (
+            _backend is not None
+            and _backend_scope_key is not None
+            and _backend_scope_key != scope_key
+        ):
+            try:
+                _backend.stop()
+            except Exception:
+                pass
+            _backend = None
+            _backend_scope_key = None
         if _backend is None:
-            backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
-            if backend_name in {"cua", "cua-driver", ""}:
+            if backend_name in {"desktop", "desktop-bridge", "desktop_bridge"}:
+                from tools.computer_use.desktop_bridge import DesktopComputerUseBridgeBackend
+                _backend = DesktopComputerUseBridgeBackend()
+            elif backend_name in {"bridge", "http", "remote", "remote-bridge"}:
+                from tools.computer_use.bridge import HttpComputerUseBridgeBackend
+                _backend = HttpComputerUseBridgeBackend()
+            elif backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
                 _backend = CuaDriverBackend()
             elif backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             else:
-                raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
+                raise RuntimeError(
+                    f"Unknown computer_use.backend={backend_name!r} in config.yaml"
+                )
             try:
                 _backend.start()
             except Exception:
@@ -165,12 +225,13 @@ def _get_backend() -> ComputerUseBackend:
                 # backend.
                 _backend = None
                 raise
+            _backend_scope_key = scope_key
         return _backend
 
 
 def reset_backend_for_tests() -> None:  # pragma: no cover
     """Test helper — tear down the cached backend."""
-    global _backend, _session_auto_approve, _always_allow
+    global _backend, _backend_scope_key, _session_auto_approve, _always_allow
     with _backend_lock:
         if _backend is not None:
             try:
@@ -178,6 +239,7 @@ def reset_backend_for_tests() -> None:  # pragma: no cover
             except Exception:
                 pass
         _backend = None
+        _backend_scope_key = None
     _session_auto_approve = False
     _always_allow = set()
 
@@ -899,15 +961,26 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS, Windows, or Linux + cua-driver binary installed (or
-    override via env). cua-driver runs on all three; the Linux path is
-    headed/X11 today (Wayland via XWayland), pure-Wayland progress tracked
-    upstream. Linux users see specific blocked checks via
-    `hermes computer-use doctor` if their session is incomplete (e.g. no
-    DISPLAY set).
+    Conditions: macOS, Windows, or Linux + either a local cua-driver binary or
+    an explicitly configured HTTP bridge backend. The bridge mode is what lets
+    a remote Hermes backend forward Computer Use to a desktop host without the
+    remote machine having a GUI/cua-driver of its own.
     """
     if sys.platform not in ("darwin", "win32", "linux"):
         return False
+    backend_name = configured_computer_use_backend()
+    if backend_name in {"desktop", "desktop-bridge", "desktop_bridge"}:
+        from tools.computer_use.desktop_bridge import desktop_bridge_connected
+        return desktop_bridge_connected()
+    try:
+        from tools.computer_use.desktop_bridge import desktop_bridge_connected
+        if desktop_bridge_connected():
+            return True
+    except ImportError:
+        pass
+    if backend_name in {"bridge", "http", "remote", "remote-bridge"}:
+        from tools.computer_use.bridge import bridge_backend_configured
+        return bridge_backend_configured()
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
 

@@ -75,6 +75,40 @@ hermes -t computer_use chat
 
 or add `computer_use` to your enabled toolsets in `~/.hermes/config.yaml`.
 
+## Remote Desktop/local-tool bridge
+
+When [Hermes Desktop connects to a remote backend](../desktop.md#connecting-to-a-remote-backend), tools normally run on the **backend** machine. If Desktop is on your Mac but the backend is on a VPS, `computer_use` sees the VPS, not your Mac.
+
+Hermes Desktop can manage this automatically for remote backends. When the **Local Computer Use bridge** option is enabled in Desktop's Gateway settings, Desktop starts a loopback-only local bridge, opens an authenticated reverse WebSocket to the remote backend, and the backend routes `computer_use` calls over that channel. The remote backend does not need inbound access to your laptop.
+
+For headless or non-Desktop setups, you can still run the bridge manually. Start an authenticated local bridge on the desktop host:
+
+```bash
+# Local desktop host, e.g. your Mac
+export HERMES_COMPUTER_USE_BRIDGE_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+hermes computer-use bridge --host 127.0.0.1 --port 8765
+```
+
+Configure the non-secret behavior in that backend profile's `config.yaml`:
+
+```yaml
+computer_use:
+  backend: bridge
+  bridge_url: http://127.0.0.1:18765
+  bridge_timeout_seconds: 30
+```
+
+Then expose that loopback-only bridge to the backend with SSH/VPN tunnelling, provide the bearer secret, and start the backend:
+
+```bash
+# Remote backend host
+ssh -N -L 18765:127.0.0.1:8765 mac-host
+export HERMES_COMPUTER_USE_BRIDGE_TOKEN="<same token>"
+hermes serve --host 0.0.0.0 --port 9119
+```
+
+The bridge is an actuator surface: it can click, type, scroll, and read the local screen through `cua-driver`. Keep the default `127.0.0.1` bind. Desktop's managed bridge keeps the local side loopback-only and uses an outbound reverse channel; for manual mode, tunnel it and only use `--allow-non-loopback` on a trusted VPN with a strong token.
+
 ## `hermes computer-use doctor` — your first triage stop
 
 `hermes computer-use doctor` runs cua-driver's structured
@@ -295,10 +329,11 @@ Override the driver binary path (tests / CI / local builds):
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
 
-Swap the backend entirely (for testing):
+Swap the backend entirely (for testing) in `config.yaml`:
 
-```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
+```yaml
+computer_use:
+  backend: noop   # records calls, no side effects
 ```
 
 ### Telemetry

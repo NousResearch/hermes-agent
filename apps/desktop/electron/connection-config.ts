@@ -88,6 +88,24 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
   return `${wsScheme}://${parsed.host}${prefix}/api/ws?ticket=${encodeURIComponent(ticket)}`
 }
 
+function buildComputerUseBridgeWsUrl(baseUrl, token, profile = null) {
+  const parsed = new URL(baseUrl)
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+
+  const profileParam = connectionScopeKey(profile) ? `&profile=${encodeURIComponent(connectionScopeKey(profile))}` : ''
+  return `${wsScheme}://${parsed.host}${prefix}/api/tools/computer-use/desktop-bridge/ws?token=${encodeURIComponent(token)}${profileParam}`
+}
+
+function buildComputerUseBridgeWsUrlWithTicket(baseUrl, ticket, profile = null) {
+  const parsed = new URL(baseUrl)
+  const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
+  const prefix = parsed.pathname.replace(/\/+$/, '')
+
+  const profileParam = connectionScopeKey(profile) ? `&profile=${encodeURIComponent(connectionScopeKey(profile))}` : ''
+  return `${wsScheme}://${parsed.host}${prefix}/api/tools/computer-use/desktop-bridge/ws?ticket=${encodeURIComponent(ticket)}${profileParam}`
+}
+
 /**
  * Build the WS URL the renderer would connect with, so the connection test can
  * exercise the same transport the app actually uses.
@@ -115,9 +133,9 @@ function buildGatewayWsUrlWithTicket(baseUrl, ticket) {
  * @param {{ mintTicket: (baseUrl: string) => Promise<string> }} deps
  * @returns {Promise<string|null>}
  */
-async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
+async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
   if (authMode === 'oauth') {
-    const mintTicket = deps.mintTicket
+    const mintTicket = deps && deps['mintTicket']
 
     if (typeof mintTicket !== 'function') {
       throw new Error('resolveTestWsUrl: a mintTicket function is required in OAuth mode.')
@@ -133,8 +151,8 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps: any = {}) {
           '(it may have expired). Open Settings → Gateway and sign in again.'
       )
 
-      ;(err as any).needsOauthLogin = true
-      err.cause = error
+      err['needsOauthLogin'] = true
+      err['cause'] = error
       throw err
     }
 
@@ -193,7 +211,12 @@ function profileRemoteOverride(config, profile) {
     return null
   }
 
-  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+  return {
+    url,
+    authMode: normAuthMode(entry.authMode),
+    token: entry.token,
+    computerUseBridge: entry.computerUseBridge !== false
+  }
 }
 
 /**
@@ -202,10 +225,10 @@ function profileRemoteOverride(config, profile) {
  * query parameter. Local pooled backends and per-profile remote overrides do not
  * need this: they already run against a backend scoped to the target profile.
  */
-function pathWithGlobalRemoteProfile(path, profile, opts: any = {}) {
+function pathWithGlobalRemoteProfile(path, profile, opts = {}) {
   const scopedProfile = connectionScopeKey(profile)
 
-  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+  if (!scopedProfile || !opts['globalRemote'] || opts['profileRemoteOverride']) {
     return path
   }
 
@@ -331,6 +354,8 @@ function cookiesHavePrivySession(cookies) {
 export {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildComputerUseBridgeWsUrl,
+  buildComputerUseBridgeWsUrlWithTicket,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,

@@ -21,8 +21,11 @@ def _reset_backend():
     """Tear down the cached backend between tests."""
     from tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
-    # Force the noop backend.
-    with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
+    # Force the noop backend through structured backend selection.
+    with patch(
+        "tools.computer_use.tool.configured_computer_use_backend",
+        return_value="noop",
+    ):
         yield
     reset_backend_for_tests()
 
@@ -138,6 +141,23 @@ class TestRegistration:
         from tools.computer_use import tool as cu_tool
         with patch("tools.computer_use.tool.sys.platform", "win32"), \
              patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
+            assert cu_tool.check_computer_use_requirements() is False
+
+    def test_check_fn_true_for_configured_bridge_backend_without_local_driver(self):
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "linux"), \
+             patch("tools.computer_use.tool.configured_computer_use_backend", return_value="bridge"), \
+             patch("tools.computer_use.bridge.bridge_url_from_config", return_value="http://127.0.0.1:8765"), \
+             patch.dict(os.environ, {"HERMES_COMPUTER_USE_BRIDGE_TOKEN": "secret"}, clear=False), \
+             patch("tools.computer_use.cua_backend.cua_driver_binary_available", return_value=False):
+            assert cu_tool.check_computer_use_requirements() is True
+
+    def test_check_fn_false_for_bridge_backend_without_token(self):
+        from tools.computer_use import tool as cu_tool
+        with patch("tools.computer_use.tool.sys.platform", "linux"), \
+             patch("tools.computer_use.tool.configured_computer_use_backend", return_value="bridge"), \
+             patch("tools.computer_use.bridge.bridge_url_from_config", return_value="http://127.0.0.1:8765"), \
+             patch.dict(os.environ, {}, clear=True):
             assert cu_tool.check_computer_use_requirements() is False
 
 

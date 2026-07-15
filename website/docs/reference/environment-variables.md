@@ -511,6 +511,14 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 | `HERMES_DESKTOP_IGNORE_EXISTING` | Set to `1` to make Desktop ignore an existing `hermes` on `PATH` during backend resolution. Equivalent to `hermes desktop --ignore-existing`. |
 | `HERMES_DESKTOP_CWD` | Initial project directory for Desktop chat sessions. Set by `hermes desktop --cwd`. |
 
+### Computer Use bridge
+
+The bridge bearer token is the only Computer Use bridge setting stored as an environment secret. Backend mode, URL, and timeout live under `computer_use` in `config.yaml`; Desktop-managed enablement lives in **Settings → Gateway**. See [Computer Use → Remote Desktop/local-tool bridge](/user-guide/features/computer-use#remote-desktoplocal-tool-bridge).
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_COMPUTER_USE_BRIDGE_TOKEN` | Bearer token shared by the manual bridge server and backend client. Store it in `~/.hermes/.env`, not shell history or `config.yaml`. |
+
 ### Microsoft Graph (Teams Meetings)
 
 App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](/guides/microsoft-graph-app-registration) for the Azure portal walkthrough and the exact API permissions required.

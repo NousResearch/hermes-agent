@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
@@ -26,6 +27,7 @@ interface GatewaySettingsState {
   envOverride: boolean
   mode: Mode
   remoteAuthMode: AuthMode
+  remoteComputerUseBridge: boolean
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
@@ -37,6 +39,7 @@ const EMPTY_STATE: GatewaySettingsState = {
   envOverride: false,
   mode: 'local',
   remoteAuthMode: 'token',
+  remoteComputerUseBridge: true,
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
@@ -346,6 +349,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     mode: state.mode,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
+    remoteComputerUseBridge: state.remoteComputerUseBridge,
     remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
     remoteUrl: trimmedUrl
   })
@@ -401,6 +405,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         mode: state.mode,
         profile: scope ?? undefined,
         remoteAuthMode: 'oauth',
+        remoteComputerUseBridge: state.remoteComputerUseBridge,
         remoteUrl: trimmedUrl
       })
 
@@ -644,10 +649,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         return
       }
 
-  // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
-  // Include the selected org so Settings reopens into the same org + instance.
-  // Read the REF (not the cloudOrg state) so a just-resolved org from
-  // discovery in this same render tick is captured, not a stale null.
+      // Persist a cloud-mode connection (remote-shaped, oauth) and soft-reconnect.
+      // Include the selected org so Settings reopens into the same org + instance.
+      // Read the REF (not the cloudOrg state) so a just-resolved org from
+      // discovery in this same render tick is captured, not a stale null.
       const next = await desktop.applyConnectionConfig({
         mode: 'cloud',
         profile: scope ?? undefined,
@@ -688,6 +693,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         mode: 'remote',
         profile: scope ?? undefined,
         remoteAuthMode: authMode,
+        remoteComputerUseBridge: state.remoteComputerUseBridge,
         remoteToken: authMode === 'token' ? remoteToken.trim() || undefined : undefined,
         remoteUrl: trimmedUrl
       })
@@ -789,6 +795,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           />
         </div>
       </div>
+
+      {state.mode === 'remote' ? (
+        <div className="mt-4 flex items-start gap-2 rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+          <AlertCircle className="mt-0.5 size-4 shrink-0 text-(--ui-text-tertiary)" />
+          <div>
+            <div className="font-medium text-(--ui-text-primary)">{g.remoteToolLocalityTitle}</div>
+            <div className="mt-1 leading-5">{g.remoteToolLocalityDesc}</div>
+          </div>
+        </div>
+      ) : null}
 
       {/* Hermes Cloud panel: one portal sign-in, then a discovered-agent picker
           whose selection drives the silent per-agent cascade + a cloud
@@ -1021,6 +1037,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
               title={g.tokenTitle}
             />
           ) : null}
+
+          <ListRow
+            action={
+              <Checkbox
+                checked={state.remoteComputerUseBridge}
+                disabled={state.envOverride}
+                onCheckedChange={checked =>
+                  setState(current => ({ ...current, remoteComputerUseBridge: checked === true }))
+                }
+              />
+            }
+            description={g.remoteComputerUseBridgeDesc}
+            title={g.remoteComputerUseBridgeTitle}
+          />
         </div>
       ) : null}
 

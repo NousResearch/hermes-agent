@@ -542,8 +542,13 @@ export const en: Translations = {
       localDesc: 'Start a private Hermes backend on localhost. This is the default and works offline.',
       remoteTitle: 'Remote gateway',
       remoteDesc: 'Connect this desktop shell to a remote Hermes backend.',
-      remoteAuthHint:
-        'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteAuthHint: 'Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token.',
+      remoteToolLocalityTitle: 'Tools run on the remote backend',
+      remoteToolLocalityDesc:
+        'Terminal, file access, MCP, and Computer Use execute on the backend machine you connect to. A remote backend cannot control this local desktop just because the app window is open here; use Local gateway for this computer, or a dedicated local tool bridge.',
+      remoteComputerUseBridgeTitle: 'Use this Mac for Computer Use',
+      remoteComputerUseBridgeDesc:
+        'When connected to a remote gateway, Desktop starts a private local bridge so Computer Use can capture and control this machine instead of the remote host.',
       cloudTitle: 'Hermes Cloud',
       cloudDesc: 'Sign in once to Hermes Cloud and pick from the agents on your account — no URL to paste.',
       cloudSignInTitle: 'Hermes Cloud',
@@ -576,7 +581,7 @@ export const en: Translations = {
       cloudAgentProvisioning: 'Provisioning…',
       cloudStatusLabel: status => `Status: ${status}`,
       remoteUrlTitle: 'Remote URL',
-      remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
+      remoteUrlDesc: 'Base URL for the remote Hermes backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
       probeError: 'Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.',
       signedIn: 'Signed in',

@@ -17,6 +17,8 @@ import { test } from 'vitest'
 import {
   AT_COOKIE_VARIANTS,
   authModeFromStatus,
+  buildComputerUseBridgeWsUrl,
+  buildComputerUseBridgeWsUrlWithTicket,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
@@ -93,13 +95,19 @@ test('profileRemoteOverride returns the per-profile remote with defaulted auth m
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://coder.example.com/hermes',
     authMode: 'token',
-    token: { value: 'sek' }
+    token: { value: 'sek' },
+    computerUseBridge: true
   })
 })
 
 test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
   const config = { profiles: { coder: { mode: 'remote', url: 'https://x', authMode: 'oauth' } } }
   assert.equal(profileRemoteOverride(config, 'coder').authMode, 'oauth')
+})
+
+test('profileRemoteOverride preserves an explicitly disabled Computer Use bridge', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x', computerUseBridge: false } } }
+  assert.equal(profileRemoteOverride(config, 'coder').computerUseBridge, false)
 })
 
 test('profileRemoteOverride treats a cloud entry as a remote override', () => {
@@ -113,7 +121,8 @@ test('profileRemoteOverride treats a cloud entry as a remote override', () => {
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://agent-1.agents.nousresearch.com',
     authMode: 'oauth',
-    token: undefined
+    token: undefined,
+    computerUseBridge: true
   })
 })
 
@@ -243,6 +252,24 @@ test('buildGatewayWsUrlWithTicket uses ?ticket= not ?token=', () => {
 
 test('buildGatewayWsUrlWithTicket url-encodes the ticket', () => {
   assert.equal(buildGatewayWsUrlWithTicket('https://host', 'a+b/c'), 'wss://host/api/ws?ticket=a%2Bb%2Fc')
+})
+
+test('buildComputerUseBridgeWsUrl targets the Desktop bridge reverse channel', () => {
+  assert.equal(
+    buildComputerUseBridgeWsUrl('https://gw.example.com/hermes', 'a/b c'),
+    'wss://gw.example.com/hermes/api/tools/computer-use/desktop-bridge/ws?token=a%2Fb%20c'
+  )
+  assert.equal(
+    buildComputerUseBridgeWsUrl('https://gw.example.com/hermes', 'token', 'work'),
+    'wss://gw.example.com/hermes/api/tools/computer-use/desktop-bridge/ws?token=token&profile=work'
+  )
+})
+
+test('buildComputerUseBridgeWsUrlWithTicket uses OAuth ticket auth', () => {
+  assert.equal(
+    buildComputerUseBridgeWsUrlWithTicket('http://127.0.0.1:9119', 'ticket+1', 'research'),
+    'ws://127.0.0.1:9119/api/tools/computer-use/desktop-bridge/ws?ticket=ticket%2B1&profile=research'
+  )
 })
 
 // --- authModeFromStatus ---

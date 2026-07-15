@@ -121,10 +121,11 @@ Hermes 应用多层防护机制：
 HERMES_CUA_DRIVER_CMD=/opt/homebrew/bin/cua-driver
 ```
 
-完全替换后端（用于测试）：
+在 `config.yaml` 中完全替换后端（用于测试）：
 
-```
-HERMES_COMPUTER_USE_BACKEND=noop   # records calls, no side effects
+```yaml
+computer_use:
+  backend: noop   # records calls, no side effects
 ```
 
 ## 故障排查

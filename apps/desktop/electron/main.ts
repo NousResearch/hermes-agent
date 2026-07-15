@@ -1,4 +1,3 @@
-
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -37,7 +36,15 @@ import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
 import {
+  detachBridgeOwnedPoolEntry,
+  releaseBridgeOwnerAndStopSidecarIfIdle,
+  scheduleBridgeReconnectIfCurrent,
+  ScopedComputerUseBridgeLifecycle
+} from './computer-use-bridge-lifecycle'
+import {
   authModeFromStatus,
+  buildComputerUseBridgeWsUrl,
+  buildComputerUseBridgeWsUrlWithTicket,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
@@ -65,7 +72,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -84,7 +90,14 @@ import {
   reviewUnstage
 } from './git-review-ops'
 import { gitRootForIpc } from './git-root'
-import { addWorktree, listBaseBranches, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
+import {
+  addWorktree,
+  listBaseBranches,
+  listBranches,
+  listWorktrees,
+  removeWorktree,
+  switchBranch
+} from './git-worktree-ops'
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -127,10 +140,16 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
-import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, resolveVenvHermesCommand } from './windows-hermes-path'
+import {
+  buildPathExtCandidates,
+  chooseUpdaterArgs,
+  getVenvSitePackagesEntries,
+  resolveVenvHermesCommand
+} from './windows-hermes-path'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -840,6 +859,21 @@ let backendStartFailure = null
 let bootstrapAbortController = null
 let connectionConfigCache = null
 let connectionConfigCacheMtime = null
+let computerUseBridgeProcess = null
+let computerUseBridgeStartPromise = null
+let computerUseBridgeState: any = null
+const computerUseBridgeLifecycle = new ScopedComputerUseBridgeLifecycle<any>()
+const computerUseBridgeConnections = computerUseBridgeLifecycle.connections
+const computerUseBridgeConnectionPromises = computerUseBridgeLifecycle.connectionPromises
+const computerUseBridgeReconnectTimers = computerUseBridgeLifecycle.reconnectTimers
+let computerUseBridgeStopping = false
+let computerUseBridgeGeneration = 0
+let primaryComputerUseBridgeRemoteKey = null
+const PRIMARY_COMPUTER_USE_BRIDGE_OWNER = 'primary'
+const COMPUTER_USE_BRIDGE_TOKEN_ENV = 'HERMES_DESKTOP_COMPUTER_USE_BRIDGE_TOKEN'
+const COMPUTER_USE_BRIDGE_RECONNECT_MS = 3_000
+const COMPUTER_USE_BRIDGE_START_TIMEOUT_MS = 12_000
+const COMPUTER_USE_BRIDGE_LOCAL_TIMEOUT_MS = 30_000
 const hermesLog = []
 const previewWatchers = new Map()
 let previewShortcutActive = false
@@ -3679,6 +3713,447 @@ function fetchJson(url, token, options: any = {}) {
   })
 }
 
+function fetchComputerUseBridgeJson(baseUrl, token, pathSuffix, options: any = {}) {
+  return new Promise((resolve, reject) => {
+    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const parsed = new URL(`${baseUrl}${pathSuffix}`)
+    const client = parsed.protocol === 'https:' ? https : http
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs, COMPUTER_USE_BRIDGE_LOCAL_TIMEOUT_MS)
+
+    const req = client.request(
+      parsed,
+      {
+        method: options.method || 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ['Bearer', token].join(' '),
+          'X-Hermes-Computer-Use-Bridge-Token': token,
+          ...(body ? { 'Content-Length': String(body.length) } : {})
+        }
+      },
+      res => {
+        const chunks = []
+        res.on('error', reject)
+        res.on('data', chunk => chunks.push(chunk))
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8')
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            return
+          }
+          try {
+            resolve(text ? JSON.parse(text) : null)
+          } catch {
+            reject(new Error(`Invalid JSON from local Computer Use bridge: ${text.slice(0, 200)}`))
+          }
+        })
+      }
+    )
+
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out waiting for local Computer Use bridge after ${timeoutMs}ms`))
+    })
+    if (body) {
+      req.write(body)
+    }
+    req.end()
+  })
+}
+
+function closeComputerUseBridgeSocket(remoteKey = null, allowReconnect = false) {
+  computerUseBridgeLifecycle.closeSockets(remoteKey, allowReconnect)
+}
+
+function stopRemoteComputerUseBridge(remoteKey, owner) {
+  if (remoteKey && owner) {
+    releaseBridgeOwnerAndStopSidecarIfIdle({
+      lifecycle: computerUseBridgeLifecycle,
+      remoteKey,
+      owner,
+      stopSidecar: stopLocalComputerUseBridgeSidecar
+    })
+  }
+}
+
+function stopPrimaryComputerUseBridge() {
+  const remoteKey = primaryComputerUseBridgeRemoteKey
+  primaryComputerUseBridgeRemoteKey = null
+  stopRemoteComputerUseBridge(remoteKey, PRIMARY_COMPUTER_USE_BRIDGE_OWNER)
+}
+
+function stopLocalComputerUseBridgeSidecar() {
+  computerUseBridgeStopping = true
+  computerUseBridgeGeneration += 1
+  const child = computerUseBridgeProcess
+  computerUseBridgeProcess = null
+  computerUseBridgeStartPromise = null
+  computerUseBridgeState = null
+  stopBackendChild(child)
+}
+
+function stopComputerUseBridge() {
+  primaryComputerUseBridgeRemoteKey = null
+  computerUseBridgeLifecycle.cancelAll()
+  stopLocalComputerUseBridgeSidecar()
+}
+
+function bridgeUrlFromStdout(line) {
+  const match = String(line || '').match(/Hermes Computer Use bridge listening on (http:\/\/[^\s]+) /)
+  return match ? match[1].replace(/\/+$/, '') : null
+}
+
+async function ensureLocalComputerUseBridgeSidecar() {
+  if (
+    computerUseBridgeState?.url &&
+    computerUseBridgeState?.token &&
+    computerUseBridgeProcess &&
+    !computerUseBridgeProcess.killed
+  ) {
+    return {
+      child: computerUseBridgeProcess,
+      url: computerUseBridgeState.url,
+      token: computerUseBridgeState.token
+    }
+  }
+
+  if (computerUseBridgeStartPromise) {
+    return computerUseBridgeStartPromise
+  }
+
+  const generation = computerUseBridgeGeneration
+  const startPromise = (async () => {
+    const token = crypto.randomBytes(32).toString('base64url')
+    const bridgeArgs = [
+      'computer-use',
+      'bridge',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      '0',
+      '--token-env',
+      COMPUTER_USE_BRIDGE_TOKEN_ENV
+    ]
+    let backend
+
+    backend = resolveHermesBackend(bridgeArgs)
+    if (backend.bootstrap) {
+      throw new Error('Local Hermes runtime is not installed; cannot start Computer Use bridge sidecar.')
+    }
+    backend = await ensureRuntime(backend)
+
+    if (computerUseBridgeStopping || generation !== computerUseBridgeGeneration) {
+      throw new Error('Local Computer Use bridge startup was cancelled.')
+    }
+
+    return new Promise((resolve, reject) => {
+      const hermesCwd = resolveHermesCwd()
+      const child = spawn(
+        backend.command,
+        backend.args,
+        hiddenWindowsChildOptions({
+          cwd: hermesCwd,
+          env: {
+            ...process.env,
+            HERMES_HOME,
+            ...backend.env,
+            TERMINAL_CWD: hermesCwd,
+            [COMPUTER_USE_BRIDGE_TOKEN_ENV]: token
+          },
+          shell: backend.shell,
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      )
+
+      computerUseBridgeProcess = child
+      let settled = false
+      let stdoutBuffer = ''
+
+      const finish = (error, value = null) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        if (error) {
+          stopBackendChild(child)
+          reject(error)
+        } else {
+          resolve(value)
+        }
+      }
+
+      const timer = setTimeout(() => {
+        finish(new Error('Timed out waiting for local Computer Use bridge to announce its port.'))
+      }, COMPUTER_USE_BRIDGE_START_TIMEOUT_MS)
+
+      child.stdout.on('data', chunk => {
+        const text = String(chunk || '')
+        stdoutBuffer += text
+        rememberLog(`[computer-use-bridge] ${text}`)
+        if (computerUseBridgeStopping || generation !== computerUseBridgeGeneration) {
+          finish(new Error('Local Computer Use bridge startup was cancelled.'))
+          return
+        }
+        const url = bridgeUrlFromStdout(stdoutBuffer)
+        if (url) {
+          computerUseBridgeState = { ...(computerUseBridgeState || {}), child, token, url }
+          finish(null, { child, url, token })
+        }
+      })
+      child.stderr.on('data', chunk => rememberLog(`[computer-use-bridge] ${String(chunk || '')}`))
+      child.once('error', error => finish(error))
+      child.once('exit', (code, signal) => {
+        rememberLog(`[computer-use-bridge] local sidecar exited (${signal || code})`)
+        if (computerUseBridgeProcess === child) {
+          computerUseBridgeProcess = null
+        }
+        if (!settled) {
+          finish(new Error(`Local Computer Use bridge exited before ready (${signal || code}).`))
+        }
+        if (computerUseBridgeState?.child === child) {
+          closeComputerUseBridgeSocket(null, true)
+          computerUseBridgeState = null
+        }
+      })
+    })
+  })()
+
+  computerUseBridgeStartPromise = startPromise
+  void startPromise.then(
+    () => {
+      if (computerUseBridgeStartPromise === startPromise) {
+        computerUseBridgeStartPromise = null
+      }
+    },
+    () => {
+      if (computerUseBridgeStartPromise === startPromise) {
+        computerUseBridgeStartPromise = null
+      }
+    }
+  )
+  return startPromise
+}
+
+async function buildRemoteComputerUseBridgeWsUrl(remote, profile) {
+  if (remote.authMode === 'oauth') {
+    const ticket = await mintGatewayWsTicket(remote.baseUrl)
+    return buildComputerUseBridgeWsUrlWithTicket(remote.baseUrl, ticket, profile)
+  }
+  return buildComputerUseBridgeWsUrl(remote.baseUrl, remote.token, profile)
+}
+
+function sendComputerUseBridgeReply(ws, id, payload) {
+  if (!id || !ws || ws.readyState !== 1) {
+    return
+  }
+  ws.send(JSON.stringify({ id, ...payload }))
+}
+
+async function handleComputerUseBridgeRequest(state, event) {
+  let request
+  try {
+    if (
+      computerUseBridgeStopping ||
+      state.generation !== computerUseBridgeGeneration ||
+      computerUseBridgeState?.child !== state.child ||
+      computerUseBridgeConnections.get(state.remoteKey) !== state
+    ) {
+      throw new Error('Local Computer Use bridge is no longer available.')
+    }
+
+    const raw = typeof event.data === 'string' ? event.data : Buffer.from(event.data).toString('utf8')
+    request = JSON.parse(raw)
+  } catch (error) {
+    rememberLog(`[computer-use-bridge] ignored invalid remote frame: ${error.message}`)
+    return
+  }
+
+  const id = String(request?.id || '')
+  if (!id) {
+    return
+  }
+
+  try {
+    if (request.type === 'status') {
+      const data = (await fetchComputerUseBridgeJson(state.url, state.token, '/v1/status')) as any
+      sendComputerUseBridgeReply(state.ws, id, { ok: true, result: data?.status || data })
+      return
+    }
+
+    if (request.type === 'computer-use') {
+      const data = (await fetchComputerUseBridgeJson(state.url, state.token, '/v1/computer-use', {
+        method: 'POST',
+        body: { method: request.method, args: request.args || {} }
+      })) as any
+      sendComputerUseBridgeReply(state.ws, id, { ok: true, result: data?.result })
+      return
+    }
+
+    throw new Error(`Unsupported Computer Use bridge request type: ${request.type}`)
+  } catch (error) {
+    sendComputerUseBridgeReply(state.ws, id, { ok: false, error: error.message || String(error) })
+  }
+}
+
+function computerUseBridgeRemoteKey(remote, profile) {
+  const scopedProfile = remote.source === 'profile' ? null : profile
+  return `${remote.baseUrl}|${remote.authMode}|${remote.source || ''}|${connectionScopeKey(scopedProfile) || 'current'}`
+}
+
+function scheduleComputerUseBridgeReconnect(remote, profile, remoteKey) {
+  if (
+    computerUseBridgeStopping ||
+    !remote?.computerUseBridge ||
+    !computerUseBridgeLifecycle.hasOwners(remoteKey) ||
+    computerUseBridgeReconnectTimers.has(remoteKey)
+  ) {
+    return
+  }
+  const timer = setTimeout(() => {
+    computerUseBridgeReconnectTimers.delete(remoteKey)
+    if (!computerUseBridgeLifecycle.hasOwners(remoteKey)) {
+      return
+    }
+    void ensureRemoteComputerUseBridge(remote, profile).catch(error =>
+      rememberLog(`[computer-use-bridge] reconnect failed: ${error.message}`)
+    )
+  }, COMPUTER_USE_BRIDGE_RECONNECT_MS)
+  computerUseBridgeReconnectTimers.set(remoteKey, timer)
+}
+
+async function ensureRemoteComputerUseBridge(remote, profile = null) {
+  if (!remote?.computerUseBridge) {
+    return null
+  }
+  if (typeof globalThis.WebSocket !== 'function') {
+    rememberLog('[computer-use-bridge] WebSocket is not available in this Electron runtime; local bridge disabled.')
+    return null
+  }
+
+  profile = remote.source === 'profile' ? null : profile
+  const remoteKey = computerUseBridgeRemoteKey(remote, profile)
+  if (!computerUseBridgeLifecycle.hasOwners(remoteKey)) {
+    return null
+  }
+  const existing = computerUseBridgeConnections.get(remoteKey)
+  if (existing?.ws && [0, 1].includes(existing.ws.readyState)) {
+    return existing
+  }
+  const pending = computerUseBridgeConnectionPromises.get(remoteKey)
+  if (pending) {
+    return pending
+  }
+
+  computerUseBridgeStopping = false
+  const generation = computerUseBridgeGeneration
+  const scopedGeneration = computerUseBridgeLifecycle.generation(remoteKey)
+  const connectionPromise = connectRemoteComputerUseBridge(remote, profile, remoteKey, generation, scopedGeneration)
+  computerUseBridgeConnectionPromises.set(remoteKey, connectionPromise)
+  try {
+    return await connectionPromise
+  } catch (error) {
+    scheduleBridgeReconnectIfCurrent({
+      lifecycle: computerUseBridgeLifecycle,
+      remoteKey,
+      stopping: computerUseBridgeStopping,
+      enabled: Boolean(remote?.computerUseBridge),
+      capturedGlobalGeneration: generation,
+      currentGlobalGeneration: computerUseBridgeGeneration,
+      capturedScopedGeneration: scopedGeneration,
+      scheduleReconnect: () => scheduleComputerUseBridgeReconnect(remote, profile, remoteKey)
+    })
+    throw error
+  } finally {
+    if (computerUseBridgeConnectionPromises.get(remoteKey) === connectionPromise) {
+      computerUseBridgeConnectionPromises.delete(remoteKey)
+    }
+  }
+}
+
+async function connectRemoteComputerUseBridge(remote, profile, remoteKey, generation, scopedGeneration) {
+  const local = await ensureLocalComputerUseBridgeSidecar()
+  if (
+    computerUseBridgeStopping ||
+    generation !== computerUseBridgeGeneration ||
+    !computerUseBridgeLifecycle.isCurrent(remoteKey, scopedGeneration)
+  ) {
+    return null
+  }
+  const existing = computerUseBridgeConnections.get(remoteKey)
+  if (existing?.ws && [0, 1].includes(existing.ws.readyState)) {
+    return existing
+  }
+
+  closeComputerUseBridgeSocket(remoteKey)
+  const wsUrl = await buildRemoteComputerUseBridgeWsUrl(remote, profile)
+  if (
+    computerUseBridgeStopping ||
+    generation !== computerUseBridgeGeneration ||
+    !computerUseBridgeLifecycle.isCurrent(remoteKey, scopedGeneration)
+  ) {
+    return null
+  }
+  const WebSocketImpl = globalThis.WebSocket as any
+  const ws = new WebSocketImpl(wsUrl)
+  const state = {
+    ...local,
+    generation,
+    remoteKey,
+    remoteBaseUrl: remote.baseUrl,
+    profile: connectionScopeKey(profile) || null,
+    ws
+  }
+  computerUseBridgeConnections.set(remoteKey, state)
+
+  await new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        closeComputerUseBridgeSocket(remoteKey, true)
+        reject(new Error('Timed out connecting local Computer Use bridge to remote backend.'))
+      }
+    }, 8_000)
+
+    ws.addEventListener('open', () => {
+      rememberLog(
+        `[computer-use-bridge] connected local Computer Use bridge to ${remote.baseUrl} for profile "${state.profile || 'current'}"`
+      )
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        resolve(null)
+      }
+    })
+    ws.addEventListener('message', event => void handleComputerUseBridgeRequest(state, event))
+    ws.addEventListener('error', event => {
+      rememberLog(`[computer-use-bridge] websocket error: ${event?.message || 'connection failed'}`)
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        reject(new Error('Computer Use bridge WebSocket connection failed.'))
+      }
+    })
+    ws.addEventListener('close', event => {
+      rememberLog(`[computer-use-bridge] websocket closed (${event?.code || 'unknown'})`)
+      if (computerUseBridgeConnections.get(remoteKey)?.ws === ws) {
+        computerUseBridgeConnections.delete(remoteKey)
+      }
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        reject(new Error('Computer Use bridge WebSocket closed before it became ready.'))
+      }
+      if (!state.closedByDesktop) {
+        scheduleComputerUseBridgeReconnect(remote, profile, remoteKey)
+      }
+    })
+  })
+
+  return state
+}
+
 function fetchPublicJson(url, options: any = {}) {
   // Credential-free JSON GET/POST for public gateway endpoints
   // (``/api/status``, ``/api/auth/providers``). Unlike ``fetchJson`` it sends
@@ -5725,6 +6200,7 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       authMode?: string
       token?: object
       org?: string
+      computerUseBridge?: boolean
     } = {
       mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
     }
@@ -5739,6 +6215,10 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
 
     if ((entry as any).token && typeof entry.token === 'object') {
       cleaned.token = entry.token
+    }
+
+    if (typeof entry.computerUseBridge === 'boolean') {
+      cleaned.computerUseBridge = entry.computerUseBridge
     }
 
     // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
@@ -5882,6 +6362,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     // Echo the scope back so the UI knows which profile (if any) this reflects.
     profile: key,
     remoteAuthMode: authMode,
+    remoteComputerUseBridge: mode === 'remote' && block.computerUseBridge !== false,
     remoteOauthConnected,
     remoteUrl,
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
@@ -5901,17 +6382,18 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
 // block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string) {
+function buildRemoteBlock(remoteUrl, authMode, token, options: any = {}) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; org?: string } = {
+  const block: { url: string; authMode: string; token: object; org?: string; computerUseBridge: boolean } = {
     url: normalizeRemoteBaseUrl(remoteUrl),
     authMode,
-    token
+    token,
+    computerUseBridge: options.computerUseBridge !== false
   }
-  const orgValue = typeof org === 'string' ? org.trim() : ''
+  const orgValue = typeof options.org === 'string' ? options.org.trim() : ''
 
   if (orgValue) {
     block.org = orgValue
@@ -5948,6 +6430,12 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   // (switching cloud→remote drops it), so it stays unset unless mode is cloud.
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
+  const computerUseBridge =
+    typeof input.remoteComputerUseBridge === 'boolean'
+      ? input.remoteComputerUseBridge
+      : typeof input.computerUseBridge === 'boolean'
+        ? input.computerUseBridge
+        : existingBlock.computerUseBridge !== false
 
   const nextToken = incomingToken
     ? persistToken
@@ -5962,7 +6450,10 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     const profiles = { ...(existing.profiles || {}) }
 
     if (remoteLike) {
-      profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg) }
+      profiles[key] = {
+        mode,
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, { org: cloudOrg, computerUseBridge })
+      }
     } else {
       delete profiles[key]
     }
@@ -5975,8 +6466,13 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg)
-    : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, { org: cloudOrg, computerUseBridge })
+    : {
+        url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl,
+        authMode,
+        token: nextToken,
+        computerUseBridge
+      }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -5987,8 +6483,9 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source) {
+async function buildRemoteConnection(rawUrl, authMode, token, source, options: any = {}) {
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const computerUseBridge = options.computerUseBridge !== false
 
   if (authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookies in the OAuth
@@ -6028,6 +6525,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
       mode: 'remote',
       source,
       authMode: 'oauth',
+      computerUseBridge,
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
       wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -6046,6 +6544,7 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
     mode: 'remote',
     source,
     authMode: 'token',
+    computerUseBridge,
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
   }
@@ -6069,7 +6568,9 @@ async function resolveRemoteBackend(profile) {
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
 
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(override.url, override.authMode, token, 'profile', {
+      computerUseBridge: override.computerUseBridge !== false
+    })
   }
 
   // 2. Env override (global, token-auth only).
@@ -6084,7 +6585,12 @@ async function resolveRemoteBackend(profile) {
       )
     }
 
-    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env')
+    return buildRemoteConnection(rawEnvUrl, 'token', rawEnvToken, 'env', {
+      // Enablement is behavioral Desktop configuration even when the legacy
+      // URL/token env override supplies connectivity. Keep the safe default
+      // on, while honoring the persisted Gateway setting as the explicit off.
+      computerUseBridge: config.remote?.computerUseBridge !== false
+    })
   }
 
   // 3. Global remote (or cloud — cloud resolves to a remote backend, Q6).
@@ -6095,7 +6601,9 @@ async function resolveRemoteBackend(profile) {
   const authMode = normAuthMode(config.remote?.authMode)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
 
-  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings', {
+    computerUseBridge: config.remote?.computerUseBridge !== false
+  })
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local
@@ -6293,6 +6801,8 @@ function stopBackendChild(child) {
 function resetHermesConnection({ soft = false } = {}) {
   connectionPromise = null
   backendStartFailure = null
+  // Reset only primary bridge ownership; pooled profiles own their sockets.
+  stopPrimaryComputerUseBridge()
 
   stopBackendChild(hermesProcess)
 
@@ -6398,9 +6908,21 @@ async function ensureBackend(profile) {
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
-  const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
+  const entry = {
+    process: null,
+    port: null,
+    token: null,
+    connectionPromise: null,
+    computerUseBridgeRemoteKey: null,
+    computerUseBridgeOwner: `pool:${key}`,
+    lastActiveAt: Date.now(),
+    stopped: false
+  }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
-    backendPool.delete(key)
+    if (backendPool.get(key) === entry) {
+      backendPool.delete(key)
+    }
+    stopRemoteComputerUseBridge(entry.computerUseBridgeRemoteKey, entry.computerUseBridgeOwner)
     throw error
   })
   backendPool.set(key, entry)
@@ -6494,6 +7016,18 @@ async function spawnPoolBackend(profile, entry) {
 
   if (remote) {
     await waitForHermes(remote.baseUrl, remote.token)
+    // stopPoolBackend may have removed this entry while remote liveness or an
+    // OAuth ticket was in flight. Never let that stale continuation recreate
+    // a connector for a disabled/deleted/evicted profile.
+    if (remote.computerUseBridge && !entry.stopped && backendPool.get(profile) === entry) {
+      entry.computerUseBridgeRemoteKey = computerUseBridgeRemoteKey(remote, profile)
+      computerUseBridgeLifecycle.acquire(entry.computerUseBridgeRemoteKey, entry.computerUseBridgeOwner)
+      await ensureRemoteComputerUseBridge(remote, profile).catch(error => {
+        rememberLog(
+          `[computer-use-bridge] remote bridge setup failed for profile "${profile}": ${error.message || error}`
+        )
+      })
+    }
 
     return {
       ...remote,
@@ -6606,25 +7140,28 @@ async function spawnPoolBackend(profile, entry) {
 }
 
 function stopPoolBackend(profile) {
-  const entry = backendPool.get(profile)
-
+  const entry = detachBridgeOwnedPoolEntry(
+    backendPool,
+    profile,
+    computerUseBridgeLifecycle,
+    stopLocalComputerUseBridgeSidecar
+  )
   if (!entry) {
     return
   }
-
-  backendPool.delete(profile)
   stopBackendChild(entry.process)
 }
 
 async function teardownPoolBackendAndWait(profile) {
-  const entry = backendPool.get(profile)
-
+  const entry = detachBridgeOwnedPoolEntry(
+    backendPool,
+    profile,
+    computerUseBridgeLifecycle,
+    stopLocalComputerUseBridgeSidecar
+  )
   if (!entry) {
     return
   }
-
-  backendPool.delete(profile)
-
   stopBackendChild(entry.process)
 
   await waitForBackendExit(entry.process)
@@ -6646,9 +7183,9 @@ function stopAllPoolBackends() {
 // profile-delete-routing.ts; this function only performs the side effects
 // that decision calls for.
 async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
+  const requestedProfile = profileNameFromDeleteRequest(request)
 
-  const decision = decideProfileDeleteAction(profile, {
+  const decision = decideProfileDeleteAction(requestedProfile, {
     isDefaultProfile: p => p === 'default',
     isValidProfileName: p => PROFILE_NAME_RE.test(p),
     primaryProfileKey
@@ -6658,16 +7195,18 @@ async function prepareProfileDeleteRequest(request) {
     return null
   }
 
+  const profile = decision.profile
+
   if (decision.action === 'teardown-primary') {
     writeActiveDesktopProfile('default')
     await teardownPrimaryBackendAndWait()
 
-    return decision.profile
+    return profile
   }
 
-  await teardownPoolBackendAndWait(decision.profile)
+  await teardownPoolBackendAndWait(profile)
 
-  return decision.profile
+  return profile
 }
 
 async function startHermes() {
@@ -6693,11 +7232,26 @@ async function startHermes() {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
-    const remote = await resolveRemoteBackend(primaryProfileKey())
+    const primaryProfile = primaryProfileKey()
+    const remote = await resolveRemoteBackend(primaryProfile)
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token)
+      if (remote.computerUseBridge) {
+        const remoteKey = computerUseBridgeRemoteKey(remote, primaryProfile)
+        if (primaryComputerUseBridgeRemoteKey && primaryComputerUseBridgeRemoteKey !== remoteKey) {
+          stopRemoteComputerUseBridge(primaryComputerUseBridgeRemoteKey, PRIMARY_COMPUTER_USE_BRIDGE_OWNER)
+        }
+        primaryComputerUseBridgeRemoteKey = remoteKey
+        computerUseBridgeLifecycle.acquire(remoteKey, PRIMARY_COMPUTER_USE_BRIDGE_OWNER)
+        await advanceBootProgress('backend.computer-use-bridge', 'Connecting local Computer Use bridge', 72)
+        await ensureRemoteComputerUseBridge(remote, primaryProfile).catch(error => {
+          rememberLog(`[computer-use-bridge] remote bridge setup failed: ${error.message || error}`)
+        })
+      } else {
+        stopPrimaryComputerUseBridge()
+      }
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -6711,12 +7265,15 @@ async function startHermes() {
         mode: 'remote',
         source: remote.source,
         authMode: remote.authMode || 'token',
+        computerUseBridge: remote.computerUseBridge !== false,
         token: remote.token,
         wsUrl: remote.wsUrl,
         logs: hermesLog.slice(-80),
         ...getWindowState()
       }
     }
+
+    stopPrimaryComputerUseBridge()
 
     // Mutual exclusion with an in-app update (#50238). If this instance was
     // relaunched while the Tauri updater is still applying an update, spawning
@@ -8466,9 +9023,7 @@ ipcMain.handle('hermes:git:branchSwitch', async (_event, repoPath, branch) =>
 
 ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches(repoPath, resolveGitBinary()))
 
-ipcMain.handle('hermes:git:baseBranchList', async (_event, repoPath) =>
-  listBaseBranches(repoPath, resolveGitBinary())
-)
+ipcMain.handle('hermes:git:baseBranchList', async (_event, repoPath) => listBaseBranches(repoPath, resolveGitBinary()))
 
 // Compact repo status (branch, ahead/behind, change counts + files) for the
 // composer coding rail. Returns null on a non-repo / remote backend so the rail
@@ -9099,6 +9654,7 @@ app.on('before-quit', () => {
   }
 
   stopBackendChild(hermesProcess)
+  stopComputerUseBridge()
   stopAllPoolBackends()
 })
 

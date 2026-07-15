@@ -1017,6 +1017,59 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _normalized_authenticated_principal(value: Any) -> tuple[str, str] | None:
+    """Normalize only a principal supplied by a trusted transport/session."""
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        return None
+    provider, subject = (str(part).strip() for part in value)
+    return (provider, subject) if provider and subject else None
+
+
+def _transport_authenticated_principal(
+    transport: Transport | None = None,
+) -> tuple[str, str] | None:
+    transport = transport if transport is not None else current_transport()
+    return _normalized_authenticated_principal(
+        getattr(transport, "authenticated_principal", None)
+    )
+
+
+def _session_authenticated_principal(session: dict) -> tuple[str, str] | None:
+    return _normalized_authenticated_principal(
+        session.get("authenticated_principal")
+    )
+
+
+def _normalized_desktop_bridge_profile(value: Any) -> str:
+    """Normalize a profile only for selecting a scoped Computer Use bridge."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "current":
+        return _current_profile_name()
+    try:
+        from hermes_cli import profiles as profiles_mod
+
+        return profiles_mod.normalize_profile_name(raw)
+    except Exception:
+        return ""
+
+
+def _transport_desktop_bridge_identity(
+    transport: Transport | None,
+    *,
+    requested_profile: str | None = None,
+) -> tuple[tuple[str, str] | None, str]:
+    """Capture only the verified identity used by Computer Use bridge routing."""
+    principal = _transport_authenticated_principal(transport)
+    verified_profile = _normalized_desktop_bridge_profile(
+        getattr(transport, "desktop_bridge_profile", None)
+    )
+    if bool(getattr(transport, "allow_desktop_bridge_profile_override", False)):
+        requested = str(requested_profile or "").strip()
+        if requested and requested.lower() != "current":
+            verified_profile = _normalized_desktop_bridge_profile(requested)
+    return principal, verified_profile
+
+
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
 
@@ -1345,8 +1398,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
         worker = None
         notify_registered = False
         home_token = None
+        bridge_caller_token = None
         profile_home = current.get("profile_home")
         try:
+            bridge_caller_token = _set_desktop_bridge_caller_for_session(current)
             tokens = _set_session_context(key)
             # Build against the session's profile (global-remote): bind its
             # HERMES_HOME so config/skills/model resolve to it, and hand the
@@ -1466,6 +1521,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
         finally:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            _reset_desktop_bridge_caller(bridge_caller_token)
             # _attach_worker already closed the worker if this session was
             # reaped mid-build; only the late notify registration can still
             # leak (session.close unregistered before _build registered it).
@@ -2024,6 +2080,40 @@ def _clear_session_context(tokens: list) -> None:
         from gateway.session_context import clear_session_vars
 
         clear_session_vars(tokens)
+    except Exception:
+        pass
+
+
+def _set_desktop_bridge_caller_for_session(
+    session: dict, *, transport: Transport | None = None
+):
+    """Bind Computer Use only when the execution caller matches its session."""
+    principal = _session_authenticated_principal(session)
+    profile = _normalized_desktop_bridge_profile(session.get("profile"))
+    request_transport = transport or current_transport() or session.get("transport")
+    request_principal, request_profile = _transport_desktop_bridge_identity(
+        request_transport,
+        requested_profile=profile,
+    )
+    if request_principal is not None and request_principal != principal:
+        principal = None
+    elif request_principal is not None and request_profile != profile:
+        principal = None
+    try:
+        from tools.computer_use.desktop_bridge import set_desktop_bridge_caller
+
+        return set_desktop_bridge_caller(principal, profile=profile)
+    except Exception:
+        return None
+
+
+def _reset_desktop_bridge_caller(token) -> None:
+    if token is None:
+        return
+    try:
+        from tools.computer_use.desktop_bridge import reset_desktop_bridge_caller
+
+        reset_desktop_bridge_caller(token)
     except Exception:
         pass
 
@@ -2670,7 +2760,14 @@ def _load_enabled_toolsets() -> list[str] | None:
                 # the focus-mode coding posture returns before the fallback path
                 # that normally adds it — without this the desktop loses the
                 # project tools exactly when sitting in a repo (see below).
-                return sorted({*selection, "project"})
+                selected = {*selection, "project"}
+                try:
+                    from tools.computer_use.desktop_bridge import desktop_bridge_connected
+                    if desktop_bridge_connected():
+                        selected.add("computer_use")
+                except Exception:
+                    pass
+                return sorted(selected)
         except Exception:
             pass
 
@@ -2786,8 +2883,18 @@ def _load_enabled_toolsets() -> list[str] | None:
         # recovery above — which keys off hermes-cli's tool universe — can't
         # surface them. This resolver runs ONLY in the desktop/TUI gateway, so
         # folding in the `project` toolset here is the gate that exposes them on
-        # exactly the surface that can follow a project move.
-        return sorted(enabled | {"project"})
+        # exactly the surface that can follow a project move. If Hermes Desktop
+        # has attached its local Computer Use bridge to a remote backend, expose
+        # `computer_use` too even when the backend is sitting in a source repo and
+        # the coding posture would otherwise hide it.
+        enabled = set(enabled) | {"project"}
+        try:
+            from tools.computer_use.desktop_bridge import desktop_bridge_connected
+            if desktop_bridge_connected():
+                enabled.add("computer_use")
+        except Exception:
+            pass
+        return sorted(enabled)
     except Exception:
         if fallback_notice is not None:
             print(
@@ -4358,6 +4465,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    bridge_caller_token = _set_desktop_bridge_caller_for_session(session)
     tokens = _set_session_context(session["session_key"])
     try:
         # Preserve this session's chosen model AND reasoning across /new so a
@@ -4379,6 +4487,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         )
     finally:
         _clear_session_context(tokens)
+        _reset_desktop_bridge_caller(bridge_caller_token)
     session["agent"] = new_agent
     session["config_model_seen"] = _config_model_target()
     session["attached_images"] = []
@@ -4689,8 +4798,22 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile: str | None = None,
+    authenticated_principal: tuple[str, str] | None = None,
+    transport: Transport | None = None,
 ):
     now = time.time()
+    bound_transport = transport or current_transport() or _stdio_transport
+    captured_principal, captured_profile = _transport_desktop_bridge_identity(
+        bound_transport,
+        requested_profile=profile,
+    )
+    bound_principal = (
+        _normalized_authenticated_principal(authenticated_principal)
+        if authenticated_principal is not None
+        else captured_principal
+    )
+    bound_profile = _normalized_desktop_bridge_profile(profile or captured_profile)
     with _sessions_lock:
         _sessions[sid] = {
             "agent": agent,
@@ -4712,13 +4835,15 @@ def _init_session(
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
+            "profile": bound_profile,
+            "authenticated_principal": bound_principal,
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
             "model_override": None,
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
-            "transport": current_transport() or _stdio_transport,
+            "transport": bound_transport,
         }
     db = session_db if session_db is not None else _get_db()
     if db is not None:
@@ -5232,6 +5357,11 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    bound_transport = current_transport() or _stdio_transport
+    bound_principal, bridge_profile = _transport_desktop_bridge_identity(
+        bound_transport,
+        requested_profile=profile,
+    )
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -5289,6 +5419,8 @@ def _(rid, params: dict) -> dict:
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile": bridge_profile,
+            "authenticated_principal": bound_principal,
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
@@ -5296,7 +5428,7 @@ def _(rid, params: dict) -> dict:
             "slash_worker": None,
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
-            "transport": current_transport() or _stdio_transport,
+            "transport": bound_transport,
         }
         _register_session_cwd(_sessions[sid])
 
@@ -5509,6 +5641,9 @@ def _deferred_session_record(
     close_on_disconnect: bool = False,
     display_history_prefix: list | None = None,
     profile_home: Path | None = None,
+    profile: str | None = None,
+    authenticated_principal: tuple[str, str] | None = None,
+    transport: Transport | None = None,
     lazy: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
@@ -5516,6 +5651,16 @@ def _deferred_session_record(
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
     now = time.time()
+    bound_transport = transport or current_transport() or _stdio_transport
+    captured_principal, captured_profile = _transport_desktop_bridge_identity(
+        bound_transport,
+        requested_profile=profile,
+    )
+    bound_principal = (
+        _normalized_authenticated_principal(authenticated_principal)
+        if authenticated_principal is not None
+        else captured_principal
+    )
     return {
         "agent": None,
         "agent_error": None,
@@ -5539,6 +5684,8 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "profile": _normalized_desktop_bridge_profile(profile or captured_profile),
+        "authenticated_principal": bound_principal,
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
@@ -5548,7 +5695,7 @@ def _deferred_session_record(
         "source": source,
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
-        "transport": current_transport() or _stdio_transport,
+        "transport": bound_transport,
     }
 
 
@@ -5594,9 +5741,14 @@ def _(rid, params: dict) -> dict:
     except (TypeError, ValueError):
         cols = 80
     # ``profile`` (app-global remote mode): resume a session that lives in another
-    # local profile's state.db. None/own profile → the launch profile (unchanged).
+    # local profile's state.db. None/own profile -> the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    bound_transport = current_transport() or _stdio_transport
+    bound_principal, bridge_profile = _transport_desktop_bridge_identity(
+        bound_transport,
+        requested_profile=profile,
+    )
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
@@ -5660,7 +5812,7 @@ def _(rid, params: dict) -> dict:
             session,
             cols=cols,
             touch=True,
-            transport=current_transport() or _stdio_transport,
+            transport=bound_transport,
         )
         payload["resumed"] = target
         # A lazy watch session never owns a run loop, so its payload's running
@@ -5711,6 +5863,9 @@ def _(rid, params: dict) -> dict:
             source=source,
             close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
             profile_home=profile_home,
+            profile=bridge_profile,
+            authenticated_principal=bound_principal,
+            transport=bound_transport,
             lazy=True,
         )
         if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
@@ -5788,6 +5943,9 @@ def _(rid, params: dict) -> dict:
             close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
             display_history_prefix=prefix,
             profile_home=profile_home,
+            profile=bridge_profile,
+            authenticated_principal=bound_principal,
+            transport=bound_transport,
             model_override=overrides.get("model_override"),
             resume_runtime_overrides=overrides or None,
         )
@@ -5833,6 +5991,13 @@ def _(rid, params: dict) -> dict:
     home_token = (
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
     )
+    bridge_caller_token = _set_desktop_bridge_caller_for_session(
+        {
+            "authenticated_principal": bound_principal,
+            "profile": bridge_profile,
+            "transport": bound_transport,
+        }
+    )
     try:
         db.reopen_session(target)
         raw_history = db.get_messages_as_conversation(target)
@@ -5876,6 +6041,7 @@ def _(rid, params: dict) -> dict:
     finally:
         if home_token is not None:
             reset_hermes_home_override(home_token)
+        _reset_desktop_bridge_caller(bridge_caller_token)
 
     # Double-checked locking: another concurrent resume may have created the
     # live session while we were building. Re-check under the lock; if it won,
@@ -5916,6 +6082,9 @@ def _(rid, params: dict) -> dict:
                     cwd=profile_resume_cwd,
                     session_db=db,
                     source=source,
+                    profile=bridge_profile,
+                    authenticated_principal=bound_principal,
+                    transport=bound_transport,
                 )
             finally:
                 if init_home_token is not None:
@@ -8076,6 +8245,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
+    parent_principal = _session_authenticated_principal(session)
+    parent_profile = _normalized_desktop_bridge_profile(session.get("profile"))
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5008)
@@ -8128,6 +8299,7 @@ def _(rid, params: dict) -> dict:
             lease.release()
         return _err(rid, 5008, f"branch failed: {e}")
     try:
+        bridge_caller_token = _set_desktop_bridge_caller_for_session(session)
         tokens = _set_session_context(new_key)
         try:
             agent = _make_agent(
@@ -8138,6 +8310,7 @@ def _(rid, params: dict) -> dict:
             )
         finally:
             _clear_session_context(tokens)
+            _reset_desktop_bridge_caller(bridge_caller_token)
         _init_session(
             new_sid,
             new_key,
@@ -8145,6 +8318,9 @@ def _(rid, params: dict) -> dict:
             list(history),
             cols=session.get("cols", 80),
             source=source,
+            profile=parent_profile,
+            authenticated_principal=parent_principal,
+            transport=current_transport() or session.get("transport"),
         )
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = lease
@@ -8970,6 +9146,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
+        bridge_caller_token = None
         goal_followup = None  # set by the post-turn goal hook below
         try:
             from tools.approval import (
@@ -8978,6 +9155,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
 
             approval_token = set_current_session_key(session["session_key"])
+            bridge_caller_token = _set_desktop_bridge_caller_for_session(session)
             session_tokens = _set_session_context(
                 session["session_key"],
                 ui_session_id=sid,
@@ -9370,6 +9548,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 pass
             if home_token is not None:
                 reset_hermes_home_override(home_token)
+            _reset_desktop_bridge_caller(bridge_caller_token)
             _clear_session_context(session_tokens)
             with session["history_lock"]:
                 session["running"] = False
@@ -10081,9 +10260,19 @@ def _(rid, params: dict) -> dict:
     text, parent = params.get("text", ""), params.get("session_id", "")
     if not text:
         return _err(rid, 4012, "text required")
+    profile_home = session.get("profile_home")
+    request_transport = current_transport()
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
 
     def run():
+        home_token = (
+            set_hermes_home_override(str(profile_home))
+            if profile_home is not None
+            else None
+        )
+        bridge_caller_token = _set_desktop_bridge_caller_for_session(
+            session, transport=request_transport
+        )
         session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         try:
             from run_agent import AIAgent
@@ -10114,6 +10303,9 @@ def _(rid, params: dict) -> dict:
             )
         finally:
             _clear_session_context(session_tokens)
+            _reset_desktop_bridge_caller(bridge_caller_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
 
     threading.Thread(target=run, daemon=True).start()
     return _ok(rid, {"task_id": task_id})
@@ -10127,6 +10319,8 @@ def _(rid, params: dict) -> dict:
 
     url = str(params.get("url") or "").strip()
     cwd = str(params.get("cwd") or "").strip()
+    profile_home = session.get("profile_home")
+    request_transport = current_transport()
     context = str(params.get("context") or "").strip()
 
     if not url:
@@ -10181,6 +10375,14 @@ def _(rid, params: dict) -> dict:
     def run():
         # Pin the validated preview cwd, else the parent workspace — never an
         # invalid client path, which would silently fall back to the launch dir.
+        home_token = (
+            set_hermes_home_override(str(profile_home))
+            if profile_home is not None
+            else None
+        )
+        bridge_caller_token = _set_desktop_bridge_caller_for_session(
+            session, transport=request_transport
+        )
         session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         try:
             from run_agent import AIAgent
@@ -10227,6 +10429,9 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 pass
             _clear_session_context(session_tokens)
+            _reset_desktop_bridge_caller(bridge_caller_token)
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
 
     threading.Thread(target=run, daemon=True).start()
     return _ok(rid, {"task_id": task_id})

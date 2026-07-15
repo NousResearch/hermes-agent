@@ -453,6 +453,10 @@ export interface Translations {
       localDesc: string
       remoteTitle: string
       remoteDesc: string
+      remoteToolLocalityTitle: string
+      remoteToolLocalityDesc: string
+      remoteComputerUseBridgeTitle: string
+      remoteComputerUseBridgeDesc: string
       remoteAuthHint: string
       cloudTitle: string
       cloudDesc: string

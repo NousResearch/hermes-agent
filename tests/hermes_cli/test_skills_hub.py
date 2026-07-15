@@ -169,16 +169,26 @@ def test_do_list_filter_builtin(three_source_env):
     assert "local-skill" not in output
 
 
-def test_do_list_personal_filters_to_user_specific_local_skills(
-    monkeypatch, hub_env
-):
+def _personal_capture(monkeypatch, skills, usage=None, hub_entries=None) -> str:
+    """Run do_list(personal_only=True) against stubbed skills + usage records."""
+    import tools.skill_usage as skill_usage
+    import tools.skills_hub as hub
     import tools.skills_sync as skills_sync
     import tools.skills_tool as skills_tool
 
-    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(_PERSONAL_SKILLS))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(skills))
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
+    monkeypatch.setattr(skill_usage, "load_usage", lambda: dict(usage or {}))
+    if hub_entries is not None:
+        monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile(list(hub_entries)))
 
-    output = _capture(personal_only=True)
+    return _capture(personal_only=True)
+
+
+def test_do_list_personal_filters_to_user_specific_local_skills(
+    monkeypatch, hub_env
+):
+    output = _personal_capture(monkeypatch, _PERSONAL_SKILLS)
 
     assert "personal-meta-skill" in output
     assert "legacy-agent-skill" not in output
@@ -191,20 +201,125 @@ def test_do_list_personal_filters_to_user_specific_local_skills(
 def test_do_list_personal_does_not_include_author_without_metadata_marker(
     monkeypatch, hub_env
 ):
-    import tools.skills_sync as skills_sync
-    import tools.skills_tool as skills_tool
-
     skills = [
         {"name": "builtin-skill", "category": "x", "description": "builtin", "author": "Hermes Agent"},
         {"name": "local-skill", "category": "x", "description": "local", "author": "Hermes Agent"},
     ]
-    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: skills)
-    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
 
-    output = _capture(personal_only=True)
+    output = _personal_capture(monkeypatch, skills)
 
     assert "local-skill" not in output
     assert "builtin-skill" not in output
+
+
+def test_do_list_personal_accepts_top_level_user_specific_marker(
+    monkeypatch, hub_env
+):
+    skills = [
+        {"name": "flag-user-skill", "category": "x", "description": "d", "user_specific": True},
+    ]
+
+    output = _personal_capture(monkeypatch, skills)
+
+    assert "flag-user-skill" in output
+
+
+def test_do_list_personal_accepts_truthy_string_marker_spelling(
+    monkeypatch, hub_env
+):
+    skills = [
+        {"name": "flag-str-skill", "category": "x", "description": "d", "user_specific": "yes"},
+    ]
+
+    output = _personal_capture(monkeypatch, skills)
+
+    assert "flag-str-skill" in output
+
+
+def test_do_list_personal_accepts_owner_specific_marker(
+    monkeypatch, hub_env
+):
+    skills = [
+        {"name": "flag-owner-skill", "category": "x", "description": "d", "owner_specific": True},
+    ]
+
+    output = _personal_capture(monkeypatch, skills)
+
+    assert "flag-owner-skill" in output
+
+
+def test_do_list_personal_accepts_owner_field(
+    monkeypatch, hub_env
+):
+    skills = [
+        {"name": "owned-skill", "category": "x", "description": "d", "owner": "example-user"},
+    ]
+
+    output = _personal_capture(monkeypatch, skills)
+
+    assert "owned-skill" in output
+
+
+def test_do_list_personal_includes_agent_created_usage_record(
+    monkeypatch, hub_env
+):
+    """Legacy agent-created skills carry no frontmatter marker — only the
+    ``created_by: agent`` provenance record written by skill_manage(create)."""
+    skills = [
+        {"name": "old-agent-skill", "category": "x", "description": "d"},
+    ]
+    usage = {"old-agent-skill": {"created_by": "agent"}}
+
+    output = _personal_capture(monkeypatch, skills, usage=usage)
+
+    assert "old-agent-skill" in output
+
+
+def test_do_list_personal_includes_agent_created_flag_record(
+    monkeypatch, hub_env
+):
+    skills = [
+        {"name": "old-flag-skill", "category": "x", "description": "d"},
+    ]
+    usage = {"old-flag-skill": {"agent_created": True}}
+
+    output = _personal_capture(monkeypatch, skills, usage=usage)
+
+    assert "old-flag-skill" in output
+
+
+def test_do_list_personal_markers_do_not_leak_non_local_sources(
+    monkeypatch, hub_env
+):
+    """user_specific markers and agent-created records on hub/builtin skills
+    must not bypass the local-source guard."""
+    skills = [
+        {"name": "hub-skill", "category": "x", "description": "hub", "user_specific": True},
+        {"name": "builtin-skill", "category": "x", "description": "builtin", "user_specific": True},
+    ]
+    usage = {"builtin-skill": {"created_by": "agent"}}
+
+    output = _personal_capture(
+        monkeypatch, skills, usage=usage, hub_entries=[_HUB_ENTRY]
+    )
+
+    assert "hub-skill" not in output
+    assert "builtin-skill" not in output
+
+
+def test_handle_skills_slash_list_personal_and_user_aliases(monkeypatch):
+    calls = []
+
+    def fake_do_list(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("hermes_cli.skills_hub.do_list", fake_do_list)
+
+    handle_skills_slash("/skills list --personal")
+    handle_skills_slash("/skills list --user")
+    handle_skills_slash("/skills list")
+
+    assert [c["personal_only"] for c in calls] == [True, True, False]
 
 
 def test_do_list_renders_status_column(three_source_env, monkeypatch):

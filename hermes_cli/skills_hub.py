@@ -914,16 +914,34 @@ def _truthy_frontmatter_value(value: object) -> bool:
     return bool(value)
 
 
-def _is_user_specific_skill(skill: dict, source_type: str) -> bool:
-    """Return True for local skills explicitly tagged as user-specific."""
+def _is_user_specific_skill(skill: dict, source_type: str,
+                            usage_record: Optional[dict] = None) -> bool:
+    """Return True for local skills explicitly tagged as user-specific, or
+    recorded as agent-created in the ``.usage.json`` sidecar.
+
+    Legacy agent-created skills predate the frontmatter markers and are only
+    identifiable via their ``skill_manage(action="create")`` usage record.
+    """
     if source_type != "local":
         return False
+
+    if _truthy_frontmatter_value(skill.get("user_specific")):
+        return True
+    if _truthy_frontmatter_value(skill.get("owner_specific")):
+        return True
+    owner = skill.get("owner")
+    if isinstance(owner, str) and owner.strip():
+        return True
 
     raw_metadata = skill.get("metadata")
     metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     raw_hermes_meta = metadata.get("hermes")
     hermes_meta = raw_hermes_meta if isinstance(raw_hermes_meta, dict) else {}
-    return _truthy_frontmatter_value(hermes_meta.get("user_specific"))
+    if _truthy_frontmatter_value(hermes_meta.get("user_specific")):
+        return True
+
+    from tools.skill_usage import _is_curator_managed_record
+    return _is_curator_managed_record(usage_record)
 
 
 def do_list(source_filter: str = "all",
@@ -957,6 +975,11 @@ def do_list(source_filter: str = "all",
     # Pull ALL skills (including disabled ones) so we can annotate status.
     all_skills = _find_all_skills(skip_disabled=True)
     disabled_names = get_disabled_skill_names()
+
+    usage_records = {}
+    if personal_only:
+        from tools.skill_usage import load_usage
+        usage_records = load_usage()
 
     title = "Installed Skills"
     if enabled_only:
@@ -998,7 +1021,9 @@ def do_list(source_filter: str = "all",
         if source_filter != "all" and source_filter != source_type:
             continue
 
-        if personal_only and not _is_user_specific_skill(skill, source_type):
+        if personal_only and not _is_user_specific_skill(
+            skill, source_type, usage_records.get(name)
+        ):
             continue
 
         is_enabled = name not in disabled_names

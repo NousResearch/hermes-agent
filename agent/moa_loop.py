@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -43,6 +44,10 @@ class _RefAccounting:
     display ``text`` is a truncated preview and is not enough to audit what an
     advisor actually saw). They are only populated when tracing is on; they add
     negligible cost otherwise.
+
+    ``started_at`` / ``ended_at`` / ``duration_ms`` capture per-reference latency
+    for trace reporting while preserving backward compatibility with prior traces
+    that do not include timing data.
     """
 
     __slots__ = (
@@ -55,6 +60,9 @@ class _RefAccounting:
         "model",
         "provider",
         "temperature",
+        "started_at",
+        "ended_at",
+        "duration_ms",
     )
 
     def __init__(
@@ -69,6 +77,9 @@ class _RefAccounting:
         model: str | None = None,
         provider: str | None = None,
         temperature: Any = None,
+        started_at: float | None = None,
+        ended_at: float | None = None,
+        duration_ms: int | None = None,
     ):
         self.usage = usage
         self.cost_usd = cost_usd
@@ -79,6 +90,9 @@ class _RefAccounting:
         self.model = model
         self.provider = provider
         self.temperature = temperature
+        self.started_at = started_at
+        self.ended_at = ended_at
+        self.duration_ms = duration_ms
 
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
@@ -217,12 +231,22 @@ def _maybe_apply_moa_cache_control(
         return messages
 
 
+def _moa_traces_enabled() -> bool:
+    try:
+        from agent.moa_trace import _traces_enabled_and_dir
+
+        return _traces_enabled_and_dir() is not None
+    except Exception:  # pragma: no cover - tracing must never break a turn
+        return False
+
+
 def _run_reference(
     slot: dict[str, str],
     ref_messages: list[dict[str, Any]],
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    trace_enabled: bool = False,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, usage)``.
 
@@ -252,6 +276,7 @@ def _run_reference(
 
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
+    started_at = time.time() if trace_enabled else None
     try:
         # Prepend the advisory-role system prompt so the reference understands
         # it is analyzing state for an aggregator, not acting on the task. The
@@ -308,6 +333,12 @@ def _run_reference(
             cost_source = cost.source
         except Exception:  # pragma: no cover - defensive
             pass
+        _ended_at = time.time() if started_at is not None else None
+        duration_ms = (
+            int((_ended_at - started_at) * 1000)
+            if started_at is not None and _ended_at is not None
+            else None
+        )
         _output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(
             usage,
@@ -319,10 +350,19 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            started_at=started_at,
+            ended_at=_ended_at,
+            duration_ms=duration_ms,
         )
         return label, _output_text, acct
     except Exception as exc:
         logger.warning("MoA reference model %s failed: %s", label, exc)
+        ended_at = time.time() if started_at is not None else None
+        duration_ms = (
+            int((ended_at - started_at) * 1000)
+            if started_at is not None and ended_at is not None
+            else None
+        )
         return label, f"[failed: {exc}]", _RefAccounting(
             CanonicalUsage(),
             messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
@@ -330,6 +370,9 @@ def _run_reference(
             model=slot.get("model"),
             provider=runtime.get("provider") or slot.get("provider"),
             temperature=temperature,
+            started_at=started_at,
+            ended_at=ended_at,
+            duration_ms=duration_ms,
         )
 
 
@@ -339,6 +382,7 @@ def _run_references_parallel(
     *,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    trace_enabled: bool = False,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel, returning outputs in order.
 
@@ -375,6 +419,7 @@ def _run_references_parallel(
                     ref_messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    trace_enabled=trace_enabled,
                 )
             ] = idx
         # Collect every reference before returning — the aggregator needs the
@@ -768,6 +813,14 @@ class MoAChatCompletions:
             from agent.moa_trace import save_moa_turn
 
             agg_slot = pending.get("aggregator_slot") or {}
+            if pending.get("aggregator_streamed") and pending.get("trace_enabled"):
+                _started_at = pending.get("aggregator_started_at")
+                if _started_at is not None:
+                    _ended_at = time.time()
+                    pending["aggregator_ended_at"] = _ended_at
+                    pending["aggregator_duration_ms"] = int(
+                        (_ended_at - _started_at) * 1000
+                    )
             # Prefer the inline capture (non-streaming); fall back to the
             # caller's resolved streamed text when streaming left it None.
             agg_output = pending.get("aggregator_output")
@@ -781,6 +834,9 @@ class MoAChatCompletions:
                 aggregator_model=agg_slot.get("model"),
                 aggregator_provider=agg_slot.get("provider"),
                 aggregator_temperature=pending.get("aggregator_temperature"),
+                aggregator_started_at=pending.get("aggregator_started_at"),
+                aggregator_ended_at=pending.get("aggregator_ended_at"),
+                aggregator_duration_ms=pending.get("aggregator_duration_ms"),
                 aggregator_input_messages=pending.get("aggregator_input_messages"),
                 aggregator_output=agg_output,
                 aggregator_streamed=bool(pending.get("aggregator_streamed")),
@@ -843,6 +899,7 @@ class MoAChatCompletions:
 
         reference_outputs: list[tuple[str, str, Any]] = []
         ref_messages = _reference_messages(messages)
+        trace_enabled = _moa_traces_enabled()
 
         # Fan-out cadence. "per_iteration" (default): advisors re-run whenever
         # the advisory view changes — i.e. every tool iteration, since the
@@ -902,6 +959,7 @@ class MoAChatCompletions:
                 ref_messages,
                 temperature=temperature,
                 max_tokens=reference_max_tokens,
+                trace_enabled=trace_enabled,
             )
             self._ref_cache_key = _cache_key
             self._ref_cache_outputs = list(reference_outputs)
@@ -933,6 +991,7 @@ class MoAChatCompletions:
                 "reference_outputs": list(reference_outputs),
                 "aggregator_slot": aggregator,
                 "aggregator_temperature": aggregator_temperature,
+                "trace_enabled": trace_enabled,
             }
 
             # Surface each reference model's answer to the display BEFORE the
@@ -984,6 +1043,8 @@ class MoAChatCompletions:
         if self._pending_trace is not None:
             self._pending_trace["aggregator_input_messages"] = agg_messages
             self._pending_trace["aggregator_label"] = _slot_label(aggregator)
+            if self._pending_trace.get("trace_enabled"):
+                self._pending_trace["aggregator_started_at"] = time.time()
         # The aggregator is the acting model. Resolve its slot to the provider's
         # real runtime (base_url/api_key/api_mode) and call it through the same
         # request-building path any model uses — so per-model wire-format
@@ -1010,6 +1071,7 @@ class MoAChatCompletions:
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
                 stream_kwargs["timeout"] = api_kwargs["timeout"]
+        agg_runtime = _slot_runtime(aggregator)
         _agg_response = call_llm(
             task="moa_aggregator",
             messages=agg_messages,
@@ -1018,7 +1080,7 @@ class MoAChatCompletions:
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
             **stream_kwargs,
-            **_slot_runtime(aggregator),
+            **agg_runtime,
         )
         # Non-streaming path (quiet mode / eval / subagents): the aggregator
         # output is available inline, so capture it into the pending trace now.
@@ -1035,6 +1097,19 @@ class MoAChatCompletions:
                     self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
                 except Exception:  # pragma: no cover - defensive
                     self._pending_trace["aggregator_output"] = None
+                if self._pending_trace.get("trace_enabled"):
+                    _agg_ended_at = time.time()
+                    self._pending_trace["aggregator_ended_at"] = _agg_ended_at
+                    self._pending_trace["aggregator_duration_ms"] = int(
+                        (
+                            _agg_ended_at
+                            - (
+                                self._pending_trace.get("aggregator_started_at")
+                                or _agg_ended_at
+                            )
+                        )
+                        * 1000
+                    )
         return _agg_response
 
 

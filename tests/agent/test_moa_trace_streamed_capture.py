@@ -16,6 +16,7 @@ with real file I/O against a temp HERMES_HOME — no mocks on the write path.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -76,6 +77,16 @@ def _read_single_trace(trace_dir, session_id):
     lines = path.read_text().strip().split("\n")
     assert len(lines) == 1
     return json.loads(lines[0])
+
+
+def _make_usage_fields():
+    return SimpleNamespace(
+        input_tokens=11,
+        output_tokens=22,
+        cache_read_tokens=3,
+        cache_write_tokens=1,
+        reasoning_tokens=0,
+    )
 
 
 def test_streamed_aggregator_output_captured_from_fallback(tmp_path, monkeypatch):
@@ -153,3 +164,176 @@ def test_empty_fallback_string_treated_as_missing(tmp_path, monkeypatch):
     agg = rec["aggregator"]
     assert agg["output"] is None
     assert agg["output_location"] == "assistant_message_in_session_db"
+
+
+def test_trace_records_reference_and_aggregator_latency_fields(tmp_path, monkeypatch):
+    """Reference and aggregator blocks expose start/end/duration in trace records."""
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    mc = MoAChatCompletions.__new__(MoAChatCompletions)
+    mc._pending_trace = {
+        "preset": "closed",
+        "reference_outputs": [
+            (
+                "reference-1",
+                "ref summary",
+                SimpleNamespace(
+                    model="gpt-4.1-mini",
+                    provider="openrouter",
+                    temperature=0.1,
+                    messages=[{"role": "system", "content": "ref"}],
+                    output="full ref output",
+                    usage=_make_usage_fields(),
+                    cost_usd=0.0001,
+                    cost_status="ok",
+                    cost_source="pricing-table",
+                    started_at=1700000000.111,
+                    ended_at=1700000000.311,
+                    duration_ms=200,
+                ),
+            )
+        ],
+        "aggregator_label": "openrouter:anthropic/claude-opus-4.8",
+        "aggregator_slot": {
+            "model": "anthropic/claude-opus-4.8",
+            "provider": "openrouter",
+        },
+        "aggregator_temperature": 0.4,
+        "aggregator_started_at": 1700000001.0,
+        "aggregator_ended_at": 1700000001.245,
+        "aggregator_duration_ms": 245,
+        "aggregator_input_messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do the thing"},
+        ],
+        "aggregator_output": "inline agg output",
+        "aggregator_streamed": False,
+    }
+
+    mc.consume_and_save_trace("sess_latency")
+
+    rec = _read_single_trace(trace_dir, "sess_latency")
+    ref = rec["references"][0]
+    agg = rec["aggregator"]
+
+    assert ref["started_at"] == 1700000000.111
+    assert ref["ended_at"] == 1700000000.311
+    assert ref["duration_ms"] == 200
+
+    assert agg["started_at"] == 1700000001.0
+    assert agg["ended_at"] == 1700000001.245
+    assert agg["duration_ms"] == 245
+
+
+def test_streamed_aggregator_latency_ends_at_trace_flush(tmp_path, monkeypatch):
+    """Streaming duration spans token consumption, not just stream creation."""
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    mc = _make_completions_with_pending(streamed=True, inline_output=None)
+    mc._pending_trace["trace_enabled"] = True
+    mc._pending_trace["aggregator_started_at"] = 10.0
+
+    import agent.moa_loop as moa_loop
+
+    monkeypatch.setattr(moa_loop.time, "time", lambda: 10.75)
+
+    mc.consume_and_save_trace(
+        "sess_stream_latency",
+        aggregator_output_fallback="streamed answer",
+    )
+
+    rec = _read_single_trace(trace_dir, "sess_stream_latency")
+    agg = rec["aggregator"]
+    assert agg["started_at"] == 10.0
+    assert agg["ended_at"] == 10.75
+    assert agg["duration_ms"] == 750
+
+
+def test_trace_is_backward_compatible_without_latency_fields(tmp_path, monkeypatch):
+    """Legacy reference/aggregator objects lacking latency attrs are tolerated."""
+    trace_dir = _enable_traces(tmp_path, monkeypatch)
+    mc = MoAChatCompletions.__new__(MoAChatCompletions)
+    mc._pending_trace = {
+        "preset": "closed",
+        "reference_outputs": [
+            (
+                "reference-legacy",
+                "legacy summary",
+                SimpleNamespace(
+                    model="gpt-4.1-mini",
+                    provider="openrouter",
+                    temperature=0.1,
+                    messages=[{"role": "system", "content": "legacy"}],
+                    output="legacy output",
+                    usage=_make_usage_fields(),
+                    cost_usd=0.0002,
+                    cost_status="ok",
+                    cost_source="pricing-table",
+                ),
+            )
+        ],
+        "aggregator_label": "openrouter:anthropic/claude-opus-4.8",
+        "aggregator_slot": {
+            "model": "anthropic/claude-opus-4.8",
+            "provider": "openrouter",
+        },
+        "aggregator_temperature": 0.4,
+        "aggregator_input_messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "do the thing"},
+        ],
+        "aggregator_output": "inline agg output",
+        "aggregator_streamed": False,
+    }
+
+    mc.consume_and_save_trace("sess_backward_compat")
+
+    rec = _read_single_trace(trace_dir, "sess_backward_compat")
+    ref = rec["references"][0]
+    agg = rec["aggregator"]
+
+    assert ref["started_at"] is None
+    assert ref["ended_at"] is None
+    assert ref["duration_ms"] is None
+
+    assert agg["started_at"] is None
+    assert agg["ended_at"] is None
+    assert agg["duration_ms"] is None
+
+
+def test_reference_latency_fields_are_gated_by_trace_enabled(monkeypatch):
+    """Reference timing remains empty unless MoA trace persistence is enabled."""
+    import agent.moa_loop as moa_loop
+
+    monkeypatch.setattr(
+        moa_loop,
+        "_slot_runtime",
+        lambda slot: {"provider": "test-provider", "model": slot.get("model")},
+    )
+    monkeypatch.setattr(moa_loop, "_extract_text", lambda _response: "reference output")
+    monkeypatch.setattr(
+        moa_loop,
+        "call_llm",
+        lambda **_kwargs: SimpleNamespace(usage=None),
+    )
+
+    _label, _text, acct = moa_loop._run_reference(
+        {"provider": "test-provider", "model": "test-model"},
+        [{"role": "user", "content": "hi"}],
+        trace_enabled=False,
+    )
+
+    assert acct.started_at is None
+    assert acct.ended_at is None
+    assert acct.duration_ms is None
+
+    times = iter([20.0, 20.125])
+    monkeypatch.setattr(moa_loop.time, "time", lambda: next(times))
+
+    _label, _text, acct = moa_loop._run_reference(
+        {"provider": "test-provider", "model": "test-model"},
+        [{"role": "user", "content": "hi"}],
+        trace_enabled=True,
+    )
+
+    assert acct.started_at == 20.0
+    assert acct.ended_at == 20.125
+    assert acct.duration_ms == 125

@@ -287,6 +287,23 @@ if [ -d "$HERMES_HOME/cron" ]; then
     chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
+# Always reset ownership of pairing data on every boot, same docker-exec/
+# root-write reason as profiles/ and cron/. `docker exec <container>
+# hermes pairing approve …` defaults to uid=0 and writes 0600 root-owned
+# approval files that the unprivileged hermes gateway cannot read,
+# silently leaving the approved user unauthorized (#10270). The targeted
+# data-volume chown above only runs when the top-level $HERMES_HOME is
+# mis-owned, so warm boots skip it — this block makes a container restart
+# self-heal. Tiny directory (a handful of small JSON files), so the cost
+# is negligible.
+if [ -d "$HERMES_HOME/platforms/pairing" ]; then
+    chown_hermes_tree "$HERMES_HOME/platforms/pairing"
+fi
+# Legacy location (pre-consolidated layout).
+if [ -d "$HERMES_HOME/pairing" ]; then
+    chown_hermes_tree "$HERMES_HOME/pairing"
+fi
+
 # Reset ownership of hermes-owned top-level state files on every boot.
 # The targeted data-volume chown above only covers hermes-owned
 # *subdirectories*; loose state files living directly under $HERMES_HOME
@@ -423,6 +440,31 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
         printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
         chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
         chmod 600 "$HERMES_HOME/auth.json"
+    fi
+fi
+
+# auth.json: re-seed a TERMINALLY-DEAD Nous bootstrap session (self-heal).
+#
+# The [ ! -f ] guard above deliberately refuses to clobber an existing
+# auth.json, so a container whose Nous bootstrap session took a terminal
+# invalid_grant (tokens cleared, providers.nous.last_auth_error.relogin_required
+# stamped) can NOT recover from a plain restart — it stays unauthenticated until
+# the credential is replaced. An orchestrator that manages the container can
+# supply a freshly-issued session via HERMES_AUTH_JSON_REBOOTSTRAP (distinct
+# from the create-only *_BOOTSTRAP var); this helper swaps ONLY the
+# providers.nous entry, and ONLY when the on-disk entry is provably terminal.
+# Every other case (healthy, rotating, absent, or unparseable auth.json) is a
+# no-op, so it is safe to leave the env set across restarts and never risks
+# clobbering a good/rotated token. Runs as its own stdlib-only subprocess (no
+# app imports) and always exits 0.
+if [ -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_REBOOTSTRAP:-}" ]; then
+    if refuse_symlinked_path "reseed" "$HERMES_HOME/auth.json"; then
+        :
+    else
+        s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" \
+            "$INSTALL_DIR/scripts/docker_rebootstrap_nous_session.py" \
+            "$HERMES_HOME/auth.json" \
+            || echo "[stage2] Warning: docker_rebootstrap_nous_session.py failed; continuing"
     fi
 fi
 

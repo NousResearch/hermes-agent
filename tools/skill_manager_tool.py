@@ -178,24 +178,33 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         return None
 
     # Layer 1 — keyword/pattern scan (unchanged classifier).
-    if _GUARD_AVAILABLE:
-        try:
-            result = scan_skill(skill_dir, source="agent-created")
-            allowed, reason = should_allow_install(result)
-            # `allowed` is True (pass), False (block), or None ("ask" verdict —
-            # treated as a block for agent-created writes). Block on anything but
-            # a clean pass; log the full report, but hand the agent only a
-            # generic error so it gets no detection report to iterate against.
-            if allowed is not True:
-                logger.warning(
-                    "Agent-created skill blocked (%s):\n%s",
-                    reason, format_scan_report(result),
-                )
-                return _SCAN_BLOCKED_MESSAGE
-        except Exception as e:
-            # Fail closed: a scanner error must not let the skill through.
-            logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+    if not _GUARD_AVAILABLE:
+        # The primary scanner failed to import — fail closed instead of
+        # silently falling through to the narrow layer-2 check alone, which
+        # only catches one specific evasion and would let everything else
+        # (e.g. a plain `import subprocess`) through unscanned.
+        logger.warning(
+            "Agent-created skill blocked: security scanner unavailable (import failed)"
+        )
+        return _SCAN_BLOCKED_MESSAGE
+
+    try:
+        result = scan_skill(skill_dir, source="agent-created")
+        allowed, reason = should_allow_install(result)
+        # `allowed` is True (pass), False (block), or None ("ask" verdict —
+        # treated as a block for agent-created writes). Block on anything but
+        # a clean pass; log the full report, but hand the agent only a
+        # generic error so it gets no detection report to iterate against.
+        if allowed is not True:
+            logger.warning(
+                "Agent-created skill blocked (%s):\n%s",
+                reason, format_scan_report(result),
+            )
             return _SCAN_BLOCKED_MESSAGE
+    except Exception as e:
+        # Fail closed: a scanner error must not let the skill through.
+        logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        return _SCAN_BLOCKED_MESSAGE
 
     # Layer 2 — narrow dynamic-import evasion check.
     evaded = _scan_dynamic_import_evasion(skill_dir)

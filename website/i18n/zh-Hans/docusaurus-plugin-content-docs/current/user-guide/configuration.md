@@ -438,14 +438,14 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 ### Agent 创建技能写入的守卫
 
-当 agent 使用 `skill_manage` 创建、编辑、修补或删除技能时，Hermes 可以选择扫描新/更新的内容以查找危险关键字模式（凭据收集、明显的 prompt 注入、数据外泄指令）。扫描器**默认关闭** —— 合法触及 `~/.ssh/` 或提及 `$OPENAI_API_KEY` 的真实 agent 工作流触发启发式规则过于频繁。如果您希望扫描器在 agent 的技能写入落地前提示您，请重新开启：
+当 agent 使用 `skill_manage` 创建、编辑、修补或写入技能文件时，Hermes 会在内容落地前扫描新/更新的内容以查找危险模式。扫描器**默认开启**：与短暂的 `terminal()` 调用不同，技能会持久化到磁盘、在重启后仍然存在，并在每个会话中被重新加载进 agent 的上下文 —— 因此如果不加以审查，被 prompt 注入的 agent 可能借此植入恶意技能。
 
 ```yaml
 skills:
   guard_agent_created: true   # 默认：true
 ```
 
-开启后，任何被标记的 `skill_manage` 写入都会以审批提示的形式出现，并附带扫描器的理由。接受的写入落地；拒绝的写入向 agent 返回解释性错误。
+分类器逻辑未变：`safe`（安全）和 `caution`（谨慎）判定会放行（因此仅仅提及 `~/.ssh` 之类路径的技能不会被拦截），只有 `dangerous`（危险）判定（例如读取密钥环境变量、通过 `curl $TOKEN` 外泄数据）才会**拦截** —— 该次写入会被回滚。一项范围很窄的附加检查还会拦截对代码执行/网络模块的字符串字面量动态导入（例如 `importlib.import_module("subprocess")`），这是唯一能绕过字面量关键字正则的手法；通过变量进行的动态导入以及良性模块则不受影响。命中的模式**不会**被回传给 agent，这样行为异常的 agent 就无法针对检测报告反复试探直到某个 payload 漏网；完整细节会记录在日志中供你查阅。读取该配置项遵循**失败即拦截**原则 —— 配置损坏或不可读时守卫保持开启。外部技能中心的安装（可信/社区来源）无论此设置如何都会始终被扫描。如需显式关闭，使用 `hermes config set skills.guard_agent_created false`。
 
 ## 内存配置
 

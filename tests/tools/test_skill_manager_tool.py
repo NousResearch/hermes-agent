@@ -704,6 +704,22 @@ class TestSecurityScanGate:
         assert result is not None
         assert "Security scan blocked" in result
 
+    def test_scan_fails_closed_when_guard_unavailable(self, tmp_path):
+        """If the primary scanner failed to import (_GUARD_AVAILABLE=False), the
+        write must still be blocked — falling through to the narrow layer-2
+        check alone would let anything outside that one evasion pattern
+        through unscanned, breaking the fail-closed guarantee."""
+        from tools.skill_manager_tool import _security_scan_skill
+
+        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("tools.skill_manager_tool._GUARD_AVAILABLE", False), \
+             patch("tools.skill_manager_tool.scan_skill") as mock_scan:
+            result = _security_scan_skill(tmp_path)
+
+        assert result is not None
+        assert "Security scan blocked" in result
+        mock_scan.assert_not_called()  # never reached — blocked before layer 1 attempts to run
+
 
 class TestDynamicImportEvasion:
     """The narrow layer-2 check closes the importlib("subprocess") bypass of

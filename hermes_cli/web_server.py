@@ -25,6 +25,7 @@ import inspect
 import importlib.util
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -44,7 +45,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -100,7 +101,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel, SecretStr
+    from pydantic import BaseModel, SecretStr, field_validator
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -116,7 +117,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel, SecretStr
+        from pydantic import BaseModel, SecretStr, field_validator
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -1003,15 +1004,34 @@ class MoaModelSlot(BaseModel):
     reasoning_effort: Optional[str] = None
 
 
-class MoaPresetPayload(BaseModel):
+class _MoaReferenceControls(BaseModel):
+    reference_timeout: float = 30.0
+    degraded_reference_policy: Literal["loud", "silent"] = "loud"
+
+    @field_validator("reference_timeout", mode="before")
+    @classmethod
+    def _validate_reference_timeout(cls, value: Any) -> float:
+        """Reject JSON booleans/non-finite values before float coercion."""
+        if isinstance(value, bool):
+            raise ValueError("reference_timeout must be a finite positive number")
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "reference_timeout must be a finite positive number"
+            ) from exc
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("reference_timeout must be a finite positive number")
+        return timeout
+
+
+class MoaPresetPayload(_MoaReferenceControls):
     reference_models: list[MoaModelSlot] = []
     aggregator: MoaModelSlot = MoaModelSlot()
     # None = temperature omitted from API calls (provider default), matching
     # single-model agent behavior.
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
-    reference_timeout: float = 30.0
-    degraded_reference_policy: str = "loud"
     max_tokens: int = 4096
     # Newer per-preset knobs (see moa_config._normalize_preset). Optional so
     # older clients that never send them keep working; declared so clients
@@ -1021,7 +1041,7 @@ class MoaPresetPayload(BaseModel):
     enabled: bool = True
 
 
-class MoaConfigPayload(BaseModel):
+class MoaConfigPayload(_MoaReferenceControls):
     default_preset: str = "default"
     active_preset: str = ""
     presets: dict[str, MoaPresetPayload] = {}
@@ -1031,8 +1051,6 @@ class MoaConfigPayload(BaseModel):
     aggregator: MoaModelSlot = MoaModelSlot()
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
-    reference_timeout: float = 30.0
-    degraded_reference_policy: str = "loud"
     max_tokens: int = 4096
     reference_max_tokens: Optional[int] = None
     fanout: Optional[str] = None

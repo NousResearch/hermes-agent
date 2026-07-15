@@ -8,12 +8,13 @@ REFS = ROOT / "team-shortcuts/payload/skills/prompt-shortcuts/references"
 def test_new_chat_rechecks_branch_for_every_writable_task():
     text = (REFS / "use-new-chat.md").read_text(encoding="utf-8")
 
-    assert 'version: "2.6"' in text
+    assert 'version: "2.7"' in text
     assert "ด่านก่อนเขียนทุกงาน" in text
     assert "NEW_WRITABLE_TASK" in text
     assert "Write Permit" in text
     assert "คำสั่งผู้ใช้ก้อนใหม่" in text
-    assert "ต้องเสนอ branch ใหม่" in text
+    # v2.7 เปลี่ยนกลไก: งานเขียนใหม่ต้องผ่าน Worktree Manager dry-run + เจ้าของอนุมัติ (สัญญาเดิม: ห้ามเขียนก่อนได้ไฟเขียว)
+    assert "แสดง dry-run และรอเจ้าของอนุมัติ" in text
 
 
 def test_relay_and_continue_require_task_scoped_write_permit():
@@ -36,7 +37,7 @@ def test_same_reviewer_method_stops_after_two_failures():
     assert "ห้ามยิงรอบที่ 3" in relay
     assert "เปลี่ยนเป็น test/lint/build/gate-run" in relay
     assert "ห้ามเรียกรอบที่ 3" in new_chat
-    assert 'version: "4.4"' in continuation
+    assert 'version: "4.5"' in continuation
     assert "ผู้ตรวจคนละค่าย" in continuation
 
 

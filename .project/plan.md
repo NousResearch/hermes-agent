@@ -135,7 +135,7 @@
 - **MW-P3-I4** รันสัญญา §13 ครบ 3 ข้อ → ส่งเจ้าของ
 - verify: mw-spec-check PASS + Codex ตรวจ + ด่าน git + สัญญา §13
 
-## MW-P4 — ทดสอบจริงบน RoadSafeFund + ติดตั้ง 2 ทาง (VPS/notebook) · สถานะ: **install เสร็จ (mw-setup.sh + install-shortcuts wiring · 2 เทสต์ · branch feature/mw-p4-install)** · **ค้าง: รันจริงกับ RoadSafeFund backend (ต้องมี API+DB+token เจ้าของ) + ยืนยันติดตั้งบน VPS**
+## MW-P4 — ทดสอบจริงบน RoadSafeFund + ติดตั้ง 2 ทาง (VPS/notebook) · สถานะ: **จบ 2026-07-15 — backend-check รันจริงกับ RSF site 78 (อ่าน 3/3 PASS + negative 2/2 FAIL ถูกต้อง) + วงจรฟอร์มจริง submit→DB PASS (POST /api/v1/contact · ข้อมูล TEST-MW ลบเกลี้ยง เหลือ 0) · เหลืองานเจ้าของ: กดชุดทดสอบรับงาน team-shortcuts/OWNER-ACCEPTANCE-MW.md**
 
 - verify: เดิน flow จริงอย่างน้อย 1 เมนู หลักฐาน tier 3+ + เจ้าของเห็นของจริง
 

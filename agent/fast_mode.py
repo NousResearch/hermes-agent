@@ -2,9 +2,9 @@
 
 Hermes stores the user's fast-mode preference on ``agent.service_tier`` for
 backward compatibility with the existing Normal/Fast implementation.  The
-``auto`` value is a Hermes policy, not an API service tier: requests that begin
-within the configured window receive the provider-specific fast override and
-later requests in the same turn do not.
+``auto`` and ``cold`` values are Hermes policies, not API service tiers:
+``auto`` opens the configured fast window on every user turn, while ``cold``
+opens it only on the first turn of a logical session.
 
 The policy only returns an ephemeral copy of ``request_overrides``.  It never
 mutates the conversation, system prompt, tool schemas, or the agent's persisted
@@ -32,12 +32,47 @@ def normalize_fast_auto_on_seconds(value: Any) -> float:
     return cutoff
 
 
-def begin_fast_mode_turn(agent: Any, *, now: float | None = None) -> None:
-    """Reset the auto-fast clock for one user turn."""
-    if getattr(agent, "service_tier", None) == "auto":
-        agent._fast_mode_turn_started_at = time.monotonic() if now is None else now
-    else:
-        agent._fast_mode_turn_started_at = None
+def _has_prior_session_activity(history: Any) -> bool:
+    """Return whether a transcript already contains a conversational turn.
+
+    System-only history is setup for a new session, not evidence of a prior
+    user turn.  Any user, assistant, or tool row is conservatively treated as
+    existing session activity, including compressed or partially recovered
+    transcripts.
+    """
+    if not isinstance(history, (list, tuple)):
+        return False
+    return any(
+        isinstance(message, dict)
+        and message.get("role") in {"user", "assistant", "tool"}
+        for message in history
+    )
+
+
+def begin_fast_mode_turn(
+    agent: Any,
+    conversation_history: Any = None,
+    *,
+    now: float | None = None,
+) -> None:
+    """Resolve fast-window eligibility at one user-turn boundary.
+
+    ``cold`` derives its state from durable transcript history so recreating an
+    agent process for an existing session does not open another fast window.
+    The live message list is a fallback for callers that omit explicit history.
+    """
+    mode = getattr(agent, "service_tier", None)
+    eligible = mode == "auto"
+    if mode == "cold":
+        history = conversation_history
+        if not history:
+            history = getattr(agent, "_session_messages", None)
+        eligible = not _has_prior_session_activity(history)
+
+    agent._fast_mode_turn_eligible = eligible
+    agent._fast_mode_turn_started_at = (
+        (time.monotonic() if now is None else now) if eligible else None
+    )
 
 
 def effective_request_overrides(
@@ -45,12 +80,14 @@ def effective_request_overrides(
 ) -> dict[str, Any]:
     """Resolve request overrides for the model call starting now.
 
-    Explicit Normal/Fast behavior is unchanged.  Auto mode removes any stale
-    fast-only key from the copied override map, then re-adds the active model's
-    provider-specific fast override while the turn is inside the cutoff.
+    Explicit Normal/Fast behavior is unchanged.  Dynamic modes remove any stale
+    fast-only key from the copied override map, then re-add the active model's
+    provider-specific fast override while the current turn is eligible and
+    inside the cutoff.
     """
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    if getattr(agent, "service_tier", None) != "auto":
+    mode = getattr(agent, "service_tier", None)
+    if mode not in {"auto", "cold"}:
         return overrides
 
     overrides.pop("service_tier", None)
@@ -59,7 +96,10 @@ def effective_request_overrides(
     current = time.monotonic() if now is None else now
     started_at = getattr(agent, "_fast_mode_turn_started_at", None)
     if not isinstance(started_at, (int, float)):
+        if mode == "cold" or getattr(agent, "_fast_mode_turn_eligible", None) is False:
+            return overrides
         started_at = current
+        agent._fast_mode_turn_eligible = True
         agent._fast_mode_turn_started_at = started_at
 
     cutoff = normalize_fast_auto_on_seconds(

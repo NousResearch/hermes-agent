@@ -131,15 +131,17 @@ gateway:
 
   fast:
     not_supported:         "⚡ /fast is only available for models that support OpenAI Priority Processing or Anthropic Fast Mode."
-    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|status>`"
-    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, status"
+    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
+    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast:            "FAST"
     label_auto:            "AUTO"
+    label_cold:            "COLD"
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_auto:           "auto"
+    status_cold:           "cold"
     status_normal:         "normal"
 
   footer:

@@ -552,10 +552,11 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
-    # Auto fast mode is turn-local.  Start the clock at ingress so prompt
-    # assembly, hooks, and preflight work count toward the same cutoff as the
-    # provider calls they precede.
-    begin_fast_mode_turn(agent)
+    # Dynamic fast modes are turn-local. Resolve eligibility and start the
+    # clock at ingress so prompt assembly, hooks, and preflight work count
+    # toward the same cutoff as the provider calls they precede. Cold-mode
+    # eligibility comes from the durable prior transcript.
+    begin_fast_mode_turn(agent, conversation_history)
 
     if moa_config is None:
         try:

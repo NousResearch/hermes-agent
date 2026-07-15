@@ -163,6 +163,26 @@ def test_turn_route_leaves_auto_policy_for_request_time_resolution():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_leaves_cold_policy_for_request_time_resolution():
+    runner = _make_runner()
+    runner._service_tier = "cold"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs
+    )
+
+    assert route["request_overrides"] == {}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -194,6 +214,24 @@ async def test_handle_fast_command_persists_auto_policy(monkeypatch, tmp_path):
     assert runner._service_tier == "auto"
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert saved["agent"]["service_tier"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_handle_fast_command_persists_cold_policy(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4"
+    )
+
+    response = await runner._handle_fast_command(_make_event("/fast cold"))
+
+    assert "COLD" in response
+    assert runner._service_tier == "cold"
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["agent"]["service_tier"] == "cold"
 
 
 @pytest.mark.asyncio

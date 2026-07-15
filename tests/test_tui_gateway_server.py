@@ -3014,6 +3014,63 @@ def test_config_set_fast_auto_updates_live_agent_without_static_override(monkeyp
         server._sessions.pop("sid", None)
 
 
+def test_config_set_fast_cold_updates_live_agent_without_static_override(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(
+        model="openai/gpt-5.4",
+        request_overrides={"foo": "bar", "service_tier": "priority"},
+        service_tier="priority",
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "cold"},
+            }
+        )
+        assert resp["result"]["value"] == "cold"
+        assert agent.service_tier == "cold"
+        assert agent.request_overrides == {"foo": "bar"}
+        assert ("agent.service_tier", "cold") in writes
+
+        status = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "status"},
+            }
+        )
+        assert status["result"]["value"] == "cold"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_get_fast_reports_live_cold_policy():
+    agent = types.SimpleNamespace(service_tier="cold")
+    server._sessions["sid"] = _session(agent=agent)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.get",
+                "params": {"session_id": "sid", "key": "fast"},
+            }
+        )
+        assert response["result"]["value"] == "cold"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_fast_rejects_unsupported_model(monkeypatch):
     writes = []
     agent = types.SimpleNamespace(

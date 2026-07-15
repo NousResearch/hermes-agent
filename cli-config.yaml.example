@@ -750,9 +750,10 @@ agent:
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
 
-  # Fast-mode policy used by `/fast`: "normal", "fast", or "auto".
-  # Auto accelerates model requests that begin during the opening window of
-  # each user turn, then returns later tool-loop/retry requests to normal mode.
+  # Fast-mode policy used by `/fast`: "normal", "fast", "auto", or "cold".
+  # Auto accelerates the opening window of every user turn. Cold accelerates
+  # only the opening window of the first turn in a logical session, including
+  # across process restarts. Later tool-loop/retry requests use normal mode.
   # service_tier: "normal"
   # fast_auto_on_seconds: 60
   

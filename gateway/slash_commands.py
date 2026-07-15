@@ -2923,6 +2923,8 @@ class GatewaySlashCommandsMixin:
         if not args or args == "status":
             if self._service_tier == "auto":
                 status = t("gateway.fast.status_auto")
+            elif self._service_tier == "cold":
+                status = t("gateway.fast.status_cold")
             else:
                 status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
             return t("gateway.fast.status", mode=status)
@@ -2935,6 +2937,10 @@ class GatewaySlashCommandsMixin:
             self._service_tier = "auto"
             saved_value = "auto"
             label = t("gateway.fast.label_auto")
+        elif args == "cold":
+            self._service_tier = "cold"
+            saved_value = "cold"
+            label = t("gateway.fast.label_cold")
         elif args in {"normal", "off"}:
             self._service_tier = None
             saved_value = "normal"

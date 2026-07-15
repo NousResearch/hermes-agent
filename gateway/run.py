@@ -3960,7 +3960,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         }
 
         service_tier = getattr(self, "_service_tier", None)
-        if not service_tier or service_tier == "auto":
+        if not service_tier or service_tier in {"auto", "cold"}:
             route["request_overrides"] = {}
             return route
 
@@ -4942,8 +4942,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Load Priority Processing setting from config.yaml.
 
         Reads agent.service_tier from config.yaml. Accepted values mirror the CLI:
-        "fast"/"priority"/"on" => "priority", "auto" enables the turn-local
-        policy, while "normal"/"off" disables it.
+        "fast"/"priority"/"on" => "priority"; "auto" and "cold" enable
+        turn-local policies, while "normal"/"off" disables fast mode.
         Returns None when unset or unsupported.
         """
         cfg = _load_gateway_runtime_config()
@@ -4954,8 +4954,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         if value in {"fast", "priority", "on"}:
             return "priority"
-        if value == "auto":
-            return "auto"
+        if value in {"auto", "cold"}:
+            return value
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
 

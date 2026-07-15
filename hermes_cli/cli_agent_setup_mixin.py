@@ -204,7 +204,7 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier or service_tier == "auto":
+        if not service_tier or service_tier in {"auto", "cold"}:
             route["request_overrides"] = None
             return route
 

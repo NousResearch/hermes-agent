@@ -633,6 +633,7 @@ def init_agent(
     from agent.fast_mode import normalize_fast_auto_on_seconds
     agent.fast_auto_on_seconds = normalize_fast_auto_on_seconds(fast_auto_on_seconds)
     agent._fast_mode_turn_started_at = None
+    agent._fast_mode_turn_eligible = False
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

@@ -3563,6 +3563,11 @@ class MatrixAdapter(BasePlatformAdapter):
             return str(content.get("body", "") or "")
         return str(getattr(content, "body", "") or "")
 
+    # Bound on the homeserver lookup of a replied-to event. Handlers are
+    # awaited by the sync loop, so an unresponsive homeserver must not be
+    # able to stall sync-cycle completion on a best-effort context fetch.
+    _reply_context_timeout_seconds: float = 10.0
+
     async def _resolve_reply_context(
         self,
         room_id: str,
@@ -3585,7 +3590,18 @@ class MatrixAdapter(BasePlatformAdapter):
             return _EMPTY_REPLY_CONTEXT
 
         try:
-            event = await get_event(RoomID(room_id), EventID(reply_to_event_id))
+            event = await asyncio.wait_for(
+                get_event(RoomID(room_id), EventID(reply_to_event_id)),
+                timeout=self._reply_context_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.debug(
+                "Matrix: timed out fetching replied-to event %s in %s after %ss",
+                reply_to_event_id,
+                room_id,
+                self._reply_context_timeout_seconds,
+            )
+            return _EMPTY_REPLY_CONTEXT
         except Exception as exc:
             logger.debug(
                 "Matrix: could not fetch replied-to event %s in %s: %s",

@@ -1175,6 +1175,67 @@ class TestMatrixReplyContext:
         assert captured.reply_to_text == "Deploy finished at noon."
         assert captured.reply_to_author_id == "@bob:example.org"
 
+    @pytest.mark.asyncio
+    async def test_hung_get_event_times_out_and_degrades(self):
+        """A homeserver that never answers the replied-to event lookup must
+        not stall message handling: the fetch is bounded by a timeout and the
+        message proceeds without reply context."""
+        never_done = asyncio.Event()
+
+        async def hang_forever(*_args, **_kwargs):
+            await never_done.wait()
+
+        client = MagicMock()
+        client.get_event = hang_forever
+        self.adapter._reply_context_timeout_seconds = 0.05
+
+        try:
+            captured = await asyncio.wait_for(
+                self._dispatch_reply(client=client), timeout=5
+            )
+        finally:
+            never_done.set()
+
+        assert captured is not None
+        assert captured.reply_to_message_id == "$parent-event"
+        assert captured.reply_to_text is None
+        assert captured.reply_to_author_id is None
+        assert captured.reply_to_author_name is None
+        assert captured.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_reply_author_reaches_agent_prefix(self):
+        """Integration: the author the adapter resolves is named in the
+        per-turn reply prefix the gateway builds for the agent."""
+        from gateway.config import GatewayConfig
+        from gateway.run import GatewayRunner
+
+        client = self._client_returning(
+            sender="@bob:example.org", body="The meeting is at 3pm."
+        )
+        captured = await self._dispatch_reply(client=client)
+        assert captured is not None
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={Platform.MATRIX: PlatformConfig(enabled=True, token="fake")},
+        )
+        runner.adapters = {}
+        runner._model = "openai/gpt-4.1-mini"
+        runner._base_url = None
+
+        message_text = await runner._prepare_inbound_message_text(
+            event=captured,
+            source=captured.source,
+            history=[],
+        )
+
+        assert message_text is not None
+        assert message_text.startswith(
+            '[Replying to Bob: "The meeting is at 3pm."]'
+        )
+        assert message_text.endswith("what does this mean?")
+
 
 # ---------------------------------------------------------------------------
 # Format message

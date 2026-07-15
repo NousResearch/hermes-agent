@@ -996,6 +996,9 @@ class ModelAssignment(BaseModel):
 class MoaModelSlot(BaseModel):
     provider: str = ""
     model: str = ""
+    # Optional per-slot reasoning effort. Declared so a client round-tripping
+    # the GET payload doesn't have it stripped at parse time and wiped on save.
+    reasoning_effort: Optional[str] = None
 
 
 class MoaPresetPayload(BaseModel):
@@ -1006,6 +1009,11 @@ class MoaPresetPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    # Newer per-preset knobs (see moa_config._normalize_preset). Optional so
+    # older clients that never send them keep working; declared so clients
+    # that round-trip the GET payload don't silently erase hand-set values.
+    reference_max_tokens: Optional[int] = None
+    fanout: Optional[str] = None
     enabled: bool = True
 
 
@@ -1020,6 +1028,8 @@ class MoaConfigPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    reference_max_tokens: Optional[int] = None
+    fanout: Optional[str] = None
     enabled: bool = True
     profile: Optional[str] = None
 
@@ -5701,7 +5711,23 @@ def get_moa_models(profile: Optional[str] = None):
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     try:
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
+
+        def _slot_dict(slot: MoaModelSlot) -> dict:
+            # Drop unset optionals so saved slots stay minimal ({provider, model}).
+            return {k: v for k, v in slot.dict().items() if v is not None}
+
+        def _preset_dict(preset: MoaPresetPayload) -> dict:
+            return {
+                "reference_models": [_slot_dict(slot) for slot in preset.reference_models],
+                "aggregator": _slot_dict(preset.aggregator),
+                "reference_temperature": preset.reference_temperature,
+                "aggregator_temperature": preset.aggregator_temperature,
+                "max_tokens": preset.max_tokens,
+                "reference_max_tokens": preset.reference_max_tokens,
+                "fanout": preset.fanout,
+                "enabled": preset.enabled,
+            }
 
         with _profile_scope(body.profile or profile):
             cfg = load_config()
@@ -5709,27 +5735,35 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
-                    "presets": {
-                        name: {
-                            "reference_models": [slot.dict() for slot in preset.reference_models],
-                            "aggregator": preset.aggregator.dict(),
-                            "reference_temperature": preset.reference_temperature,
-                            "aggregator_temperature": preset.aggregator_temperature,
-                            "max_tokens": preset.max_tokens,
-                            "enabled": preset.enabled,
-                        }
-                        for name, preset in body.presets.items()
-                    },
+                    "presets": {name: _preset_dict(preset) for name, preset in body.presets.items()},
                 }
             else:
-                raw = {
-                    "reference_models": [slot.dict() for slot in body.reference_models],
-                    "aggregator": body.aggregator.dict(),
-                    "reference_temperature": body.reference_temperature,
-                    "aggregator_temperature": body.aggregator_temperature,
-                    "max_tokens": body.max_tokens,
-                    "enabled": body.enabled,
-                }
+                raw = _preset_dict(
+                    MoaPresetPayload(
+                        reference_models=body.reference_models,
+                        aggregator=body.aggregator,
+                        reference_temperature=body.reference_temperature,
+                        aggregator_temperature=body.aggregator_temperature,
+                        max_tokens=body.max_tokens,
+                        reference_max_tokens=body.reference_max_tokens,
+                        fanout=body.fanout,
+                        enabled=body.enabled,
+                    )
+                )
+
+            # Reject-don't-repair: normalize_moa_config() silently swaps any
+            # preset containing incomplete slots for the hardcoded defaults —
+            # correct tolerance for hand-edited configs at READ time, silent
+            # data loss at WRITE time (#64156: desktop autosave of a
+            # half-filled slot replaced the user's whole preset). Refuse the
+            # save loudly so no client can corrupt config through this route.
+            problems = validate_moa_payload(raw)
+            if problems:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Invalid MoA config: " + "; ".join(problems),
+                )
+
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized
             save_config(cfg)

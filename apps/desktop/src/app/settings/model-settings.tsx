@@ -130,6 +130,24 @@ const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', m
 export const withActive = (models: readonly string[], active: string): readonly string[] =>
   active && !models.includes(active) ? [active, ...models] : models
 
+// A slot is complete when both halves are chosen. Changing a slot's provider
+// intentionally clears its model (see updateMoaSlot), so every provider change
+// passes through an incomplete state while the user picks the new model.
+export const moaSlotComplete = (slot: MoaModelSlot): boolean => !!(slot.provider.trim() && slot.model.trim())
+
+// True when every slot in every preset is fully specified — the only state
+// that is safe to persist. The backend rejects configs with half-filled slots
+// (HTTP 422) instead of silently swapping the preset for hardcoded defaults
+// (#64156), so the autosave must simply wait for the edit to finish rather
+// than trying to "repair" the payload.
+export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
+  Object.values(config.presets).every(
+    preset =>
+      preset.reference_models.length > 0 &&
+      preset.reference_models.every(moaSlotComplete) &&
+      moaSlotComplete(preset.aggregator)
+  )
+
 interface StaleAuxWarningProps {
   applying: boolean
   onReset: () => void
@@ -320,49 +338,31 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   // Guard against stale save responses overwriting newer state.
   const moaSaveGeneration = useRef(0)
 
-  // Strip slots with an empty model from every preset before autosave, so a
-  // half-filled slot (provider selected but no model yet) is never sent to the
-  // backend.  Without this guard, _clean_slot rejects the empty-model slot and
-  // _normalize_preset falls back to hardcoded defaults.  Both reference and
-  // aggregator slots are sanitized.  Presets keep their empty reference_models
-  // array rather than being dropped.
-  const sanitizeMoaRefsForSave = useCallback((config: MoaConfigResponse): MoaConfigResponse => {
-    const presets: MoaConfigResponse['presets'] = {}
-    let changed = false
-
-    for (const [name, preset] of Object.entries(config.presets)) {
-      const refs = preset.reference_models.filter(slot => slot.provider.trim() && slot.model.trim())
-      if (refs.length !== preset.reference_models.length) {
-        changed = true
-      }
-      const agg = preset.aggregator
-      const aggValid = agg && agg.provider.trim() && agg.model.trim()
-      const cleanAgg = aggValid ? agg : { provider: agg?.provider ?? '', model: agg?.model ?? '' }
-
-      presets[name] = {
-        ...preset,
-        reference_models: refs,
-        aggregator: cleanAgg
-      }
-    }
-
-    return changed ? { ...config, presets } : config
-  }, [])
-
   // Quiet debounced persist for inline MoA edits — mirrors the config page's
   // autosave so slot/aggregator tweaks save themselves, matching the
   // preset-level ops (set default / add / delete) that already persist on
   // click. No `applying` spinner, so selecting stays responsive.
+  //
+  // While any slot is half-filled (provider picked, model pending) the save is
+  // HELD, not sent: the previous complete config stays on disk and the next
+  // edit that completes the slot flushes the whole preset. Every edit bumps
+  // the generation so an in-flight response from an older save can never
+  // repaint over the user's mid-edit state.
   const scheduleMoaSave = useCallback((next: MoaConfigResponse) => {
     if (moaSaveTimer.current) {
       window.clearTimeout(moaSaveTimer.current)
+      moaSaveTimer.current = null
     }
 
     const generation = moaSaveGeneration.current + 1
     moaSaveGeneration.current = generation
 
+    if (!moaConfigComplete(next)) {
+      return
+    }
+
     moaSaveTimer.current = window.setTimeout(() => {
-      void saveMoaModels(sanitizeMoaRefsForSave(next))
+      void saveMoaModels(next)
         .then(saved => {
           if (moaSaveGeneration.current === generation) {
             setMoa(saved)
@@ -374,7 +374,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           }
         })
     }, 600)
-  }, [sanitizeMoaRefsForSave])
+  }, [])
 
   const updateMoaPreset = useCallback(
     (updater: (preset: NonNullable<typeof currentMoaPreset>) => NonNullable<typeof currentMoaPreset>) => {
@@ -402,7 +402,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const updateMoaSlot = useCallback((slot: MoaModelSlot, patch: Partial<MoaModelSlot>): MoaModelSlot => {
     const next = { ...slot, ...patch }
 
-    if (patch.provider) {
+    // Picking a new provider invalidates the model choice (models are
+    // per-provider). A same-provider update must not wipe the model — Radix
+    // filters same-value changes, but programmatic callers may not.
+    if (patch.provider && patch.provider !== slot.provider) {
       next.model = ''
     }
 
@@ -411,6 +414,16 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const saveMoa = useCallback(async (next: MoaConfigResponse) => {
     const epoch = profileEpoch.current
+
+    // Explicit preset ops (set default / add / delete) supersede any pending
+    // debounced slot autosave — cancel it and invalidate in-flight responses
+    // so the two writers can't race each other's state.
+    if (moaSaveTimer.current) {
+      window.clearTimeout(moaSaveTimer.current)
+      moaSaveTimer.current = null
+    }
+
+    moaSaveGeneration.current += 1
     setApplying(true)
     setError('')
 
@@ -1036,6 +1049,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       <SelectContent>
                         {withActive(moaSlotProviderOptions.map(p => p.slug || 'none'), slot.provider).map(slug => {
                           const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
+
                           return (
                             <SelectItem key={slug} value={slug}>
                               {provider?.name || slug}
@@ -1083,10 +1097,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                 }
                 description={
                   <span className="font-mono text-[0.68rem]">
-                    {slot.provider} · {slot.model}
+                    {slot.provider} · {slot.model || m.model}
                   </span>
                 }
-                key={`${selectedMoaPreset}-${slot.provider}-${slot.model}-${index}`}
+                key={`${selectedMoaPreset}-${index}`}
                 title={`Reference ${index + 1}`}
               />
             ))}
@@ -1118,6 +1132,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                     <SelectContent>
                       {withActive(moaSlotProviderOptions.map(p => p.slug || 'none'), currentMoaPreset.aggregator.provider).map(slug => {
                         const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
+
                         return (
                           <SelectItem key={slug} value={slug}>
                             {provider?.name || slug}

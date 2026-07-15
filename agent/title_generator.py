@@ -1,7 +1,13 @@
 """Auto-generate short session titles from the first user/assistant exchange.
 
-Runs asynchronously after the first response is delivered so it never
-adds latency to the user-facing reply.
+A synchronous heuristic pass (``agent.title_heuristic``) sets an instant
+placeholder title before the LLM call runs in a background thread.  The
+LLM result overwrites the heuristic title when it returns, producing
+better titles for edge cases while guaranteeing every session has *some*
+title immediately — even when the LLM call fails.
+
+Runs asynchronously after the first response is delivered so the LLM
+call never adds latency to the user-facing reply.
 """
 
 import logging
@@ -9,6 +15,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.title_heuristic import extract_title
 
 logger = logging.getLogger(__name__)
 
@@ -125,23 +132,44 @@ def auto_title_session(
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
     title_callback: Optional[TitleCallback] = None,
+    heuristic_placeholder: Optional[str] = None,
 ) -> None:
-    """Generate and set a session title if one doesn't already exist.
+    """Generate and set a session title via LLM.
 
     Called in a background thread after the first exchange completes.
-    Silently skips if:
-    - session_db is None
-    - session already has a title (user-set or previously auto-generated)
-    - title generation fails
+
+    When ``heuristic_placeholder`` is provided, the LLM title overwrites
+    it only if the current title still matches the placeholder —
+    protecting user-set titles that arrived in the interim.
+
+    When ``heuristic_placeholder`` is ``None``, the original behavior is
+    preserved: skip if any title already exists.
+
+    Args:
+        heuristic_placeholder: The title set by the heuristic in
+            ``maybe_auto_title``.  Pass ``None`` to preserve legacy
+            "skip if title exists" behavior.
     """
     if not session_db or not session_id:
         return
 
-    # Check if title already exists (user may have set one via /title before first response)
     try:
         existing = session_db.get_session_title(session_id)
         if existing:
-            return
+            if heuristic_placeholder is not None:
+                # Race-condition guard: only overwrite if the current title
+                # still matches the heuristic placeholder.  Protects user-set
+                # titles that arrived between the heuristic set and here.
+                if existing != heuristic_placeholder:
+                    logger.debug(
+                        "Title changed from heuristic placeholder (%r -> %r), skipping LLM overwrite",
+                        heuristic_placeholder, existing,
+                    )
+                    return
+                # Title matches placeholder — proceed to overwrite with LLM
+            else:
+                # Legacy path: any existing title means skip
+                return
     except Exception:
         return
 
@@ -175,6 +203,10 @@ def maybe_auto_title(
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
+    Sets a heuristic placeholder title synchronously (instant UI feedback),
+    then spawns a background thread for the LLM call which overwrites the
+    placeholder when it returns.
+
     Only generates a title when:
     - This appears to be the first user→assistant exchange
     - No title is already set
@@ -190,6 +222,27 @@ def maybe_auto_title(
     if user_msg_count > 2:
         return
 
+    # ── Synchronous heuristic: instant placeholder title ──
+    # Set the heuristic title immediately so the session is never untitled,
+    # even if the LLM call fails or is slow.  The background LLM thread
+    # below overwrites this with a (usually better) LLM-generated title.
+    heuristic_title = None
+    try:
+        existing = session_db.get_session_title(session_id)
+        if existing:
+            return  # user or prior auto-title already set, nothing to do
+        heuristic_title = extract_title(user_message)
+        if heuristic_title:
+            session_db.set_session_title(session_id, heuristic_title)
+            logger.debug("Heuristic session title: %s", heuristic_title)
+            if title_callback is not None:
+                try:
+                    title_callback(heuristic_title)
+                except Exception:
+                    logger.debug("Heuristic title_callback failed", exc_info=True)
+    except Exception as e:
+        logger.debug("Heuristic title failed: %s", e)
+
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
@@ -197,6 +250,7 @@ def maybe_auto_title(
             "failure_callback": failure_callback,
             "main_runtime": main_runtime,
             "title_callback": title_callback,
+            "heuristic_placeholder": heuristic_title if heuristic_title else None,
         },
         daemon=True,
         name="auto-title",

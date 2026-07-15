@@ -1355,8 +1355,6 @@ class GatewaySlashCommandsMixin:
         The legacy ``/handoff <platform>`` live-session transfer remains a CLI
         operation because a gateway session is already on a platform.
         """
-        from gateway.run import _hermes_home
-
         raw_args = event.get_command_args().strip()
         if not raw_args:
             prefix = self._typed_command_prefix_for(getattr(event.source, "platform", None))
@@ -1375,12 +1373,12 @@ class GatewaySlashCommandsMixin:
                 "From Telegram/Discord/Slack and other gateway platforms, use /handoff inline, /handoff save, or /handoff consume instead."
             )
 
-        session_entry = self.session_store.get_or_create_session(event.source)
+        session_entry = await self.async_session_store.get_or_create_session(event.source)
         session_id = getattr(session_entry, "session_id", None)
         history = []
         try:
             if getattr(self, "_session_db", None) and session_id:
-                history = self._session_db.get_messages(session_id)
+                history = await self._session_db.get_messages(session_id)
         except Exception:
             history = []
 
@@ -1391,7 +1389,7 @@ class GatewaySlashCommandsMixin:
                 conversation_history=history,
                 session_id=session_id,
                 workdir=os.getenv("TERMINAL_CWD", os.getcwd()),
-                hermes_home=_hermes_home,
+                hermes_home=self._resolve_profile_home_for_source(event.source),
             )
         except Exception as exc:
             return f"Handoff command failed: {exc}"

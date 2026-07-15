@@ -15388,10 +15388,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             _handoff_result = consume_handoff_markdown_text(user_input)
                         except Exception:
                             _handoff_result = None
-                        if _handoff_result and getattr(_handoff_result, "agent_seed", None):
+                        if _handoff_result:
                             _cprint(f"\n📦 {_handoff_result.text}")
-                            user_input = _handoff_result.agent_seed
-                            _auto_consumed_handoff = True
+                            if getattr(_handoff_result, "agent_seed", None):
+                                user_input = _handoff_result.agent_seed
+                                _auto_consumed_handoff = True
+                            else:
+                                continue
                     print()
                     if not _auto_consumed_handoff:
                         self._print_user_message_preview(user_input)

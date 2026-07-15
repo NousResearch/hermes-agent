@@ -1,10 +1,15 @@
 """Tests for hermes_cli.runtime_provider._detect_api_mode_for_url.
 
-The helper maps base URLs to api_modes for three cases:
-  * api.openai.com  → codex_responses
-  * api.x.ai        → codex_responses
-  * */anthropic     → anthropic_messages (third-party gateways like MiniMax,
-                                          Zhipu GLM, LiteLLM proxies)
+The helper maps base URLs to api_modes for four cases:
+  * api.openai.com    → codex_responses
+  * api.x.ai          → codex_responses
+  * api.anthropic.com → anthropic_messages (Pro/Max OAuth is only billed
+                                            against /v1/messages; the
+                                            chat_completions shim counts
+                                            against a separate empty
+                                            "extra usage" pool, see #32243)
+  * */anthropic       → anthropic_messages (third-party gateways like MiniMax,
+                                            Zhipu GLM, LiteLLM proxies)
 
 Consolidating the /anthropic detection in this helper (instead of three
 inline ``endswith`` checks spread across _resolve_runtime_from_pool_entry,
@@ -36,6 +41,49 @@ class TestCodexResponsesDetection:
 
     def test_xai_host_suffix_does_not_match(self):
         assert _detect_api_mode_for_url("https://api.x.ai.example/v1") is None
+
+
+class TestDirectAnthropicHost:
+    """Native api.anthropic.com → /v1/messages. Pinned for issue #32243.
+
+    The Anthropic OpenAI-compat ``/chat/completions`` shim on the same
+    host bills against a separate "extra usage" pool that Pro/Max OAuth
+    subscriptions don't fund, so a fresh OAuth credential 400s with
+    "out of extra usage" the moment a request lands there. The detector
+    must keep ``api.anthropic.com`` on the native Messages API.
+    """
+
+    def test_bare_host(self):
+        assert _detect_api_mode_for_url("https://api.anthropic.com") == "anthropic_messages"
+
+    def test_with_trailing_slash(self):
+        assert _detect_api_mode_for_url("https://api.anthropic.com/") == "anthropic_messages"
+
+    def test_with_v1_suffix(self):
+        # The Anthropic SDK appends /v1/messages itself but the user's
+        # config may persist the /v1 form — must still resolve.
+        assert _detect_api_mode_for_url("https://api.anthropic.com/v1") == "anthropic_messages"
+
+    def test_uppercase_host_tolerated(self):
+        assert _detect_api_mode_for_url("https://API.ANTHROPIC.COM/v1") == "anthropic_messages"
+
+    def test_lookalike_subdomain_does_not_match(self):
+        # ``api.anthropic.com.attacker.test`` is an attacker-controlled
+        # host; the registrable label is ``attacker``, not Anthropic.
+        # Must NOT be routed to anthropic_messages — leaking an
+        # Anthropic OAuth token there is the worst case.
+        assert (
+            _detect_api_mode_for_url("https://api.anthropic.com.attacker.test/v1")
+            is None
+        )
+
+    def test_anthropic_path_segment_does_not_match(self):
+        # A reverse proxy under an unrelated host whose path *contains*
+        # ``api.anthropic.com`` should not be classified as native.
+        assert (
+            _detect_api_mode_for_url("https://proxy.example.test/api.anthropic.com/v1")
+            is None
+        )
 
 
 class TestAnthropicMessagesDetection:

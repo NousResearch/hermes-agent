@@ -61,7 +61,7 @@ def test_bad_token_401(monkeypatch):
     gate). fire_due must NOT run."""
     fired = []
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: None),  # verification fails
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
@@ -82,7 +82,7 @@ def test_bad_token_401(monkeypatch):
 
 def test_missing_job_id_400(monkeypatch):
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     client, pa, ph = _client(auth_required=False)
@@ -100,7 +100,7 @@ def test_unknown_job_200_gone(monkeypatch):
     """Valid token but the job isn't found in any profile -> 200 'gone'
     (NAS shouldn't retry a fire for a cancelled/completed job)."""
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: None)
@@ -121,7 +121,7 @@ def test_valid_token_accepts_and_fires(monkeypatch):
     profile."""
     fired = []
     monkeypatch.setattr(
-        "plugins.cron.chronos.verify.get_fire_verifier",
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire", "aud": "agent:x"}),
     )
     monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")

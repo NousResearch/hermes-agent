@@ -139,6 +139,90 @@ def _stub_install_env(monkeypatch, m, seen):
     )
 
 
+def test_recovery_self_lock_guard_clears_marker_without_install(tmp_path, monkeypatch):
+    # Windows self-lock: hermes.exe is an ancestor of this Python process, so a
+    # pip-install would fail trying to replace the running launcher (WinError 32
+    # / 拒绝访问). Recovery must short-circuit — clear the marker, skip install,
+    # break the loop (#45542 / #52378) — instead of retrying forever.
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    scripts_dir = tmp_path / "venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    shim = scripts_dir / "hermes.exe"
+    shim.write_text("")
+
+    monkeypatch.setattr(m, "_is_windows", lambda: True)
+    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
+
+    class FakeProc:
+        def __init__(self, exe_path):
+            self._exe = exe_path
+
+        def exe(self):
+            return self._exe
+
+        def parents(self):
+            return [FakeProc(str(shim))]
+
+    monkeypatch.setattr("psutil.Process", lambda: FakeProc(sys_executable_path()))
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert seen["install"] is False, "self-lock must skip the install"
+    assert not m._update_marker_path().exists(), "marker cleared to break the loop"
+
+
+def sys_executable_path():
+    import sys
+
+    return sys.executable
+
+
+def test_recovery_self_lock_guard_inactive_when_not_ancestor(tmp_path, monkeypatch):
+    # Windows, but hermes.exe is NOT in the ancestry (launched via `hermes
+    # dashboard` from a separate cmd, say). The guard must fall through to the
+    # normal install so a genuinely interrupted install still gets healed.
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    scripts_dir = tmp_path / "venv" / "Scripts"
+    scripts_dir.mkdir(parents=True)
+    shim = scripts_dir / "hermes.exe"
+    shim.write_text("")
+
+    monkeypatch.setattr(m, "_is_windows", lambda: True)
+    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(m, "_hermes_exe_shims", lambda d: [shim])
+
+    class FakeProc:
+        def __init__(self, exe_path):
+            self._exe = exe_path
+
+        def exe(self):
+            return self._exe
+
+        def parents(self):
+            # Ancestry is plain pythons / cmd — no hermes.exe shim.
+            return [FakeProc(str(tmp_path / "cmd.exe"))]
+
+    monkeypatch.setattr("psutil.Process", lambda: FakeProc(sys_executable_path()))
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert seen["install"] is True, "without self-lock, normal recovery runs"
+    assert not m._update_marker_path().exists(), "marker cleared on successful install"
+
+
 def test_recovery_skips_when_lock_held(tmp_path, monkeypatch):
     # Another process is mid-recovery (fresh lockfile) — this launch must skip
     # the install entirely and leave both marker and lock untouched.

@@ -1730,17 +1730,20 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = parser.parse_args(args)
 
     def _run() -> None:
-        from hermes_state import DEFAULT_DB_PATH, _db_opens_cleanly, repair_state_db_schema
+        from hermes_state import DEFAULT_DB_PATH, _probe_db_health, repair_state_db_schema
 
         db_path = DEFAULT_DB_PATH
         if not db_path.exists():
             print(f"No session database at {db_path} (nothing to repair).")
             return
-        reason = _db_opens_cleanly(db_path)
-        if reason is None:
+        health = _probe_db_health(db_path)
+        if health.status == "healthy":
             print(f"{db_path} opens cleanly; no repair needed.")
             return
-        print(f"{db_path} does not open cleanly: {reason}")
+        if health.status == "skipped":
+            print(f"{db_path} health check skipped: {health.reason}; no repair attempted.")
+            return
+        print(f"{db_path} does not open cleanly: {health.reason}")
         if ns.check_only:
             return
         report = repair_state_db_schema(db_path, backup=not ns.no_backup)
@@ -1749,6 +1752,9 @@ def _sessions_repair(_engine: HermesConsoleEngine, args: list[str]) -> str:
                 print(f"backup: {report['backup_path']}")
             print(f"strategy: {report.get('strategy')}")
             print("Repaired session database.")
+            return
+        if report.get("skipped"):
+            print(f"Repair verification skipped: {report.get('error')}")
             return
         raise ConsoleCommandError(f"Repair failed: {report.get('error')}")
 

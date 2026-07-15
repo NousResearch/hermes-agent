@@ -678,12 +678,17 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 ## `hermes doctor`
 
 ```bash
-hermes doctor [--fix]
+hermes doctor [--fix] [--full-state-db-check]
 ```
+
+Routine doctor runs the `state.db` integrity probe with a five-second budget.
+If the database is busy, locked, or exceeds that budget, doctor reports the
+check as skipped instead of calling the database corrupt.
 
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+| `--full-state-db-check` | Opt into the full unbounded `state.db` integrity scan. This can take a long time on large databases. |
 
 ## `hermes dump`
 

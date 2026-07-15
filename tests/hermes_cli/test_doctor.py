@@ -855,6 +855,169 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
 
 
+class TestDoctorStateDBHealth:
+    @staticmethod
+    def _state_db(tmp_path):
+        import sqlite3
+
+        path = tmp_path / "state.db"
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE sessions ("
+            "id TEXT PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL)"
+        )
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_routine_and_full_modes_are_forwarded_to_probe(self, monkeypatch, tmp_path):
+        import hermes_state
+
+        state_db = self._state_db(tmp_path)
+        calls = []
+
+        def fake_probe(path, *, full_integrity=False):
+            calls.append((path, full_integrity))
+            return hermes_state.DBHealthResult(
+                status="healthy", session_count=12,
+                check_mode="full" if full_integrity else "bounded",
+            )
+
+        monkeypatch.setattr(hermes_state, "_probe_db_health", fake_probe)
+
+        routine_out = io.StringIO()
+        with contextlib.redirect_stdout(routine_out):
+            fixed = doctor_mod._check_state_db(
+                state_db,
+                should_fix=False,
+                full_integrity=False,
+                issues=[],
+            )
+        full_out = io.StringIO()
+        with contextlib.redirect_stdout(full_out):
+            doctor_mod._check_state_db(
+                state_db,
+                should_fix=False,
+                full_integrity=True,
+                issues=[],
+            )
+
+        assert fixed == 0
+        assert calls == [(state_db, False), (state_db, True)]
+        assert "12 sessions" in routine_out.getvalue()
+        assert "full" in full_out.getvalue().lower()
+        assert "unbounded" in full_out.getvalue().lower()
+
+    @pytest.mark.parametrize(
+        ("category", "reason"),
+        (("timeout", "health check exceeded 5s budget"), ("locked", "database is locked")),
+    )
+    def test_skipped_probe_warns_without_repair(
+        self, monkeypatch, tmp_path, category, reason
+    ):
+        import hermes_state
+
+        state_db = self._state_db(tmp_path)
+        monkeypatch.setattr(
+            hermes_state,
+            "_probe_db_health",
+            lambda *_args, **_kwargs: hermes_state.DBHealthResult(
+                status="skipped", category=category, reason=reason
+            ),
+        )
+        monkeypatch.setattr(
+            hermes_state,
+            "repair_state_db_schema",
+            lambda *_args, **_kwargs: pytest.fail("skipped probe must not be repaired"),
+        )
+        issues = []
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            fixed = doctor_mod._check_state_db(
+                state_db,
+                should_fix=True,
+                full_integrity=False,
+                issues=issues,
+            )
+
+        rendered = output.getvalue().lower()
+        assert fixed == 0
+        assert "skipped" in rendered
+        assert category in rendered or reason.lower() in rendered
+        assert "corrupt" not in rendered
+        assert any("skipped" in issue.lower() for issue in issues)
+
+    def test_general_integrity_failure_is_not_labeled_fts_or_auto_repaired(
+        self, monkeypatch, tmp_path
+    ):
+        import hermes_state
+
+        state_db = self._state_db(tmp_path)
+        monkeypatch.setattr(
+            hermes_state,
+            "_probe_db_health",
+            lambda *_args, **_kwargs: hermes_state.DBHealthResult(
+                status="unhealthy", category="integrity", reason="page 7 is corrupt"
+            ),
+        )
+        monkeypatch.setattr(
+            hermes_state,
+            "repair_state_db_schema",
+            lambda *_args, **_kwargs: pytest.fail("general corruption is not FTS repair"),
+        )
+        issues = []
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            doctor_mod._check_state_db(
+                state_db,
+                should_fix=True,
+                full_integrity=False,
+                issues=issues,
+            )
+
+        rendered = output.getvalue().lower()
+        assert "integrity" in rendered
+        assert "corrupt" in rendered
+        assert "fts" not in rendered
+        assert issues
+
+    @pytest.mark.parametrize(
+        ("category", "reason", "expected"),
+        (
+            ("fts_index", "malformed inverted index", "fts"),
+            ("malformed_schema", "malformed database schema", "schema is malformed"),
+        ),
+    )
+    def test_repairable_corruption_classes_keep_specific_reporting(
+        self, monkeypatch, tmp_path, category, reason, expected
+    ):
+        import hermes_state
+
+        state_db = self._state_db(tmp_path)
+        monkeypatch.setattr(
+            hermes_state,
+            "_probe_db_health",
+            lambda *_args, **_kwargs: hermes_state.DBHealthResult(
+                status="unhealthy", category=category, reason=reason
+            ),
+        )
+        issues = []
+        output = io.StringIO()
+
+        with contextlib.redirect_stdout(output):
+            doctor_mod._check_state_db(
+                state_db,
+                should_fix=False,
+                full_integrity=False,
+                issues=issues,
+            )
+
+        assert expected in output.getvalue().lower()
+        assert any(expected.split()[0] in issue.lower() for issue in issues)
+
+
 class TestGitHubTokenCheck:
     """Tests for GitHub token / gh auth detection in doctor."""
 

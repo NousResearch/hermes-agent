@@ -23,6 +23,7 @@ import sqlite3
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -495,6 +496,10 @@ _MALFORMED_SCHEMA_MARKERS = (
 _repair_attempted_paths: set[str] = set()
 _repair_attempt_lock = threading.Lock()
 
+_DB_HEALTH_BUDGET_SECONDS = 5.0
+_DB_HEALTH_PROGRESS_OPS = 1_000
+_DB_HEALTH_BUSY_TIMEOUT_SECONDS = 0.1
+
 
 def is_malformed_db_error(exc: BaseException) -> bool:
     """True if *exc* is a SQLite 'malformed schema / disk image' error.
@@ -547,25 +552,112 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
         return None
 
 
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
-    """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
+@dataclass(frozen=True)
+class DBHealthResult:
+    """Structured result from a state database health probe."""
 
-    Runs the same first-statement (``PRAGMA journal_mode``) that trips the
-    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
-    ``sessions`` read, and finally a rolled-back ``messages`` write so that
-    FTS5 index corruption — which leaves base-table reads and
-    ``integrity_check`` passing while every ``INSERT INTO messages`` fails
-    through the FTS triggers — is reported as unhealthy rather than slipping
-    past as a false "ok" (#50502).
+    status: str
+    category: Optional[str] = None
+    reason: Optional[str] = None
+    session_count: Optional[int] = None
+    check_mode: str = "bounded"
+
+
+def _probe_db_health(
+    db_path: Path,
+    *,
+    full_integrity: bool = False,
+    budget_seconds: float = _DB_HEALTH_BUDGET_SECONDS,
+    _clock: Optional[Callable[[], float]] = None,
+    _progress_ops: int = _DB_HEALTH_PROGRESS_OPS,
+    _busy_timeout_seconds: float = _DB_HEALTH_BUSY_TIMEOUT_SECONDS,
+) -> DBHealthResult:
+    """Probe state.db without mistaking contention or cancellation for damage.
+
+    Routine probes run ``PRAGMA integrity_check`` behind a SQLite progress
+    handler with a five-second wall-clock budget. ``full_integrity=True`` is
+    the explicit operator opt-in to the same complete scan without a progress
+    deadline. Both modes retain the rolled-back FTS-trigger write probe.
     """
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    check_mode = "full" if full_integrity else "bounded"
+    clock = _clock or time.monotonic
+    deadline = None if full_integrity else clock() + max(0.0, budget_seconds)
+    timed_out = False
+    conn: Optional[sqlite3.Connection] = None
+    progress_handler_installed = False
+
+    def _result_for_error(exc: sqlite3.DatabaseError) -> DBHealthResult:
+        message = str(exc)
+        lowered = message.lower()
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        primary_code = error_code & 0xFF if isinstance(error_code, int) else None
+        if timed_out:
+            return DBHealthResult(
+                status="skipped",
+                category="timeout",
+                reason=f"health check exceeded {budget_seconds:g}s budget",
+                check_mode=check_mode,
+            )
+        busy_code = getattr(sqlite3, "SQLITE_BUSY", 5)
+        locked_code = getattr(sqlite3, "SQLITE_LOCKED", 6)
+        if primary_code in (busy_code, locked_code) or (
+            "database is locked" in lowered
+            or "database table is locked" in lowered
+            or "database is busy" in lowered
+        ):
+            return DBHealthResult(
+                status="skipped",
+                category="locked",
+                reason=message,
+                check_mode=check_mode,
+            )
+        category = (
+            "malformed_schema"
+            if "malformed database schema" in lowered
+            else "database_error"
+        )
+        return DBHealthResult(
+            status="unhealthy",
+            category=category,
+            reason=message,
+            check_mode=check_mode,
+        )
+
     try:
+        conn = sqlite3.connect(
+            str(db_path),
+            isolation_level=None,
+            timeout=max(0.0, _busy_timeout_seconds),
+        )
+        if deadline is not None:
+
+            def _cancel_after_budget() -> int:
+                nonlocal timed_out
+                if clock() >= deadline:
+                    timed_out = True
+                    return 1
+                return 0
+
+            conn.set_progress_handler(_cancel_after_budget, max(1, _progress_ops))
+            progress_handler_installed = True
+
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
         problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
         if problems:
-            return "; ".join(problems[:3])
-        conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+            reason = "; ".join(problems[:3])
+            lowered_reason = reason.lower()
+            return DBHealthResult(
+                status="unhealthy",
+                category=(
+                    "fts_index"
+                    if "fts5" in lowered_reason or "messages_fts" in lowered_reason
+                    else "integrity"
+                ),
+                reason=reason,
+                check_mode=check_mode,
+            )
+        session_count = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
 
         # FTS write probe: drive a row through the messages_fts* triggers in a
         # transaction that is always rolled back, so a corrupt FTS index that
@@ -586,21 +678,51 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
                 (probe_session_id, "user", "_fts_health_probe", time.time()),
             )
             conn.execute("ROLLBACK")
-        except sqlite3.OperationalError as exc:
+        except sqlite3.DatabaseError as exc:
             # Missing tables / FTS disabled — not the corruption class we probe.
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
             msg = str(exc).lower()
             if "no such table" in msg or "no such column" in msg:
-                return None
-            return str(exc)
-        return None
+                return DBHealthResult(
+                    status="healthy",
+                    session_count=session_count,
+                    check_mode=check_mode,
+                )
+            transient = _result_for_error(exc)
+            if transient.status == "skipped":
+                return transient
+            return DBHealthResult(
+                status="unhealthy",
+                category="fts_write",
+                reason=str(exc),
+                session_count=session_count,
+                check_mode=check_mode,
+            )
+        return DBHealthResult(
+            status="healthy",
+            session_count=session_count,
+            check_mode=check_mode,
+        )
     except sqlite3.DatabaseError as exc:
-        return str(exc)
+        return _result_for_error(exc)
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                if progress_handler_installed:
+                    conn.set_progress_handler(None, 0)
+            finally:
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                except sqlite3.Error:
+                    pass
+                finally:
+                    conn.close()
+
+
+def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+    """Compatibility wrapper: None when healthy, otherwise the probe reason."""
+    result = _probe_db_health(db_path)
+    return None if result.status == "healthy" else result.reason
 
 
 def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
@@ -627,11 +749,12 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     Canonical ``sessions`` / ``messages`` rows are never modified. A
     timestamped raw backup is taken first unless ``backup=False``.
 
-    Returns a report dict: ``{repaired: bool, strategy: str|None,
-    backup_path: str|None, error: str|None}``.
+    Returns a report dict: ``{repaired: bool, skipped: bool,
+    strategy: str|None, backup_path: str|None, error: str|None}``.
     """
     report: Dict[str, Any] = {
         "repaired": False,
+        "skipped": False,
         "strategy": None,
         "backup_path": None,
         "error": None,
@@ -642,9 +765,20 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
-    if _db_opens_cleanly(db_path) is None:
+    health = _probe_db_health(db_path)
+    if health.status == "healthy":
         report["repaired"] = True
         report["strategy"] = "already_healthy"
+        return report
+    if health.status == "skipped":
+        report["skipped"] = True
+        report["error"] = f"health check skipped: {health.reason}"
+        return report
+    if health.category == "integrity":
+        report["error"] = (
+            f"{health.reason} (not an FTS/schema repair target; restore from "
+            "a known-good backup or use SQLite recovery tooling)"
+        )
         return report
 
     if backup:
@@ -668,13 +802,18 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                     continue
         finally:
             conn.close()
-        if _db_opens_cleanly(db_path) is None:
+        health = _probe_db_health(db_path)
+        if health.status == "healthy":
             report["repaired"] = True
             report["strategy"] = "rebuild_fts"
             logger.warning(
                 "state.db FTS indexes rebuilt in place (schema preserved): %s",
                 db_path,
             )
+            return report
+        if health.status == "skipped":
+            report["skipped"] = True
+            report["error"] = f"post-repair verification skipped: {health.reason}"
             return report
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db FTS in-place rebuild pass failed: %s", exc)
@@ -698,13 +837,18 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
             conn.commit()
         finally:
             conn.close()
-        if _db_opens_cleanly(db_path) is None:
+        health = _probe_db_health(db_path)
+        if health.status == "healthy":
             report["repaired"] = True
             report["strategy"] = "dedup_schema"
             logger.warning(
                 "state.db schema repaired by de-duplicating sqlite_master "
                 "(FTS index preserved): %s", db_path
             )
+            return report
+        if health.status == "skipped":
+            report["skipped"] = True
+            report["error"] = f"post-repair verification skipped: {health.reason}"
             return report
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db dedup repair pass failed: %s", exc)
@@ -720,8 +864,8 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
             conn.execute("VACUUM")
         finally:
             conn.close()
-        reason = _db_opens_cleanly(db_path)
-        if reason is None:
+        health = _probe_db_health(db_path)
+        if health.status == "healthy":
             report["repaired"] = True
             report["strategy"] = "drop_fts_rebuild"
             logger.warning(
@@ -729,7 +873,11 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                 "will rebuild from messages on next open: %s", db_path
             )
             return report
-        report["error"] = reason
+        if health.status == "skipped":
+            report["skipped"] = True
+            report["error"] = f"post-repair verification skipped: {health.reason}"
+            return report
+        report["error"] = health.reason
     except sqlite3.DatabaseError as exc:
         report["error"] = str(exc)
 

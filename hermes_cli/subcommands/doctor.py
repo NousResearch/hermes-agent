@@ -23,6 +23,14 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--full-state-db-check",
+        action="store_true",
+        help=(
+            "Run the full unbounded state.db integrity check (may take a long "
+            "time on large databases; routine doctor uses a 5-second budget)"
+        ),
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,

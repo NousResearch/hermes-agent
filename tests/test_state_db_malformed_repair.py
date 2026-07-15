@@ -172,7 +172,7 @@ def test_strategy_b_rebuild_when_dedup_insufficient(tmp_path, monkeypatch):
     # + VACUUM) and runs its real SQL against the file. Keyed on whether the FTS
     # schema is still present rather than a call counter, so it stays correct as
     # earlier verification call sites are added/removed.
-    real_check = hermes_state._db_opens_cleanly
+    real_check = hermes_state._probe_db_health
     calls = {"n": 0}
 
     def flaky_check(path):
@@ -186,12 +186,20 @@ def test_strategy_b_rebuild_when_dedup_insufficient(tmp_path, monkeypatch):
             probe.close()
         except sqlite3.DatabaseError:
             # sqlite_master still malformed (pre-dedup) — treat as broken.
-            return "pretend still broken (schema unreadable)"
+            return hermes_state.DBHealthResult(
+                status="unhealthy",
+                category="malformed_schema",
+                reason="pretend still broken (schema unreadable)",
+            )
         if still_has_fts:
-            return "pretend in-place/dedup passes were insufficient"
+            return hermes_state.DBHealthResult(
+                status="unhealthy",
+                category="fts_index",
+                reason="pretend in-place/dedup passes were insufficient",
+            )
         return real_check(path)
 
-    monkeypatch.setattr(hermes_state, "_db_opens_cleanly", flaky_check)
+    monkeypatch.setattr(hermes_state, "_probe_db_health", flaky_check)
     report = repair_state_db_schema(db_path)
     monkeypatch.undo()
 

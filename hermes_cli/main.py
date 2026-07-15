@@ -13910,7 +13910,7 @@ def main():
         if action == "repair":
             from hermes_state import (
                 DEFAULT_DB_PATH,
-                _db_opens_cleanly,
+                _probe_db_health,
                 repair_state_db_schema,
             )
 
@@ -13918,11 +13918,17 @@ def main():
             if not db_path.exists():
                 print(f"No session database at {db_path} (nothing to repair).")
                 return
-            reason = _db_opens_cleanly(db_path)
-            if reason is None:
+            health = _probe_db_health(db_path)
+            if health.status == "healthy":
                 print(f"✓ {db_path} opens cleanly — no repair needed.")
                 return
-            print(f"✗ {db_path} does not open cleanly: {reason}")
+            if health.status == "skipped":
+                print(
+                    f"⚠ {db_path} health check skipped: {health.reason}; "
+                    "no repair attempted."
+                )
+                return
+            print(f"✗ {db_path} does not open cleanly: {health.reason}")
             if getattr(args, "check_only", False):
                 return
             print("Repairing (a backup copy is made first)…")
@@ -13943,6 +13949,9 @@ def main():
                 except Exception:
                     print("✓ Repaired.")
             else:
+                if report.get("skipped"):
+                    print(f"⚠ Repair verification skipped: {report.get('error')}")
+                    return
                 print(f"✗ Repair failed: {report.get('error')}")
                 if report.get("backup_path"):
                     print(f"  A backup is preserved at: {report['backup_path']}")

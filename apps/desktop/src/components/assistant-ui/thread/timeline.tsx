@@ -1,5 +1,5 @@
 import { useAuiState } from '@assistant-ui/react'
-import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type FC, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -139,6 +139,8 @@ export const ThreadTimeline: FC = () => {
   const [activeIndex, setActiveIndex] = useState(0)
   const [open, setOpen] = useState(false)
   const closeTimerRef = useRef<number | undefined>(undefined)
+  const triggerRef = useRef<HTMLDivElement | null>(null)
+  const popoverId = useId()
 
   // Hover sync lives on the DOM, not in React state — the tick and its popover
   // row are siblings in different subtrees, so a shared index-keyed paint() lights
@@ -172,6 +174,51 @@ export const ThreadTimeline: FC = () => {
     window.clearTimeout(closeTimerRef.current)
     closeTimerRef.current = window.setTimeout(() => setOpen(false), HOVER_CLOSE_MS)
   }, [])
+
+  const closeNow = useCallback(() => {
+    window.clearTimeout(closeTimerRef.current)
+    setOpen(false)
+  }, [])
+
+  const toggle = useCallback(() => {
+    setOpen(prev => {
+      if (prev) {
+        window.clearTimeout(closeTimerRef.current)
+        return false
+      }
+      return true
+    })
+  }, [])
+
+  // Keyboard activation for the rail trigger: Enter/Space toggle, Escape close.
+  // Without this, a NVDA user can see the rail in the DOM (via object navigation)
+  // but has no path to actually open the popover or reach its rows.
+  const onTriggerKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        toggle()
+      } else if (event.key === 'Escape' && open) {
+        event.preventDefault()
+        closeNow()
+      }
+    },
+    [open, toggle, closeNow]
+  )
+
+  // Inside the popover, Escape closes AND moves focus back to the trigger so a
+  // screen-reader user lands somewhere predictable after dismissal (no transient
+  // focus trap; matches what hover-off does for sighted users).
+  const onPopoverKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeNow()
+        triggerRef.current?.focus()
+      }
+    },
+    [closeNow]
+  )
 
   useEffect(() => () => window.clearTimeout(closeTimerRef.current), [])
 
@@ -230,13 +277,21 @@ export const ThreadTimeline: FC = () => {
 
   return (
     <div
+      aria-controls={popoverId}
+      aria-expanded={open}
       aria-label="Conversation timeline"
-      className="group/timeline pointer-events-auto absolute right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-end"
+      className="group/timeline pointer-events-auto absolute right-0 top-1/2 z-40 flex -translate-y-1/2 cursor-pointer flex-col items-end"
       data-slot="thread-timeline"
       data-suppress-pane-reveal=""
+      onBlur={closeSoon}
+      onClick={toggle}
+      onFocus={keepOpen}
+      onKeyDown={onTriggerKeyDown}
       onMouseEnter={keepOpen}
       onMouseLeave={closeSoon}
-      role="navigation"
+      ref={triggerRef}
+      role="button"
+      tabIndex={0}
     >
       <TimelineTicks
         activeIndex={activeIndex}
@@ -244,14 +299,18 @@ export const ThreadTimeline: FC = () => {
         onHover={paint}
         onJump={scrollToPrompt}
         tickRefs={tickRefs}
+        totalEntries={entries.length}
       />
       <TimelinePopover
         activeIndex={activeIndex}
         entries={entries}
+        id={popoverId}
         onHover={paint}
         onJump={scrollToPrompt}
+        onKeyDown={onPopoverKeyDown}
         open={open}
         rowRefs={rowRefs}
+        totalEntries={entries.length}
       />
     </div>
   )
@@ -260,21 +319,32 @@ export const ThreadTimeline: FC = () => {
 const TimelinePopover: FC<{
   activeIndex: number
   entries: TimelineEntry[]
+  id: string
   onHover: (index: number, on: boolean) => void
   onJump: (id: string) => void
+  onKeyDown: (event: React.KeyboardEvent<HTMLDivElement>) => void
   open: boolean
   rowRefs: React.RefObject<(HTMLButtonElement | null)[]>
-}> = ({ activeIndex, entries, onHover, onJump, open, rowRefs }) => (
+  totalEntries: number
+}> = ({ activeIndex, entries, onHover, onJump, onKeyDown, open, id, rowRefs, totalEntries }) => (
   <div
+    aria-label="Past user prompts"
     className={cn(
       POPOVER_SHELL,
       open ? 'pointer-events-auto opacity-100 translate-x-0' : 'pointer-events-none translate-x-1 opacity-0'
     )}
     data-slot="thread-timeline-popover"
+    id={id}
+    onKeyDown={onKeyDown}
+    role="group"
   >
     {entries.map((entry, index) => (
       <button
-        aria-label={entry.preview}
+        aria-label={
+          entry.preview
+            ? `Prompt ${index + 1} of ${totalEntries}: ${entry.preview}`
+            : `Prompt ${index + 1} of ${totalEntries} (no preview)`
+        }
         className={cn(ROW_CLASS, index === activeIndex && 'bg-(--ui-row-active-background) text-foreground')}
         key={entry.id}
         onClick={() => onJump(entry.id)}
@@ -294,11 +364,16 @@ const TimelineTicks: FC<{
   onHover: (index: number, on: boolean) => void
   onJump: (id: string) => void
   tickRefs: React.RefObject<(HTMLSpanElement | null)[]>
-}> = ({ activeIndex, entries, onHover, onJump, tickRefs }) => (
+  totalEntries: number
+}> = ({ activeIndex, entries, onHover, onJump, tickRefs, totalEntries }) => (
   <div className="flex flex-col items-end py-1" data-slot="thread-timeline-ticks">
     {entries.map((entry, index) => (
       <button
-        aria-label={entry.preview}
+        aria-label={
+          entry.preview
+            ? `Prompt ${index + 1} of ${totalEntries}: ${entry.preview}`
+            : `Prompt ${index + 1} of ${totalEntries} (no preview)`
+        }
         className="flex h-2 w-7 cursor-pointer items-center justify-end pr-1"
         key={entry.id}
         onClick={() => onJump(entry.id)}

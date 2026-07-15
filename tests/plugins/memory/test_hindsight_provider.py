@@ -5,9 +5,11 @@ prefetch (auto_recall, preamble, query truncation), sync_turn (auto_retain,
 turn counting, tags), and schema completeness.
 """
 
+import gc
 import json
 import os
 import threading
+import weakref
 from concurrent.futures import Future
 import re
 import stat
@@ -1152,6 +1154,170 @@ class TestPrefetch:
                 timeout=2.0,
             )
         assert provider._client is None
+
+    @pytest.mark.parametrize(
+        "scheduler_accepts",
+        [True, False],
+        ids=["accepted", "rejected"],
+    )
+    def test_close_between_schedule_and_future_publication_is_owned(
+        self,
+        provider,
+        monkeypatch,
+        scheduler_accepts,
+    ):
+        from agent import async_utils
+
+        client = provider._client
+        late_future = Future()
+        scheduler_entered = threading.Event()
+        release_scheduler = threading.Event()
+        future_published = threading.Event()
+        client_closed = threading.Event()
+        close_calls = []
+        real_register = provider._register_prefetch_future_locked
+
+        def _register(request, owned_client, reservation, future):
+            real_register(request, owned_client, reservation, future)
+            future_published.set()
+
+        def _schedule(coro, loop):
+            scheduler_entered.set()
+            assert release_scheduler.wait(timeout=2.0)
+            coro.close()
+            return late_future if scheduler_accepts else None
+
+        def _close_client(closing_client):
+            close_calls.append(closing_client)
+            client_closed.set()
+
+        monkeypatch.setattr(
+            provider,
+            "_register_prefetch_future_locked",
+            _register,
+        )
+        monkeypatch.setattr(async_utils, "safe_schedule_threadsafe", _schedule)
+        monkeypatch.setattr(provider, "_close_hindsight_client", _close_client)
+        provider._timeout = 0
+
+        provider.queue_prefetch("ownership barrier", session_id="test-session")
+        worker = provider._prefetch_thread
+        assert scheduler_entered.wait(timeout=2.0)
+
+        provider._retire_hindsight_client(client)
+
+        assert not client_closed.is_set()
+        with provider._prefetch_condition:
+            owner = provider._prefetch_client_owners[id(client)]
+            assert owner[0] is client
+            assert len(owner[1]) == 1
+            assert provider._prefetch_deferred_clients[id(client)] is client
+            assert all(
+                not operation.futures
+                for operation in provider._prefetch_operations.values()
+            )
+
+        release_scheduler.set()
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+        if scheduler_accepts:
+            assert future_published.is_set()
+            assert not client_closed.is_set()
+            late_future.set_result("- late memory")
+        else:
+            assert not future_published.is_set()
+
+        assert client_closed.wait(timeout=2.0)
+        with provider._prefetch_condition:
+            assert provider._prefetch_condition.wait_for(
+                lambda: (
+                    not provider._prefetch_client_owners
+                    and not provider._prefetch_deferred_clients
+                    and not provider._prefetch_closing_clients
+                    and not provider._prefetch_close_threads
+                    and not provider._prefetch_operations
+                ),
+                timeout=2.0,
+            )
+
+        provider.shutdown()
+        assert close_calls == [client]
+
+    def test_repeated_reconnect_cleanup_is_bounded_and_identity_safe(
+        self,
+        provider,
+        monkeypatch,
+    ):
+        class _WeakClient:
+            __slots__ = ("index", "successes", "__weakref__")
+
+            def __init__(self, index, successes):
+                self.index = index
+                self.successes = successes
+
+        created_refs = []
+        close_counts = {}
+        next_index = 0
+
+        def _create_client():
+            nonlocal next_index
+            client = _WeakClient(
+                next_index,
+                0 if next_index == 0 else 1,
+            )
+            next_index += 1
+            created_refs.append(weakref.ref(client))
+            return client
+
+        def _run_client(client):
+            if client.successes:
+                client.successes -= 1
+                return f"client-{client.index}"
+            raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+
+        def _close_client(client):
+            close_counts[client.index] = close_counts.get(client.index, 0) + 1
+
+        provider._mode = "local_embedded"
+        provider._client = _create_client()
+        monkeypatch.setattr(provider, "_create_client", _create_client)
+        monkeypatch.setattr(provider, "_run_sync", _run_client)
+        monkeypatch.setattr(provider, "_close_hindsight_client", _close_client)
+
+        for expected_index in range(1, 65):
+            assert provider._run_hindsight_operation(lambda client: client) == (
+                f"client-{expected_index}"
+            )
+            gc.collect()
+            with provider._prefetch_condition:
+                assert not provider._closed_client_refs
+                assert not provider._closed_client_fallbacks
+                assert not provider._prefetch_client_owners
+                assert not provider._prefetch_deferred_clients
+                assert not provider._prefetch_closing_clients
+
+        provider.shutdown()
+        gc.collect()
+
+        assert close_counts == {index: 1 for index in range(65)}
+        assert all(client_ref() is None for client_ref in created_refs)
+        with provider._prefetch_condition:
+            assert not provider._closed_client_refs
+            assert not provider._closed_client_fallbacks
+            assert not provider._prefetch_client_owners
+            assert not provider._prefetch_deferred_clients
+            assert not provider._prefetch_closing_clients
+
+            stale_client = _WeakClient(100, 0)
+            replacement_client = _WeakClient(101, 0)
+            stale_ref = weakref.ref(stale_client)
+            replacement_ref = weakref.ref(replacement_client)
+            reused_key = id(stale_client)
+            provider._closed_client_refs[reused_key] = replacement_ref
+            provider._forget_closed_client_ref(reused_key, stale_ref)
+            assert provider._closed_client_refs[reused_key] is replacement_ref
+            provider._closed_client_refs.pop(reused_key)
 
     def test_prefetch_failure_retires_exact_inflight_key(
         self, provider, monkeypatch

@@ -3228,7 +3228,10 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
+                # POSIX separators so bundle keys (and the lock file's recorded
+                # file list) are consistent on Windows; str(WindowsPath) would
+                # emit backslashes like "scripts\\recalc.py" (#64878).
+                rel_path = f.relative_to(skill_dir).as_posix()
                 try:
                     files[rel_path] = f.read_bytes()
                 except OSError:
@@ -3240,11 +3243,18 @@ class OptionalSkillSource(SkillSource):
         # Determine category from directory structure
         name = skill_dir.name
 
+        # Use POSIX separators in the identifier so the "official/<category>/<name>"
+        # shape survives on Windows. str(WindowsPath) yields backslashes, which
+        # breaks do_install's `identifier.split("/")` category auto-detection and
+        # installs the skill to a flat path instead of its canonical category
+        # path. _scan_all() already normalizes with as_posix() for the same reason.
+        rel_identifier = skill_dir.relative_to(self._optional_dir).as_posix()
+
         return SkillBundle(
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            identifier=f"official/{rel_identifier}",
             trust_level="builtin",
         )
 

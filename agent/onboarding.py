@@ -16,6 +16,8 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from agent.i18n import t
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,24 +42,10 @@ def busy_input_hint_gateway(mode: str) -> str:
     message matches reality ("I just interrupted…" vs "I just queued…").
     """
     if mode == "queue":
-        return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
-        )
+        return t("gateway.busy_hint_queued")
     if mode == "steer":
-        return (
-            "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
-        )
-    return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
-    )
+        return t("gateway.busy_hint_steered")
+    return t("gateway.busy_hint_interrupt")
 
 
 def busy_input_hint_cli(mode: str) -> str:
@@ -82,11 +70,7 @@ def busy_input_hint_cli(mode: str) -> str:
 
 
 def tool_progress_hint_gateway() -> str:
-    return (
-        "💡 First-time tip — that tool took a while and I'm streaming every step. "
-        "If the progress messages feel noisy, send `/verbose` to cycle modes "
-        "(all → new → off). This notice won't appear again."
-    )
+    return t("gateway.tool_progress_hint")
 
 
 def tool_progress_hint_cli() -> str:

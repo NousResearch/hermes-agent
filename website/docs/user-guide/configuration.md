@@ -1685,6 +1685,48 @@ For separate natural mid-turn assistant updates without progressive token editin
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
+## Gateway System Messages
+
+Override the wording of Hermes-authored gateway messages without editing locale
+catalogs. Keys are the catalog paths below `gateway.` and values are standard
+format strings using the placeholders supported by that message:
+
+```yaml
+gateway:
+  system_messages:
+    draining: "{name} is finishing {count} active task(s) before restart."
+    restart_success: "{name} restarted successfully."
+```
+
+Overrides apply in every language. Resolution order is:
+
+1. `gateway.system_messages.<key>` from `config.yaml`
+2. the catalog entry for `display.language`
+3. the English catalog entry
+4. the dotted key itself, if no catalog contains it
+
+Hermes fills `{name}` from the `agent_name` branding field of the skin selected
+by `display.skin`, unless the call site supplies a name explicitly. Other
+placeholders vary by message. Unknown placeholders, including compound forms
+such as `{missing.attr}` or `{missing[key]}`, remain literal instead of crashing
+the gateway. Restart the gateway after changing these overrides so its cached
+configuration is reloaded.
+
+Non-critical notifications can also be muted by category:
+
+```yaml
+gateway:
+  system_messages:
+    suppress:
+      - progress   # work-status updates
+      - lifecycle  # gateway start/restart/shutdown notices
+      - info       # optional informational notices
+```
+
+Use `suppress: all` to mute all three categories. Error messages, approval
+prompts, and command replies are never suppressible. Unknown category names are
+ignored with a warning.
+
 ## Group Chat Session Isolation
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,

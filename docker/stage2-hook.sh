@@ -249,6 +249,30 @@ if [ "$needs_chown" = true ]; then
     done
 fi
 
+# Top-level files in the data volume (config.yaml, .env, SOUL.md, restart/update
+# markers, ...) are hermes-managed state — NOT host-bind mounts, which are always
+# mounted at a subdir (e.g. /opt/data/homeassistant), never a bare top-level file.
+# Two ways these break a reader/writer running as hermes with EACCES:
+#   1. Wrong OWNER (root-written seed / UID remap) — fixed by chown.
+#   2. Wrong MODE — e.g. SOUL.md is seeded 0444 (read-only). config migration
+#      rewrites it via shutil.copy2; on a read-only file that raises EACCES,
+#      which aborts + rolls back the WHOLE migration, leaving the config at an
+#      old schema the new loader rejects ("Could not load config.yaml") so the
+#      gateway silently falls back to defaults (wrong language, no suppression,
+#      streaming re-enabled). kanban hits the same EACCES and disables.
+# Give hermes ownership + owner read/write on just the depth-1 regular files so
+# the runtime can always read AND rewrite them, without recursing into subdirs
+# (that would clobber bind-mounted host files). Latent all along; only surfaced
+# once a newer migration step began touching SOUL.md. Runs unconditionally — a
+# mis-owned/mis-moded top-level file can exist even when $HERMES_HOME itself
+# already has the right owner.
+if [ -d "$HERMES_HOME" ] && ! refuse_symlinked_path "top-level file perms" "$HERMES_HOME"; then
+    find "$HERMES_HOME" -maxdepth 1 -type f -exec chown hermes:hermes {} + 2>/dev/null \
+        || echo "[stage2] Warning: top-level data-file chown failed (rootless container?) — continuing"
+    find "$HERMES_HOME" -maxdepth 1 -type f -exec chmod u+rw {} + 2>/dev/null \
+        || echo "[stage2] Warning: top-level data-file chmod failed (rootless container?) — continuing"
+fi
+
 # --- Immutable install tree ---
 # Do not chown runtime code or dependency trees under $INSTALL_DIR back to the
 # hermes user. Hosted/container instances keep mutable state under

@@ -462,13 +462,14 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         sid = args.get("session_id", "")
         data = args.get("data", "")
         timeout_val = args.get("timeout")
-        parts = [action]
+        parts = [str(action) if action else ""]
         if sid:
-            parts.append(sid[:16])
+            parts.append(str(sid)[:16])
         if data:
-            parts.append(f'"{_oneline(data[:20])}"')
+            parts.append(f'"{_oneline(str(data)[:20])}"')
         if timeout_val and action == "wait":
             parts.append(f"{timeout_val}s")
+        parts = [p for p in parts if p]
         return " ".join(parts) if parts else None
 
     if tool_name == "todo":

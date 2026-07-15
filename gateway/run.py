@@ -6512,6 +6512,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = via_service
         self._restart_task_started = True
 
+        # Log the restart trigger with call-site context for debugging
+        # restart loops (#65207). Include a short traceback so we can tell
+        # whether this came from SIGUSR1, /restart, hermes update, or
+        # an internal code path.
+        import traceback as _tb
+        _frames = _tb.format_stack(limit=10)
+        logger.info(
+            "Gateway restart requested (detached=%r, via_service=%r). "
+            "Call stack:\n%s",
+            detached, via_service, "".join(_frames),
+        )
+
         async def _run_restart() -> None:
             if detached:
                 try:
@@ -8208,6 +8220,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "Stopping gateway%s...",
                 " for restart" if self._restart_requested else "",
             )
+
+            # Dump child process state for debugging restart loops (#65207).
+            # If a child survives our exit (e.g. a detached hermes-update
+            # or a gateway worker in a separate process group), the next
+            # restart attempt will see it as "already running" and fail.
+            # Logging here lets us correlate zombie PIDs with the crash.
+            try:
+                import os as _os
+                import subprocess as _subproc
+                _my_pid = _os.getpid()
+                _result = _subproc.run(
+                    ["ps", "-eo", "pid,ppid,stat,args", "--no-headers"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                _children = [
+                    line for line in _result.stdout.splitlines()
+                    if int(line.split()[0]) != _my_pid and  # not self
+                       int(line.split()[1]) == _my_pid       # child of self
+                ]
+                if _children:
+                    logger.warning(
+                        "Shutdown: found %d direct child process(es) that may "
+                        "survive our exit (potential 'already running' trap):\n%s",
+                        len(_children), "\n".join(_children),
+                    )
+                # Also check for any process holding our PID file
+                _pid_file = _hermes_home / "gateway.pid"
+                if _pid_file.exists():
+                    try:
+                        import json as _json
+                        _pid_data = _json.loads(_pid_file.read_text())
+                        _file_pid = _pid_data.get("pid")
+                        if _file_pid and _file_pid != _my_pid:
+                            logger.warning(
+                                "Shutdown: gateway.pid points to PID %d, but our PID is %d — "
+                                "next restart will fail with 'already running'",
+                                _file_pid, _my_pid,
+                            )
+                    except Exception:
+                        pass
+            except Exception as _e:
+                logger.debug("Child process dump failed: %s", _e)
             _stop_started_at = time.monotonic()
 
             def _phase_elapsed() -> float:
@@ -20723,11 +20777,28 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 pass
         else:
             hermes_home = str(get_hermes_home())
-            logger.error(
-                "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
-                "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
-                existing_pid, hermes_home,
-            )
+            # Log process info about the stale PID for debugging restart loops
+            # (#65207). This tells us if it's a zombie, a legitimate gateway,
+            # or something else entirely.
+            try:
+                import subprocess as _subproc
+                _proc_info = _subproc.run(
+                    ["ps", "-p", str(existing_pid), "-o", "pid,ppid,stat,etime,args", "--no-headers"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                _proc_line = _proc_info.stdout.strip() or "process not found (zombie?)"
+                logger.error(
+                    "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+                    "Process info: %s. Use 'hermes gateway restart' to replace it, or "
+                    "'hermes gateway stop' first.",
+                    existing_pid, hermes_home, _proc_line,
+                )
+            except Exception:
+                logger.error(
+                    "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
+                    "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",
+                    existing_pid, hermes_home,
+                )
             print(
                 f"\n❌ Gateway already running (PID {existing_pid}).\n"
                 f"   Use 'hermes gateway restart' to replace it,\n"
@@ -20889,6 +20960,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
+        logger.info("Received SIGUSR1 — triggering gateway restart (likely from `hermes update` or `hermes gateway restart`)")
         runner.request_restart(detached=False, via_service=True)
     
     loop = asyncio.get_running_loop()

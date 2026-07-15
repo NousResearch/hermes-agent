@@ -50,9 +50,68 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+import requests
+
 from agent.web_search_provider import WebSearchProvider
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
+
+# ---------------------------------------------------------------------------
+# Credential pool support
+# ---------------------------------------------------------------------------
+# Firecrawl API keys can be managed via ``hermes auth add firecrawl``.
+# When multiple keys are registered, the pool auto-rotates on 429 (rate
+# limit) and 402 (billing/quota) errors.
+
+_FIRECRAWL_POOL: Optional["CredentialPool"] = None  # type: ignore[name-defined]
+_FIRECRAWL_POOL_CREDENTIAL_ID: Optional[str] = None
+
+
+# Import gate — credential_pool is a heavy module; defer until first pool access.
+def _load_firecrawl_pool() -> Optional["CredentialPool"]:  # type: ignore[name-defined]
+    """Load the Firecrawl credential pool, returning None if unavailable."""
+    global _FIRECRAWL_POOL
+    if _FIRECRAWL_POOL is None:
+        try:
+            from agent.credential_pool import load_pool
+
+            pool = load_pool("firecrawl")
+            if pool.has_credentials():
+                _FIRECRAWL_POOL = pool
+        except Exception:
+            logger.debug("Firecrawl credential pool not available", exc_info=True)
+    return _FIRECRAWL_POOL
+
+
+def _select_firecrawl_pool_key() -> Optional[str]:
+    """Select the next healthy Firecrawl API key from the credential pool.
+
+    Returns the API key string, or None if the pool is empty or all keys
+    are exhausted.
+    """
+    pool = _load_firecrawl_pool()
+    if pool is None:
+        return None
+    entry = pool.select()
+    if entry is None:
+        return None
+    global _FIRECRAWL_POOL_CREDENTIAL_ID
+    _FIRECRAWL_POOL_CREDENTIAL_ID = entry.id
+    return entry.runtime_api_key
+
+
+def _mark_firecrawl_key_exhausted(status_code: int) -> None:
+    """Mark the current pool credential as exhausted (rate limit or billing)."""
+    pool = _load_firecrawl_pool()
+    if pool is None or _FIRECRAWL_POOL_CREDENTIAL_ID is None:
+        return
+    entry = pool.current()
+    if entry is None or entry.id != _FIRECRAWL_POOL_CREDENTIAL_ID:
+        return
+    try:
+        pool.mark_exhausted_and_rotate(status_code=status_code)
+    except Exception:
+        logger.warning("Failed to mark Firecrawl key exhausted", exc_info=True)
 
 logger = logging.getLogger(__name__)
 
@@ -212,9 +271,11 @@ def _raise_web_backend_configuration_error() -> None:
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client.
 
-    When ``web.use_gateway`` is set in config, the managed Tool Gateway is
-    preferred even if direct Firecrawl credentials are present. Otherwise
-    direct Firecrawl takes precedence when explicitly configured.
+    Resolution order:
+      1. Credential pool — when ``firecrawl`` pool has healthy entries.
+      2. Managed Tool Gateway — when ``web.use_gateway`` is set or direct
+         credentials are absent.
+      3. Direct Firecrawl credentials (FIRECRAWL_API_KEY).
 
     Raises ValueError when neither path is usable.
 
@@ -229,6 +290,25 @@ def _get_firecrawl_client() -> Any:
     """
     import tools.web_tools as _wt
 
+    # 1. Credential pool path
+    pool_key = _select_firecrawl_pool_key()
+    if pool_key:
+        kwargs = {"api_key": pool_key}
+        api_url = (os.environ.get("FIRECRAWL_API_URL") or "").strip().rstrip("/")
+        if api_url:
+            kwargs["api_url"] = api_url
+        client_config = ("pool", pool_key[:8] + "...", api_url or None)
+
+        cached = getattr(_wt, "_firecrawl_client", None)
+        cached_config = getattr(_wt, "_firecrawl_client_config", None)
+        if cached is not None and cached_config == client_config:
+            return cached
+
+        _wt._firecrawl_client = _wt.Firecrawl(**kwargs)
+        _wt._firecrawl_client_config = client_config
+        return _wt._firecrawl_client
+
+    # 2. Direct / managed-gateway path (original behaviour)
     direct_config = _get_direct_firecrawl_config()
     if direct_config is not None and not _wt.prefers_gateway("web"):
         kwargs, client_config = direct_config
@@ -416,6 +496,33 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             web_results = _extract_web_search_results(response)
             logger.info("Firecrawl: found %d search results", len(web_results))
             return {"success": True, "data": {"web": web_results}}
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response is not None else 0
+            # Rotate pool key on rate limit (429) or billing/quota (402)
+            if status_code in (429, 402):
+                logger.warning(
+                    "Firecrawl key exhausted (HTTP %d), rotating pool key", status_code
+                )
+                _mark_firecrawl_key_exhausted(status_code)
+                # Force a new client on next call
+                import tools.web_tools as _wt
+                _wt._firecrawl_client = None
+                _wt._firecrawl_client_config = None
+                # Retry once with the next key
+                client = _get_firecrawl_client()
+                try:
+                    response = client.search(query=query, limit=limit)
+                    web_results = _extract_web_search_results(response)
+                    logger.info(
+                        "Firecrawl: found %d search results (after pool rotation)",
+                        len(web_results),
+                    )
+                    return {"success": True, "data": {"web": web_results}}
+                except Exception as retry_exc:  # noqa: BLE001
+                    logger.warning("Firecrawl search retry error: %s", retry_exc)
+                    return {"success": False, "error": f"Firecrawl search failed: {retry_exc}"}
+            logger.warning("Firecrawl search error (HTTP %d): %s", status_code, exc)
+            return {"success": False, "error": f"Firecrawl search failed: {exc}"}
         except Exception as exc:  # noqa: BLE001
             logger.warning("Firecrawl search error: %s", exc)
             return {"success": False, "error": f"Firecrawl search failed: {exc}"}
@@ -494,6 +601,51 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                         ),
                         timeout=60,
                     )
+                except requests.exceptions.HTTPError as httperr:
+                    status_code = (
+                        httperr.response.status_code
+                        if httperr.response is not None
+                        else 0
+                    )
+                    # Rotate pool key on rate limit (429) or billing/quota (402)
+                    if status_code in (429, 402):
+                        logger.warning(
+                            "Firecrawl key exhausted (HTTP %d), rotating pool key",
+                            status_code,
+                        )
+                        _mark_firecrawl_key_exhausted(status_code)
+                        # Force a new client on next call
+                        import tools.web_tools as _wt
+
+                        _wt._firecrawl_client = None
+                        _wt._firecrawl_client_config = None
+                        # Retry once with the next key
+                        try:
+                            scrape_result = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    _get_firecrawl_client().scrape,
+                                    url=url,
+                                    formats=formats,
+                                ),
+                                timeout=60,
+                            )
+                        except Exception as retry_err:
+                            logger.warning(
+                                "Firecrawl scrape retry failed for %s: %s",
+                                url,
+                                retry_err,
+                            )
+                            results.append(
+                                {
+                                    "url": url,
+                                    "title": "",
+                                    "content": "",
+                                    "error": str(retry_err),
+                                }
+                            )
+                            continue
+                    else:
+                        raise
                 except asyncio.TimeoutError:
                     logger.warning("Firecrawl scrape timed out for %s", url)
                     results.append(

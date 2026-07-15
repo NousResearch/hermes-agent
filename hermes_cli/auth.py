@@ -143,6 +143,7 @@ DEFAULT_SPOTIFY_SCOPE = " ".join((
 ))
 SERVICE_PROVIDER_NAMES: Dict[str, str] = {
     "spotify": "Spotify",
+    "firecrawl": "Firecrawl",
 }
 
 # LM Studio's default no-auth mode still requires *some* non-empty bearer for

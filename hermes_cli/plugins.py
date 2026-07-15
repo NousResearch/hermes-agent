@@ -224,7 +224,26 @@ def _env_enabled(name: str) -> bool:
     return env_var_enabled(name)
 
 
-def _get_disabled_plugins() -> set:
+def _load_plugin_config(home_path: Optional[Path] = None) -> dict:
+    """Load plugin activation config for one resolved Hermes home."""
+    if home_path is None:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        return config if isinstance(config, dict) else {}
+
+    config_path = Path(home_path) / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = fast_safe_load(f) or {}
+    except Exception:
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def _get_disabled_plugins(home_path: Optional[Path] = None) -> set:
     """Read the disabled plugins list from config.yaml.
 
     Kept for backward compat and explicit deny-list semantics. A plugin
@@ -232,15 +251,14 @@ def _get_disabled_plugins() -> set:
     ``plugins.enabled``.
     """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        config = _load_plugin_config(home_path)
         disabled = cfg_get(config, "plugins", "disabled", default=[])
         return set(disabled) if isinstance(disabled, list) else set()
     except Exception:
         return set()
 
 
-def _get_enabled_plugins() -> Optional[set]:
+def _get_enabled_plugins(home_path: Optional[Path] = None) -> Optional[set]:
     """Read the enabled-plugins allow-list from config.yaml.
 
     Plugins are opt-in by default — only plugins whose name appears in
@@ -255,8 +273,7 @@ def _get_enabled_plugins() -> Optional[set]:
     * ``set(...)`` — the concrete allow-list.
     """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        config = _load_plugin_config(home_path)
         plugins_cfg = config.get("plugins")
         if not isinstance(plugins_cfg, dict):
             return None
@@ -811,15 +828,10 @@ class PluginContext:
         ordering, mapped-vs-bulk precedence, conflict warnings, and
         provenance; the source only fetches.
 
-        NOTE ON TIMING: plugin discovery happens later in startup than
-        the first ``load_hermes_dotenv()`` call, so a plugin-registered
-        source is not consulted by the initial env load of the process
-        that discovers it.  It IS consulted by every subsequently
-        spawned Hermes process (gateway children, cron sessions,
-        subagents), and immediately after a
-        ``reset_secret_source_cache()`` re-pull.  Plugin sources are
-        therefore best for supplying credentials to the running fleet;
-        the bundled sources cover first-process bootstrap.
+        Secret-source plugin discovery is triggered by
+        ``load_hermes_dotenv()`` before the source merge, so enabled plugin
+        sources participate in the initial process load as well as gateway
+        children, cron sessions, and subagents.
 
         Contract requirements (rejected with a warning otherwise):
         inherit from ``SecretSource``, ``api_version`` matching
@@ -839,6 +851,7 @@ class PluginContext:
             )
             return
         if register_source(source):
+            self._manager._plugin_secret_sources[source.name] = source
             logger.info(
                 "Plugin '%s' registered secret source: %s",
                 self.manifest.name, source.name,
@@ -1253,11 +1266,13 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_secret_sources: Dict[str, Any] = {}
         self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
+        self._discovery_home: Optional[str] = None
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
@@ -1276,24 +1291,41 @@ class PluginManager:
     # Public
     # -----------------------------------------------------------------------
 
-    def discover_and_load(self, force: bool = False) -> None:
+    def discover_and_load(
+        self,
+        force: bool = False,
+        *,
+        home_path: Optional[Path] = None,
+    ) -> None:
         """Scan all plugin sources and load each plugin found.
 
         When ``force`` is true, clear cached discovery state first so config
         changes or newly-added bundled backends become visible in long-lived
-        sessions without requiring a full agent restart.
+        sessions without requiring a full agent restart. Discovery is cached
+        per resolved Hermes home; changing profiles forces a fresh scan.
         """
+        resolved_home = Path(home_path or get_hermes_home()).resolve()
+        home_key = str(resolved_home)
+        if self._discovered and self._discovery_home != home_key:
+            force = True
         if self._discovered and not force:
             return
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
+            self._discovery_home = home_key
             return
         if force:
+            if self._plugin_secret_sources:
+                from agent.secret_sources.registry import unregister_source
+
+                for source in self._plugin_secret_sources.values():
+                    unregister_source(source)
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
             self._plugin_tool_names.clear()
+            self._plugin_secret_sources.clear()
             self._plugin_platform_names.clear()
             self._cli_commands.clear()
             self._plugin_commands.clear()
@@ -1308,14 +1340,17 @@ class PluginManager:
         # permanently stranded on the early-return above (the "No web provider
         # configured" class of failures).
         self._discovered = True
+        self._discovery_home = home_key
         try:
             self._discover_and_load_inner()
         except BaseException:
             self._discovered = False
+            self._discovery_home = None
             raise
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
+        resolved_home = Path(self._discovery_home or get_hermes_home()).resolve()
         manifests: List[PluginManifest] = []
 
         # 1. Bundled plugins (<repo>/plugins/<name>/)
@@ -1347,7 +1382,7 @@ class PluginManager:
         manifests.extend(bundled_platforms)
 
         # 2. User plugins (~/.hermes/plugins/)
-        user_dir = get_hermes_home() / "plugins"
+        user_dir = resolved_home / "plugins"
         logger.debug("Scanning user plugins: %s", user_dir)
         user_manifests = self._scan_directory(user_dir, source="user")
         logger.debug("  user: %d manifest(s)", len(user_manifests))
@@ -1377,8 +1412,8 @@ class PluginManager:
         # winner. Keys are path-derived (``image_gen/openai``,
         # ``disk-cleanup``) so ``tts/openai`` and ``image_gen/openai``
         # don't collide even when both manifests say ``name: openai``.
-        disabled = _get_disabled_plugins()
-        enabled = _get_enabled_plugins()  # None = opt-in default (nothing enabled)
+        disabled = _get_disabled_plugins(resolved_home)
+        enabled = _get_enabled_plugins(resolved_home)  # None = opt-in default
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
@@ -2037,13 +2072,18 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
-def discover_plugins(force: bool = False) -> None:
+def discover_plugins(
+    force: bool = False,
+    *,
+    home_path: Optional[Path] = None,
+) -> None:
     """Discover and load all plugins.
 
     Default behavior is idempotent. Pass ``force=True`` to rescan plugin
-    manifests and reload state in the current process.
+    manifests and reload state in the current process. ``home_path`` scopes
+    user-plugin discovery and activation config to a resolved profile home.
     """
-    get_plugin_manager().discover_and_load(force=force)
+    get_plugin_manager().discover_and_load(force=force, home_path=home_path)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

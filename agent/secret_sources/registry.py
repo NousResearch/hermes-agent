@@ -140,6 +140,20 @@ def register_source(source: SecretSource, *, replace: bool = False) -> bool:
     return True
 
 
+def unregister_source(source: SecretSource) -> bool:
+    """Remove *source* when it is still the registered instance.
+
+    Identity checking prevents one plugin manager from removing a source that
+    another registration has since replaced.  Profile-aware plugin discovery
+    uses this when unloading sources owned by the previous profile.
+    """
+    name = getattr(source, "name", "") or ""
+    if _SOURCES.get(name) is not source:
+        return False
+    del _SOURCES[name]
+    return True
+
+
 def get_source(name: str) -> Optional[SecretSource]:
     _ensure_builtin_sources()
     return _SOURCES.get(name)

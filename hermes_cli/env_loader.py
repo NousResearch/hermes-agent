@@ -330,6 +330,17 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         return
     _APPLIED_HOMES.add(home_key)
 
+    # Secret-source plugins must register before the orchestrator resolves
+    # ``secrets.sources``.  Discovery is profile-scoped and idempotent; the
+    # applied-home guard above also prevents a plugin import that loops back
+    # through load_hermes_dotenv() from recursing.
+    try:
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins(home_path=Path(home_path))
+    except Exception:  # noqa: BLE001 — plugins must never block env startup
+        pass
+
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup

@@ -126,7 +126,7 @@ def register(ctx):
 Registration is rejected (with a log warning, never a crash) for: non-`SecretSource` instances, invalid/duplicate names, a `scheme` another source owns, wrong `api_version`, or a `shape` outside `mapped`/`bulk`.
 
 :::note Timing
-Plugin discovery runs later in startup than the first `load_hermes_dotenv()` call, so a plugin source is not consulted by the very first env load of the process that discovers it. It IS consulted by every subsequently spawned Hermes process (gateway children, cron sessions, subagents). Bundled sources cover first-process bootstrap.
+`load_hermes_dotenv()` discovers enabled plugins before the secret-source merge. Plugin sources therefore participate in the initial process load as well as subsequently spawned gateway children, cron sessions, and subagents. Discovery and the source merge are both scoped to the resolved `HERMES_HOME` profile.
 :::
 
 ## Users configure it like any other source

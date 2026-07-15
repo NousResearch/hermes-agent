@@ -192,6 +192,38 @@ class TestIsAvailable:
         monkeypatch.setenv("EXA_API_KEY", "real")
         assert p.is_available() is True
 
+    def test_exa_client_sets_user_agent_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import types
+
+        captured = {}
+
+        class FakeExa:
+            def __init__(self, api_key: str) -> None:
+                captured["api_key"] = api_key
+                self.headers = {}
+
+        fake_exa_module = types.ModuleType("exa_py")
+        fake_exa_module.Exa = FakeExa
+        monkeypatch.setitem(sys.modules, "exa_py", fake_exa_module)
+        monkeypatch.setenv("EXA_API_KEY", "real-key")
+
+        import tools.lazy_deps as lazy_deps
+        import tools.web_tools as web_tools
+
+        monkeypatch.setattr(lazy_deps, "ensure", lambda *args, **kwargs: None)
+        monkeypatch.setattr(web_tools, "_exa_client", None, raising=False)
+
+        from plugins.web.exa.provider import _get_exa_client
+
+        client = _get_exa_client()
+
+        assert captured["api_key"] == "real-key"
+        assert client.headers["x-exa-integration"] == "hermes-agent"
+        assert "Hermes-Agent" in client.headers["User-Agent"]
+
     def test_parallel_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider

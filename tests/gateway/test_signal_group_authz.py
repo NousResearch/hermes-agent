@@ -17,7 +17,7 @@ from gateway.session import SessionSource
 def _authz():
     obj = object.__new__(GatewayAuthorizationMixin)
     # Reach the group-allowlist branch without the trusted-upstream shortcut.
-    obj._adapter_authorization_is_upstream = lambda platform: False
+    obj._adapter_authorization_is_upstream = lambda platform, **kwargs: False
     return obj
 
 

@@ -2901,6 +2901,17 @@ DEFAULT_CONFIG = {
         # producing ~/.hermes/sessions/sessions.json entirely.
         "write_sessions_json": True,
 
+        # Give each messaging session its own git worktree so concurrent
+        # gateway users never edit the same checkout. Disabled by default.
+        # ``repos`` also enables routing for absolute paths into additional
+        # repositories outside terminal.cwd. ``sync_base`` fetches the remote
+        # default branch before creating a session branch.
+        "auto_worktrees": {
+            "enabled": False,
+            "sync_base": False,
+            "repos": [],
+        },
+
         # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent

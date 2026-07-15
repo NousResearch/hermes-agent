@@ -366,6 +366,34 @@ Persisted transcripts always stay clean — the timestamp is stored as message
 metadata regardless of this toggle, so enabling it later also surfaces
 send-times for past messages, and replay never accumulates duplicate prefixes.
 
+### Isolated Git worktrees per session
+
+Enable `gateway.auto_worktrees` when multiple messaging sessions may edit code
+at the same time. Hermes creates a dedicated branch and linked worktree for
+each session, routes terminal and file operations into it, and removes both the
+worktree and branch when the session is reset or expires.
+
+```yaml
+gateway:
+  auto_worktrees:
+    enabled: true
+    sync_base: false
+    repos:
+      - ~/src/my-project
+      - ~/src/another-project
+```
+
+- `enabled` defaults to `false`.
+- `sync_base` fetches the remote default branch before creating the worktree.
+  Keep it disabled when gateway turns must not perform network access.
+- `repos` limits automatic creation and absolute-path routing to the listed
+  repository roots. When omitted, Hermes still isolates the repository that
+  contains `terminal.cwd`.
+
+Worktrees are created under `<repo>/.worktrees/`. Add relative paths to a
+repository-level `.worktreeinclude` file when every session worktree needs
+untracked local files such as development-only configuration.
+
 When enabled, the bot sends status messages as it works:
 
 ```text

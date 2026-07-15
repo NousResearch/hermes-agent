@@ -83,9 +83,9 @@ def _prepare_slash_worker_runtime() -> None:
         logger=logger,
         thread_name="slash-worker-mcp-discovery",
     )
-    # Slash workers are one-shot-ish command processes: give MCP the full
-    # single-query cold-start bound so profile-local servers land in /tools.
-    wait_for_mcp_discovery(single_query=True)
+    # Persistent slash workers stay on the bounded interactive path so a
+    # slow/dead MCP server cannot delay slash readiness (#51322 review).
+    wait_for_mcp_discovery()
 
 
 def _start_parent_death_watchdog(original_ppid, parent_create_time) -> None:

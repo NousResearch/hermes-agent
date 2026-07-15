@@ -384,6 +384,13 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    # Top-level `hermes -z "..."` dispatches straight to oneshot (main.py),
+    # bypassing cli.py `_single_query_mode`. Wait the full single-query MCP
+    # cold-start bound so slow servers land in the one tool snapshot (#51316).
+    from hermes_cli.mcp_startup import wait_for_mcp_discovery
+
+    wait_for_mcp_discovery(single_query=True)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),

@@ -668,6 +668,12 @@ class TestStopRun:
 
                 stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
                 assert stop_resp.status == 200
+                repeated_stop_resp = await cli.post(f"/v1/runs/{run_id}/stop")
+                assert repeated_stop_resp.status == 200
+                assert (await repeated_stop_resp.json()) == {
+                    "run_id": run_id,
+                    "status": "stopping",
+                }
                 await asyncio.sleep(0.1)
 
                 assert not run_finished.is_set()

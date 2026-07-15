@@ -5023,7 +5023,11 @@ def run_conversation(
                         or getattr(assistant_message, "reasoning_details", None)
                         or _has_inline_thinking
                     )
-                    if _has_structured and agent._thinking_prefill_retries < 2:
+                    _has_visible_content = bool(
+                        final_response
+                        and agent._strip_think_blocks(final_response).strip()
+                    )
+                    if _has_structured and not _has_visible_content and agent._thinking_prefill_retries < 2:
                         agent._thinking_prefill_retries += 1
                         logger.info(
                             "Thinking-only response (no visible content) — "

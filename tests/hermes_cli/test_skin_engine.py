@@ -112,6 +112,22 @@ class TestBuiltinSkins:
 
         assert load_skin("auto").name == "default"
 
+    def test_macos_theme_probe_rejects_unexpected_success_output(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        monkeypatch.setattr(
+            skin_engine.shutil, "which", lambda command: "/usr/bin/defaults"
+        )
+        monkeypatch.setattr(
+            skin_engine.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, stdout="unexpected\n", stderr=""
+            ),
+        )
+
+        assert skin_engine._macos_uses_light_theme() is None
+
     def test_user_auto_skin_takes_precedence_over_alias(self, tmp_path, monkeypatch):
         from hermes_cli import skin_engine
         from hermes_cli.skin_engine import load_skin
@@ -168,6 +184,25 @@ class TestBuiltinSkins:
 
         assert skin_engine._windows_app_uses_light_theme() is True
 
+    def test_windows_theme_probe_rejects_unknown_registry_value(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        class FakeKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        fake_winreg = types.SimpleNamespace(
+            HKEY_CURRENT_USER=object(),
+            OpenKey=lambda *_args: FakeKey(),
+            QueryValueEx=lambda _key, _name: (2, None),
+        )
+        monkeypatch.setitem(__import__("sys").modules, "winreg", fake_winreg)
+
+        assert skin_engine._windows_app_uses_light_theme() is None
+
     def test_auto_skin_resolves_linux_dark_to_default(self, monkeypatch):
         from hermes_cli import skin_engine
         from hermes_cli.skin_engine import load_skin
@@ -186,6 +221,22 @@ class TestBuiltinSkins:
             "run",
             lambda *args, **kwargs: subprocess.CompletedProcess(
                 args[0], 0, stdout="(<uint32 2>,)\n", stderr=""
+            ),
+        )
+
+        assert skin_engine._linux_uses_light_theme() is True
+
+    def test_linux_theme_probe_parses_only_portal_uint32_value(self, monkeypatch):
+        from hermes_cli import skin_engine
+
+        monkeypatch.setattr(
+            skin_engine.shutil, "which", lambda command: f"/usr/bin/{command}"
+        )
+        monkeypatch.setattr(
+            skin_engine.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args[0], 0, stdout="version 1: (<uint32 2>,)\n", stderr=""
             ),
         )
 

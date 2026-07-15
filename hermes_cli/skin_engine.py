@@ -782,7 +782,10 @@ def _macos_uses_light_theme() -> Optional[bool]:
             return True
         return None
 
-    return result.stdout.strip().lower() != "dark"
+    appearance = result.stdout.strip().lower()
+    if appearance == "dark":
+        return False
+    return None
 
 
 def _windows_app_uses_light_theme() -> Optional[bool]:
@@ -802,9 +805,14 @@ def _windows_app_uses_light_theme() -> Optional[bool]:
         return None
 
     try:
-        return int(value) != 0
+        appearance = int(value)
     except (TypeError, ValueError):
         return None
+    if appearance == 0:
+        return False
+    if appearance == 1:
+        return True
+    return None
 
 
 def _run_theme_probe(command: List[str]) -> Optional[str]:
@@ -844,10 +852,11 @@ def _linux_uses_light_theme() -> Optional[bool]:
         ]
     )
     if portal:
-        values = [int(v) for v in re.findall(r"\d+", portal)]
-        if 1 in values:
+        match = re.search(r"\buint32\s+([012])\b", portal.lower())
+        value = int(match.group(1)) if match else None
+        if value == 1:
             return False
-        if 2 in values:
+        if value == 2:
             return True
 
     gsettings = _run_theme_probe(
@@ -855,9 +864,9 @@ def _linux_uses_light_theme() -> Optional[bool]:
     )
     if gsettings:
         value = gsettings.strip("'\"").lower()
-        if "dark" in value:
+        if value == "prefer-dark":
             return False
-        if "light" in value:
+        if value == "prefer-light":
             return True
 
     return None

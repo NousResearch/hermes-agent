@@ -4581,6 +4581,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        repair_alternation: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -4589,6 +4590,16 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``repair_alternation=True`` runs ``repair_message_sequence`` over the
+        loaded list before returning it. Callers that restore a session for
+        LIVE REPLAY should pass it: a durable alternation violation (e.g. a
+        ``user;user`` pair left by a turn that persisted no assistant row)
+        otherwise re-triggers the pre-request defensive repair on every
+        single request for the rest of the session's life — the repair
+        mutates only the per-request list, never the stored transcript.
+        Inspection/export consumers keep the default and see the transcript
+        verbatim.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -4685,6 +4696,21 @@ class SessionDB:
         # assistant reply immediately following it, so a polluted session
         # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
+        if repair_alternation and messages:
+            # Lazy import: hermes_state already depends on agent.* (see
+            # sanitize_context above), but keep this optional path from
+            # widening the import surface at module load.
+            from agent.agent_runtime_helpers import repair_message_sequence
+
+            repaired = repair_message_sequence(None, messages)
+            if repaired:
+                logger.info(
+                    "Repaired %d message-alternation violation(s) while "
+                    "restoring session %s — durable transcript kept them, "
+                    "see repair_message_sequence",
+                    repaired,
+                    session_id,
+                )
         return messages
 
     def get_conversation_root(self, session_id: str) -> str:

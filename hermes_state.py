@@ -2557,11 +2557,22 @@ class SessionDB:
         (only filling in NULL), this unconditionally sets the model column
         so that the dashboard reflects the user's latest /model choice.
         Also nulls ``system_prompt`` so stale ``Model:`` / ``Provider:``
-        footer metadata is rebuilt on the next turn.
+        footer metadata is rebuilt on the next turn. A successful /model
+        switch explicitly replaces any confirmed Browser runtime lock while
+        preserving unrelated lineage markers in ``model_config``.
         """
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET model = ?, system_prompt = NULL WHERE id = ?",
+                """UPDATE sessions SET
+                   model = ?,
+                   model_config = CASE
+                       WHEN model_config IS NULL THEN NULL
+                       WHEN json_valid(model_config)
+                           THEN json_remove(model_config, '$.browser_model_lock')
+                       ELSE model_config
+                   END,
+                   system_prompt = NULL
+                   WHERE id = ?""",
                 (model, session_id),
             )
         self._execute_write(_do)

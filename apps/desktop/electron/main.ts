@@ -94,6 +94,11 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { imageFormatExtension, imageSaveFilename } from './image-save-filename'
+import {
+  createSingleFlightOperation,
+  encodedImageDimensions,
+  imageDimensionsWithinLimit
+} from './image-save-operation'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -3841,6 +3846,30 @@ function extensionForMimeType(mimeType) {
   return ''
 }
 
+async function readBoundedFileHandle(handle, maxBytes) {
+  const chunks = []
+  let byteLength = 0
+
+  while (byteLength <= maxBytes) {
+    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, maxBytes + 1 - byteLength))
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, null)
+
+    if (!bytesRead) {
+      return Buffer.concat(chunks, byteLength)
+    }
+
+    byteLength += bytesRead
+
+    if (byteLength > maxBytes) {
+      throw new Error('Image is too large')
+    }
+
+    chunks.push(chunk.subarray(0, bytesRead))
+  }
+
+  throw new Error('Image is too large')
+}
+
 // Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
 const titleCache = new Map()
 const titleInflight = new Map()
@@ -4132,10 +4161,58 @@ function fetchLinkTitle(rawUrl) {
   return pending
 }
 
-const MAX_IMAGE_SAVE_BYTES = 128 * 1024 * 1024
+const MAX_IMAGE_SAVE_BYTES = 32 * 1024 * 1024
+const MAX_IMAGE_DIMENSION = 16_384
+const MAX_DECODED_IMAGE_PIXELS = 40_000_000
 const IMAGE_FETCH_TIMEOUT_MS = 30_000
-const MAX_CONCURRENT_IMAGE_FETCHES = 4
+const MAX_CONCURRENT_IMAGE_FETCHES = 1
 let activeImageFetches = 0
+const withImageOperation = createSingleFlightOperation('Another image operation is already in progress')
+
+function validateImageResource(buffer, mimeType, { decode = false } = {}) {
+  const declaredExtension = extensionForMimeType(mimeType)
+  const detectedExtension = imageFormatExtension(buffer)
+
+  if (!declaredExtension || detectedExtension !== declaredExtension) {
+    throw new Error('Could not read image')
+  }
+
+  const encodedDimensions = encodedImageDimensions(buffer, detectedExtension)
+
+  if (
+    !encodedDimensions ||
+    !imageDimensionsWithinLimit(
+      encodedDimensions.width,
+      encodedDimensions.height,
+      MAX_IMAGE_DIMENSION,
+      MAX_DECODED_IMAGE_PIXELS
+    )
+  ) {
+    throw new Error('Image dimensions are too large')
+  }
+
+  if (!decode) {
+    return { detectedExtension, image: null }
+  }
+
+  if (detectedExtension === '.svg') {
+    throw new Error('SVG images cannot be copied to the clipboard')
+  }
+
+  const image = nativeImage.createFromBuffer(buffer)
+
+  if (image.isEmpty()) {
+    throw new Error('Could not read image')
+  }
+
+  const { width, height } = image.getSize()
+
+  if (!imageDimensionsWithinLimit(width, height, MAX_IMAGE_DIMENSION, MAX_DECODED_IMAGE_PIXELS)) {
+    throw new Error('Image dimensions are too large')
+  }
+
+  return { detectedExtension, image }
+}
 
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
@@ -4160,7 +4237,26 @@ async function resourceBufferFromUrl(rawUrl) {
     }
 
     const encoded = match[3] || ''
-    const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
+    let buffer
+
+    if (match[2]) {
+      const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+      const decodedBytes = Math.max(0, Math.floor((encoded.length * 3) / 4) - padding)
+
+      if (decodedBytes > MAX_IMAGE_SAVE_BYTES) {
+        throw new Error('Image is too large')
+      }
+
+      buffer = Buffer.from(encoded, 'base64')
+    } else {
+      // Percent escapes only shrink the UTF-8 byte count, so the encoded
+      // payload is a conservative pre-allocation bound for decodeURIComponent.
+      if (Buffer.byteLength(encoded, 'utf8') > MAX_IMAGE_SAVE_BYTES) {
+        throw new Error('Image is too large')
+      }
+
+      buffer = Buffer.from(decodeURIComponent(encoded), 'utf8')
+    }
 
     if (buffer.length > MAX_IMAGE_SAVE_BYTES) {
       throw new Error('Image is too large')
@@ -4170,20 +4266,35 @@ async function resourceBufferFromUrl(rawUrl) {
   }
 
   if (/^file:/i.test(rawUrl)) {
-    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
-    const stat = await fs.promises.stat(resolvedPath)
+    const { realPath, stat: validatedStat } = await resolveReadableFileForIpc(rawUrl, {
+      maxBytes: MAX_IMAGE_SAVE_BYTES,
+      purpose: 'Image save'
+    })
 
-    if (stat.size > MAX_IMAGE_SAVE_BYTES) {
-      throw new Error('Image is too large')
+    const noFollow = fs.constants.O_NOFOLLOW || 0
+    const handle = await fs.promises.open(realPath, fs.constants.O_RDONLY | noFollow)
+
+    try {
+      const stat = await handle.stat()
+
+      if (!stat.isFile()) {
+        throw new Error('Image source is not a regular file')
+      }
+
+      if (stat.dev !== validatedStat.dev || stat.ino !== validatedStat.ino) {
+        throw new Error('Image source changed during validation')
+      }
+
+      if (stat.size > MAX_IMAGE_SAVE_BYTES) {
+        throw new Error('Image is too large')
+      }
+
+      const buffer = await readBoundedFileHandle(handle, MAX_IMAGE_SAVE_BYTES)
+
+      return { buffer, mimeType: mimeTypeForPath(realPath) }
+    } finally {
+      await handle.close()
     }
-
-    const buffer = await fs.promises.readFile(resolvedPath)
-
-    if (buffer.length > MAX_IMAGE_SAVE_BYTES) {
-      throw new Error('Image is too large')
-    }
-
-    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
 
   const parsed = new URL(rawUrl)
@@ -4228,7 +4339,8 @@ async function resourceBufferFromUrl(rawUrl) {
     req = client.get(parsed, res => {
       if ((res.statusCode || 500) >= 400) {
         finish(new Error(`Failed to fetch ${rawUrl}: ${res.statusCode}`))
-        res.resume()
+        res.destroy()
+        req.destroy()
 
         return
       }
@@ -4278,40 +4390,37 @@ async function resourceBufferFromUrl(rawUrl) {
 }
 
 async function copyImageFromUrl(rawUrl) {
-  const { buffer } = (await resourceBufferFromUrl(rawUrl)) as any
-  const image = nativeImage.createFromBuffer(buffer)
+  return withImageOperation(async () => {
+    const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
+    const { image } = validateImageResource(buffer, mimeType, { decode: true })
 
-  if (image.isEmpty()) {
-    throw new Error('Could not read image')
-  }
+    if (!image) {
+      throw new Error('Could not read image')
+    }
 
-  clipboard.writeImage(image)
+    clipboard.writeImage(image)
+  })
 }
 
 async function saveImageFromUrl(rawUrl, suggestedFilename = '') {
-  const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
-  const declaredExtension = extensionForMimeType(mimeType)
-  const detectedExtension = imageFormatExtension(buffer)
-  const image = nativeImage.createFromBuffer(buffer)
+  return withImageOperation(async () => {
+    const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
+    const { detectedExtension } = validateImageResource(buffer, mimeType)
+    const fallbackName = imageSaveFilename(rawUrl, suggestedFilename, detectedExtension)
 
-  if (!declaredExtension || detectedExtension !== declaredExtension || image.isEmpty()) {
-    throw new Error('Could not read image')
-  }
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Save Image',
+      defaultPath: fallbackName
+    })
 
-  const fallbackName = imageSaveFilename(rawUrl, suggestedFilename, detectedExtension)
+    if (result.canceled || !result.filePath) {
+      return false
+    }
 
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save Image',
-    defaultPath: fallbackName
+    await fs.promises.writeFile(result.filePath, buffer)
+
+    return true
   })
-
-  if (result.canceled || !result.filePath) {
-    return false
-  }
-
-  await fs.promises.writeFile(result.filePath, buffer)
-
-  return true
 }
 
 async function writeComposerImage(buffer, ext = '.png') {
@@ -4913,7 +5022,7 @@ function installContextMenu(window) {
           label: 'Open Image',
           click: () => {
             if (params.srcURL && !params.srcURL.startsWith('data:')) {
-              openExternalUrl(params.srcURL)
+              void openExternalUrl(params.srcURL).catch(error => rememberLog(`Open image failed: ${error.message}`))
             }
           },
           enabled: !params.srcURL.startsWith('data:')
@@ -4945,7 +5054,9 @@ function installContextMenu(window) {
       template.push(
         {
           label: 'Open Link',
-          click: () => openExternalUrl(params.linkURL)
+          click: () => {
+            void openExternalUrl(params.linkURL).catch(error => rememberLog(`Open link failed: ${error.message}`))
+          }
         },
         {
           label: 'Copy Link',
@@ -7063,7 +7174,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
-    openExternalUrl(details.url)
+    void openExternalUrl(details.url).catch(error => rememberLog(`Open window failed: ${error.message}`))
 
     return { action: 'deny' }
   })
@@ -7073,7 +7184,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     }
 
     event.preventDefault()
-    openExternalUrl(url)
+    void openExternalUrl(url).catch(error => rememberLog(`Open navigation failed: ${error.message}`))
   })
 }
 

@@ -100,16 +100,20 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
 
   if (failed && image) {
     return (
-      <a
-        className="mt-2 inline-block font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
-        href="#"
-        onClick={event => {
-          event.preventDefault()
-          void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
-        }}
-      >
-        {copy.openImage}: {mediaName(image)}
-      </a>
+      <>
+        <button
+          className="mt-2 inline-block bg-transparent font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+          onClick={openFullFile}
+          type="button"
+        >
+          {downloadsRemoteFile ? 'Download' : copy.openImage}: {mediaName(image)}
+        </button>
+        {openFailed && (
+          <span className="mt-1 block text-xs text-muted-foreground">
+            Couldn&apos;t open or download {mediaName(image)}.
+          </span>
+        )}
+      </>
     )
   }
 

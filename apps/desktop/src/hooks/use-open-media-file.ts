@@ -5,11 +5,20 @@ import { downloadGatewayMediaFile, isRemoteGateway, mediaExternalUrl } from '@/l
 export function useOpenMediaFile(path?: string) {
   const [openFailed, setOpenFailed] = useState(false)
   const source = path?.trim()
-  const currentSource = useRef(source)
+  const previousSource = useRef(source)
+  const requestGeneration = useRef(0)
 
-  currentSource.current = source
+  if (previousSource.current !== source) {
+    previousSource.current = source
+    requestGeneration.current += 1
+  }
 
-  const downloadsRemoteFile = Boolean(source && !/^https?:/i.test(source) && window.hermesDesktop && isRemoteGateway())
+  const downloadsRemoteFile = Boolean(
+    source &&
+    window.hermesDesktop &&
+    isRemoteGateway() &&
+    (/^(?:\/|[a-z]:[\\/]|\\\\)/i.test(source) || !/^[a-z][a-z0-9+.-]*:/i.test(source) || /^file:/i.test(source))
+  )
 
   useEffect(() => setOpenFailed(false), [source])
 
@@ -20,8 +29,10 @@ export function useOpenMediaFile(path?: string) {
 
     setOpenFailed(false)
 
+    const generation = ++requestGeneration.current
+
     const failCurrentRequest = () => {
-      if (currentSource.current === source) {
+      if (requestGeneration.current === generation) {
         setOpenFailed(true)
       }
     }
@@ -29,17 +40,17 @@ export function useOpenMediaFile(path?: string) {
     const protocol = source.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase()
     const absoluteLocalPath = /^(?:\/|[a-z]:[\\/]|\\\\)/i.test(source)
 
+    if (downloadsRemoteFile) {
+      void downloadGatewayMediaFile(source).catch(failCurrentRequest)
+
+      return
+    }
+
     if (
       (protocol && !absoluteLocalPath && !['file', 'http', 'https'].includes(protocol)) ||
       (!protocol && !absoluteLocalPath)
     ) {
       failCurrentRequest()
-
-      return
-    }
-
-    if (downloadsRemoteFile) {
-      void downloadGatewayMediaFile(source).catch(failCurrentRequest)
 
       return
     }

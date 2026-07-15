@@ -59,6 +59,27 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
   })
 
+  it.each([
+    ['/tmp/a #?%.png', 'file:///tmp/a%20%23%3F%25.png'],
+    ['C:\\Users\\alice\\a #?%.png', 'file:///C:/Users/alice/a%20%23%3F%25.png'],
+    ['\\\\server\\share\\a #?%.png', 'file://server/share/a%20%23%3F%25.png']
+  ])('encodes reserved characters in local path %s', (input, expected) => {
+    $connection.set({ mode: 'local' } as never)
+
+    const url = mediaExternalUrl(input)
+
+    expect(url).toBe(expected)
+    expect(new URL(url).hash).toBe('')
+    expect(new URL(url).search).toBe('')
+  })
+
+  it('normalizes file URLs and malformed Unicode without throwing', () => {
+    $connection.set({ mode: 'local' } as never)
+
+    expect(mediaExternalUrl('file:///tmp/a%20%23.png')).toBe('file:///tmp/a%20%23.png')
+    expect(mediaExternalUrl('/tmp/bad-\ud800.png')).toBe('file:///tmp/bad-%EF%BF%BD.png')
+  })
+
   it('rewrites gateway-local paths to an authenticated download URL', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
     expect(mediaExternalUrl('file:///tmp/a b.png')).toBe(

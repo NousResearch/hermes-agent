@@ -31,6 +31,47 @@ describe('useOpenMediaFile', () => {
     await waitFor(() => expect(downloadGatewayMediaFile).toHaveBeenCalledWith('/tmp/generated-image.png'))
   })
 
+  it.each(['~/generated-image.png', 'outputs/generated-image.png'])(
+    'downloads supported gateway path %s before local path validation',
+    async path => {
+      const downloadGatewayMediaFile = vi.spyOn(media, 'downloadGatewayMediaFile').mockResolvedValue()
+
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { openExternal: vi.fn() }
+      })
+      $connection.set({ mode: 'remote', baseUrl: 'https://gateway.example', token: 'token' } as never)
+      const { result } = renderHook(() => useOpenMediaFile(path))
+
+      expect(result.current.downloadsRemoteFile).toBe(true)
+      act(() => result.current.open())
+
+      await waitFor(() => expect(downloadGatewayMediaFile).toHaveBeenCalledWith(path))
+    }
+  )
+
+  it.each(['data:image/png;base64,ZHVtbXk=', 'javascript:alert(1)', 'blob:https://gateway.example/id'])(
+    'does not treat unsupported URL source %s as a gateway filesystem path',
+    async source => {
+      const downloadGatewayMediaFile = vi.spyOn(media, 'downloadGatewayMediaFile').mockResolvedValue()
+      const openExternal = vi.fn()
+
+      Object.defineProperty(window, 'hermesDesktop', {
+        configurable: true,
+        value: { openExternal }
+      })
+      $connection.set({ mode: 'remote', baseUrl: 'https://gateway.example', token: 'token' } as never)
+      const { result } = renderHook(() => useOpenMediaFile(source))
+
+      expect(result.current.downloadsRemoteFile).toBe(false)
+      act(() => result.current.open())
+
+      await waitFor(() => expect(result.current.openFailed).toBe(true))
+      expect(downloadGatewayMediaFile).not.toHaveBeenCalled()
+      expect(openExternal).not.toHaveBeenCalled()
+    }
+  )
+
   it('reports rejected native open requests', async () => {
     const openExternal = vi.fn(async () => {
       throw new Error('open failed')
@@ -144,6 +185,61 @@ describe('useOpenMediaFile', () => {
     act(() => result.current.open())
     rerender({ path: '/tmp/second.png' })
     await act(async () => rejectOpen(new Error('stale failure')))
+
+    expect(result.current.openFailed).toBe(false)
+  })
+
+  it('ignores an old rejection across an A-to-B-to-A source transition', async () => {
+    let rejectFirst: (error: Error) => void = () => undefined
+
+    const openExternal = vi.fn(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          rejectFirst = reject
+        })
+    )
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { openExternal }
+    })
+
+    const { rerender, result } = renderHook(({ path }) => useOpenMediaFile(path), {
+      initialProps: { path: '/tmp/a.png' }
+    })
+
+    act(() => result.current.open())
+    rerender({ path: '/tmp/b.png' })
+    rerender({ path: '/tmp/a.png' })
+    await act(async () => rejectFirst(new Error('old A failed')))
+
+    expect(result.current.openFailed).toBe(false)
+  })
+
+  it('ignores an older same-source retry after a newer request succeeds', async () => {
+    let rejectFirst: (error: Error) => void = () => undefined
+
+    const openExternal = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((_resolve, reject) => {
+            rejectFirst = reject
+          })
+      )
+      .mockResolvedValueOnce(true)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { openExternal }
+    })
+    const { result } = renderHook(() => useOpenMediaFile('/tmp/retry.png'))
+
+    act(() => {
+      result.current.open()
+      result.current.open()
+    })
+    await act(async () => rejectFirst(new Error('first retry failed')))
 
     expect(result.current.openFailed).toBe(false)
   })

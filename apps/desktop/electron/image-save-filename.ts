@@ -30,8 +30,24 @@ function boundFilename(filename: string): string {
   return `${boundedStem}${extension}`
 }
 
+function firstCodePoints(value: unknown, maxCodePoints: number): string {
+  let bounded = ''
+  let count = 0
+
+  for (const character of String(value || '')) {
+    if (count >= maxCodePoints) {
+      break
+    }
+
+    bounded += character
+    count += 1
+  }
+
+  return bounded
+}
+
 function safeBasename(value?: string): string {
-  const raw = [...String(value || '')].slice(0, MAX_FILENAME_INPUT_LENGTH).join('').trim()
+  const raw = firstCodePoints(value, MAX_FILENAME_INPUT_LENGTH).trim()
 
   if (!raw) {
     return ''

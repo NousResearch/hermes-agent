@@ -70,6 +70,28 @@ describe('GeneratedImage actions', () => {
     expect(screen.getByRole('button', { name: 'Download full file' })).toBeTruthy()
   })
 
+  it('keeps failed gateway previews on the authenticated download path', async () => {
+    const openExternal = vi.fn(async () => true)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { openExternal }
+    })
+    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.example', token: 'secret-token' } as never)
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce({ json: async () => 'data:image/png;base64,ZHVtbXk=', ok: true })
+        .mockImplementation(() => new Promise(() => undefined))
+    )
+
+    render(<GeneratedImage result={{ image: '/tmp/generated.png', success: true }} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Download: generated.png' }))
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
   it('does not offer a full-file action when the result only contains inline image data', () => {
     const image = 'data:image/png;base64,ZHVtbXk='
     render(<GeneratedImage result={{ image, success: true }} />)

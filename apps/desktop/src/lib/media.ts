@@ -58,20 +58,57 @@ export function mediaMarkdownHref(path: string): string {
   return `#media:${encodeURIComponent(path)}`
 }
 
+function encodedFilePath(path: string): string {
+  const encodeSegment = (segment: string) => {
+    let wellFormed = ''
+
+    for (let index = 0; index < segment.length; index += 1) {
+      const code = segment.charCodeAt(index)
+
+      if (code >= 0xd800 && code <= 0xdbff) {
+        const next = segment.charCodeAt(index + 1)
+
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          wellFormed += segment[index] + segment[index + 1]
+          index += 1
+        } else {
+          wellFormed += '\ufffd'
+        }
+      } else if (code >= 0xdc00 && code <= 0xdfff) {
+        wellFormed += '\ufffd'
+      } else {
+        wellFormed += segment[index]
+      }
+    }
+
+    return encodeURIComponent(wellFormed)
+  }
+
+  const encodeSegments = (segments: string[]) => segments.map(encodeSegment).join('/')
+
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    const normalized = path.replace(/\\/g, '/')
+    const drive = normalized.slice(0, 2)
+    const remainder = encodeSegments(normalized.slice(2).split('/').filter(Boolean))
+
+    return `file:///${drive}/${remainder}`
+  }
+
+  if (/^\\\\/.test(path)) {
+    const [host = '', ...segments] = path.slice(2).split(/[\\/]/)
+
+    return `file://${host}/${encodeSegments(segments)}`
+  }
+
+  return `file://${encodeSegments(path.split('/'))}`
+}
+
 // Resolve a media path to a URL the shell can open. Remote mode rewrites
 // gateway-local paths to an authenticated /api/files/download URL (the file
 // lives on the gateway, not this disk); local mode keeps the file:// form.
 export function mediaExternalUrl(path: string): string {
   if (/^https?:/i.test(path)) {
     return path
-  }
-
-  if (/^[a-z]:[\\/]/i.test(path)) {
-    return `file:///${path.replace(/\\/g, '/')}`
-  }
-
-  if (/^\\\\/.test(path)) {
-    return `file:${path.replace(/\\/g, '/')}`
   }
 
   if (isRemoteGateway()) {
@@ -84,7 +121,15 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
-  return /^file:/i.test(path) ? path : `file://${path}`
+  if (/^file:/i.test(path)) {
+    try {
+      return new URL(path).toString()
+    } catch {
+      return path
+    }
+  }
+
+  return encodedFilePath(path)
 }
 
 // Custom Electron scheme (registered in electron/main.ts) that streams a local

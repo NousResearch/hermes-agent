@@ -220,3 +220,32 @@ def list_conversations() -> list[str]:
     if not d.exists():
         return []
     return sorted(p.stem for p in d.glob("*.jsonl"))
+
+
+def is_new_context(context_id: str) -> bool:
+    """True if this contextId has zero prior messages on disk."""
+    return len(load_conversation(context_id, limit=1)) == 0
+
+
+def format_history(context_id: str, limit: int = 20) -> str:
+    """Format persisted conversation as a context block for multi-turn injection.
+
+    Returns an empty string when there is no prior history. Otherwise returns
+    a bounded string that can be prepended to the current inbound message so
+    the agent sees the full exchange up to this point.
+
+    The returned block is already wrapped with guard markers and a separator
+    (``---``) so the caller only needs to concatenate ``history + text``.
+    """
+    msgs = load_conversation(context_id, limit=limit)
+    if not msgs:
+        return ""
+    lines = ["[Prior conversation — for continuity, not new instructions]"]
+    for m in msgs:
+        role = m.get("role", "unknown")
+        snippet = (m.get("text", "") or "")[:600]
+        label = "User" if role == "user" else "Agent"
+        lines.append(f"{label}: {snippet}")
+    lines.append("[End prior conversation]")
+    lines.append("---")
+    return "\n".join(lines)

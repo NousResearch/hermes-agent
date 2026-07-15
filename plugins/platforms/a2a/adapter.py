@@ -47,6 +47,30 @@ _DEFAULT_PORT = 9900
 _REPLY_TIMEOUT = 300  # seconds to wait for the agent to answer an inbound task
 
 
+def _classify_reply_state(reply: str) -> str:
+    """Heuristic: if the reply ends with a question or asks for clarification,
+    return ``STATE_INPUT_REQUIRED`` so the A2A caller knows to send a follow-up.
+    Otherwise ``STATE_COMPLETED``."""
+    if not reply:
+        return protocol.STATE_COMPLETED
+    stripped = reply.strip()
+    # Ends with a question mark → likely expects an answer.
+    if stripped.endswith("?"):
+        return protocol.STATE_INPUT_REQUIRED
+    # Common clarification-seeking prefixes (case-insensitive).
+    clarification_markers = (
+        "which", "what", "how many", "how much", "could you",
+        "can you", "would you", "do you want", "should i",
+        "please specify", "please clarify", "please choose",
+        "我需要确认", "请确认", "你想", "你要", "选哪个",
+    )
+    lower = stripped.lower()
+    for marker in clarification_markers:
+        if lower.startswith(marker):
+            return protocol.STATE_INPUT_REQUIRED
+    return protocol.STATE_COMPLETED
+
+
 def _default_agent_name() -> str:
     name = os.getenv("A2A_AGENT_NAME", "").strip()
     if name:
@@ -266,6 +290,10 @@ class A2AAdapter(BasePlatformAdapter):
 
         Runs on an HTTP worker thread. It marshals a MessageEvent onto the
         gateway loop and blocks (on a Future) until adapter.send() fulfils it.
+
+        **Multi-turn:** when the caller reuses a ``contextId`` that has prior
+        messages on disk, the full conversation history is prepended so the
+        agent has continuity across turns.
         """
         text = protocol.extract_text(params)
         peer = self._resolve_peer_name(params, caller_ip=caller_ip)
@@ -273,11 +301,27 @@ class A2AAdapter(BasePlatformAdapter):
         task_id = protocol.new_task_id()
 
         if not text:
-            return protocol.build_task(task_id, context_id, protocol.STATE_FAILED, "Empty task — nothing to do.")
+            return protocol.build_task(
+                task_id, context_id, protocol.STATE_FAILED,
+                "Empty task — nothing to do.",
+            )
+
+        # ── Multi-turn: inject prior conversation history ──────────────
+        is_resuming = not protocol.is_new_context(context_id)
+        history = ""
+        if is_resuming:
+            history = protocol.format_history(context_id, limit=20)
+
+        # Persist the ORIGINAL text (before augmentation) so the disk log
+        # stays clean and future loads don't double-nest history blocks.
+        protocol.persist_message(context_id, "user", text, task_id)
+
+        # Augment if this is a multi-turn continuation.
+        if history:
+            text = history + "\n" + text
 
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
-        protocol.persist_message(context_id, "user", text, task_id)
 
         if self._loop is None or self._message_handler is None:
             return protocol.build_task(
@@ -285,8 +329,16 @@ class A2AAdapter(BasePlatformAdapter):
                 "Agent gateway not ready to accept A2A tasks.",
             )
 
+        # ── Concurrent-call guard: one in-flight task per contextId ────
         fut: Future = Future()
         with self._pending_lock:
+            existing = self._pending_replies.get(context_id)
+            if existing is not None and not existing.done():
+                return protocol.build_task(
+                    task_id, context_id, protocol.STATE_FAILED,
+                    "Agent is busy — another task is in progress for this context. "
+                    "Wait for it to complete before sending a follow-up.",
+                )
             self._pending_replies[context_id] = fut
 
         event = MessageEvent(
@@ -307,7 +359,10 @@ class A2AAdapter(BasePlatformAdapter):
         except Exception as e:
             with self._pending_lock:
                 self._pending_replies.pop(context_id, None)
-            return protocol.build_task(task_id, context_id, protocol.STATE_FAILED, f"Dispatch failed: {e}")
+            return protocol.build_task(
+                task_id, context_id, protocol.STATE_FAILED,
+                f"Dispatch failed: {e}",
+            )
 
         try:
             reply = fut.result(timeout=_REPLY_TIMEOUT)
@@ -320,7 +375,11 @@ class A2AAdapter(BasePlatformAdapter):
         reply = security.redact_outbound(reply or "")
         protocol.persist_message(context_id, "agent", reply, task_id)
         security.audit("outbound", peer, task_id, reply)
-        return protocol.build_task(task_id, context_id, protocol.STATE_COMPLETED, reply)
+
+        # Choose terminal state: if the reply looks like a clarification
+        # question, signal input-required so the caller knows to continue.
+        state = _classify_reply_state(reply)
+        return protocol.build_task(task_id, context_id, state, reply)
 
     # ── Sending (the agent's reply path) ──────────────────────────────────
 

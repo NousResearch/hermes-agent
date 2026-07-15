@@ -169,8 +169,8 @@ def a2a_call(args: dict, **_: Any) -> str:
         "method": "message/send",
         "params": {"message": protocol.text_message("user", safe_message)},
     }
-    if context_id:
-        rpc_body["params"]["message"]["contextId"] = context_id
+    # Always attach contextId so the peer can maintain multi-turn state.
+    rpc_body["params"]["message"]["contextId"] = ctx
 
     security.audit("outbound", agent, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
@@ -199,8 +199,13 @@ def a2a_call(args: dict, **_: Any) -> str:
     header = f"[{agent} · context {reply_ctx}"
     if state:
         header += f" · {state}"
-    header += "]"
-    return f"{header}\n{reply or '(no text reply)'}"
+    header += "]\n"
+    if state == protocol.STATE_INPUT_REQUIRED:
+        header += (
+            "(Agent is waiting for your response. "
+            "Reply with the SAME context_id to continue the conversation.)\n"
+        )
+    return f"{header}{reply or '(no text reply)'}"
 
 
 def _reply_text_from_result(result: Any) -> str:

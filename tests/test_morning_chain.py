@@ -312,6 +312,48 @@ class TestDryRun:
 # AC8 — README.md documentation
 # ---------------------------------------------------------------------------
 
+class TestFiveStepDryRun:
+    """Step 1/3 became the todo_store_sync export/ingest reconciliation
+    (services/hermes/todo_store_sync.py); the chain grew from three steps to
+    five: export -> journal -> ingest -> perf-coach brief -> composer. This
+    pins down that --dry-run still prints all five, in the right order, when
+    every step is overridden with a simple stub command.
+    """
+
+    def test_dry_run_prints_all_five_steps_in_order(self, tmp_path):
+        env = os.environ.copy()
+        env["MORNING_CHAIN_LOG_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_LOCK_DIR"] = str(tmp_path)
+        env["MORNING_CHAIN_STEP1"] = "echo STUB_EXPORT"
+        env["MORNING_CHAIN_STEP2"] = "echo STUB_JOURNAL"
+        env["MORNING_CHAIN_STEP3"] = "echo STUB_INGEST"
+        env["MORNING_CHAIN_STEP4"] = "true"
+        env["MORNING_CHAIN_STEP5"] = "echo STUB_COMPOSER"
+
+        result = subprocess.run(
+            [str(CHAIN_SCRIPT), "--dry-run"],
+            capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+        )
+
+        assert result.returncode == 0
+        combined = result.stdout + result.stderr
+
+        markers = ["STUB_EXPORT", "STUB_JOURNAL", "STUB_INGEST", "true", "STUB_COMPOSER"]
+        for marker in markers:
+            assert marker in combined, f"expected {marker!r} in dry-run output:\n{combined}"
+
+        # Order must be export, journal, ingest, perf-coach (STEP4/"true"),
+        # composer -- i.e. steps must print in ascending step-number order.
+        positions = [combined.index(marker) for marker in markers]
+        assert positions == sorted(positions), (
+            f"steps did not print in order 1..5:\n{combined}"
+        )
+
+        # Sanity: every step is explicitly labeled with its own number.
+        for i in range(1, 6):
+            assert f"Step {i}:" in combined, f"missing 'Step {i}:' label:\n{combined}"
+
+
 class TestReadme:
     def test_readme_exists(self):
         assert README.exists(), "deploy/README.md must exist"

@@ -1,15 +1,23 @@
 # Morning-Chain Deploy
 
-Automates the M5 morning workflow (journal → perf-coach brief → hermes delivery)
-via a launchd job that fires at **05:45 Asia/Bangkok (UTC+7)** = **22:45 UTC** the
-previous calendar day.
+Automates the M5 morning workflow (export todo keys → journal → ingest journal
+contract → perf-coach brief → hermes delivery) via a launchd job that fires at
+**05:45 Asia/Bangkok (UTC+7)** = **22:45 UTC** the previous calendar day.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `com.hermes.morning-chain.plist` | launchd job definition |
-| `bin/morning-chain.sh` | three-step chain script with flock + kill switch |
+| `bin/morning-chain.sh` | five-step chain script with flock + kill switch |
+
+**Steps:** (1) `todo_store_sync export` — reopen expired snoozes, write
+OPEN_KEYS/CLOSED_KEYS for journal; (2) journal's morning run; (3)
+`todo_store_sync ingest` — reconcile today's journal contract (todos +
+resolved_keys) back into the persistent todo store; (4) perf-coach brief
+export; (5) hermes brief compose/deliver. See
+`services/hermes/todo_store_sync.py` for why the export step runs *before*
+journal rather than after it.
 
 ---
 

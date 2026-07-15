@@ -1676,6 +1676,15 @@ def init_agent(
         _config_context_length = _model_cfg.get("context_length")
     else:
         _config_context_length = None
+    # Only honor the model.context_length override for the model it was
+    # written for (model.default). A per-session override to a different
+    # model must auto-detect its own window instead of inheriting the
+    # default's pinned window — otherwise the context gauge and compressor
+    # threshold fire against the wrong size. See #62152.
+    if _config_context_length is not None and isinstance(_model_cfg, dict):
+        _default_model = _model_cfg.get("default") or _model_cfg.get("model")
+        if agent.model and _default_model and agent.model != _default_model:
+            _config_context_length = None
     if _config_context_length is not None:
         try:
             _config_context_length = int(_config_context_length)

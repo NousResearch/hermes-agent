@@ -266,10 +266,11 @@ def _domains_aligned(a: str, b: str) -> bool:
     return a.endswith("." + b) or b.endswith("." + a)
 
 
-# Match a single "method=result" token in an Authentication-Results header,
-# e.g. ``dmarc=pass`` or ``spf=fail``.
-_AUTH_METHOD_RE = re.compile(
-    r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE
+# Match the method/result token that starts an Authentication-Results clause.
+# Match all method names, not just the ones Hermes evaluates, so an unknown
+# method such as ARC still creates a property-isolation boundary.
+_AUTH_CLAUSE_METHOD_RE = re.compile(
+    r"^\s*([a-z][a-z0-9_-]*)\s*=\s*([a-z]+)\b", re.IGNORECASE
 )
 # Match a property value like ``header.from=example.com`` or
 # ``smtp.mailfrom=user@example.com``.
@@ -327,6 +328,33 @@ def _first_aligned_domain(values: List[str], from_domain: str) -> str:
     return ""
 
 
+def _parse_auth_method_results(
+    trusted: str,
+) -> List[Tuple[str, str, Dict[str, List[str]]]]:
+    """Parse auth results while keeping properties scoped to their method."""
+    parsed: List[Tuple[str, str, Dict[str, List[str]]]] = []
+    current: Tuple[str, str, Dict[str, List[str]]] | None = None
+
+    # The first field is the authserv-id. A new method token, including one
+    # Hermes does not evaluate such as ARC, always starts a fresh property scope.
+    for clause in trusted.split(";")[1:]:
+        method_match = _AUTH_CLAUSE_METHOD_RE.match(clause)
+        if method_match:
+            current = (
+                method_match.group(1).lower(),
+                method_match.group(2).lower(),
+                {},
+            )
+            parsed.append(current)
+        if current is None:
+            continue
+        props = current[2]
+        for prop, value in _AUTH_PROP_RE.findall(clause):
+            props.setdefault(prop.lower(), []).append(value)
+
+    return parsed
+
+
 def _verify_sender_authentication(
     msg: email_lib.message.Message,
     from_addr: str,
@@ -379,27 +407,25 @@ def _verify_sender_authentication(
     if trusted is None:
         return False, "no Authentication-Results from trusted authserv-id"
 
-    methods = {m.lower(): r.lower() for m, r in _AUTH_METHOD_RE.findall(trusted)}
-    props: Dict[str, List[str]] = {}
-    for prop, value in _AUTH_PROP_RE.findall(trusted):
-        props.setdefault(prop.lower(), []).append(value)
+    results = _parse_auth_method_results(trusted)
 
     # 1) DMARC pass is the strongest signal — DMARC already enforces From
     #    alignment, so a pass means the From domain is authenticated.
-    if methods.get("dmarc") == "pass":
+    if any(method == "dmarc" and result == "pass" for method, result, _ in results):
         return True, "dmarc=pass"
 
     # 2) SPF pass aligned with the From domain. Prefer MAIL FROM / envelope
     #    identity, but accept common provider aliases when aligned.
-    if methods.get("spf") == "pass":
+    for method, result, props in results:
+        if method != "spf" or result != "pass":
+            continue
         spf_domain = _first_aligned_domain(
             props.get("smtp.mailfrom", [])
             + props.get("smtp.mail", [])
             + props.get("mailfrom", [])
             + props.get("envelope-from", [])
             + props.get("return-path", [])
-            + props.get("smtp.from", [])
-            + props.get("header.from", []),
+            + props.get("smtp.from", []),
             from_domain,
         )
         if spf_domain:
@@ -407,11 +433,12 @@ def _verify_sender_authentication(
 
     # 3) DKIM pass aligned with the From domain (the signing domain header.d,
     #    or identity header.i when header.d is not exposed, must align).
-    if methods.get("dkim") == "pass":
+    for method, result, props in results:
+        if method != "dkim" or result != "pass":
+            continue
         dkim_domain = _first_aligned_domain(
             props.get("header.d", [])
             + props.get("header.i", [])
-            + props.get("header.from", [])
             + props.get("policy.domain", []),
             from_domain,
         )

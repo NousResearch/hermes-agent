@@ -2833,8 +2833,9 @@ DEFAULT_CONFIG = {
     # in the model-facing tools array with three bridge tools —
     # tool_search / tool_describe / tool_call — and surfaced on demand.
     #
-    # Core Hermes tools (terminal, read_file, write_file, patch,
-    # search_files, todo, memory, browser_*, etc.) are NEVER deferred.
+    # Core Hermes tools stay visible by default. Providers with strict tool
+    # schema limits can explicitly defer unpinned core tools while keeping a
+    # small bootstrap set directly visible.
     # See tools/tool_search.py for full design notes and the
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
@@ -2855,6 +2856,13 @@ DEFAULT_CONFIG = {
             "search_default_limit": 5,
             # Hard upper bound the model can request via ``limit``. Range 1..50.
             "max_search_limit": 20,
+            # Explicit opt-in: allow core Hermes tools not named in
+            # always_visible to be loaded through the bridge tools. Leave
+            # disabled unless the provider rejects the complete tool schema.
+            "defer_core": False,
+            # Tools that always remain directly callable when defer_core is
+            # enabled. Names are matched exactly; unknown names are ignored.
+            "always_visible": [],
         },
     },
 

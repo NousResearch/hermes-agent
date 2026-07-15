@@ -45,6 +45,8 @@ class TestConfigParsing:
         cfg = ToolSearchConfig.from_raw(None)
         assert cfg.enabled == "auto"
         assert cfg.threshold_pct == 10.0
+        assert cfg.defer_core is False
+        assert cfg.always_visible == frozenset()
 
     def test_bool_true_maps_to_auto(self):
         from tools.tool_search import ToolSearchConfig
@@ -82,15 +84,33 @@ class TestConfigParsing:
         assert cfg.max_search_limit == 50
         assert cfg.search_default_limit <= cfg.max_search_limit
 
+    def test_core_deferral_is_explicit_and_pins_are_sanitized(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "defer_core": "yes",
+            "always_visible": [" terminal ", "skills_list", "", 42],
+        })
+        assert cfg.defer_core is True
+        assert cfg.always_visible == frozenset({"terminal", "skills_list"})
+
+    def test_invalid_core_deferral_values_keep_safe_defaults(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "defer_core": "sometimes",
+            "always_visible": "terminal",
+        })
+        assert cfg.defer_core is False
+        assert cfg.always_visible == frozenset()
+
 
 # ---------------------------------------------------------------------------
-# Classification — the hard invariant: core tools NEVER defer.
+# Classification — core tools stay visible unless explicitly deferred.
 # ---------------------------------------------------------------------------
 
 
 class TestClassification:
-    def test_core_tools_never_defer(self):
-        """The critical invariant from the OpenClaw report."""
+    def test_core_tools_do_not_defer_by_default(self):
+        """The safe default preserves the OpenClaw regression guard."""
         from tools.tool_search import is_deferrable_tool_name
         # Sample of core tools from _HERMES_CORE_TOOLS.
         for core_name in ["terminal", "read_file", "write_file", "patch",
@@ -98,7 +118,7 @@ class TestClassification:
                           "web_search", "session_search", "clarify",
                           "execute_code", "delegate_task", "send_message"]:
             assert not is_deferrable_tool_name(core_name), (
-                f"Core tool '{core_name}' must NEVER be deferrable"
+                f"Core tool '{core_name}' must not defer by default"
             )
 
     def test_bridge_tools_never_defer(self):
@@ -126,6 +146,26 @@ class TestClassification:
         names = {(td.get("function") or {}).get("name") for td in visible}
         assert "xx_unknown_tool" in names
         assert deferrable == []
+
+    def test_opt_in_defers_unpinned_core_tools(self):
+        from tools.tool_search import ToolSearchConfig, classify_tools
+        cfg = ToolSearchConfig.from_raw({
+            "defer_core": True,
+            "always_visible": ["terminal", "skills_list"],
+        })
+        defs = [
+            _td("terminal"),
+            _td("skills_list"),
+            _td("cronjob"),
+            _td("browser_navigate"),
+        ]
+        visible, deferrable = classify_tools(defs, config=cfg)
+        assert {td["function"]["name"] for td in visible} == {
+            "terminal", "skills_list",
+        }
+        assert {td["function"]["name"] for td in deferrable} == {
+            "cronjob", "browser_navigate",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +318,29 @@ class TestAssembly:
         # activation happened; here it didn't).
         assert "tool_search" not in names
 
+    def test_opt_in_keeps_pinned_core_and_bridges_deferred_core(self):
+        from tools.tool_search import (
+            BRIDGE_TOOL_NAMES,
+            ToolSearchConfig,
+            assemble_tool_defs,
+        )
+        defs = [
+            _td("terminal"),
+            _td("skills_list"),
+            _td("cronjob"),
+            _td("browser_navigate"),
+        ]
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_core": True,
+            "always_visible": ["terminal", "skills_list"],
+        })
+        result = assemble_tool_defs(defs, context_length=200_000, config=cfg)
+        names = {td["function"]["name"] for td in result.tool_defs}
+        assert result.activated is True
+        assert result.deferred_count == 2
+        assert names == {"terminal", "skills_list", *BRIDGE_TOOL_NAMES}
+
 
 # ---------------------------------------------------------------------------
 # Bridge dispatch
@@ -303,6 +366,66 @@ class TestBridgeDispatch:
             {"name": "terminal"}, current_tool_defs=[_td("terminal", "Run shell")],
         )
         assert "error" in json.loads(result)
+
+    def test_opt_in_searches_and_describes_deferred_core_tool(self):
+        from tools.tool_search import (
+            ToolSearchConfig,
+            dispatch_tool_describe,
+            dispatch_tool_search,
+        )
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_core": True,
+            "always_visible": ["terminal"],
+        })
+        defs = [_td("terminal", "Run shell"), _td("cronjob", "Manage scheduled jobs")]
+
+        search = json.loads(dispatch_tool_search(
+            {"query": "scheduled jobs"},
+            current_tool_defs=defs,
+            config=cfg,
+        ))
+        assert search["total_available"] == 1
+        assert [match["name"] for match in search["matches"]] == ["cronjob"]
+        assert search["matches"][0]["source"] == "core"
+        assert search["matches"][0]["source_name"] == "hermes"
+
+        described = json.loads(dispatch_tool_describe(
+            {"name": "cronjob"},
+            current_tool_defs=defs,
+            config=cfg,
+        ))
+        assert described["name"] == "cronjob"
+
+    def test_opt_in_resolves_deferred_core_but_rejects_pinned_core(self):
+        from tools.tool_search import ToolSearchConfig, resolve_underlying_call
+        cfg = ToolSearchConfig.from_raw({
+            "defer_core": True,
+            "always_visible": ["terminal"],
+        })
+
+        name, args, err = resolve_underlying_call(
+            {"name": "cronjob", "arguments": {"action": "list"}},
+            config=cfg,
+        )
+        assert (name, args, err) == ("cronjob", {"action": "list"}, None)
+
+        _, _, pinned_err = resolve_underlying_call(
+            {"name": "terminal", "arguments": {}},
+            config=cfg,
+        )
+        assert "not a deferrable" in (pinned_err or "")
+
+    def test_scoped_names_use_same_core_deferral_config(self):
+        from tools.tool_search import ToolSearchConfig, scoped_deferrable_names
+        cfg = ToolSearchConfig.from_raw({
+            "defer_core": True,
+            "always_visible": ["terminal"],
+        })
+        assert scoped_deferrable_names(
+            [_td("terminal"), _td("cronjob")],
+            config=cfg,
+        ) == frozenset({"cronjob"})
 
     def test_resolve_underlying_call_parses_object_args(self):
         from tools.tool_search import resolve_underlying_call
@@ -364,6 +487,24 @@ class TestHandleFunctionCallIntegration:
         # dispatch path completed without error.
         assert "matches" in parsed or "error" in parsed
 
+    def test_dispatch_uses_core_deferral_config(self, monkeypatch):
+        import model_tools
+        from tools import tool_search
+
+        cfg = tool_search.ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "defer_core": True,
+            "always_visible": ["terminal"],
+        })
+        monkeypatch.setattr(tool_search, "load_config", lambda: cfg)
+
+        result = model_tools.handle_function_call(
+            function_name="tool_search",
+            function_args={"query": "skill_manage", "limit": 20},
+        )
+        parsed = json.loads(result)
+        assert "skill_manage" in {match["name"] for match in parsed["matches"]}
+
 
 class TestRegression_OpenClawCron84141:
     """Regression guard for the OpenClaw cron-tool-loss class of bug.
@@ -372,9 +513,9 @@ class TestRegression_OpenClawCron84141:
     resulted in the agent receiving only ``sessions_send`` — the catalog
     builder silently dropped the requested core tool.
 
-    Our defense: core tools are NEVER deferred. This test exercises the
-    full assembly pipeline with a mixed core+MCP toolset and asserts that
-    every core tool survives.
+    Our default defense: core tools are not deferred unless the provider's
+    config explicitly opts in. This test exercises the full assembly pipeline
+    and asserts that the safe default survives.
     """
 
     def test_core_tool_survives_alongside_many_mcp_tools(self):
@@ -533,6 +674,5 @@ class TestRegression_ToolsetScoping:
         )
         names = scoped_deferrable_names(defs)
         assert "mcp_helper_op" in names
-        # core tools are never deferrable
+        # Core tools remain visible under the default config.
         assert "terminal" not in names
-

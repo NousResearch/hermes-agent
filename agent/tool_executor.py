@@ -227,8 +227,8 @@ def _tool_search_scoped_names(agent) -> frozenset:
     scope.
 
     Result is cached on the agent and refreshed when the tool registry's
-    generation changes (e.g. an MCP server reconnects), so the common case is
-    a dict lookup, not a full tool-defs rebuild on every tool call.
+    generation or Tool Search config changes, so the common case is a dict
+    lookup rather than a full tool-defs rebuild on every tool call.
     """
     try:
         import model_tools
@@ -239,10 +239,12 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
+    config = _ts.load_config()
     cache_key = (
         getattr(_registry, "_generation", 0),
         frozenset(enabled) if enabled is not None else None,
         frozenset(disabled) if disabled is not None else None,
+        config,
     )
     cached = getattr(agent, "_tool_search_scope_cache", None)
     if cached is not None and cached[0] == cache_key:
@@ -254,7 +256,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
             quiet_mode=True,
             skip_tool_search_assembly=True,
         ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
+        names = _ts.scoped_deferrable_names(scoped_defs, config=config)
     except Exception:
         names = frozenset()
     try:

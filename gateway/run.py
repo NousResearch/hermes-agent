@@ -8661,6 +8661,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Record served profiles in runtime status for `hermes status`.
         try:
             from gateway.status import write_runtime_status
+            from gateway.pairing import PairingStore
             served = [active] + sorted(self._profile_adapters.keys())
             # Per-profile PairingStores so authz_mixin can route pairing
             # checks to the right whitelist. The active profile gets a store

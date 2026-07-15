@@ -179,12 +179,16 @@ def _auto_sso_response(request: Request) -> Response | None:
     # token-only credentials (drain/service providers) are never candidates.
     providers = list_session_providers()
     if len(providers) != 1:
-        # Zero → nothing to redirect to. Two+ → user must choose at /login.
+        # Zero -> nothing to redirect to. Two+ -> user must choose at /login.
         return None
 
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
-
     provider = providers[0]
+    # Password-only providers (supports_password=True) don't have an OAuth
+    # redirect flow - their start_login raises NotImplementedError. Skip
+    # auto-SSO and fall through to /login which renders the password form.
+    if getattr(provider, "supports_password", False):
+        return None
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
     prefix = prefix_from_request(request)
     next_param = _safe_next_target(request)
     from urllib.parse import quote

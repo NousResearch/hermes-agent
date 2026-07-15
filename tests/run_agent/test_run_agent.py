@@ -8105,6 +8105,33 @@ class TestSupportsReasoningExtraBody:
             agent.model = model
             assert agent._supports_reasoning_extra_body() is True, model
 
+    @pytest.mark.parametrize(
+        "base_url, model, expected",
+        [
+            # Custom provider (e.g. SGLang) + known reasoning model → enabled.
+            # This is the case the gate reorder was meant to fix.
+            ("http://localhost:30000/v1", "qwen/qwen3.6", True),
+            # Custom provider + unknown model → safe default: disabled.
+            ("http://localhost:30000/v1", "my-org/custom-llm", False),
+            # OpenRouter + known reasoning model → enabled.
+            ("https://openrouter.ai/api/v1", "qwen/qwen3-235b-a22b", True),
+            # OpenRouter + unknown model → disabled. Regression guard: the
+            # reorder must not flip this from False to True (could 400 upstream).
+            ("https://openrouter.ai/api/v1", "some/unknown-model", False),
+            # Mistral rejects `reasoning` and must be off regardless of model,
+            # even when the model name matches a known reasoning prefix.
+            ("https://api.mistral.ai/v1", "mistral-large-latest", False),
+            ("https://api.mistral.ai/v1", "qwen/qwen3-235b-a22b", False),
+        ],
+    )
+    def test_reasoning_gate_by_provider_and_model(self, base_url, model, expected):
+        agent = self._make_agent()
+        agent.provider = ""
+        agent.base_url = base_url
+        agent._base_url_lower = base_url.lower()
+        agent.model = model
+        assert agent._supports_reasoning_extra_body() is expected, (base_url, model)
+
 
 class TestMemoryContextSanitization:
     """sanitize_context() helper correctness — used at provider boundaries."""

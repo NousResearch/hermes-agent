@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Set
 try:
     import dingtalk_stream
     from dingtalk_stream import ChatbotMessage
-    from dingtalk_stream.frames import CallbackMessage, AckMessage
+    from dingtalk_stream.frames import CallbackMessage, AckMessage, Headers
 
     DINGTALK_STREAM_AVAILABLE = True
 except Exception:  # noqa: BLE001 — broad: optional SDK's transitive deps (cryptography) may raise non-ImportError; degrade gracefully (#41112)
@@ -47,6 +47,7 @@ except Exception:  # noqa: BLE001 — broad: optional SDK's transitive deps (cry
     dingtalk_stream = None  # type: ignore[assignment]
     ChatbotMessage = None  # type: ignore[assignment]
     CallbackMessage = None  # type: ignore[assignment]
+    Headers = None  # type: ignore[assignment]
     AckMessage = type(
         "AckMessage",
         (),
@@ -1454,7 +1455,7 @@ class _IncomingHandler(
         ack.code = status
         ack.headers.message_id = callback_message.headers.message_id
         ack.headers.content_type = Headers.CONTENT_TYPE_APPLICATION_JSON
-        ack.message = msg
+        ack.data = {"response": msg}
         return ack
 
     async def process(self, message: "CallbackMessage"):

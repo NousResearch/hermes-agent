@@ -491,6 +491,61 @@ class TestHandlerProcessIsAsync:
         assert asyncio.iscoroutinefunction(_IncomingHandler.process)
 
 
+class TestRawProcessAck:
+    """raw_process() must return a well-formed AckMessage for SDK >= 0.24."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_sdk_types(self, monkeypatch):
+        import plugins.platforms.dingtalk.adapter as dt
+
+        class _FakeAckMessage:
+            STATUS_OK = 200
+            STATUS_SYSTEM_EXCEPTION = 500
+
+            def __init__(self):
+                self.code = None
+                self.headers = SimpleNamespace(message_id=None, content_type=None)
+                self.data = None
+                self.message = None
+
+        monkeypatch.setattr(dt, "AckMessage", _FakeAckMessage)
+        monkeypatch.setattr(
+            dt, "Headers",
+            SimpleNamespace(CONTENT_TYPE_APPLICATION_JSON="application/json"),
+            raising=False,
+        )
+
+    @pytest.fixture()
+    def handler(self):
+        from plugins.platforms.dingtalk.adapter import _IncomingHandler
+        adapter = MagicMock()
+        return _IncomingHandler(adapter)
+
+    @staticmethod
+    def _make_callback(msg_id="test-msg-123"):
+        headers = SimpleNamespace(message_id=msg_id, content_type=None)
+        return SimpleNamespace(headers=headers, data={"text": "hello"})
+
+    def test_ack_shape_on_success(self, handler):
+        handler.process = AsyncMock(return_value=(200, "OK"))
+        callback = self._make_callback()
+
+        ack = asyncio.run(handler.raw_process(callback))
+
+        assert ack.code == 200
+        assert ack.headers.message_id == "test-msg-123"
+        assert ack.data == {"response": "OK"}
+
+    def test_ack_shape_on_exception(self, handler):
+        handler.process = AsyncMock(side_effect=RuntimeError("boom"))
+        callback = self._make_callback()
+
+        ack = asyncio.run(handler.raw_process(callback))
+
+        assert ack.code == 500
+        assert ack.data == {"response": "error"}
+
+
 class TestExtractText:
     """_extract_text must handle both legacy and current SDK payload shapes.
 

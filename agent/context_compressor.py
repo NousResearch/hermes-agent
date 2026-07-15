@@ -3205,6 +3205,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
+        # Snapshot the rehydration state so an aborted attempt below can roll
+        # it back. The self-heal scan mutates ``_previous_summary`` (populating
+        # it from a fossil, or discarding a stale cross-session one); if
+        # summary generation then aborts and returns the transcript unchanged,
+        # leaving that mutation behind would make the retry — still
+        # ``compression_count == 0`` but now with a truthy ``_previous_summary``
+        # — take the narrow rescan, miss a beyond-window fossil, and discard the
+        # rehydrated state as cross-session leakage (#57835).
+        _previous_summary_before_scan = self._previous_summary
         # A persisted handoff summary can sit in the protected head after a
         # resume (commonly immediately after the system prompt). Search from
         # the first non-system message through the compression window. On the
@@ -3308,6 +3317,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
+            # Roll back the self-heal rehydration so this aborted attempt is a
+            # true no-op: the next attempt must re-run the full first-compaction
+            # scan instead of narrow-rescanning against a half-populated state
+            # and discarding a legitimately rehydrated fossil (#57835).
+            self._previous_summary = _previous_summary_before_scan
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(

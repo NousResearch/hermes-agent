@@ -294,6 +294,56 @@ def test_fossil_beyond_restart_probe_window_is_still_folded():
     assert all(old_summary not in str(msg.get("content", "")) for msg in result)
 
 
+def test_restart_fossil_survives_summary_abort_then_retry():
+    """An aborted first compaction must not strand the rehydrated fossil.
+
+    Regression for the abort/retry path. The first-compaction self-heal scan
+    (``compression_count < 1``) populates ``_previous_summary`` from a fossil
+    that drifted past the decay probe. If summary generation then aborts
+    (auth / network / ``abort_on_summary_failure``) and returns the transcript
+    unchanged, the aborted attempt must not leave that rehydrated state behind:
+    otherwise the retry — still ``compression_count == 0`` but now with a
+    truthy ``_previous_summary`` — takes the narrow rescan, misses the
+    beyond-window fossil, and then discards the rehydrated summary as
+    cross-session leakage, copying the fossil forward as a stacked summary.
+    """
+    compressor = _compressor(protect_first_n=1)
+    compressor.abort_on_summary_failure = True
+    old_summary = "ABORT-RETRY-OLD-SUMMARY durable facts"
+    msgs = [{"role": "system", "content": "system prompt"}]
+    msgs += [
+        {
+            "role": "user" if idx % 2 else "assistant",
+            "content": f"filler {idx}",
+        }
+        for idx in range(1, 6)
+    ]
+    msgs += [
+        {"role": "assistant", "content": f"{SUMMARY_PREFIX}\n{old_summary}"},
+        {"role": "user", "content": "active request"},
+    ]
+
+    # First compaction aborts on a summary-generation failure. The transcript
+    # is returned unchanged AND the self-heal state it rehydrated must be
+    # rolled back, so a retry behaves like the original first compaction.
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        aborted = compressor.compress([dict(m) for m in msgs])
+    assert compressor._last_compress_aborted is True
+    assert all(m["content"] for m in aborted)  # returned unchanged
+    assert compressor.compression_count == 0
+    assert compressor._previous_summary is None
+
+    # Retry: the fossil beyond the narrow window is still folded, not copied
+    # forward as a second stacked summary.
+    with patch("agent.context_compressor.call_llm", return_value=_response("fresh summary")):
+        result = compressor.compress([dict(m) for m in msgs])
+
+    assert all(old_summary not in str(msg.get("content", "")) for msg in result)
+    assert sum(
+        1 for msg in result if ContextCompressor._is_context_summary_message(msg)
+    ) == 1
+
+
 def test_tail_turns_before_late_handoff_are_not_lost():
     """Live tail turns before a late handoff should be summarized or kept."""
     compressor = _compressor(protect_first_n=3)

@@ -19,6 +19,7 @@ Embed alibaba/page-agent into your own web application — a pure-JavaScript in-
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `web`, `javascript`, `agent`, `browser`, `gui`, `alibaba`, `embed`, `copilot`, `saas` |
 
 ## Reference: full SKILL.md

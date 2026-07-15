@@ -34,6 +34,32 @@ from websockets.asyncio.client import ClientConnection
 logger = logging.getLogger(__name__)
 
 
+def _redact_cdp_error_text(exc: object) -> str:
+    """Redact any CDP endpoint credentials from an error's string form.
+
+    ``websockets`` bakes the raw target URL into its exception messages
+    (``InvalidURI``, connection errors, TLS failures all embed the full
+    ``self.cdp_url`` — including a ``?token=`` query credential or
+    ``user:pass@`` userinfo). Every supervisor egress point that turns such an
+    exception into log text or a re-raised message MUST route through here so
+    those credentials never reach Hermes logs or tracebacks. Falls back to a
+    fixed sentinel if redaction itself raises, erring toward masking.
+    """
+    try:
+        from agent.redact import redact_cdp_url
+
+        return redact_cdp_url(str(exc))
+    except Exception:
+        return "<error redacted>"
+
+
+def _redact_supervisor_text(value: str) -> str:
+    """Redact page-originated text before exposing supervisor snapshots."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(value, force=True)
+
+
 # ── Config defaults ───────────────────────────────────────────────────────────
 
 DIALOG_POLICY_MUST_RESPOND = "must_respond"
@@ -147,8 +173,8 @@ class PendingDialog:
         return {
             "id": self.id,
             "type": self.type,
-            "message": self.message,
-            "default_prompt": self.default_prompt,
+            "message": _redact_supervisor_text(self.message),
+            "default_prompt": _redact_supervisor_text(self.default_prompt),
             "opened_at": self.opened_at,
             "frame_id": self.frame_id,
         }
@@ -175,7 +201,7 @@ class DialogRecord:
         return {
             "id": self.id,
             "type": self.type,
-            "message": self.message,
+            "message": _redact_supervisor_text(self.message),
             "opened_at": self.opened_at,
             "closed_at": self.closed_at,
             "closed_by": self.closed_by,
@@ -341,14 +367,26 @@ class CDPSupervisor:
         self._thread.start()
         if not self._ready_event.wait(timeout=timeout):
             self.stop()
+            try:
+                from agent.redact import redact_cdp_url
+                _safe_url = redact_cdp_url(self.cdp_url)
+            except Exception:
+                _safe_url = "<cdp_url redacted>"
             raise TimeoutError(
                 f"CDP supervisor did not attach within {timeout}s "
-                f"(cdp_url={self.cdp_url[:80]}...)"
+                f"(cdp_url={_safe_url[:80]}...)"
             )
         if self._start_error is not None:
             err = self._start_error
             self.stop()
-            raise err
+            # ``err`` is a raw ``websockets`` exception whose message embeds the
+            # full cdp_url (token / userinfo). Re-raise a redacted RuntimeError
+            # and suppress the raw cause (``from None``) so no credential leaks
+            # via the message OR the traceback chain. Type is not load-bearing:
+            # the sole caller (_ensure_cdp_supervisor) only logs it.
+            raise RuntimeError(
+                f"CDP supervisor failed to start: {_redact_cdp_error_text(err)}"
+            ) from None
 
     def stop(self, timeout: float = 5.0) -> None:
         """Cancel the supervisor task and join the thread."""
@@ -368,11 +406,13 @@ class CDPSupervisor:
                         pass
 
             try:
-                fut = asyncio.run_coroutine_threadsafe(_close_ws(), loop)
-                try:
-                    fut.result(timeout=2.0)
-                except Exception:
-                    pass
+                from agent.async_utils import safe_schedule_threadsafe
+                fut = safe_schedule_threadsafe(_close_ws(), loop)
+                if fut is not None:
+                    try:
+                        fut.result(timeout=2.0)
+                    except Exception:
+                        pass
             except RuntimeError:
                 pass  # loop already shutting down
         if self._thread is not None:
@@ -412,7 +452,7 @@ class CDPSupervisor:
         ``{"ok": False, "error": "..."}`` on a recoverable error (no dialog,
         ambiguous dialog_id, supervisor inactive).
         """
-        if action not in ("accept", "dismiss"):
+        if action not in {"accept", "dismiss"}:
             return {"ok": False, "error": f"action must be 'accept' or 'dismiss', got {action!r}"}
 
         with self._state_lock:
@@ -451,11 +491,118 @@ class CDPSupervisor:
             )
 
         try:
-            fut = asyncio.run_coroutine_threadsafe(_do_respond(), loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            fut = safe_schedule_threadsafe(_do_respond(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
             fut.result(timeout=timeout)
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         return {"ok": True, "dialog": snapshot_copy.to_dict()}
+
+    def evaluate_runtime(
+        self,
+        expression: str,
+        *,
+        return_by_value: bool = True,
+        await_promise: bool = True,
+        timeout: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Evaluate ``expression`` in the page's Runtime context over the live WS.
+
+        Reuses the supervisor's already-connected WebSocket — zero subprocess
+        startup cost vs the agent-browser CLI ``eval`` command (which does
+        fork+exec+Node-startup+CDP-setup on every call).
+
+        Returns a dict shaped like ``{"ok": True, "result": <value>, "result_type": "..."}``
+        on success, or ``{"ok": False, "error": "..."}`` on failure.
+
+        ``return_by_value=True`` asks the browser to JSON-serialize the result
+        before sending it back, matching DevTools-console semantics for
+        primitive / plain-object expressions. For DOM nodes or non-serializable
+        objects, the browser returns a description string in ``result_type``.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            session_id = self._page_session_id
+
+        if not session_id:
+            return {"ok": False, "error": "supervisor has no attached page session"}
+
+        async def _do_eval(by_value: bool) -> Dict[str, Any]:
+            return await self._cdp(
+                "Runtime.evaluate",
+                {
+                    "expression": expression,
+                    "returnByValue": by_value,
+                    "awaitPromise": await_promise,
+                    # userGesture matters for things like clipboard / fullscreen
+                    # APIs that require a user-activation context.
+                    "userGesture": True,
+                },
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        from agent.async_utils import safe_schedule_threadsafe
+
+        def _run_eval(by_value: bool) -> Dict[str, Any]:
+            fut = safe_schedule_threadsafe(_do_eval(by_value), loop)
+            if fut is None:
+                raise RuntimeError("Browser supervisor loop unavailable")
+            return fut.result(timeout=timeout + 1)
+
+        try:
+            response = _run_eval(return_by_value)
+        except Exception as exc:
+            # ``returnByValue=True`` asks Chrome to deep-serialize the result.
+            # For live DOM nodes / NodeLists / Window that serialization can
+            # blow past CDP's recursion guard and fail the whole call with
+            # ``Object reference chain is too long`` (a protocol-level error,
+            # not a JS exception).  Retry once with ``returnByValue=False`` so
+            # Chrome returns the object's description string instead — the same
+            # graceful degradation path used for ``document.querySelector(...)``
+            # results — rather than crashing the eval.
+            if return_by_value and "reference chain is too long" in str(exc).lower():
+                try:
+                    response = _run_eval(False)
+                except Exception as exc2:
+                    return {"ok": False, "error": f"{type(exc2).__name__}: {exc2}"}
+            else:
+                return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        # Runtime.evaluate response shape:
+        #   {"id": N, "result": {"result": {"type": "...", "value": ..., ...},
+        #                         "exceptionDetails": {...} (only on error)}}
+        result_payload = response.get("result", {}) if isinstance(response, dict) else {}
+        exception_details = result_payload.get("exceptionDetails")
+        if exception_details:
+            # Surface the JS-side exception with a clean message.
+            exc_text = exception_details.get("text") or "JavaScript exception"
+            exc_obj = exception_details.get("exception") or {}
+            description = exc_obj.get("description")
+            if description:
+                exc_text = f"{exc_text}: {description}"
+            return {"ok": False, "error": exc_text}
+
+        result_obj = result_payload.get("result", {})
+        result_type = result_obj.get("type", "undefined")
+
+        if "value" in result_obj:
+            value = result_obj["value"]
+        elif result_type == "undefined":
+            value = None
+        else:
+            # Non-serializable (functions, DOM nodes, etc.) — return the
+            # browser's string description so the model gets *something*.
+            value = result_obj.get("description") or result_obj.get("unserializableValue")
+
+        return {"ok": True, "result": value, "result_type": result_type}
 
     # ── Supervisor loop internals ────────────────────────────────────────────
 
@@ -517,7 +664,7 @@ class CDPSupervisor:
                     return
                 logger.warning(
                     "CDP supervisor %s: connect failed (attempt %s): %s",
-                    self.task_id, attempt, e,
+                    self.task_id, attempt, _redact_cdp_error_text(e),
                 )
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
@@ -554,7 +701,7 @@ class CDPSupervisor:
                     "CDP supervisor %s: session dropped after %.1fs: %s",
                     self.task_id,
                     time.time() - last_success_at,
-                    e,
+                    _redact_cdp_error_text(e),
                 )
             finally:
                 with self._state_lock:
@@ -1123,7 +1270,7 @@ class CDPSupervisor:
         info = params.get("targetInfo") or {}
         sid = params.get("sessionId")
         target_type = info.get("type")
-        if not sid or target_type not in ("iframe", "worker"):
+        if not sid or target_type not in {"iframe", "worker"}:
             return
         self._child_sessions[sid] = {"info": info, "type": target_type}
 
@@ -1207,7 +1354,7 @@ class CDPSupervisor:
             event = ConsoleEvent(ts=time.time(), level="exception", text=text, url=url)
         else:
             raw_level = str(params.get("type") or "log")
-            level = "error" if raw_level in ("error", "assert") else (
+            level = "error" if raw_level in {"error", "assert"} else (
                 "warning" if raw_level == "warning" else "log"
             )
             args = params.get("args") or []

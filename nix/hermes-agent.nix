@@ -1,7 +1,9 @@
 # nix/hermes-agent.nix — Overridable Hermes Agent package
 #
 # callPackage auto-wires nixpkgs args; flake inputs are passed explicitly.
-# Users override via: pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+# Users override via:
+#   pkgs.hermes-agent.override { extraPythonPackages = [...]; }
+#   pkgs.hermes-agent.override { extraDependencyGroups = [ "hindsight" ]; }
 {
   lib,
   stdenv,
@@ -9,11 +11,17 @@
   callPackage,
   python312,
   nodejs_22,
+  electron,
   ripgrep,
   git,
   openssh,
   ffmpeg,
   tirith,
+
+  # linux-only deps
+  wl-clipboard,
+  xclip,
+
   # Flake inputs — passed explicitly by packages.nix and overlays.nix
   uv2nix,
   pyproject-nix,
@@ -25,12 +33,18 @@
   rev ? null,
   # Overridable parameters
   extraPythonPackages ? [ ],
+  extraDependencyGroups ? [ ],
 }:
 let
   nodejs = nodejs_22;
-  hermesVenv = callPackage ./python.nix {
-    inherit uv2nix pyproject-nix pyproject-build-systems;
-  };
+  mkHermesVenv =
+    extraDependencyGroups:
+    callPackage ./python.nix {
+      inherit uv2nix pyproject-nix pyproject-build-systems;
+      dependency-groups = [ "all" ] ++ extraDependencyGroups;
+    };
+
+  hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
   hermesNpmLib = callPackage ./lib.nix {
     inherit npm-lockfile-fix nodejs;
@@ -57,6 +71,21 @@ let
     filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
   };
 
+  # i18n locale catalogs (locales/*.yaml). Shipped into the store and pointed
+  # at by HERMES_BUNDLED_LOCALES so the wrapped binary always resolves human
+  # strings instead of raw i18n keys (#23943 / #27632 / #35374).
+  #
+  # Defense-in-depth, not load-bearing: the wheel already declares locales/ as
+  # setuptools data-files, so uv2nix materializes them into the venv's data
+  # scheme and agent/i18n.py resolves them with no env var. The wrapper override
+  # pins the store path so a future uv2nix change that drops data-files can't
+  # silently ship raw keys via `nix build` (checks don't run on a plain build).
+  # The bundled-locales flake check verifies BOTH paths independently.
+  #
+  # Plain cleanSource (no __pycache__ filter): locales/ is bare *.yaml, never
+  # compiled, so it never carries a __pycache__ dir to exclude.
+  bundledLocales = lib.cleanSource ../locales;
+
   runtimeDeps = [
     nodejs
     ripgrep
@@ -64,6 +93,10 @@ let
     openssh
     ffmpeg
     tirith
+  ]
+  ++ lib.optionals stdenv.isLinux [
+    wl-clipboard
+    xclip
   ];
 
   runtimePath = lib.makeBinPath runtimeDeps;
@@ -77,12 +110,6 @@ let
 
   pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 
-  pyprojectHash = builtins.hashString "sha256" (builtins.readFile ../pyproject.toml);
-  uvLockHash =
-    if builtins.pathExists ../uv.lock then
-      builtins.hashString "sha256" (builtins.readFile ../uv.lock)
-    else
-      "none";
   checkPackageCollisions = ''
     import pathlib, sys, re
 
@@ -123,7 +150,7 @@ let
     print('No collisions found.')
   '';
 in
-stdenv.mkDerivation {
+stdenv.mkDerivation (finalAttrs: {
   pname = "hermes-agent";
   version = (fromTOML (builtins.readFile ../pyproject.toml)).project.version;
 
@@ -137,6 +164,7 @@ stdenv.mkDerivation {
     mkdir -p $out/share/hermes-agent $out/bin
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
     cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
+    cp -r ${bundledLocales} $out/share/hermes-agent/locales
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -148,6 +176,7 @@ stdenv.mkDerivation {
           --suffix PATH : "${runtimePath}" \
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
+          --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
@@ -171,32 +200,36 @@ stdenv.mkDerivation {
     runHook postInstall
   '';
 
-  passthru = {
-    inherit
-      hermesTui
-      hermesWeb
-      hermesNpmLib
-      hermesVenv
-      ;
+  passthru =
+    let
+      devPython = (mkHermesVenv (extraDependencyGroups ++ [ "dev" ])).editableVenv;
+    in
+    {
+      inherit
+        hermesTui
+        hermesWeb
+        hermesNpmLib
+        hermesVenv
+        ;
 
-    devShellHook = ''
-      STAMP=".nix-stamps/hermes-agent"
-      STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
-      if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
-        echo "hermes-agent: installing Python dependencies..."
-        uv venv .venv --python ${python312}/bin/python3 2>/dev/null || true
-        source .venv/bin/activate
-        uv pip install -e ".[all]"
-        [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
-        [ -d tinker-atropos ] && uv pip install -e ./tinker-atropos 2>/dev/null || true
-        mkdir -p .nix-stamps
-        echo "$STAMP_VALUE" > "$STAMP"
-      else
-        source .venv/bin/activate
-        export HERMES_PYTHON=${hermesVenv}/bin/python3
-      fi
-    '';
-  };
+      # `hermesDesktop` references `finalAttrs.finalPackage` (this whole
+      # derivation, after all overrides are applied) so the desktop wrapper
+      # can prepend its `/bin` to PATH.  The desktop's resolver step 4
+      # ("existing hermes on PATH") then picks up the fully wrapped
+      # `hermes` binary — venv with all deps, bundled skills/plugins,
+      # runtime PATH (ripgrep/git/ffmpeg/etc).  No re-implementation
+      # of the agent resolution in the desktop wrapper.
+      hermesDesktop = callPackage ./desktop.nix {
+        inherit hermesNpmLib electron;
+        hermesAgent = finalAttrs.finalPackage;
+      };
+
+      devShellHook = ''
+        export HERMES_PYTHON=${devPython}/bin/python3
+      '';
+
+      devDeps = runtimeDeps ++ [ devPython ];
+    };
 
   meta = with lib; {
     description = "AI agent with advanced tool-calling capabilities";
@@ -205,4 +238,4 @@ stdenv.mkDerivation {
     license = licenses.mit;
     platforms = platforms.unix;
   };
-}
+})

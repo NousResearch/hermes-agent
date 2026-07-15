@@ -1,18 +1,19 @@
-import { AlertTriangle, Radio, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, PowerOff, Radio, Wifi, WifiOff } from "lucide-react";
 import type { PlatformStatus } from "@/lib/api";
 import { isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
 import { useI18n } from "@/i18n";
 
 export function PlatformsCard({ platforms }: PlatformsCardProps) {
   const { t } = useI18n();
   const platformStateBadge: Record<
     string,
-    { tone: "success" | "warning" | "destructive"; label: string }
+    { tone: "success" | "warning" | "destructive" | "outline"; label: string }
   > = {
     connected: { tone: "success", label: t.status.connected },
     disconnected: { tone: "warning", label: t.status.disconnected },
+    disabled: { tone: "outline", label: t.status.disabled ?? "Disabled" },
     fatal: { tone: "destructive", label: t.status.error },
   };
 
@@ -38,7 +39,9 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
               ? Wifi
               : info.state === "fatal"
                 ? AlertTriangle
-                : WifiOff;
+                : info.state === "disabled"
+                  ? PowerOff
+                  : WifiOff;
 
           return (
             <div
@@ -52,23 +55,31 @@ export function PlatformsCard({ platforms }: PlatformsCardProps) {
                       ? "text-success"
                       : info.state === "fatal"
                         ? "text-destructive"
-                        : "text-warning"
+                        : info.state === "disabled"
+                          ? "text-muted-foreground"
+                          : "text-warning"
                   }`}
                 />
 
                 <div className="flex flex-col gap-0.5 min-w-0">
-                  <span className="text-sm font-medium capitalize truncate">
+                  <span className="font-mondwest normal-case text-sm font-medium capitalize truncate">
                     {name}
                   </span>
 
                   {info.error_message && (
-                    <span className="text-xs text-destructive">
+                    <span
+                      className={`font-mondwest normal-case text-xs ${
+                        info.state === "disabled"
+                          ? "text-muted-foreground"
+                          : "text-destructive"
+                      }`}
+                    >
                       {info.error_message}
                     </span>
                   )}
 
                   {info.updated_at && (
-                    <span className="text-xs text-muted-foreground">
+                    <span className="font-mondwest normal-case text-xs text-muted-foreground">
                       {t.status.lastUpdate}: {isoTimeAgo(info.updated_at)}
                     </span>
                   )}

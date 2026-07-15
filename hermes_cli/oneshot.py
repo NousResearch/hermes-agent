@@ -17,7 +17,6 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
-    - HERMES_INFERENCE_PROVIDER  (already read by resolve_runtime_provider)
 """
 
 from __future__ import annotations
@@ -26,7 +25,10 @@ import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from typing import Optional
+
+from hermes_cli.fallback_config import get_fallback_chain
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -121,11 +123,55 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
+def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] = None) -> None:
+    """Best-effort JSON usage report for pipelines (``-z --usage-file``).
+
+    Written even on failure so callers can always account for spend. Never
+    raises — a broken usage write must not mask the run's own outcome.
+    """
+    if not path:
+        return
+    try:
+        import json
+
+        report = {
+            "estimated_cost_usd": result.get("estimated_cost_usd"),
+            "cost_status": result.get("cost_status"),
+            "cost_source": result.get("cost_source"),
+            "input_tokens": result.get("input_tokens"),
+            "output_tokens": result.get("output_tokens"),
+            "cache_read_tokens": result.get("cache_read_tokens"),
+            "cache_write_tokens": result.get("cache_write_tokens"),
+            "reasoning_tokens": result.get("reasoning_tokens"),
+            "total_tokens": result.get("total_tokens"),
+            "api_calls": result.get("api_calls"),
+            "model": result.get("model"),
+            "provider": result.get("provider"),
+            "session_id": result.get("session_id"),
+            "completed": result.get("completed"),
+            "failed": bool(result.get("failed")) or failure is not None,
+            # Billing-audit field: the service tier this run REQUESTED via
+            # request_overrides.extra_body (e.g. OpenAI "flex"). None when
+            # unset. Lets batch pipelines verify the tier they think they're
+            # paying for actually went out on the wire (July 2026 incident:
+            # a config-matching bug silently dropped flex -> 2.3x billing).
+            "service_tier": result.get("service_tier"),
+        }
+        if failure is not None:
+            report["failure"] = failure
+        out = Path(path).expanduser()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    usage_file: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -133,10 +179,13 @@ def run_oneshot(
         prompt: The user message to send.
         model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
             env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to
-            HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
-            then "auto".
+        provider: Optional provider override. Falls back to config.yaml's
+            model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        usage_file: Optional path; when set, a JSON usage report (estimated
+            cost, token counts, model, api_calls) is written there after the
+            run — even when the run fails — so pipelines can account for
+            spend per invocation.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -174,29 +223,81 @@ def run_oneshot(
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout
-    devnull = open(os.devnull, "w")
+    real_stderr = sys.stderr
+    devnull = open(os.devnull, "w", encoding="utf-8")
 
+    response: Optional[str] = None
+    result: dict = {}
+    failure: BaseException | None = None
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(
-                prompt,
-                model=model,
-                provider=provider,
-                toolsets=explicit_toolsets,
-                use_config_toolsets=use_config_toolsets,
-            )
+            try:
+                response, result = _run_agent(
+                    prompt,
+                    model=model,
+                    provider=provider,
+                    toolsets=explicit_toolsets,
+                    use_config_toolsets=use_config_toolsets,
+                )
+            except BaseException as exc:  # noqa: BLE001
+                # Capture anything that escapes the agent (including OSError
+                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+                # the real stderr instead of crashing past the redirect with a
+                # traceback that the caller never sees. A silent exit in a
+                # cron / SSH / subprocess context is the worst failure mode.
+                # See #30623.
+                failure = exc
     finally:
         try:
             devnull.close()
         except Exception:
             pass
 
+    if failure is not None:
+        # Re-raise control-flow exceptions so the parent handles them as usual
+        # (Ctrl-C / explicit sys.exit() inside the agent).
+        if isinstance(failure, (KeyboardInterrupt, SystemExit)):
+            _write_usage_file(usage_file, result, failure=repr(failure))
+            raise failure
+        _write_usage_file(usage_file, result, failure=str(failure))
+        real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        real_stderr.flush()
+        return 1
+
+    _write_usage_file(usage_file, result)
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
             real_stdout.write("\n")
         real_stdout.flush()
+
+    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+        return 2
+
+    if not (response or "").strip():
+        real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
+        real_stderr.flush()
+        return 1
+
     return 0
+
+
+def _create_session_db_for_oneshot():
+    """Best-effort SessionDB for ``hermes -z`` / oneshot mode.
+
+    Oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the SQLite
+    session store itself. Without this, the ``session_search``/recall tool is
+    advertised but every call returns "Session database not available.".
+    """
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB()
+    except Exception as exc:
+        logging.debug("SQLite session store not available for oneshot mode: %s", exc)
+        return None
 
 
 def _run_agent(
@@ -205,9 +306,9 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
-) -> str:
+) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
-    run a single conversation.  Returns the final response string."""
+    run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
@@ -284,6 +385,11 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    session_db = _create_session_db_for_oneshot()
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -293,7 +399,9 @@ def _run_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction
@@ -314,7 +422,8 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    result = agent.run_conversation(prompt)
+    return (result.get("final_response") or "", result)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

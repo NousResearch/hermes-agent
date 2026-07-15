@@ -31,11 +31,11 @@ By the end, you'll have:
 | **GPU** | Not required | NVIDIA GPU with 8+ GB VRAM speeds things up significantly |
 
 :::tip CPU-only works, but expect slower responses
-Ollama runs on CPU-only servers. A 9B model on a modern 8-core CPU gives ~10 tokens/sec. A 31B model on CPU is slower (~2–5 tokens/sec) — each response takes 30–120 seconds, but it works. A GPU dramatically improves this. For CPU-only setups, increase the API timeout in config:
+Ollama runs on CPU-only servers. A 9B model on a modern 8-core CPU gives ~10 tokens/sec. A 31B model on CPU is slower (~2–5 tokens/sec) — each response takes 30–120 seconds, but it works. A GPU dramatically improves this. For CPU-only setups, widen the API timeout via the env var (it's not a `config.yaml` key):
 
-```yaml
-agent:
-  api_timeout: 1800   # 30 minutes — generous for slow local models
+```bash
+# ~/.hermes/.env
+HERMES_API_TIMEOUT=1800   # 30 minutes — generous for slow local models
 ```
 :::
 
@@ -156,19 +156,19 @@ Switch models on the fly inside a session:
 
 ### Increase Ollama's Context Window
 
-By default, Ollama uses a 2048-token context. For agentic work (tool calls, long conversations), you need more:
+By default, Ollama uses a 2048-token context. Hermes requires at least 64,000 tokens for agentic work with tools:
 
 ```bash
 # Create a Modelfile that extends context
 cat > /tmp/Modelfile << 'EOF'
 FROM gemma4:31b
-PARAMETER num_ctx 16384
+PARAMETER num_ctx 64000
 EOF
 
-ollama create gemma4-16k -f /tmp/Modelfile
+ollama create gemma4-64k -f /tmp/Modelfile
 ```
 
-Then update your Hermes config to use `gemma4-16k` as the model name.
+Then update your Hermes config to use `gemma4-64k` as the model name.
 
 ### Keep the Model Loaded
 
@@ -311,7 +311,7 @@ Your only cost is electricity — roughly $0.01–0.05 per session depending on 
 ## What's Better with Cloud Models
 
 - **Very complex multi-step reasoning** — 70B+ or cloud models like Claude Opus are noticeably better
-- **Long context windows** — cloud models offer 100K–1M tokens; local models are typically 8K–32K
+- **Long context windows** — cloud models offer 100K–1M tokens; local runtimes often default below Hermes' 64K minimum unless you configure them
 - **Speed on large responses** — cloud inference is faster than CPU-only local for long generations
 
 The sweet spot: use local for everyday tasks, set up a cloud fallback for the hard stuff.

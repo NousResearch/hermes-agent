@@ -12,7 +12,6 @@ behaviour is only observable at runtime under load.
 
 from __future__ import annotations
 
-import os
 
 import pytest
 
@@ -78,11 +77,11 @@ def test_helper_is_importable_from_every_platform_that_uses_it():
     the regression shows up as a runtime adapter-startup crash."""
     # Just importing exercises the helper's import path for each adapter.
     import gateway.platforms.qqbot.adapter  # noqa: F401
-    import gateway.platforms.wecom  # noqa: F401
-    import gateway.platforms.dingtalk  # noqa: F401
+    import plugins.platforms.wecom.adapter  # noqa: F401
+    import plugins.platforms.dingtalk.adapter  # noqa: F401
     import gateway.platforms.signal  # noqa: F401
     import gateway.platforms.bluebubbles  # noqa: F401
-    import gateway.platforms.wecom_callback  # noqa: F401
+    import plugins.platforms.wecom.callback_adapter  # noqa: F401
 
 
 class TestWhatsappTypingLeakFix:
@@ -99,7 +98,7 @@ class TestWhatsappTypingLeakFix:
 
     def test_bare_await_removed(self):
         import inspect
-        import gateway.platforms.whatsapp as mod
+        import plugins.platforms.whatsapp.adapter as mod
 
         src = inspect.getsource(mod.WhatsAppAdapter.send_typing)
         # The fix must be structural: the post() call is inside an

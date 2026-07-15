@@ -431,6 +431,41 @@ class TestBusySessionAck:
         assert "Steered" not in content
 
     @pytest.mark.asyncio
+    async def test_priority_steer_queues_media_events_to_preserve_attachments(self):
+        """PRIORITY steer path (_handle_message) must queue media-bearing events.
+
+        The independent PRIORITY steer branch also calls agent.steer(), which is
+        text-only, so a document/audio event would lose its cached media paths
+        unless it queues the full event instead of steering.
+        """
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "steer"
+        adapter = _make_adapter()
+
+        event = _make_event(text="please read this pdf")
+        event.message_type = MessageType.DOCUMENT
+        event.media_urls = ["/tmp/cached.pdf"]
+        event.media_types = ["application/pdf"]
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
+        runner._running_agents[sk] = agent
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        agent.steer.assert_not_called()
+        agent.interrupt.assert_not_called()
+        # Full event queued with attachment metadata intact.
+        assert adapter._pending_messages[sk] is event
+        assert adapter._pending_messages[sk].media_urls == ["/tmp/cached.pdf"]
+        assert adapter._pending_messages[sk].media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
         """If agent.steer() returns False, fall back to queue behavior."""
         runner, sentinel = _make_runner()

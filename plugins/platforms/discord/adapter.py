@@ -3709,7 +3709,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 self.name,
                 exc_info=True,
             )
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send image attachment, falling back to URL: %s",
@@ -3717,7 +3717,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_image(chat_id, image_url, caption, reply_to)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
     async def send_animation(
         self,

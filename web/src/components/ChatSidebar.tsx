@@ -48,7 +48,7 @@ interface SessionInfo {
 
 interface RpcEnvelope {
   method?: string;
-  params?: { type?: string; payload?: unknown };
+  params?: { type?: string; payload?: unknown; session_id?: string };
 }
 
 const STATE_LABEL: Record<ConnectionState, string> = {

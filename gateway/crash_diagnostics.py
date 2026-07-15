@@ -247,6 +247,8 @@ def _linux_recent_crashes(
                 "--reverse",
                 "--since",
                 since_arg,
+                "-n",
+                str(max(_MAX_CANDIDATE_RECORDS, int(limit))),
             ]
         )
         records.extend(

@@ -453,6 +453,45 @@ def test_linux_journalctl_fallback_scans_kernel_log(monkeypatch):
     assert commands[0][format_index] == "short-iso-precise"
 
 
+def test_linux_coredumpctl_bounds_candidate_records(monkeypatch):
+    commands = []
+    since = datetime(2026, 6, 5, 9, 8, tzinfo=timezone.utc)
+
+    def _fake_run(cmd):
+        commands.append(cmd)
+        if "info" in cmd:
+            return ""
+        return json.dumps(
+            [
+                {
+                    "time": int((since + timedelta(seconds=1)).timestamp() * 1_000_000),
+                    "pid": 123,
+                    "sig": 11,
+                    "exe": "/usr/bin/python3.12",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        cd.shutil,
+        "which",
+        lambda name: "/usr/bin/coredumpctl" if name == "coredumpctl" else None,
+    )
+    monkeypatch.setattr(cd, "_run", _fake_run)
+
+    records = cd._linux_recent_crashes(
+        "python",
+        expected_pid=123,
+        since=since,
+        limit=1,
+    )
+
+    assert len(records) == 1
+    assert commands[0][0] == "coredumpctl"
+    limit_index = commands[0].index("-n") + 1
+    assert commands[0][limit_index] == str(cd._MAX_CANDIDATE_RECORDS)
+
+
 def test_windows_reader_requires_matching_pid_after_exact_status_time(monkeypatch):
     since = datetime(2026, 7, 15, 10, 30, 30, tzinfo=timezone.utc)
     commands = []

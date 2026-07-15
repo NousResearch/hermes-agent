@@ -17,6 +17,7 @@ from tools.approval import (
     _get_approval_mode,
     _normalize_approval_mode,
     _smart_approve,
+    _normalize_approval_timeout,
     approve_session,
     detect_dangerous_command,
     detect_hardline_command,
@@ -55,6 +56,19 @@ class TestApprovalModeParsing:
 
     def test_yaml_bool_true_maps_to_manual(self):
         assert _normalize_approval_mode(True) == "manual"
+
+
+class TestApprovalTimeoutParsing:
+    def test_positive_timeout_remains_seconds(self):
+        assert _normalize_approval_timeout(60) == 60
+        assert _normalize_approval_timeout("30") == 30
+
+    def test_zero_and_none_disable_timeout(self):
+        for raw in (0, "0", None, False, "none", "false", "never", "off", ""):
+            assert _normalize_approval_timeout(raw) is None
+
+    def test_invalid_timeout_falls_back_to_default(self):
+        assert _normalize_approval_timeout("bogus", default=42) == 42
 
 
 class TestSmartApproval:
@@ -2281,7 +2295,7 @@ class TestApprovalTimeoutIsNotConsent:
             else:
                 os.environ[k] = v
 
-    def _force_short_timeout(self, monkeypatch, seconds=1):
+    def _force_short_timeout(self, monkeypatch, seconds: int | None = 1):
         from tools import approval as mod
         monkeypatch.setattr(
             mod, "_get_approval_config",
@@ -2361,6 +2375,30 @@ class TestApprovalTimeoutIsNotConsent:
         assert "Silence is not consent" not in r["message"]  # this one IS denied, not timed-out
         assert "NOT consented" in r["message"]
         assert "rephrase" in r["message"].lower()
+
+    def test_disabled_timeout_waits_for_explicit_gateway_decision(self, monkeypatch):
+        """A disabled timeout must keep gateway approval pending until resolved."""
+        from tools import approval as mod
+
+        self._force_short_timeout(monkeypatch, seconds=None)
+        mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
+        result_holder = {}
+
+        def _check():
+            result_holder["r"] = mod.check_all_command_guards("rm -rf .git", "local")
+
+        thread = threading.Thread(target=_check)
+        thread.start()
+        for _ in range(50):
+            if mod._gateway_queues.get(self.SESSION_KEY):
+                break
+            time.sleep(0.02)
+        assert mod._gateway_queues.get(self.SESSION_KEY), "approval request was not queued"
+        mod.resolve_gateway_approval(self.SESSION_KEY, "deny")
+        thread.join(timeout=5)
+
+        assert "r" in result_holder, "disabled-timeout approval did not return after deny"
+        assert result_holder["r"].get("outcome") == "denied"
 
     def test_timeout_emits_post_hook_with_timeout_outcome(self, monkeypatch):
         """Plugins must be able to distinguish timeout from explicit deny.

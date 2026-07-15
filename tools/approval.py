@@ -1755,6 +1755,8 @@ def prompt_dangerous_approval(command: str, description: str,
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
+    else:
+        timeout_seconds = _normalize_approval_timeout(timeout_seconds)
 
     # Redact secrets before any user-visible rendering. The original
     # `command` is still what executes after approval; only the displayed
@@ -1952,12 +1954,31 @@ def is_approval_bypass_active() -> bool:
     )
 
 
-def _get_approval_timeout() -> int:
-    """Read the approval timeout from config. Defaults to 60 seconds."""
+def _normalize_approval_timeout(raw, default: int = 60) -> int | None:
+    """Normalize ``approvals.timeout`` values.
+
+    Returns an integer number of seconds for finite timeouts.  Returns
+    ``None`` when the configured value explicitly disables timeout-based
+    auto-denial.  This lets a human approval prompt remain pending while the
+    user is away, instead of treating absence as denial.
+    """
+    if raw is None or raw is False:
+        return None
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in {"", "0", "none", "false", "never", "off"}:
+            return None
+        raw = normalized
     try:
-        return int(_get_approval_config().get("timeout", 60))
+        value = int(raw)
     except (ValueError, TypeError):
-        return 60
+        return default
+    return None if value <= 0 else value
+
+
+def _get_approval_timeout() -> int | None:
+    """Read the approval timeout from config. Defaults to 60 seconds."""
+    return _normalize_approval_timeout(_get_approval_config().get("timeout", 60))
 
 
 def _get_cron_approval_mode() -> str:
@@ -2582,7 +2603,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         touch_activity_if_due = None
 
     _now = time.monotonic()
-    _deadline = _now + max(timeout, 0)
+    _deadline = _now + timeout if timeout is not None else None
     _activity_state = {"last_touch": _now, "start": _now}
     resolved = False
     while True:
@@ -2603,10 +2624,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
             entry.event.set()
             resolved = True
             break
-        _remaining = _deadline - time.monotonic()
-        if _remaining <= 0:
-            break
-        if entry.event.wait(timeout=min(1.0, _remaining)):
+        if _deadline is None:
+            wait_timeout = 1.0
+        else:
+            _remaining = _deadline - time.monotonic()
+            if _remaining <= 0:
+                break
+            wait_timeout = min(1.0, _remaining)
+        if entry.event.wait(timeout=wait_timeout):
             resolved = True
             break
         if touch_activity_if_due is not None:

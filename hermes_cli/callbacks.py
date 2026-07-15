@@ -201,7 +201,11 @@ def approval_callback(cli, command: str, description: str) -> str:
 
     with lock:
         from cli import CLI_CONFIG
-        timeout = CLI_CONFIG.get("approvals", {}).get("timeout", 60)
+        from tools.approval import _normalize_approval_timeout
+
+        timeout = _normalize_approval_timeout(
+            CLI_CONFIG.get("approvals", {}).get("timeout", 60)
+        )
         response_queue = queue.Queue()
         choices = ["once", "session", "always", "deny"]
         if len(command) > 70:
@@ -214,7 +218,7 @@ def approval_callback(cli, command: str, description: str) -> str:
             "selected": 0,
             "response_queue": response_queue,
         }
-        cli._approval_deadline = _time.monotonic() + timeout
+        cli._approval_deadline = 0 if timeout is None else _time.monotonic() + timeout
 
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
@@ -228,9 +232,10 @@ def approval_callback(cli, command: str, description: str) -> str:
                     cli._app.invalidate()
                 return result
             except queue.Empty:
-                remaining = cli._approval_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
+                if timeout is not None:
+                    remaining = cli._approval_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
                 if hasattr(cli, "_app") and cli._app:
                     cli._app.invalidate()
 

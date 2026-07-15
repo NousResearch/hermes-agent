@@ -120,17 +120,18 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'tool.complete'
 ])
 
-const LEGACY_INTERRUPT_STATUS_PREFIXES = [
-  'Operation interrupted: waiting for model response (',
-  'Operation interrupted during retry (',
-  'Operation interrupted: handling API error (',
-  'Operation interrupted: retrying API call after error ('
+const LEGACY_INTERRUPT_STATUS_PATTERNS = [
+  /^Operation interrupted\.$/,
+  /^Operation interrupted: waiting for model response \(\d+\.\d+s elapsed\)\.$/,
+  /^Operation interrupted during retry \(.+, attempt \d+\/\d+\)\.$/,
+  /^Operation interrupted: handling API error \([^:\r\n]+: .*\)\.$/,
+  /^Operation interrupted: retrying API call after error \(retry \d+\/\d+\)\.$/
 ] as const
 
 const isLegacyInterruptStatus = (text: string) => {
   const normalized = text.trim()
 
-  return normalized === 'Operation interrupted.' || LEGACY_INTERRUPT_STATUS_PREFIXES.some(prefix => normalized.startsWith(prefix))
+  return LEGACY_INTERRUPT_STATUS_PATTERNS.some(pattern => pattern.test(normalized))
 }
 
 interface GatewayEventDeps {

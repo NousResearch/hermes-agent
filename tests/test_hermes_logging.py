@@ -1207,7 +1207,13 @@ class TestDrainLogQueue:
     def test_forced_resetup_after_drain_does_not_raise(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
         hermes_logging.drain_log_queue(timeout=1.0)
-        # A forced re-setup after a drain must not stop the already-drained
-        # listener a second time; before the fix the stale global tripped the
-        # non-idempotent stop() and raised AttributeError.
-        hermes_logging.setup_logging(hermes_home=hermes_home, force=True)
+        # The re-setup must ADD a handler to exercise the double-stop:
+        # _add_rotating_handler() returns early for agent.log/errors.log
+        # because a handler for the same resolved path is already attached, so
+        # an identical force=True call never reaches _register_queued_handler.
+        # mode="gateway" adds gateway.log — a new path — which does re-register
+        # and, before the fix, stopped the already-drained listener a second
+        # time via the non-idempotent stop() and raised AttributeError.
+        hermes_logging.setup_logging(
+            hermes_home=hermes_home, mode="gateway", force=True
+        )

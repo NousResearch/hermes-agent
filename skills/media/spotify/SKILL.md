@@ -2,6 +2,7 @@
 name: spotify
 description: "Spotify: play, search, queue, manage playlists and devices."
 version: 1.0.0
+author: "Rafael Zendron (rafaumeu)"
 
 license: MIT
 platforms: [linux, macos, windows]

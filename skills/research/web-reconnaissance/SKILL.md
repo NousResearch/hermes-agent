@@ -1,9 +1,10 @@
 ---
 name: web-reconnaissance
-description: "Web reconnaissance and API reverse engineering for discovering public APIs, endpoints, and architecture of web applications."
+description: "Web reconnaissance and API reverse engineering for discovering public APIs and endpoints."
 version: 1.0.0
+author: "Rafael Zendron (rafaumeu)"
 license: MIT
-platforms: [linux, macos, windows]
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [recon, api-discovery, web-analysis, reverse-engineering, nextjs, ssr, csr]

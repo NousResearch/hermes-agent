@@ -2,7 +2,7 @@
 name: linear
 description: "Linear: manage issues, projects, teams via GraphQL + curl."
 version: 1.0.0
-
+author: "Rafael Zendron (rafaumeu)"
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:

@@ -2,6 +2,7 @@
 name: dspy
 description: "DSPy: declarative LM programs, auto-optimize prompts, RAG."
 version: 1.0.0
+author: "Rafael Zendron (rafaumeu)"
 
 license: MIT
 dependencies: [dspy, openai, anthropic]

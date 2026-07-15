@@ -613,6 +613,18 @@ class SignalAdapter(BasePlatformAdapter):
         if text and mentions:
             text = _render_mentions(text, mentions)
 
+        # Extract quote (reply-to) context from Signal dataMessage. Signal's
+        # quote.id is the timestamp of the quoted message; quote.author points
+        # at the quoted sender when available. Preserve both so the gateway can
+        # tell the agent when the user replied to a specific assistant message.
+        # Resolved here (before the mention filter) so reply-to-bot can gate on it.
+        quote_data = data_message.get("quote") or {}
+        reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
+        reply_to_text = quote_data.get("text")
+        reply_to_author = self._extract_quote_author(quote_data)
+        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
+        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
+
         # Mention filter: in groups, only process messages that @mention the bot account
         if is_group and self.require_mention:
             account_norm = self._account_normalized
@@ -624,7 +636,22 @@ class SignalAdapter(BasePlatformAdapter):
                 m.get("number") == account_norm or m.get("uuid") == account_norm
                 for m in (data_message.get("mentions") or [])
             )
-            if not mentioned_in_text and not mentioned_in_metadata:
+            # Reply-to-bot counts as a mention (parity with Telegram/WhatsApp):
+            # treat a quote of a message the bot itself sent as "addressed to me".
+            # Reuse the robust resolver (outbound-timestamp cache + number<->uuid
+            # mapping) instead of a raw phone compare, so UUID-only quote authors
+            # and timestamp-only quotes are matched too.
+            replied_to_bot = reply_to_is_own
+            # Slash-bypass: let "/cmd" run without an @mention (parity with
+            # Telegram/WhatsApp). Slash-access / group_user_allowed_commands still
+            # gates which commands a non-owner may actually run.
+            is_slash = (text or "").strip().startswith("/")
+            if not (
+                mentioned_in_text
+                or mentioned_in_metadata
+                or replied_to_bot
+                or is_slash
+            ):
                 logger.debug(
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
                 )
@@ -650,17 +677,6 @@ class SignalAdapter(BasePlatformAdapter):
                 # Only touches the doubled space the removal introduced, so
                 # intentional newlines in a multi-line message are preserved.
                 text = text.replace("  ", " ").strip()
-
-        # Extract quote (reply-to) context from Signal dataMessage. Signal's
-        # quote.id is the timestamp of the quoted message; quote.author points
-        # at the quoted sender when available. Preserve both so the gateway can
-        # tell the agent when the user replied to a specific assistant message.
-        quote_data = data_message.get("quote") or {}
-        reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
-        reply_to_text = quote_data.get("text")
-        reply_to_author = self._extract_quote_author(quote_data)
-        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
-        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])
@@ -708,6 +724,22 @@ class SignalAdapter(BasePlatformAdapter):
             user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None,
         )
+
+        # Owner detection (Req 3 / signalfix.md Gate C). The owner is whoever is
+        # listed in SIGNAL_ALLOWED_USERS (self.dm_allow_from). In groups the sender
+        # is frequently a UUID, so resolve UUID->phone via the number<->uuid cache
+        # before matching. "*" is open-DM, never an owner. Surfaced to the model so
+        # only the owner receives owner-level persona treatment.
+        _owner_ids = {x for x in self.dm_allow_from if x and x != "*"}
+        if _owner_ids:
+            _sender_phone = sender if _looks_like_e164_number(sender) else (
+                self._recipient_number_by_uuid.get(sender_uuid or "", "")
+            )
+            source.is_owner = bool(
+                sender in _owner_ids
+                or (sender_uuid and sender_uuid in _owner_ids)
+                or (_sender_phone and _sender_phone in _owner_ids)
+            )
 
         # Determine message type from media
         msg_type = MessageType.TEXT

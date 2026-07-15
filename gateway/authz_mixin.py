@@ -330,6 +330,7 @@ class GatewayAuthorizationMixin:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -339,7 +340,15 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    # Match the platform chat_id OR its raw form. Signal emits
+                    # chat_id="group:<id>" while its allowlist holds the raw <id>
+                    # (also exposed as chat_id_alt), so compare both the raw
+                    # alt id and the "group:"-stripped form, not just chat_id.
+                    group_id_candidates = {source.chat_id, source.chat_id_alt}
+                    if source.chat_id and source.chat_id.startswith("group:"):
+                        group_id_candidates.add(source.chat_id.split("group:", 1)[1])
+                    group_id_candidates.discard(None)
+                    if "*" in allowed_group_ids or (group_id_candidates & allowed_group_ids):
                         return True
 
         # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466).
@@ -603,6 +612,39 @@ class GatewayAuthorizationMixin:
             check_ids.add(source.user_name)
 
         return bool(check_ids & allowed_ids)
+
+    def _is_owner(self, source: SessionSource) -> bool:
+        """Whether *source* is the operator/owner — the sender is in the platform's
+        primary (DM) allowlist (e.g. ``SIGNAL_ALLOWED_USERS``). Gates owner-only
+        persona treatment so a public-group user is never
+        mistaken for the owner. A wildcard ("*") allowlist is NOT an owner match —
+        owner status requires an explicit id. Adapters that can resolve a group
+        sender to a stable id (Signal: UUID->phone) set ``source.is_owner`` at
+        intake; this is the generic fallback for everything else.
+        See signalfix.md Gate C / Req 3.
+        """
+        if source is None or source.platform is None:
+            return False
+        env_name = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.SLACK: "SLACK_ALLOWED_USERS",
+        }.get(source.platform, "")
+        if not env_name:
+            return False
+        raw = os.getenv(env_name, "").strip()
+        if not raw:
+            return False
+        owner_ids = {p.strip() for p in raw.split(",") if p.strip() and p.strip() != "*"}
+        if not owner_ids:
+            return False
+        candidates = {source.user_id, source.user_id_alt}
+        if source.user_id and "@" in source.user_id:
+            candidates.add(source.user_id.split("@")[0])
+        candidates.discard(None)
+        return bool(candidates & owner_ids)
 
     def _get_unauthorized_dm_behavior(
         self,

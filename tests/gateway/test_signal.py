@@ -2565,3 +2565,80 @@ class TestRecentSentTimestampRing:
         adapter._track_sent_timestamp({"timestamp": 3})
         # Both 1 and 2 should be evicted on TTL, only 3 remains
         assert list(adapter._recent_sent_timestamps.keys()) == [3]
+
+
+# ---------------------------------------------------------------------------
+# Reply-to-bot counts as a mention (Bug 2 / PR #53348 review)
+# ---------------------------------------------------------------------------
+
+class TestSignalReplyToBotMention:
+    """In a require_mention group, quoting a message the bot itself sent must
+    bypass the @mention requirement — resolved via the robust timestamp +
+    number<->uuid path (`_quote_references_own_message`), not a raw phone
+    compare, so UUID-only quote authors and timestamp-only quotes are matched.
+    """
+
+    @staticmethod
+    def _group_envelope(quote):
+        return {
+            "envelope": {
+                "sourceNumber": "+15550002222",
+                "sourceUuid": "guest-uuid",
+                "sourceName": "Guest",
+                "timestamp": 1700000000,
+                "dataMessage": {
+                    "message": "thanks",
+                    "groupInfo": {"groupId": "grp=="},
+                    "quote": quote,
+                },
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_by_timestamp_bypasses_mention(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, require_mention=True, group_allowed="*")
+        adapter._remember_sent_message_timestamp(555000)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        # No @mention; quote.id matches a timestamp the bot sent (author is the guest).
+        await adapter._handle_envelope(
+            self._group_envelope({"id": 555000, "text": "assistant answer", "author": "guest-uuid"})
+        )
+        assert "event" in captured, "reply-to-own-timestamp should count as a mention"
+        assert captured["event"].reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_by_uuid_author_bypasses_mention(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, require_mention=True, group_allowed="*")
+        # Bot's own number<->uuid mapping observed from an envelope.
+        adapter._recipient_uuid_by_number[adapter._account_normalized] = "bot-uuid"
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        # No @mention; quote author is the bot's UUID (never its phone).
+        await adapter._handle_envelope(
+            self._group_envelope({"id": 42, "text": "assistant answer", "author": "bot-uuid"})
+        )
+        assert "event" in captured, "reply whose quote author is the bot UUID should count as a mention"
+
+    @pytest.mark.asyncio
+    async def test_reply_to_non_bot_still_requires_mention(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, require_mention=True, group_allowed="*")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        # No @mention; quote points at another member and an unknown timestamp.
+        await adapter._handle_envelope(
+            self._group_envelope({"id": 111, "text": "someone else", "author": "other-uuid"})
+        )
+        assert "event" not in captured, "reply to a non-bot message must NOT bypass require_mention"

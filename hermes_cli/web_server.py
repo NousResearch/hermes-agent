@@ -5577,6 +5577,7 @@ def get_recommended_default_model(provider: str = ""):
                 get_pricing_for_provider,
                 check_nous_free_tier,
                 partition_nous_models_by_tier,
+                pick_silent_default_model,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -5605,21 +5606,25 @@ def get_recommended_default_model(provider: str = ""):
                     model_ids, pricing, portal_url
                 )
 
-            model = model_ids[0] if model_ids else ""
+            model = pick_silent_default_model(model_ids, provider="nous")
             return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
 
-    # Non-Nous: first curated model for the provider, matching prior behaviour.
+    # Non-Nous: preferred silent default when the provider's curated list
+    # carries it, else the first curated model. Aggregator lists lead with the
+    # priciest Anthropic flagship (claude-fable-5), which must never be the
+    # model a user lands on without explicitly picking it.
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.models import pick_silent_default_model
 
         payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
-                models = row.get("models") or []
-                return {"provider": slug, "model": models[0] if models else "", "free_tier": None}
+                models = [str(m) for m in (row.get("models") or [])]
+                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
@@ -11916,8 +11921,9 @@ def _new_dashboard_backup_path() -> Path:
 async def run_backup(body: BackupRequest):
     args = ["backup"]
     archive: Optional[Path] = None
-    if body.output:
-        args.append(body.output.strip())
+    output = (body.output or "").strip()
+    if output:
+        args.extend(["-o", output])
     else:
         archive = _new_dashboard_backup_path()
         try:
@@ -11927,7 +11933,7 @@ async def run_backup(body: BackupRequest):
                 status_code=500,
                 detail=f"Could not create backup directory: {exc}",
             )
-        args.append(str(archive))
+        args.extend(["-o", str(archive)])
     try:
         proc = _spawn_hermes_action(args, "backup")
     except Exception as exc:
@@ -14143,7 +14149,9 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
-            save_config(parsed)
+            # Full-document replacement: the editor owns the whole file; do not
+            # merge omitted sections back from disk (#62723).
+            save_config(parsed, merge_existing=False)
         return {"ok": True}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")

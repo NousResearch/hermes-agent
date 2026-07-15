@@ -2443,6 +2443,24 @@ class TestExecuteToolCalls:
         assert "valid json object" in messages[0]["content"].lower()
         assert "tool was not executed" in messages[0]["content"].lower()
 
+    def test_none_args_rejected_without_dispatch(self, agent):
+        """None arguments must not crash the dispatch path. Current contract:
+        malformed (non-string, non-JSON-object) args are rejected without
+        executing the tool — same as invalid JSON strings. The mainline
+        run_conversation path normalizes None to "{}" BEFORE dispatch (see
+        test_tool_call_none_args_verbose_logging_does_not_crash), so this
+        direct-dispatch path only needs to degrade gracefully, not coerce."""
+        tc = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            mock_hfc.assert_not_called()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert messages[0]["tool_call_id"] == "c1"
+        assert "tool was not executed" in messages[0]["content"].lower()
+
     def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir()
@@ -2707,10 +2725,40 @@ class TestConcurrentToolExecution:
                 mock_seq.assert_called_once()
                 mock_con.assert_not_called()
 
+    def test_none_args_batch_does_not_crash_parallelism_gating(self, agent):
+        """Non-string tool arguments must not crash the segment planner —
+        the None-args call becomes a sequential barrier and the batch
+        dispatches without raising."""
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments=None, call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
     def test_non_dict_args_forces_sequential(self, agent):
         """Tool arguments that parse to a non-dict type should fall back to sequential."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='"just a string"', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_dict_args_batch_forces_sequential_without_crash(self, agent):
+        """Pre-parsed dict arguments (non-string) must not crash the planner.
+        Current contract: the mainline loop normalizes dict args to JSON
+        strings BEFORE dispatch, so raw dicts reaching the gate are treated
+        as barriers (defensive sequential), consistent with the executors
+        rejecting non-string args rather than repairing them."""
+        tc1 = _mock_tool_call(name="web_search", arguments={"q": "alpha"}, call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments={"q": "beta"}, call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
@@ -2747,6 +2795,29 @@ class TestConcurrentToolExecution:
         assert "alpha" in messages[0]["content"]
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
+
+    def test_concurrent_none_args_rejected_without_crash(self, agent):
+        """Concurrent executor must not crash on arguments=None. Current
+        contract (_parse_tool_arguments): non-object args are rejected with
+        a structured error result and the tool is not executed; the valid
+        sibling still runs. One result per call, in order."""
+        tc1 = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"ok"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        seen_args = []
+
+        def fake_handle(name, args, task_id, **kwargs):
+            seen_args.append((kwargs["tool_call_id"], args))
+            return "ok"
+
+        with patch("run_agent.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        # Only the valid call executed; the None-args call was rejected.
+        assert seen_args == [("c2", {"q": "ok"})]
+        assert [m["tool_call_id"] for m in messages] == ["c1", "c2"]
+        assert "tool was not executed" in messages[0]["content"].lower()
 
     def test_concurrent_preserves_order_despite_timing(self, agent):
         """Even if tools finish in different order, messages should be in original order."""
@@ -4120,6 +4191,25 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_tool_call_none_args_verbose_logging_does_not_crash(self, agent):
+        self._setup_agent(agent)
+        agent.verbose_logging = True
+        tc = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        assert mock_handle_function_call.call_args.args[:2] == ("web_search", {})
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)

@@ -193,26 +193,36 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
 
 
 def _format_stderr_tail_for_user(lines: list[str]) -> str:
-    """Return a compact, chat-safe diagnostic from Codex stderr lines."""
+    """Return a compact, chat-safe diagnostic from Codex stderr lines.
+
+    Callers pass text already run through redact_sensitive_text(force=True),
+    so lines omitted from the chat copy can be echoed to the module logger —
+    that is what keeps the "see agent.log" pointer below honest.
+    """
     cleaned: list[str] = []
-    omitted = 0
+    omitted: list[str] = []
     for raw_line in lines:
         line = _ANSI_ESCAPE_RE.sub("", str(raw_line)).replace("\x00", "").strip()
         if not line:
             continue
         if any(marker in line for marker in _NOISY_STDERR_SUBSTRINGS):
-            omitted += 1
+            omitted.append(line)
             continue
         if len(line) > _STDERR_USER_MAX_LINE_CHARS:
             line = line[: _STDERR_USER_MAX_LINE_CHARS - 15].rstrip() + " [truncated]"
         if len(cleaned) < _STDERR_USER_MAX_LINES:
             cleaned.append(line)
         else:
-            omitted += 1
+            omitted.append(line)
 
     if omitted:
+        logger.info(
+            "codex stderr omitted from chat (%d line(s)):\n%s",
+            len(omitted),
+            "\n".join(omitted),
+        )
         cleaned.append(
-            f"[{omitted} noisy Codex stderr line(s) omitted; see agent.log]"
+            f"[{len(omitted)} noisy Codex stderr line(s) omitted; see agent.log]"
         )
     return "\n".join(cleaned)
 

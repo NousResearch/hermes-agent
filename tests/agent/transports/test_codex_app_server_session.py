@@ -7,6 +7,7 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import logging
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -419,6 +420,33 @@ class TestRunTurn:
         assert "db.statement" not in r.error
         assert "rows_affected" not in r.error
         assert "noisy Codex stderr line(s) omitted" in r.error
+
+    def test_omitted_stderr_lines_land_in_the_log(self, caplog):
+        # The chat copy says "see agent.log", so the omitted lines must
+        # actually be logged — they are redacted upstream, never raw.
+        client = FakeClient()
+        client.set_stderr_tail([
+            "auth bridge rejected token",
+            "WARN sqlx::query: slow statement db.statement=\"INSERT INTO logs VALUES (?, ?)\"",
+            "rows_affected=0 rows_returned=0 elapsed_secs=6.7",
+        ])
+
+        def boom(method, params):
+            if method == "thread/start":
+                raise TimeoutError("codex method 'thread/start' timed out")
+            return {}
+
+        client._request_handler = boom
+        s = make_session(client)
+        with caplog.at_level(
+            logging.INFO, logger="agent.transports.codex_app_server_session"
+        ):
+            r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "sqlx::query" not in r.error
+        assert "codex stderr omitted from chat" in caplog.text
+        assert "sqlx::query" in caplog.text
+        assert "rows_affected=0" in caplog.text
 
     def test_interrupt_during_turn_issues_turn_interrupt(self):
         client = FakeClient()

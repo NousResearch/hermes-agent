@@ -27,6 +27,59 @@ import subprocess
 from hermes_cli.config import clear_model_endpoint_credentials
 
 
+def _prune_replaced_custom_model_config_credentials(
+    base_url: str,
+    *,
+    provider_name: str = "",
+) -> None:
+    """Drop stale ``model_config`` credentials from inactive custom pools.
+
+    ``model_config`` means "the credential currently stored under
+    ``model.api_key``". After an explicit custom-endpoint switch, any old
+    custom pool still carrying that source points at the previous endpoint and
+    can be selected before the freshly saved config is tried.
+    """
+    try:
+        from agent.credential_pool import (
+            CUSTOM_POOL_PREFIX,
+            get_custom_provider_pool_key,
+        )
+        from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+        active_pool_key = get_custom_provider_pool_key(
+            base_url,
+            provider_name=provider_name or None,
+        )
+        if not active_pool_key:
+            return
+        pools = read_credential_pool(None)
+        if not isinstance(pools, dict):
+            return
+        for pool_key, entries in pools.items():
+            if (
+                not isinstance(pool_key, str)
+                or not pool_key.startswith(CUSTOM_POOL_PREFIX)
+                or pool_key == active_pool_key
+                or not isinstance(entries, list)
+            ):
+                continue
+            retained = []
+            removed_ids = []
+            changed = False
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("source") == "model_config":
+                    changed = True
+                    entry_id = entry.get("id")
+                    if entry_id:
+                        removed_ids.append(str(entry_id))
+                    continue
+                retained.append(entry)
+            if changed:
+                write_credential_pool(pool_key, retained, removed_ids=removed_ids)
+    except Exception:
+        return
+
+
 def _prompt_auth_credentials_choice(title: str) -> str:
     """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
 
@@ -567,12 +620,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
-                # Forward CLI flags from ``hermes model --manual-paste``
-                # / ``--no-browser`` / ``--timeout`` into the loopback
-                # login. Without this, browser-only remotes (#26923)
-                # can't reach the manual-paste path via ``hermes model``.
                 mock_args = argparse.Namespace(
-                    manual_paste=bool(getattr(args, "manual_paste", False)),
                     no_browser=bool(getattr(args, "no_browser", False)),
                     timeout=getattr(args, "timeout", None),
                 )
@@ -594,7 +642,6 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         print()
         try:
             mock_args = argparse.Namespace(
-                manual_paste=bool(getattr(args, "manual_paste", False)),
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None),
             )
@@ -784,8 +831,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -948,6 +995,11 @@ def _model_flow_custom(config):
         name=display_name,
         api_mode=api_mode,
     )
+    _prune_replaced_custom_model_config_credentials(
+        effective_url,
+        provider_name=display_name,
+    )
+
 
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.
@@ -1027,7 +1079,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         )
         print(f"  Current API mode:  {_lbl}")
     if current_auth_mode == "entra_id":
-        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+        print("  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
         print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()
@@ -1452,7 +1504,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = provider_key
+        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:
@@ -2313,6 +2365,110 @@ def _model_flow_bedrock(config, current_model=""):
         deactivate_provider()
 
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
+    else:
+        print("  No change.")
+
+
+def _model_flow_vertex(config, current_model=""):
+    """Google Vertex AI provider: Gemini via the OpenAI-compatible endpoint.
+
+    Auth is OAuth2 — short-lived tokens minted from a service-account JSON or
+    Application Default Credentials (ADC). No static API key. The credential
+    *path* lives in .env (VERTEX_CREDENTIALS_PATH / GOOGLE_APPLICATION_CREDENTIALS);
+    project ID and region are non-secret and saved to config.yaml under vertex:.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config, get_env_value
+    from hermes_cli.models import _PROVIDER_MODELS
+
+    # 1. Credential source detection (fast, no network / no google-auth import).
+    sa_path = (
+        get_env_value("VERTEX_CREDENTIALS_PATH")
+        or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+        or ""
+    ).strip()
+    if sa_path:
+        print(f"  Vertex credentials: service account JSON ({sa_path}) ✓")
+    else:
+        print("  Vertex credentials: Application Default Credentials (ADC)")
+        print("    Vertex uses OAuth2, not a static API key. Either:")
+        print("      • run 'gcloud auth application-default login', or")
+        print("      • set VERTEX_CREDENTIALS_PATH in ~/.hermes/.env to a service account JSON")
+    print()
+
+    cfg = load_config()
+    vertex_cfg = cfg.get("vertex")
+    if not isinstance(vertex_cfg, dict):
+        vertex_cfg = {}
+
+    # 2. Project ID (optional — falls back to the project embedded in creds).
+    current_project = str(vertex_cfg.get("project_id") or "").strip()
+    try:
+        project_input = input(
+            f"  GCP project ID [{current_project or 'from credentials'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    project_id = project_input or current_project
+
+    # 3. Region (default global — required for the Gemini 3.x previews).
+    current_region = str(vertex_cfg.get("region") or "global").strip() or "global"
+    try:
+        region_input = input(f"  Vertex region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+
+    # 4. Model selection (curated list — Vertex has no /models listing route).
+    model_list = _PROVIDER_MODELS.get("vertex", []) or [
+        "google/gemini-3-pro-preview",
+        "google/gemini-3-flash-preview",
+    ]
+    base_url_preview = (
+        "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
+        f"locations/{region}/endpoints/openapi"
+        if region == "global"
+        else f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/<project>/"
+        f"locations/{region}/endpoints/openapi"
+    )
+    selected = _prompt_model_selection(
+        model_list,
+        current_model=current_model,
+        confirm_provider="vertex",
+        confirm_base_url=base_url_preview,
+    )
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "vertex"
+        # base_url is computed at runtime from project+region; do not pin it.
+        model.pop("base_url", None)
+        model.pop("api_mode", None)  # chat_completions is the profile default
+        clear_model_endpoint_credentials(model, clear_api_mode=False)
+
+        vcfg = cfg.get("vertex")
+        if not isinstance(vcfg, dict):
+            vcfg = {}
+        vcfg["project_id"] = project_id
+        vcfg["region"] = region
+        cfg["vertex"] = vcfg
+
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
     else:
         print("  No change.")
 

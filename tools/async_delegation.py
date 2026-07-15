@@ -40,46 +40,18 @@ import logging
 import threading
 import time
 import uuid
-import weakref
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures.thread import _worker
 from typing import Any, Callable, Dict, List, Optional
+
+from tools.daemon_pool import DaemonThreadPoolExecutor
+from tools.thread_context import propagate_context_to_thread
 
 logger = logging.getLogger(__name__)
 
-
-class _DaemonThreadPoolExecutor(ThreadPoolExecutor):
-    """ThreadPoolExecutor variant whose workers do not block process exit.
-
-    Stdlib ``ThreadPoolExecutor`` workers are non-daemon. Background
-    delegation is explicitly best-effort detached work, so a long child should
-    be interruptible by ``/stop``/shutdown but must not keep a CLI process alive
-    after the user exits.
-    """
-
-    def _adjust_thread_count(self) -> None:
-        if self._idle_semaphore.acquire(timeout=0):
-            return
-
-        def weakref_cb(_, q=self._work_queue):
-            q.put(None)
-
-        num_threads = len(self._threads)
-        if num_threads < self._max_workers:
-            thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
-            t = threading.Thread(
-                name=thread_name,
-                target=_worker,
-                args=(
-                    weakref.ref(self, weakref_cb),
-                    self._work_queue,
-                    self._initializer,
-                    self._initargs,
-                ),
-                daemon=True,
-            )
-            t.start()
-            self._threads.add(t)
+# Back-compat alias — the daemon executor now lives in tools.daemon_pool so
+# other subsystems (tool_executor, memory_manager, delegate_tool, skills_hub)
+# can share it. Existing imports of ``_DaemonThreadPoolExecutor`` keep working.
+_DaemonThreadPoolExecutor = DaemonThreadPoolExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +129,9 @@ def dispatch_async_delegation(
     role: str,
     model: Optional[str],
     session_key: str,
+    parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
+    origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
@@ -173,6 +147,11 @@ def dispatch_async_delegation(
         captured on the parent thread BEFORE dispatch, because the daemon
         worker thread won't carry the contextvar. Used to route the
         completion back to the originating session.
+    parent_session_id
+        The durable ``state.db`` session id of the parent agent that spawned
+        the delegation. Carried on the completion event so the gateway can
+        pin routing to the spawning session instead of recovering the latest
+        ``ended_at IS NULL`` row for the peer tuple (#57498).
     runner
         Zero-arg callable that builds + runs the child and returns the same
         result dict ``_run_single_child`` produces. Runs on the worker thread.
@@ -200,6 +179,8 @@ def dispatch_async_delegation(
         "role": role,
         "model": model,
         "session_key": session_key,
+        "origin_ui_session_id": origin_ui_session_id,
+        "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -219,7 +200,7 @@ def dispatch_async_delegation(
                     f"Async delegation capacity reached ({max_async_children} "
                     f"running). Wait for one to finish (its result will re-enter "
                     f"the chat), or run this task synchronously "
-                    f"(background=false). Raise delegation.max_async_children in "
+                    f"(background=false). Raise delegation.max_concurrent_children in "
                     f"config.yaml to allow more concurrent background subagents."
                 ),
             }
@@ -247,7 +228,9 @@ def dispatch_async_delegation(
             _finalize(delegation_id, result, status)
 
     try:
-        executor.submit(_worker)
+        # Propagate the dispatching profile so the detached child resolves
+        # get_hermes_home() under the right profile.
+        executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
         with _records_lock:
             _records.pop(delegation_id, None)
@@ -308,6 +291,8 @@ def _push_completion_event(
         # session_key routes the completion back to the originating gateway
         # session; empty string => CLI (single-session) path.
         "session_key": record.get("session_key", ""),
+        "origin_ui_session_id": record.get("origin_ui_session_id", ""),
+        "parent_session_id": record.get("parent_session_id"),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -342,7 +327,9 @@ def dispatch_async_delegation_batch(
     role: str,
     model: Optional[str],
     session_key: str,
+    parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
+    origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
@@ -382,6 +369,8 @@ def dispatch_async_delegation_batch(
         "role": role,
         "model": model,
         "session_key": session_key,
+        "origin_ui_session_id": origin_ui_session_id,
+        "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -398,7 +387,7 @@ def dispatch_async_delegation_batch(
                 "error": (
                     f"Async delegation capacity reached ({max_async_children} "
                     f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or raise delegation.max_async_children in "
+                    f"the chat), or raise delegation.max_concurrent_children in "
                     f"config.yaml to allow more concurrent background units."
                 ),
             }
@@ -432,7 +421,8 @@ def dispatch_async_delegation_batch(
             _finalize_batch(delegation_id, combined, status)
 
     try:
-        executor.submit(_worker)
+        # Propagate the dispatching profile to the detached batch children.
+        executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover
         with _records_lock:
             _records.pop(delegation_id, None)
@@ -478,6 +468,8 @@ def _finalize_batch(
         "type": "async_delegation",
         "delegation_id": delegation_id,
         "session_key": event_record.get("session_key", ""),
+        "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
+        "parent_session_id": event_record.get("parent_session_id"),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -541,6 +533,62 @@ def interrupt_all(reason: str = "shutdown") -> int:
                 )
     if count:
         logger.info("Interrupted %d async delegation(s) (%s)", count, reason)
+    return count
+
+
+def interrupt_for_session(
+    session_key: str = "",
+    origin_ui_session_id: str = "",
+    parent_session_id: str = "",
+    reason: str = "session_end",
+) -> int:
+    """Signal running async delegations owned by ONE session to stop.
+
+    A delegation's lifecycle is bound to the session that spawned it: when
+    that session ends, its in-flight background subagents must end with it —
+    a completed orphan would otherwise sit on the shared completion queue
+    with no live owner, either leaking into another chat or burning tokens
+    with no one listening (#55578).
+
+    Selectors (any matching field claims the record):
+    - ``origin_ui_session_id``: the live TUI tab/window that commissioned it.
+    - ``session_key``: the durable routing key captured at dispatch.
+    - ``parent_session_id``: the spawning agent's durable session-db id —
+      the right selector for gateway chats, whose ``session_key`` (the
+      platform conversation key) SURVIVES a ``/new`` reset while the
+      session id rotates.
+
+    Returns how many were interrupted.
+    """
+    if not session_key and not origin_ui_session_id and not parent_session_id:
+        return 0
+    count = 0
+    with _records_lock:
+        targets = [
+            r for r in _records.values()
+            if r.get("status") == "running"
+            and (
+                (origin_ui_session_id and str(r.get("origin_ui_session_id") or "") == origin_ui_session_id)
+                or (session_key and str(r.get("session_key") or "") == session_key)
+                or (parent_session_id and str(r.get("parent_session_id") or "") == parent_session_id)
+            )
+        ]
+    for r in targets:
+        fn = r.get("interrupt_fn")
+        if callable(fn):
+            try:
+                fn()
+                count += 1
+            except Exception as exc:
+                logger.debug(
+                    "interrupt_for_session: %s interrupt failed: %s",
+                    r.get("delegation_id"), exc,
+                )
+    if count:
+        logger.info(
+            "Interrupted %d async delegation(s) for ending session (%s)",
+            count, reason,
+        )
     return count
 
 

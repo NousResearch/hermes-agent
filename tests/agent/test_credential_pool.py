@@ -2827,7 +2827,7 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     pool = load_pool("xai-oauth")
     selected = pool.select()
     assert selected is not None
-    assert selected.source == "loopback_pkce"
+    assert selected.source == "device_code"
 
     # Add a manual API-key entry that must survive the quarantine.
     pool.add_entry(PooledCredential.from_dict("xai-oauth", {
@@ -2868,7 +2868,7 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     assert [entry["id"] for entry in auth_payload["credential_pool"]["xai-oauth"]] == ["manual-key"]
 
     # A second try_refresh_current must not call refresh_xai_oauth_pure again
-    # (pool is now empty of loopback entries and current is None).
+    # (pool is now empty of device-code entries and current is None).
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
 
@@ -3050,6 +3050,11 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
 def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
     """Regression for #19566: stale rotation writes keep concurrent entries."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery: a real ~/.claude/.credentials.json
+    # on a dev machine would seed an extra claude_code entry and break the
+    # exact-id assertions below (passes on CI where no such file exists).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -3111,6 +3116,9 @@ def test_persist_preserves_concurrent_disk_only_entry(tmp_path, monkeypatch):
 
 def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    # Block external-credential autodiscovery (see note in the test above).
+    monkeypatch.setattr("agent.anthropic_adapter.read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
     _write_auth_store(
         tmp_path,
         {
@@ -3146,3 +3154,139 @@ def test_remove_index_does_not_resurrect_via_disk_merge(tmp_path, monkeypatch):
     final = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     final_ids = [entry["id"] for entry in final["credential_pool"]["anthropic"]]
     assert final_ids == ["cred-A"]
+
+
+# ---------------------------------------------------------------------------
+# _sync_anthropic_entry_from_credentials_file — parity fix tests
+# ---------------------------------------------------------------------------
+
+def _make_anthropic_claude_code_pool(tmp_path, monkeypatch, *, access_token, refresh_token, expires_at_ms=9_999_999_999_000):
+    """Helper: load an Anthropic pool seeded with a single claude_code entry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: pid == "anthropic")
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
+    )
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.source == "claude_code"
+    return pool, entry
+
+
+def test_sync_anthropic_entry_access_token_only_changed(tmp_path, monkeypatch):
+    """Sync must trigger when access_token rotates but refresh_token stays the same.
+
+    This is the parity-fix case: the old code checked only refresh_token,
+    so a silent access_token re-issue left the pool with a stale bearer token.
+    """
+    pool, entry = _make_anthropic_claude_code_pool(
+        tmp_path, monkeypatch,
+        access_token="old-access",
+        refresh_token="shared-refresh",
+    )
+
+    # Credentials file: new access_token, same refresh_token
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "new-access", "refreshToken": "shared-refresh", "expiresAt": 9_999_999_999_000},
+    )
+
+    synced = pool._sync_anthropic_entry_from_credentials_file(entry)
+
+    assert synced is not entry, "sync must return a new entry object"
+    assert synced.access_token == "new-access"
+    assert synced.refresh_token == "shared-refresh"
+
+
+def test_sync_anthropic_entry_refresh_token_changed(tmp_path, monkeypatch):
+    """Sync must trigger when refresh_token rotates (single-use rotation path)."""
+    pool, entry = _make_anthropic_claude_code_pool(
+        tmp_path, monkeypatch,
+        access_token="access-v1",
+        refresh_token="refresh-v1",
+    )
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "access-v2", "refreshToken": "refresh-v2", "expiresAt": 9_999_999_999_000},
+    )
+
+    synced = pool._sync_anthropic_entry_from_credentials_file(entry)
+
+    assert synced is not entry
+    assert synced.access_token == "access-v2"
+    assert synced.refresh_token == "refresh-v2"
+
+
+def test_sync_anthropic_entry_tokens_unchanged_no_op(tmp_path, monkeypatch):
+    """Sync must be a no-op when credentials file matches the pool entry."""
+    pool, entry = _make_anthropic_claude_code_pool(
+        tmp_path, monkeypatch,
+        access_token="same-access",
+        refresh_token="same-refresh",
+    )
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "same-access", "refreshToken": "same-refresh", "expiresAt": 9_999_999_999_000},
+    )
+
+    synced = pool._sync_anthropic_entry_from_credentials_file(entry)
+
+    assert synced is entry, "no-op sync must return the original entry object"
+
+
+def test_sync_anthropic_entry_clears_all_error_fields(tmp_path, monkeypatch):
+    """Syncing fresh tokens must clear all six error/status fields on the entry.
+
+    Before the fix, last_error_reason / last_error_message / last_error_reset_at
+    were left set, so a previously-exhausted entry could stay stuck even after
+    fresh tokens arrived from the credentials file.
+    """
+    from dataclasses import replace as dc_replace
+    from agent.credential_pool import STATUS_EXHAUSTED
+
+    pool, entry = _make_anthropic_claude_code_pool(
+        tmp_path, monkeypatch,
+        access_token="stale-access",
+        refresh_token="stale-refresh",
+    )
+
+    now = time.time()
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=now,
+        last_error_code=401,
+        last_error_reason="token_expired",
+        last_error_message="Access token has expired",
+        last_error_reset_at=now + 300,
+    )
+    pool._replace_entry(entry, exhausted)
+
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "fresh-access", "refreshToken": "fresh-refresh", "expiresAt": 9_999_999_999_000},
+    )
+
+    synced = pool._sync_anthropic_entry_from_credentials_file(exhausted)
+
+    assert synced is not exhausted
+    assert synced.access_token == "fresh-access"
+    assert synced.last_status is None
+    assert synced.last_status_at is None
+    assert synced.last_error_code is None
+    assert synced.last_error_reason is None
+    assert synced.last_error_message is None
+    assert synced.last_error_reset_at is None

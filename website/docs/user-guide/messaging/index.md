@@ -191,13 +191,23 @@ Sessions persist across messages until they reset. The agent remembers your conv
 
 ### Reset Policies
 
-Sessions reset based on configurable policies:
+**By default sessions never auto-reset** — context lives until you `/reset`
+manually or context compression kicks in. If you want automatic resets, opt in
+with the `session_reset` section in `~/.hermes/config.yaml`:
 
-| Policy | Default | Description |
-|--------|---------|-------------|
-| Daily | 4:00 AM | Reset at a specific hour each day |
-| Idle | 1440 min | Reset after N minutes of inactivity |
-| Both | (combined) | Whichever triggers first |
+```yaml
+session_reset:
+  mode: idle        # "idle", "daily", "both", or "none" (default)
+  idle_minutes: 1440  # for idle/both: minutes of inactivity before reset
+  at_hour: 4          # for daily/both: hour of day (0-23, local time)
+```
+
+| Mode | Description |
+|------|-------------|
+| `none` | Never auto-reset (default) |
+| `daily` | Reset at a specific hour each day |
+| `idle` | Reset after N minutes of inactivity |
+| `both` | Whichever triggers first |
 
 A live background process (started with `terminal(background=true)`) normally
 protects its session from resetting so output isn't lost. To stop a forgotten
@@ -578,6 +588,21 @@ gateway:
 ```
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+
+### Typing indicators
+
+While the agent is processing a message, the gateway shows a live typing status on platforms that support it — a "typing…" bubble on Telegram/Discord/Signal, or the "is thinking…" assistant status on Slack. This is controlled per-platform by the `typing_indicator` flag in `gateway-config.yaml`, which defaults to `true`:
+
+```yaml
+gateway:
+  platforms:
+    slack:
+      typing_indicator: false   # don't show "is thinking…" on Slack
+    telegram:
+      # typing_indicator omitted → defaults to true
+```
+
+Set `typing_indicator: false` on any platform where the indicator is unwanted. Some users find Slack's "is thinking…" status noisy (it also briefly disables the compose box while shown, since it uses Slack's Assistant API). Disabling it only suppresses the indicator — message delivery and everything else is unchanged. The flag is generic, so the same key works for every platform.
 
 ### Session resume across gateway restarts
 

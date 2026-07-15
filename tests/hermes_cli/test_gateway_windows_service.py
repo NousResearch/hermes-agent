@@ -389,7 +389,7 @@ class TestPlannedStopMarkerDirCreation:
 
                 # Verify content
                 import json
-                with open(marker_path, 'r') as f:
+                with open(marker_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 assert 'target_pid' in data
                 assert 'written_at' in data
@@ -693,6 +693,7 @@ class TestServiceScriptEarlyArgParsing:
                 r"C:\Users\KK\AppData\Local\hermes\profiles\coder",
                 "--profile",
                 "coder",
+                "start",  # verb so after stripping, sys.argv > 1 → HandleCommandLine path
             ]
             # Ensure any pre-existing env doesn't pollute the assertion.
             os.environ.pop("HERMES_HOME", None)
@@ -1127,3 +1128,235 @@ class TestServiceNameForHermesHome:
         )
         name = gateway_windows.get_service_name_for_hermes_home(str(profile_home))
         assert name == "HermesGateway-coder"
+
+
+# =========================================================================
+# SCM dispatch, tagId, via_scm no-fallback, wait-for-state
+# =========================================================================
+
+
+class TestScmDispatchAndTagId:
+    """SCM lifecycle fixes (PR #50200)."""
+
+    def test_scm_dispatch_path_when_argv_len_one(self, monkeypatch):
+        """When sys.argv has only the script name (SCM launch), main()
+        must call servicemanager.Initialize/PrepareToHostSingle/
+        StartServiceCtrlDispatcher, not HandleCommandLine."""
+        import sys
+        from hermes_cli import _hermes_gateway_service as svc
+
+        original_argv = sys.argv[:]
+        calls = []
+
+        def fake_initialize():
+            calls.append("Initialize")
+
+        def fake_prepare(cls):
+            calls.append(f"PrepareToHostSingle({cls})")
+
+        def fake_dispatch():
+            calls.append("StartServiceCtrlDispatcher")
+
+        try:
+            sys.argv = ["_hermes_gateway_service.py"]
+            with patch.multiple(
+                svc.servicemanager,
+                Initialize=fake_initialize,
+                PrepareToHostSingle=fake_prepare,
+                StartServiceCtrlDispatcher=fake_dispatch,
+            ):
+                svc.main()
+            assert "Initialize" in calls, calls
+            assert any("PrepareToHostSingle" in c for c in calls), calls
+            assert "StartServiceCtrlDispatcher" in calls, calls
+        finally:
+            sys.argv = original_argv
+
+    def test_scm_dispatch_skips_handle_command_line(self, monkeypatch):
+        """When SCM path is taken (len(argv)<=1), HandleCommandLine
+        must NOT be called."""
+        import sys
+        from hermes_cli import _hermes_gateway_service as svc
+
+        original_argv = sys.argv[:]
+        hcl_called = []
+
+        def fake_hcl(cls):
+            hcl_called.append(True)
+
+        try:
+            sys.argv = ["_hermes_gateway_service.py"]
+            with patch.multiple(
+                svc.servicemanager,
+                Initialize=lambda: None,
+                PrepareToHostSingle=lambda cls: None,
+                StartServiceCtrlDispatcher=lambda: None,
+            ), patch.object(svc, "win32serviceutil") as mock_util:
+                mock_util.HandleCommandLine.side_effect = fake_hcl
+                svc.main()
+            assert hcl_called == [], (
+                "HandleCommandLine must NOT be called in SCM dispatch path"
+            )
+        finally:
+            sys.argv = original_argv
+
+    def test_install_service_tagid_is_int_zero(self, monkeypatch):
+        """install_service must pass tagId=0 to CreateService, not None
+        (PR #50200 fix: 'NoneType' object cannot be interpreted as an integer)."""
+        from hermes_cli import gateway_windows
+
+        captured = {}
+
+        def fake_create_service(scm, name, display, access, svctype,
+                                 starttype, error, binpath, *rest):
+            # rest = (loadOrderGroup, tagId, dependencies, ...)
+            captured["tagId"] = rest[1] if len(rest) > 1 else "unknown"
+            return MagicMock()
+
+        mock_ws = MagicMock()
+        mock_ws.OpenSCManager.return_value = MagicMock()
+        mock_ws.OpenService.side_effect = Exception("not found")
+        mock_ws.CreateService.side_effect = fake_create_service
+
+        with patch.dict("sys.modules", {"win32service": mock_ws}):
+            gateway_windows.install_service(force=False, allow_fallback=False)
+
+        assert "tagId" in captured
+        assert captured["tagId"] == 0, (
+            f"CreateService tagId must be 0 (int), got {captured['tagId']!r}"
+        )
+
+
+class TestScmViaScmNoFallback:
+    """via_scm=True must never fall back to _spawn_detached."""
+
+    def test_via_scm_failure_does_not_fall_through_to_detached(self, monkeypatch):
+        """When cold_start_via_scm=True and SCM start fails,
+        _cold_start_windows_gateway_after_update must NOT call
+        _spawn_detached.
+        """
+        from hermes_cli import main as main_module
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service",
+            lambda: False,  # SCM start fails
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._spawn_detached",
+            lambda: calls.append(True) or 1234,
+        )
+
+        main_module._cold_start_windows_gateway_after_update(via_scm=True)
+
+        assert calls == [], (
+            "Must NOT call _spawn_detached when via_scm=True and SCM failed; "
+            f"got {calls}"
+        )
+
+    def test_via_scm_false_falls_through_to_detached(self, monkeypatch):
+        """When via_scm=False, _cold_start_windows_gateway_after_update
+        must fall through to _spawn_detached (legacy path unchanged)."""
+        from hermes_cli import main as main_module
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [],
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._spawn_detached",
+            lambda: calls.append(True) or 1234,
+        )
+
+        main_module._cold_start_windows_gateway_after_update(via_scm=False)
+
+        assert calls == [True], (
+            "Must call _spawn_detached when via_scm=False; "
+            f"got {calls}"
+        )
+
+
+class TestScmWaitForState:
+    """stop_service_for_hermes_home / start_service_for_hermes_home
+    must wait for SERVICE_STOPPED / SERVICE_RUNNING."""
+
+    def test_stop_waits_for_stopped(self, monkeypatch):
+        """After ControlService, stop_service_for_hermes_home must
+        call WaitForServiceStatus for SERVICE_STOPPED."""
+        from hermes_cli import gateway_windows
+        import win32service
+
+        waited = []
+        def fake_wait(name, status, timeout):
+            waited.append((name, status, timeout))
+
+        # Mock the module-level helpers so the function reaches
+        # the wait block (ControlService must succeed).
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered_for_hermes_home",
+            lambda _home: True,
+        )
+        # Mock OpenSCManager/OpenService/ControlService to succeed
+        mock_ws = MagicMock()
+        mock_ws.OpenSCManager.return_value = 1
+        mock_ws.CloseServiceHandle.return_value = None
+        svc_handle = MagicMock()
+        mock_ws.OpenService.return_value = svc_handle
+        mock_ws.SERVICE_STOP = win32service.SERVICE_STOP
+        mock_ws.SERVICE_CONTROL_STOP = win32service.SERVICE_CONTROL_STOP
+        mock_ws.SERVICE_STOPPED = win32service.SERVICE_STOPPED
+
+        with patch.dict("sys.modules", {"win32service": mock_ws}):
+            # The function imports win32serviceutil inside the wait block;
+            # we need to set it up before calling.
+            import types
+            mock_util = types.ModuleType("mock_util")
+            mock_util.WaitForServiceStatus = fake_wait
+            monkeypatch.setitem(sys.modules, "win32serviceutil", mock_util)
+
+            gateway_windows.stop_service_for_hermes_home("/tmp/home")
+
+        assert len(waited) == 1, f"WaitForServiceStatus was NOT called: {waited}"
+        _, status, timeout = waited[0]
+        assert status == win32service.SERVICE_STOPPED
+        assert timeout == 30
+
+    def test_start_waits_for_running(self, monkeypatch):
+        """After StartService, start_service_for_hermes_home must
+        call WaitForServiceStatus for SERVICE_RUNNING."""
+        from hermes_cli import gateway_windows
+        import win32service
+
+        waited = []
+        def fake_wait(name, status, timeout):
+            waited.append((name, status, timeout))
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered_for_hermes_home",
+            lambda _home: True,
+        )
+        mock_ws = MagicMock()
+        mock_ws.OpenSCManager.return_value = 1
+        mock_ws.CloseServiceHandle.return_value = None
+        svc_handle = MagicMock()
+        mock_ws.OpenService.return_value = svc_handle
+        mock_ws.SERVICE_START = win32service.SERVICE_START
+        mock_ws.SERVICE_RUNNING = win32service.SERVICE_RUNNING
+
+        with patch.dict("sys.modules", {"win32service": mock_ws}):
+            import types
+            mock_util = types.ModuleType("mock_util")
+            mock_util.WaitForServiceStatus = fake_wait
+            monkeypatch.setitem(sys.modules, "win32serviceutil", mock_util)
+
+            gateway_windows.start_service_for_hermes_home("/tmp/home")
+
+        assert len(waited) == 1, f"WaitForServiceStatus was NOT called: {waited}"
+        _, status, timeout = waited[0]
+        assert status == win32service.SERVICE_RUNNING
+        assert timeout == 60

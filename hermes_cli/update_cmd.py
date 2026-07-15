@@ -3809,7 +3809,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
                 profile_name,
                 exc,
             )
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        _m()._write_update_planned_stop_marker(Path(proc.path), int(pid))
 
     # Resolve each mapped worker's venv-side launcher BEFORE draining: the
     # drain stops tracking a PID exactly when it dies, so a gracefully

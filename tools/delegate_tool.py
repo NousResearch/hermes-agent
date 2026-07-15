@@ -526,6 +526,20 @@ def _get_inherit_mcp_toolsets() -> bool:
     return is_truthy_value(cfg.get("inherit_mcp_toolsets"), default=True)
 
 
+def _get_include_tool_trace() -> bool:
+    """Whether delegate_task result entries include the tool_trace field.
+
+    Config key: delegation.include_tool_trace (bool, default True). This is a
+    narrow switch that controls ONLY the tool_trace field of delegate_task
+    results: set false to drop the per-child trace (tool names + byte counts)
+    and save parent-context tokens. All other observability fields (status,
+    model, tokens, api_calls, exit_reason, error diagnostics) are always
+    returned regardless of this setting.
+    """
+    cfg = _load_config()
+    return is_truthy_value(cfg.get("include_tool_trace"), default=True)
+
+
 def _is_mcp_toolset_name(name: str) -> bool:
     """Return True for canonical MCP toolsets and their registered aliases."""
     if not name:
@@ -2085,10 +2099,15 @@ def _run_single_child(
 
         # Build tool trace from conversation messages (already in memory).
         # Uses tool_call_id to correctly pair parallel tool calls with results.
+        # delegation.include_tool_trace (default true) controls ONLY this
+        # field: when false the trace is skipped and omitted from the result
+        # entry to save parent-context tokens, while every other
+        # observability field below is still returned.
+        include_tool_trace = _get_include_tool_trace()
         tool_trace: list[Dict[str, Any]] = []
         trace_by_id: Dict[str, Dict[str, Any]] = {}
         messages = result.get("messages") or []
-        if isinstance(messages, list):
+        if include_tool_trace and isinstance(messages, list):
             for msg in messages:
                 if not isinstance(msg, dict):
                     continue
@@ -2148,7 +2167,6 @@ def _run_single_child(
                     _output_tokens if isinstance(_output_tokens, (int, float)) else 0
                 ),
             },
-            "tool_trace": tool_trace,
             # Captured before the finally block calls child.close() so the
             # parent thread can fire subagent_stop with the correct role.
             # Stripped before the dict is serialised back to the model.
@@ -2167,6 +2185,8 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        if include_tool_trace:
+            entry["tool_trace"] = tool_trace
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 

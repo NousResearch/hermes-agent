@@ -2269,6 +2269,13 @@ DEFAULT_CONFIG = {
         # budget still applies.
         "max_summary_chars": 24000,
 
+        # Controls ONLY the tool_trace field of delegate_task results. When
+        # false, each result entry omits its per-child tool_trace (the list of
+        # tool calls with byte counts) to save parent-context tokens; all
+        # other observability fields (status, model, tokens, api_calls,
+        # exit_reason, error diagnostics) are always returned.
+        "include_tool_trace": True,
+
         "child_timeout_seconds": 0,  # optional wall-clock cap per child agent. 0 (default)
                                      # = no timeout: children fail only from real errors
                                      # (API, tools, iteration budget), never a delegation

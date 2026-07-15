@@ -496,6 +496,9 @@ def load_cli_config() -> Dict[str, Any]:
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+            "include_tool_trace": True,  # Set false to omit ONLY the tool_trace field from
+                                         # delegate_task results (saves tokens); all other
+                                         # observability fields are always returned
         },
         "onboarding": {
             # First-touch hint flags (see agent/onboarding.py).  Each hint is

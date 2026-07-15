@@ -278,7 +278,7 @@ export function useStatusbarItems({
         hidden: !currentCwd,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        label: currentCwd ? workspaceLabel(currentCwd) : undefined,
+        label: currentProject?.name || (currentCwd ? workspaceLabel(currentCwd) : undefined),
         menuItems: currentCwd
           ? [
               {
@@ -301,7 +301,7 @@ export function useStatusbarItems({
               }
             ]
           : undefined,
-        title: currentCwd || undefined,
+        title: currentProject?.primary_path || currentCwd || undefined,
         variant: 'menu'
       },
       {
@@ -343,6 +343,8 @@ export function useStatusbarItems({
       commandCenterOpen,
       copy,
       currentCwd,
+      currentProject?.name,
+      currentProject?.primary_path,
       fileMenu.copyPath,
       fileMenu.revealFileManager,
       fileMenu.revealInSidebar,
@@ -361,14 +363,6 @@ export function useStatusbarItems({
 
   const coreRightStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
-      {
-        hidden: !currentProject?.name,
-        icon: <FolderOpen className="size-3" />,
-        id: 'project',
-        label: currentProject?.name,
-        title: currentProject?.primary_path || currentProject?.slug || currentProject?.name,
-        variant: 'text'
-      },
       {
         detail: <LiveDuration since={turnStartedAt} />,
         hidden: !busy || !turnStartedAt,
@@ -425,9 +419,6 @@ export function useStatusbarItems({
       contextBar,
       contextUsage,
       copy,
-      currentProject?.name,
-      currentProject?.primary_path,
-      currentProject?.slug,
       currentUsage,
       requestGateway,
       sessionStartedAt,

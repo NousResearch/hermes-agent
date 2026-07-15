@@ -690,7 +690,7 @@ def test_oneshot_exit_code_when_failed_without_response(monkeypatch):
     assert run_oneshot("hi") == 2
 
 
-def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys):
+def test_oneshot_exit_code_nonzero_when_failed_with_error_text(monkeypatch, capsys):
     from hermes_cli.oneshot import run_oneshot
 
     monkeypatch.setattr(
@@ -700,7 +700,7 @@ def test_oneshot_exit_code_zero_when_failed_with_error_text(monkeypatch, capsys)
             {"failed": True, "partial": False},
         ),
     )
-    assert run_oneshot("hi") == 0
+    assert run_oneshot("hi") == 2
     assert "HTTP 404" in capsys.readouterr().out
 
 

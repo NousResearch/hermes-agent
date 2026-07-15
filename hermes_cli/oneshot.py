@@ -296,7 +296,10 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if (result.get("failed") or result.get("partial")) and not (response or "").strip():
+    # AIAgent can return a user-facing error string as ``final_response`` while
+    # also reporting the provider failure structurally. Do not mistake that
+    # diagnostic text for a successful answer: wrappers key off this exit code.
+    if result.get("failed") or result.get("partial") or result.get("error"):
         _finalize_oneshot_session(result, "oneshot_failed")
         return 2
 

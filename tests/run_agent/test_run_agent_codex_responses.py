@@ -2414,13 +2414,32 @@ def test_normalize_codex_response_reasoning_only_completed_is_stop_without_issue
     assert assistant_message.content == ""
 
 
-def test_normalize_codex_response_reasoning_only_is_stop_for_xai_backend(monkeypatch):
+def test_normalize_codex_response_reasoning_only_stays_incomplete_for_xai_backend(monkeypatch):
     """xAI backend also preserves incomplete for reasoning-only (same as Codex)."""
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     response = _codex_reasoning_only_response()
     assistant_message, finish_reason = _normalize_codex_response(
         response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+
+
+def test_normalize_codex_response_reasoning_only_stays_incomplete_for_github_backend(monkeypatch):
+    """GitHub/Copilot Responses backend preserves incomplete for reasoning-only.
+
+    Copilot fronts the same OpenAI model family as codex_backend and exhibits
+    the same reasoning-only "still thinking" degeneration mode, so it must
+    stay on the continuation path — only unrecognized (other:*) backends
+    trust response.status='completed' as terminal.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="github_responses"
     )
 
     assert finish_reason == "incomplete"

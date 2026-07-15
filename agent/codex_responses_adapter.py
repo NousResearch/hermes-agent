@@ -1382,10 +1382,11 @@ def _normalize_codex_response(
         # Response contains only reasoning (encrypted thinking state and/or
         # human-readable summary) with no visible content or tool calls.
         #
-        # For known Codex/xAI backends, reasoning-only with status="completed"
-        # means "the model is still thinking and needs another turn" — treat
-        # it as incomplete so the Codex continuation path retries instead of
-        # falling into the empty-content retry loop.
+        # For the specially-handled backends (Codex, xAI, GitHub/Copilot),
+        # reasoning-only with status="completed" means "the model is still
+        # thinking and needs another turn" — treat it as incomplete so the
+        # Codex continuation path retries instead of falling into the
+        # empty-content retry loop.
         #
         # For all other backends (other:<base_url>, etc.), trust the provider's
         # own response.status signal. When status == "completed" and no items
@@ -1393,7 +1394,11 @@ def _normalize_codex_response(
         # state — forcing "incomplete" causes multi-minute stalls as the
         # continuation path re-issues calls (3 retries × up to 240s each).
         # See https://github.com/NousResearch/hermes-agent/issues/64434
-        if response_status == "completed" and issuer_kind not in ("codex_backend", "xai_responses"):
+        if response_status == "completed" and issuer_kind not in (
+            "codex_backend",
+            "xai_responses",
+            "github_responses",
+        ):
             finish_reason = "stop"
         else:
             finish_reason = "incomplete"

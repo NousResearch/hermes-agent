@@ -1467,3 +1467,32 @@ class TestMultiplexProfilesEnvOverride:
         for noise in ("", "   ", "maybe", "2"):
             monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", noise)
             assert _env_multiplex_profiles_override() is None, repr(noise)
+
+
+
+class TestApiServerExplicitDisable:
+    """API_SERVER_ENABLED must not override explicit YAML disable (#62935)."""
+
+    def test_api_server_env_respects_explicit_yaml_disable(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+
+        config = GatewayConfig()
+        config.platforms[Platform.API_SERVER] = PlatformConfig(
+            enabled=False,
+            extra={"_enabled_explicit": True},
+        )
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        monkeypatch.setenv("API_SERVER_KEY", "should-still-store")
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.API_SERVER].enabled is False
+        assert config.platforms[Platform.API_SERVER].extra.get("key") == "should-still-store"
+
+    def test_api_server_env_still_enables_when_not_explicit(self, monkeypatch):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        config = GatewayConfig()
+        monkeypatch.setenv("API_SERVER_ENABLED", "true")
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.API_SERVER].enabled is True

@@ -27,7 +27,8 @@ import html
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 from urllib.parse import quote
 
 # httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
@@ -47,46 +48,37 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-try:
-    from microsoft_teams.apps import App, ActivityContext
-    from microsoft_teams.common.http.client import ClientOptions
-    from microsoft_teams.api import MessageActivity, ConversationReference
-    from microsoft_teams.api.activities.typing import TypingActivityInput
-    from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
-    from microsoft_teams.api.models.adaptive_card import (
-        AdaptiveCardActionCardResponse,
-        AdaptiveCardActionMessageResponse,
-    )
-    from microsoft_teams.api.models.invoke_response import InvokeResponse, AdaptiveCardInvokeResponse
-    from microsoft_teams.apps.http.adapter import (
-        HttpMethod,
-        HttpRequest,
-        HttpResponse,
-        HttpRouteHandler,
-    )
-    from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+# microsoft-teams-apps calls ``load_dotenv(find_dotenv(usecwd=True))`` at
+# ``microsoft_teams.apps.app`` import time. Importing it during plugin discovery
+# / ``TeamsSummaryWriter`` imports would pollute process ``os.environ`` from a
+# cwd-discovered ``.env`` (#62935). Detect presence via find_spec only; bind
+# symbols in ``check_teams_requirements()`` behind a dotenv no-op.
+import importlib.util
+import sys as _sys
 
-    TEAMS_SDK_AVAILABLE = True
-except ImportError:
-    TEAMS_SDK_AVAILABLE = False
-    ClientOptions = None  # type: ignore[assignment,misc]
-    App = None  # type: ignore[assignment,misc]
-    ActivityContext = None  # type: ignore[assignment,misc]
-    MessageActivity = None  # type: ignore[assignment,misc]
-    ConversationReference = None  # type: ignore[assignment,misc]
-    TypingActivityInput = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
-    InvokeResponse = None  # type: ignore[assignment,misc]
-    HttpMethod = str  # type: ignore[assignment,misc]
-    HttpRequest = None  # type: ignore[assignment,misc]
-    HttpResponse = None  # type: ignore[assignment,misc]
-    HttpRouteHandler = None  # type: ignore[assignment,misc]
-    AdaptiveCard = None  # type: ignore[assignment,misc]
-    ExecuteAction = None  # type: ignore[assignment,misc]
-    TextBlock = None  # type: ignore[assignment,misc]
+try:
+    TEAMS_SDK_AVAILABLE = importlib.util.find_spec("microsoft_teams") is not None
+except ValueError:
+    # Test stubs may inject a module without ``__spec__``.
+    TEAMS_SDK_AVAILABLE = "microsoft_teams" in _sys.modules
+ClientOptions = None  # type: ignore[assignment,misc]
+App = None  # type: ignore[assignment,misc]
+ActivityContext = None  # type: ignore[assignment,misc]
+MessageActivity = None  # type: ignore[assignment,misc]
+ConversationReference = None  # type: ignore[assignment,misc]
+TypingActivityInput = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
+AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
+AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
+InvokeResponse = None  # type: ignore[assignment,misc]
+HttpMethod = str  # type: ignore[assignment,misc]
+HttpRequest = None  # type: ignore[assignment,misc]
+HttpResponse = None  # type: ignore[assignment,misc]
+HttpRouteHandler = None  # type: ignore[assignment,misc]
+AdaptiveCard = None  # type: ignore[assignment,misc]
+ExecuteAction = None  # type: ignore[assignment,misc]
+TextBlock = None  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -625,6 +617,31 @@ async def _standalone_send(
 # install. ``check_teams_requirements`` is the ACTIVE lazy-installer called
 # from ``connect()``; it installs ``platform.teams`` on demand and rebinds the
 # SDK globals, mirroring ``check_slack_requirements`` in gateway/platforms/slack.py.
+@contextmanager
+def _suppress_third_party_dotenv() -> Iterator[None]:
+    """No-op ``dotenv.load_dotenv`` while importing the Teams SDK (#62935).
+
+    ``microsoft_teams.apps.app`` calls ``load_dotenv(find_dotenv(usecwd=True))``
+    at module import time. That mutates process-global ``os.environ`` from
+    whatever ``.env`` sits above cwd — typically a root profile's secrets.
+    Hermes owns dotenv loading; third-party import side effects must not.
+    """
+    try:
+        import dotenv as _dotenv
+    except ImportError:
+        yield
+        return
+    original = getattr(_dotenv, "load_dotenv", None)
+    if original is None:
+        yield
+        return
+    _dotenv.load_dotenv = lambda *args, **kwargs: False  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        _dotenv.load_dotenv = original  # type: ignore[assignment]
+
+
 def check_teams_requirements() -> bool:
     """Ensure the Teams SDK is importable, lazy-installing it on first use.
 
@@ -632,34 +649,39 @@ def check_teams_requirements() -> bool:
     ``tools.lazy_deps.ensure("platform.teams")`` if not present, then rebinds
     all module-level SDK globals on success. Returns True once the SDK (and
     aiohttp) are importable, False if they couldn't be installed/imported.
+
+    ``App is not None`` means symbols are already bound — ``TEAMS_SDK_AVAILABLE``
+    alone can be True from ``find_spec`` without an import having run yet.
     """
-    if TEAMS_SDK_AVAILABLE and AIOHTTP_AVAILABLE:
+    if App is not None and AIOHTTP_AVAILABLE:
         return True
 
     def _import() -> dict:
         from aiohttp import web as _web
-        from microsoft_teams.apps import App, ActivityContext
-        from microsoft_teams.common.http.client import ClientOptions
-        from microsoft_teams.api import MessageActivity, ConversationReference
-        from microsoft_teams.api.activities.typing import TypingActivityInput
-        from microsoft_teams.api.activities.invoke.adaptive_card import (
-            AdaptiveCardInvokeActivity,
-        )
-        from microsoft_teams.api.models.adaptive_card import (
-            AdaptiveCardActionCardResponse,
-            AdaptiveCardActionMessageResponse,
-        )
-        from microsoft_teams.api.models.invoke_response import (
-            InvokeResponse,
-            AdaptiveCardInvokeResponse,
-        )
-        from microsoft_teams.apps.http.adapter import (
-            HttpMethod,
-            HttpRequest,
-            HttpResponse,
-            HttpRouteHandler,
-        )
-        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+
+        with _suppress_third_party_dotenv():
+            from microsoft_teams.apps import App, ActivityContext
+            from microsoft_teams.common.http.client import ClientOptions
+            from microsoft_teams.api import MessageActivity, ConversationReference
+            from microsoft_teams.api.activities.typing import TypingActivityInput
+            from microsoft_teams.api.activities.invoke.adaptive_card import (
+                AdaptiveCardInvokeActivity,
+            )
+            from microsoft_teams.api.models.adaptive_card import (
+                AdaptiveCardActionCardResponse,
+                AdaptiveCardActionMessageResponse,
+            )
+            from microsoft_teams.api.models.invoke_response import (
+                InvokeResponse,
+                AdaptiveCardInvokeResponse,
+            )
+            from microsoft_teams.apps.http.adapter import (
+                HttpMethod,
+                HttpRequest,
+                HttpResponse,
+                HttpRouteHandler,
+            )
+            from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
 
         return {
             "web": _web,

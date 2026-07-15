@@ -127,11 +127,10 @@ class TestFileToolsReadTheRecord:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         monkeypatch.setattr(ft, "_file_ops_cache", {})
-        monkeypatch.setattr(ft, "_last_known_cwd", {})
         monkeypatch.setattr(tt, "_active_environments", {})
 
         # Each session ran commands that recorded its own cwd. No env alive,
-        # no ownership metadata, no registered overrides — just the records.
+        # no registered overrides — just the records.
         tt.record_session_cwd("sess-a", str(wt_a))
         tt.record_session_cwd("sess-b", str(wt_b))
 
@@ -139,7 +138,8 @@ class TestFileToolsReadTheRecord:
         assert ft._resolve_path_for_task("f.py", task_id="sess-b") == (wt_b / "f.py")
 
     def test_record_beats_foreign_env_cwd_without_ownership_metadata(self, tmp_path, monkeypatch):
-        """The leak-A scenario, solved structurally: no cwd_owner consulted."""
+        """The leak-A scenario, solved structurally: the shared env's cwd is
+        never consulted for path resolution — only the session's own record."""
         import tools.file_tools as ft
 
         wt_a = tmp_path / "wt_a"
@@ -149,11 +149,9 @@ class TestFileToolsReadTheRecord:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         monkeypatch.setattr(ft, "_file_ops_cache", {})
-        monkeypatch.setattr(ft, "_last_known_cwd", {})
 
         class _Env:
-            cwd = str(wt_b)
-            cwd_owner = ""  # unowned — the case the legacy guard let through
+            cwd = str(wt_b)  # another session's leftover cd on the shared env
 
         monkeypatch.setattr(tt, "_active_environments", {"default": _Env()})
         tt.record_session_cwd("sess-a", str(wt_a))
@@ -177,19 +175,13 @@ class TestDelegateSeedsChildRecord:
 
 
 class TestCommandCwdReadsTheRecord:
-    """Step 3: _resolve_command_cwd prefers the session's own record."""
+    """_resolve_command_cwd: workdir > session record > default. Nothing else."""
 
-    def test_record_beats_foreign_env_cwd_for_commands(self):
-        class _Env:
-            cwd = "/other/sessions/worktree"
-            cwd_owner = ""  # unowned shared env — the leak-A shape
-
+    def test_record_beats_default(self):
         tt.record_session_cwd("sess-a", "/my/worktree")
         resolved = tt._resolve_command_cwd(
             workdir=None,
-            env=_Env(),
             default_cwd="/config/default",
-            prev_owner="",
             session_key="sess-a",
         )
         assert resolved == "/my/worktree"
@@ -198,31 +190,23 @@ class TestCommandCwdReadsTheRecord:
         tt.record_session_cwd("sess-a", "/my/worktree")
         resolved = tt._resolve_command_cwd(
             workdir="/explicit/place",
-            env=None,
             default_cwd="/config/default",
             session_key="sess-a",
         )
         assert resolved == "/explicit/place"
 
-    def test_no_record_falls_back_to_legacy_env_cwd(self):
-        """Transition path: session with no record keeps prior behavior."""
-        class _Env:
-            cwd = "/live/dir"
-            cwd_owner = "sess-a"
-
+    def test_no_record_falls_back_to_default(self):
         resolved = tt._resolve_command_cwd(
             workdir=None,
-            env=_Env(),
             default_cwd="/config/default",
-            prev_owner="sess-a",
             session_key="sess-a",
         )
-        assert resolved == "/live/dir"
+        assert resolved == "/config/default"
 
-    def test_no_record_no_env_falls_back_to_default(self):
+    def test_other_sessions_record_is_not_consulted(self):
+        tt.record_session_cwd("sess-b", "/other/worktree")
         resolved = tt._resolve_command_cwd(
             workdir=None,
-            env=None,
             default_cwd="/config/default",
             session_key="sess-a",
         )

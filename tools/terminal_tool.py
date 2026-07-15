@@ -1142,17 +1142,13 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
-    # mid-session via ``session/load`` / ``session/resume``) must take effect on
-    # the cached env too. ``terminal_tool`` resolves the per-command cwd as
-    # ``workdir > env.cwd > config/override cwd`` so that ordinary in-session
-    # ``cd`` state is preserved; without syncing here the override would sit
-    # below the (already-set) ``env.cwd`` and be silently ignored once any
-    # command has run. Pushing it onto the live env keeps ``cd`` tracking intact
-    # while letting an explicit ACP cwd change win, as the client expects.
+    # mid-session via ``session/load`` / ``session/resume``) must take effect
+    # immediately. The session record is what commands resolve against;
+    # the live env's cwd is also updated so env-side seeding stays consistent.
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
-        # Dual-write (cwd rearch step 1): a registered workspace cwd IS the
-        # session's working directory until a `cd` changes it.
+        # A registered workspace cwd IS the session's working directory until
+        # a `cd` changes it.
         record_session_cwd(task_id, new_cwd)
         # The live env is cached under the raw task_id for per-session surfaces
         # (ACP/gateway/dashboard) and under the collapsed container id for
@@ -2042,49 +2038,21 @@ def _resolve_notification_flag_conflict(
 def _resolve_command_cwd(
     *,
     workdir: Optional[str],
-    env: Any,
     default_cwd: str,
-    prev_owner: Optional[str] = None,
     session_key: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
-    Resolution (cwd rearch, step 3):
-
-      1. ``workdir`` — the caller said exactly where to run.
-      2. The session's own cwd RECORD (``get_session_cwd(session_key)``) —
-         written after every completed command for this session, so it IS the
-         session's ``cd`` state, with no shared-env ambiguity: another
-         session's ``cd`` lands in another record and can't affect us.
-      3. Transition-only: the shared env's live cwd, gated by the legacy
-         ownership guard. Only reachable for a session with no record yet
-         (no command completed since this code loaded). When ``prev_owner``
-         differs from the current session, ``env.cwd`` is a different
-         session's leftover ``cd`` and falls through to ``default_cwd``.
-      4. ``default_cwd`` (config/override cwd).
+    Otherwise the session's own cwd RECORD (``get_session_cwd``) wins — it is
+    written after every completed command for this session, so it IS the
+    session's ``cd`` state, with no shared-env ambiguity: another session's
+    ``cd`` lands in another record and can't affect us. A session with no
+    record yet (first command) runs in ``default_cwd`` (config/override cwd),
+    which is also what seeds a fresh environment.
     """
     if workdir:
         return workdir
-
-    recorded = get_session_cwd(session_key)
-    if recorded:
-        return recorded
-
-    live_cwd = getattr(env, "cwd", None)
-    if isinstance(live_cwd, str) and live_cwd.strip():
-        # The env is shared (collapsed to "default"); its cwd tracks the LAST
-        # session that ran a command.  If a different session owned the env
-        # before this call claimed it, env.cwd is that session's leftover `cd`
-        # — not ours.  Don't use it.
-        if prev_owner is not None:
-            owner_key = getattr(env, "cwd_owner", "")
-            # cwd_owner was already overwritten to the current session at the
-            # call site, so compare against the captured previous owner.
-            if prev_owner and prev_owner != "default" and owner_key != prev_owner:
-                return default_cwd
-        return live_cwd
-
-    return default_cwd
+    return get_session_cwd(session_key) or default_cwd
 
 
 def terminal_tool(
@@ -2173,7 +2141,7 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
         # A per-task cwd override (registered by the gateway/TUI for workspace
         # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
         # config["cwd"] was already sanitized for container backends in
@@ -2435,24 +2403,13 @@ def terminal_tool(
                 "EOF."
             )
 
-        # Claim the (shared "default") terminal env for the session driving this
-        # command. File tools read env.cwd_owner to decide whether the env's live
-        # cwd is THIS session's `cd` or a different worktree session's — without
-        # it, two open worktree sessions sharing the env route each other's edits
-        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
-        # cross tool-worker threads, so fall back to the raw task_id (which IS the
-        # session_key for the top-level agent) — a stable, thread-safe anchor.
+        # The session key that drives cwd records: get_current_session_key()'s
+        # contextvar doesn't cross tool-worker threads, so fall back to the raw
+        # task_id (which IS the session_key for the top-level agent) — a
+        # stable, thread-safe anchor.
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
-        # Capture the env's previous owner BEFORE claiming it — _resolve_command_cwd
-        # needs to know whether env.cwd was left by a *different* session's `cd`
-        # (in which case it's stale for this session and must be ignored).
-        prev_cwd_owner = getattr(env, "cwd_owner", "") or ""
-        try:
-            env.cwd_owner = session_key
-        except Exception:
-            pass
 
         if background:
             # Spawn a tracked background process via the process registry.
@@ -2462,9 +2419,7 @@ def terminal_tool(
 
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
-                env=env,
                 default_cwd=cwd,
-                prev_owner=prev_cwd_owner,
                 session_key=session_key,
             )
             try:
@@ -2724,9 +2679,7 @@ def terminal_tool(
                 try:
                     command_cwd = _resolve_command_cwd(
                         workdir=workdir,
-                        env=env,
                         default_cwd=cwd,
-                        prev_owner=prev_cwd_owner,
                         session_key=session_key,
                     )
                     execute_kwargs = {

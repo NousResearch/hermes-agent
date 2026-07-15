@@ -592,9 +592,19 @@ class StreamingConfig:
     def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
         if not isinstance(data, dict) or not data:
             return cls()
+        transport = data.get("transport", "edit")
+        if not isinstance(transport, str) or transport.strip().lower() not in {
+            "auto",
+            "draft",
+            "edit",
+            "off",
+        }:
+            transport = "edit"
+        else:
+            transport = transport.strip().lower()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "edit"),
+            transport=transport,
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),

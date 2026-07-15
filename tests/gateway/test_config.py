@@ -271,6 +271,11 @@ class TestStreamingConfig:
         restored = StreamingConfig.from_dict({"enabled": "true", "transport": "auto"})
         assert restored.transport == "auto"
 
+    def test_malformed_transport_falls_back_to_edit(self):
+        for transport in (None, 42, [], "invalid"):
+            restored = StreamingConfig.from_dict({"transport": transport})
+            assert restored.transport == "edit"
+
     def test_from_dict_coerces_quoted_false_enabled(self):
         restored = StreamingConfig.from_dict({"enabled": "false"})
         assert restored.enabled is False
@@ -290,7 +295,7 @@ class TestStreamingConfig:
     def test_from_dict_malformed_section_falls_back_to_defaults(self):
         restored = StreamingConfig.from_dict("enabled")
         assert restored.enabled is False
-        assert restored.transport == "auto"
+        assert restored.transport == "edit"
 
 
 class TestGatewayConfigRoundtrip:
@@ -413,7 +418,7 @@ class TestGatewayConfigRoundtrip:
         assert restored.default_reset_policy.mode == SessionResetPolicy().mode
         assert restored.reset_by_type == {}
         assert restored.reset_by_platform == {}
-        assert restored.streaming.transport == "auto"
+        assert restored.streaming.transport == "edit"
 
     def test_get_notice_delivery_defaults_to_public(self):
         config = GatewayConfig(
@@ -621,7 +626,7 @@ class TestLoadGatewayConfig:
 
         config = load_gateway_config()
 
-        assert config.streaming.transport == "auto"
+        assert config.streaming.transport == "edit"
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""

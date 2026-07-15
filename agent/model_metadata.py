@@ -4,6 +4,7 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
+import base64
 import ipaddress
 import json
 import logging
@@ -1886,6 +1887,34 @@ _codex_oauth_context_cache_time: float = 0.0
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 
+def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
+    """Extract ``chatgpt_account_id`` from the Codex OAuth JWT.
+
+    The Codex ``/backend-api/codex/models`` endpoint returns the per-account
+    catalog only when the ``ChatGPT-Account-Id`` header is present; without
+    it, the endpoint returns ``{"models":[]}`` (HTTP 200) and the context
+    probe falls back to the hardcoded defaults — which can be stale or
+    wrong for the active account's plan. Mirrors the same extraction done
+    in ``auxiliary_client.py`` for the request path.
+
+    Returns ``None`` on any parse error rather than raising, so a bad
+    token still surfaces as a normal probe failure instead of crashing
+    the metadata resolver.
+    """
+    try:
+        parts = access_token.split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        if not isinstance(claims, dict):
+            return None
+        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+        return acct_id if isinstance(acct_id, str) and acct_id else None
+    except Exception:
+        return None
+
+
 def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
     """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
 
@@ -1903,10 +1932,15 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
     ):
         return _codex_oauth_context_cache
 
+    headers = {"Authorization": f"Bearer {access_token}"}
+    acct_id = _extract_chatgpt_account_id(access_token)
+    if acct_id:
+        headers["ChatGPT-Account-Id"] = acct_id
+
     try:
         resp = requests.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers=headers,
             timeout=(5, 10),
             verify=_resolve_requests_verify(),
         )

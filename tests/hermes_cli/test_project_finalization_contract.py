@@ -625,7 +625,7 @@ def test_persisted_identity_conflicts_reject_before_mutation_and_exact_repeats_r
         _close_and_unlink(conn, path)
 
 
-def test_membership_idempotent_and_separate_from_task_links():
+def test_membership_all_kinds_idempotent_and_separate_from_task_links():
     conn, path = _make_temp_db()
     try:
         ensure_project_finalization_schema(conn)
@@ -633,25 +633,34 @@ def test_membership_idempotent_and_separate_from_task_links():
 
         # also ensure basic task tables exist for separation test (they are not touched)
         conn.executescript("CREATE TABLE IF NOT EXISTS task_links (parent_id TEXT, child_id TEXT, PRIMARY KEY (parent_id, child_id));")
+        conn.execute("INSERT INTO task_links VALUES ('preexisting_parent', 'preexisting_child')")
+        task_links_before = conn.execute("SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id").fetchall()
 
-        register_project_member(conn, board_id="b", root_task_id="rt", generation=1,
-                                task_id="supp1", membership_kind="support", required=False)
-        register_project_member(conn, board_id="b", root_task_id="rt", generation=1,
-                                task_id="chk_task", membership_kind="checker", required=True)
+        expected_members = (
+            ("required_task", "required", True),
+            ("support_task", "support", False),
+            ("repair_task", "repair", False),
+            ("checker_task", "checker", True),
+        )
+        for task_id, membership_kind, required in expected_members:
+            register_project_member(
+                conn, board_id="b", root_task_id="rt", generation=1,
+                task_id=task_id, membership_kind=membership_kind, required=required,
+            )
 
         # idempotent
-        register_project_member(conn, board_id="b", root_task_id="rt", generation=1,
-                                task_id="supp1", membership_kind="support", required=False)
+        register_project_member(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            task_id="support_task", membership_kind="support", required=False,
+        )
 
         members = list_project_members(conn, board_id="b", root_task_id="rt", generation=1)
-        kinds = {m.membership_kind for m in members}
-        assert "support" in kinds
-        assert "checker" in kinds
-        assert len(members) == 2
+        assert {(m.task_id, m.membership_kind, m.required) for m in members} == set(expected_members)
+        assert {m.membership_kind for m in members} == set(MEMBERSHIP_KINDS)
+        assert len(members) == len(expected_members)
 
         # project membership did not touch task_links
-        link_count = conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0]
-        assert link_count == 0
+        assert conn.execute("SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id").fetchall() == task_links_before
     finally:
         _close_and_unlink(conn, path)
 

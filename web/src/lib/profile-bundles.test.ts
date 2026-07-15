@@ -71,4 +71,23 @@ describe("buildProfileBundlePlan", () => {
     );
     expect(plan.find((item) => item.name === "dev-qa")?.exists).toBe(false);
   });
+
+  it("preserves role suffixes when the prefix is already at the profile name limit", () => {
+    const development = getProfileBundle("development");
+    expect(development).toBeDefined();
+    if (!development) return;
+
+    const plan = buildProfileBundlePlan(
+      development,
+      "a".repeat(64),
+      new Set(),
+    );
+    const names = plan.map((item) => item.name);
+
+    expect(new Set(names).size).toBe(names.length);
+    for (const item of plan) {
+      expect(item.name.length).toBeLessThanOrEqual(64);
+      expect(item.name.endsWith(`-${item.role.slug}`)).toBe(true);
+    }
+  });
 });

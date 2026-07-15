@@ -21,6 +21,8 @@ export interface ProfileBundlePlanItem {
   role: ProfileBundleRole;
 }
 
+const PROFILE_NAME_MAX_LENGTH = 64;
+
 /**
  * Extensible catalog for dashboard profile bundles.
  *
@@ -159,7 +161,12 @@ export function bundleProfileName(
   prefix: string,
   role: ProfileBundleRole,
 ): string {
-  return `${prefix}-${role.slug}`.slice(0, 64);
+  const roleSuffix = `-${role.slug}`;
+  const maxPrefixLength = Math.max(
+    0,
+    PROFILE_NAME_MAX_LENGTH - roleSuffix.length,
+  );
+  return `${prefix.slice(0, maxPrefixLength)}${roleSuffix}`;
 }
 
 export function buildProfileBundlePlan(

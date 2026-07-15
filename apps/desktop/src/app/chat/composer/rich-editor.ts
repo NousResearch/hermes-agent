@@ -17,6 +17,7 @@ import {
 } from '@/components/assistant-ui/directive-text'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
+export const NATIVE_PASTE_INSERT_MAX_CHARS = 16_000
 
 export const REF_RE = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
 
@@ -170,6 +171,26 @@ export function insertPlainTextAtCaret(editor: HTMLElement, text: string) {
     selection?.removeAllRanges()
     selection?.addRange(caret)
   }
+}
+
+export function insertPastedTextAtCaret(editor: HTMLElement, text: string) {
+  const hit = composerSelectionRange(editor)
+
+  if (
+    hit &&
+    text.length <= NATIVE_PASTE_INSERT_MAX_CHARS &&
+    typeof document.execCommand === 'function'
+  ) {
+    try {
+      if (document.execCommand('insertText', false, text)) {
+        return
+      }
+    } catch {
+      // Fall back to manual insertion below.
+    }
+  }
+
+  insertPlainTextAtCaret(editor, text)
 }
 
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND

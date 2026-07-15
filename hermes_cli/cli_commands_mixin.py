@@ -2416,6 +2416,111 @@ class CLICommandsMixin:
         else:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
+    def _handle_auth_relay_command(self, cmd_original: str) -> None:
+        """Toggle or inspect the operator WhatsApp auth-relay from the CLI.
+
+        Usage:
+            /auth-relay           → toggle on/off
+            /auth-relay on|off    → explicit
+            /auth-relay status    → show current state
+
+        Persists ``gateway.auth_relay.enabled`` to config.yaml and, when the
+        gateway runtime is importable in this process, applies the change live
+        (re-installing / tearing down the relay callbacks). In a pure CLI
+        process the relay only activates once the gateway is running, so the
+        saved state takes effect on the next gateway start.
+        """
+        from cli import _cprint, save_config_value
+        from hermes_cli.colors import Colors as _Colors
+
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        # Current live state (best-effort — gateway module may not be loaded
+        # in a bare CLI process).
+        current = False
+        try:
+            from gateway.auth_relay import get_config, is_enabled
+            current = is_enabled()
+        except Exception:
+            pass
+
+        if arg in {"status", "?"}:
+            op = ""
+            try:
+                from gateway.auth_relay import get_config
+                op = get_config().operator_chat or "(derived from local WhatsApp config)"
+            except Exception:
+                op = "(unknown — gateway not loaded)"
+            state = "ON" if current else "OFF"
+            _cprint(
+                f"  {_Colors.BOLD}Auth-relay:{_Colors.RESET} {state}\n"
+                f"  Operator: {op}\n"
+                f"  (saved to gateway.auth_relay.enabled in config.yaml)"
+            )
+            return
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            _cprint("  Usage: /auth-relay [on|off|status]")
+            return
+
+        if not save_config_value("gateway.auth_relay.enabled", new_state):
+            _cprint("  Failed to save auth-relay setting to config.yaml")
+            return
+
+        # Apply live if the gateway runtime is available in this process.
+        applied = None
+        try:
+            from gateway.auth_relay import AuthRelayConfig, get_config, set_enabled
+            live = get_config()
+            applied = set_enabled(
+                new_state,
+                AuthRelayConfig(
+                    enabled=new_state,
+                    operator_chat=live.operator_chat,
+                    clarify=live.clarify,
+                    approval=live.approval,
+                    secret=live.secret,
+                    sudo=live.sudo,
+                    require_confirm=live.require_confirm,
+                    timeout=live.timeout,
+                ),
+            )
+        except Exception as exc:
+            applied = None
+            import logging as _logging
+            _logging.getLogger(__name__).debug(
+                "auth_relay live toggle unavailable in CLI process: %s", exc
+            )
+
+        state = (
+            f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+            else f"{_Colors.DIM}OFF{_Colors.RESET}"
+        )
+        if applied is True:
+            _cprint(f"  Auth-relay: {state} (applied live; saved to config.yaml)")
+        elif applied is False and new_state:
+            _cprint(
+                f"  Auth-relay: setting saved but could not activate live (no operator "
+                f"WhatsApp target). It will activate on the next gateway start once "
+                f"operator_chat / WHATSAPP_ALLOWED_USERS is configured."
+            )
+        else:
+            _cprint(
+                f"  Auth-relay: {state} (saved to config.yaml; applies on next gateway start)"
+            )
+
     def _handle_timestamps_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.timestamps`` from the CLI.
 

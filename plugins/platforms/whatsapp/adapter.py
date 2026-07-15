@@ -1333,6 +1333,21 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._should_process_message(data):
                 return None
 
+            # Auth-relay: intercept the owner's text reply to a pending
+            # secret/sudo prompt BEFORE it becomes a chat turn.  The value is
+            # sensitive and must not be fed to the agent as conversation input.
+            if str(data.get("body") or "").strip() and (
+                data.get("fromOwner") or data.get("fromMe")
+            ):
+                try:
+                    if await self._try_resolve_auth_relay(data):
+                        return None
+                except Exception as _relay_exc:
+                    print(
+                        f"[{self.name}] auth_relay intercept error: {_relay_exc}",
+                        flush=True,
+                    )
+
             # Determine message type
             msg_type = MessageType.TEXT
             media_type = str(data.get("mediaType", "") or "")
@@ -1519,6 +1534,60 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
             return None
+
+    async def _try_resolve_auth_relay(self, data: Dict[str, Any]) -> bool:
+        """Intercept the owner's reply to a pending secret/sudo relay prompt.
+
+        For the Baileys self-chat bridge the operator is the account owner, so
+        we gate on the bridge's ``fromOwner`` / ``fromMe`` markers rather than
+        an explicit chat id (the relay module already relaxed the operator_id
+        match in auto/self-chat mode).  Returns True if the message was
+        consumed by the relay (caller must drop the event — NOT start a chat
+        turn with the secret/sudo value).
+        """
+        try:
+            from gateway.auth_relay import (
+                is_enabled,
+                resolve_secret_relay,
+                resolve_sudo_relay,
+                pending_secret_for,
+                pending_sudo_for,
+            )
+        except Exception:
+            return False
+        if not is_enabled():
+            return False
+        # Only the owner may answer relay prompts.  In self-chat the bridge
+        # tags owner-typed inbound with fromOwner (and fromMe for own sends).
+        if not (data.get("fromOwner") or data.get("fromMe")):
+            return False
+        body = str(data.get("body") or "").strip()
+        if not body:
+            return False
+        lowered = body.lower()
+        sec_token = pending_secret_for("")
+        if sec_token is not None:
+            if lowered in ("skip", "cancel", "abort"):
+                resolve_secret_relay(sec_token, None)
+            else:
+                resolve_secret_relay(sec_token, body)
+            try:
+                await self.send(str(data.get("chatId") or ""), "🔐 Secret captured — thank you.")
+            except Exception:
+                pass
+            return True
+        sudo_token = pending_sudo_for("")
+        if sudo_token is not None:
+            if lowered in ("skip", "cancel", "abort"):
+                resolve_sudo_relay(sudo_token, None)
+            else:
+                resolve_sudo_relay(sudo_token, body)
+            try:
+                await self.send(str(data.get("chatId") or ""), "🔑 Sudo password captured — thank you.")
+            except Exception:
+                pass
+            return True
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────

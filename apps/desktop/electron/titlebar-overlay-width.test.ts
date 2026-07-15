@@ -19,14 +19,14 @@ test('Windows reserves the overlay fallback width', () => {
   assert.equal(nativeOverlayWidth({ isWindows: true }), OVERLAY_FALLBACK_WIDTH)
 })
 
-test('WSLg paints the same WCO, so it reserves the same fallback width', () => {
+test('WSLg custom controls reserve the same fallback width', () => {
   // The original bug: WSL fell through to 0, so the right tools sat under the
   // controls and the title overran into them.
   assert.equal(nativeOverlayWidth({ isWsl: true }), OVERLAY_FALLBACK_WIDTH)
 })
 
-test('WSLg enables native window controls for a hidden titlebar', () => {
-  assert.deepEqual(
+test('WSLg disables the undersized native overlay in favor of renderer controls', () => {
+  assert.equal(
     titleBarOverlayOptions({
       platform: 'wslg',
       titlebarHeight: 34,
@@ -34,7 +34,7 @@ test('WSLg enables native window controls for a hidden titlebar', () => {
       foreground: '#ffffff',
       dark: true
     }),
-    { color: 'transparent', height: 34, symbolColor: '#ffffff' }
+    false
   )
 })
 
@@ -61,8 +61,16 @@ test('macOS keeps its height-only traffic-light overlay', () => {
 })
 
 test('native overlays fall back to the active theme color', () => {
-  assert.equal(titleBarOverlayOptions({ platform: 'wslg', foreground: null, dark: true }).symbolColor, '#f7f7f7')
-  assert.equal(titleBarOverlayOptions({ platform: 'wslg', foreground: null, dark: false }).symbolColor, '#242424')
+  assert.deepEqual(titleBarOverlayOptions({ platform: 'windows', foreground: null, dark: true }), {
+    color: undefined,
+    height: 0,
+    symbolColor: '#f7f7f7'
+  })
+  assert.deepEqual(titleBarOverlayOptions({ platform: 'linux', foreground: null, dark: false }), {
+    color: undefined,
+    height: 0,
+    symbolColor: '#242424'
+  })
 })
 
 test('plain Linux paints the WCO too, so it reserves the fallback width', () => {

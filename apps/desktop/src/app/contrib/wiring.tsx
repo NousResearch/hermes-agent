@@ -91,6 +91,7 @@ import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import { titlebarControlsPosition } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
+import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
@@ -841,6 +842,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
   const nativeOverlayWidth = measuredOverlayWidth ?? connection?.nativeOverlayWidth ?? 0
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
+
+  // WSLg opts into renderer-owned controls: Electron's native overlay is an
+  // unscaled cluster whose input hit-region drifts from the rendered buttons
+  // under the RAIL compositor, so the renderer paints its own min/max/close.
+  const customWindowControls =
+    connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
+
   // Pane-registered tools (preview's monitor/devtools cluster) anchor flush
   // against the static system cluster — in the tree layout the titlebar band
   // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
@@ -872,6 +880,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           onOpenSettings={() => navigate(SETTINGS_ROUTE)}
           tools={rightTitlebarTools}
         />
+        {!isSecondaryWindow() && customWindowControls && (
+          <WslgWindowControls isMaximized={Boolean(connection?.isMaximized)} />
+        )}
         {children}
       </div>
 

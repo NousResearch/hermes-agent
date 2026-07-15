@@ -130,6 +130,7 @@ import {
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import { spawnUpdaterProcess } from './updater-process'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { performWindowControl, windowControlState } from './window-controls'
 import {
   computeWindowOptions,
   debounce,
@@ -683,9 +684,9 @@ function getWindowBackgroundColor() {
 // to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
 const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
-function getTitleBarOverlayOptions() {
+function getTitleBarOverlayOptions({ customWslgControls = true } = {}) {
   return titleBarOverlayOptions({
-    platform: IS_MAC ? 'mac' : IS_WSL ? 'wslg' : IS_WINDOWS ? 'windows' : 'linux',
+    platform: IS_MAC ? 'mac' : IS_WSL && customWslgControls ? 'wslg' : IS_WINDOWS ? 'windows' : 'linux',
     darwinMajor: DARWIN_MAJOR,
     titlebarHeight: TITLEBAR_HEIGHT,
     color: TITLEBAR_OVERLAY_COLOR,
@@ -4571,7 +4572,8 @@ function getWindowState() {
   return {
     isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
-    windowButtonPosition: getWindowButtonPosition()
+    windowButtonPosition: getWindowButtonPosition(),
+    ...windowControlState(mainWindow, IS_WSL)
   }
 }
 
@@ -7207,7 +7209,10 @@ function spawnSecondaryWindow({
     minHeight: SESSION_WINDOW_MIN_HEIGHT,
     title: 'Hermes',
     titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
+    // Compact secondary windows do not render the full titlebar cluster. Keep
+    // Electron's native overlay there; only the main WSLg window uses the
+    // larger renderer-owned controls.
+    titleBarOverlay: getTitleBarOverlayOptions({ customWslgControls: false }),
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
     opacity: windowOpacity(),
@@ -7490,8 +7495,14 @@ function createWindow() {
   // the cross-platform backstop, flushed synchronously before the window is gone.
   mainWindow.on('resized', schedulePersistWindowState)
   mainWindow.on('moved', schedulePersistWindowState)
-  mainWindow.on('maximize', schedulePersistWindowState)
-  mainWindow.on('unmaximize', schedulePersistWindowState)
+  mainWindow.on('maximize', () => {
+    schedulePersistWindowState()
+    sendWindowStateChanged()
+  })
+  mainWindow.on('unmaximize', () => {
+    schedulePersistWindowState()
+    sendWindowStateChanged()
+  })
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
@@ -7678,6 +7689,9 @@ ipcMain.handle('hermes:window:openNewSession', async () => {
   createNewSessionWindow()
 
   return { ok: true }
+})
+ipcMain.on('hermes:window-control', (event, action) => {
+  performWindowControl(BrowserWindow.fromWebContents(event.sender), action)
 })
 
 // --- Text size (zoom) -------------------------------------------------------

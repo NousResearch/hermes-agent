@@ -1742,6 +1742,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_approval_response": True,
                 "run_reasoning_effort": True,
+                "thinking_progress_events": self._thinking_progress_enabled(),
                 "tool_progress_events": True,
                 "approval_events": True,
                 "mobile_notifications": True,
@@ -4491,6 +4492,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
+        thinking_progress_enabled = self._thinking_progress_enabled()
+
         def _push(event: Dict[str, Any]) -> None:
             self._set_run_status(
                 run_id,
@@ -4531,9 +4534,29 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif event_type == "_thinking" and thinking_progress_enabled:
+                text = preview or tool_name or ""
+                if text:
+                    _push({
+                        "event": "reasoning.available",
+                        "run_id": run_id,
+                        "timestamp": ts,
+                        "text": text,
+                    })
 
         return _callback
+
+    def _thinking_progress_enabled(self) -> bool:
+        """Resolve the API server's explicit opt-in for delegated scratch progress."""
+        from gateway.display_config import resolve_display_setting
+        from gateway.run import _load_gateway_config
+
+        return bool(resolve_display_setting(
+            _load_gateway_config(),
+            "api_server",
+            "thinking_progress",
+            fallback=False,
+        ))
 
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":

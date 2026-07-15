@@ -298,6 +298,26 @@ class TestRunStatus:
 
 class TestRunEvents:
     @pytest.mark.asyncio
+    async def test_events_forward_subagent_thinking_only_when_enabled(self, adapter, monkeypatch):
+        loop = asyncio.get_running_loop()
+        enabled_run_id = "run_thinking_enabled"
+        disabled_run_id = "run_thinking_disabled"
+        adapter._run_streams[enabled_run_id] = asyncio.Queue()
+        adapter._run_streams[disabled_run_id] = asyncio.Queue()
+
+        monkeypatch.setattr(adapter, "_thinking_progress_enabled", lambda: True)
+        adapter._make_run_event_callback(enabled_run_id, loop)("_thinking", "Checking the delegated task")
+        event = await asyncio.wait_for(adapter._run_streams[enabled_run_id].get(), timeout=1)
+
+        assert event["event"] == "reasoning.available"
+        assert event["text"] == "Checking the delegated task"
+
+        monkeypatch.setattr(adapter, "_thinking_progress_enabled", lambda: False)
+        adapter._make_run_event_callback(disabled_run_id, loop)("_thinking", "Do not forward this")
+        await asyncio.sleep(0)
+        assert adapter._run_streams[disabled_run_id].empty()
+
+    @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
         app = _create_runs_app(adapter)

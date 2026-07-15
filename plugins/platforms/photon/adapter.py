@@ -129,6 +129,33 @@ def _coerce_port(value: Any, default: int) -> int:
         return default
 
 
+def _windows_hidden_startupinfo():
+    """Return STARTUPINFO that keeps Windows console subprocesses hidden."""
+    if sys.platform != "win32":
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return startupinfo
+
+
+def _sidecar_popen_kwargs() -> Dict[str, Any]:
+    """Return platform-specific Popen kwargs for the long-lived sidecar."""
+    if sys.platform != "win32":
+        return {"start_new_session": True}
+    kwargs: Dict[str, Any] = {
+        "creationflags": (
+            subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NO_WINDOW
+        ),
+    }
+    startupinfo = _windows_hidden_startupinfo()
+    if startupinfo is not None:
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def check_requirements() -> bool:
     """Return True when both Python deps and the Node sidecar are available."""
     if not HTTPX_AVAILABLE:
@@ -972,7 +999,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
-            start_new_session=(sys.platform != "win32"),
+            **_sidecar_popen_kwargs(),
         )
 
         # Pump sidecar stderr/stdout into our logger so users see crashes.

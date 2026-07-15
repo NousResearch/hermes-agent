@@ -169,3 +169,84 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_hides_node_window_on_windows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Windows sidecar spawn must suppress the visible Node console window."""
+    adapter = _make_adapter(monkeypatch)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(photon_adapter.sys, "platform", "win32")
+
+    class _FakeStartupInfo:
+        def __init__(self) -> None:
+            self.dwFlags = 0
+            self.wShowWindow = None
+
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "STARTUPINFO", _FakeStartupInfo, raising=False
+    )
+    monkeypatch.setattr(
+        photon_adapter.subprocess, "STARTF_USESHOWWINDOW", 0x00000001, raising=False
+    )
+    monkeypatch.setattr(photon_adapter.subprocess, "SW_HIDE", 0, raising=False)
+    monkeypatch.setattr(
+        photon_adapter.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        photon_adapter.subprocess,
+        "DETACHED_PROCESS",
+        0x00000008,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        photon_adapter.subprocess,
+        "CREATE_NO_WINDOW",
+        0x08000000,
+        raising=False,
+    )
+
+    spawned: Dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+        spawned["cmd"] = cmd
+        spawned["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "Popen", _fake_popen)
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    kwargs = spawned["kwargs"]
+    assert kwargs["creationflags"] == 0x08000000 | 0x00000008 | 0x00000200
+    assert kwargs["startupinfo"].dwFlags == 0x00000001
+    assert kwargs["startupinfo"].wShowWindow == 0

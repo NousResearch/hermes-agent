@@ -14203,18 +14203,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         loop = asyncio.get_running_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
+            from tools.mcp_tool import reload_mcp_servers, _servers, _lock
 
             # Capture old server names before shutdown
             with _lock:
                 old_servers = set(_servers.keys())
 
-            # Read new config before shutting down, so we know what will be added/removed
-            # Shutdown existing connections
-            await loop.run_in_executor(None, shutdown_mcp_servers)
-
-            # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            # Shutdown and reconnect (reads config.yaml fresh) as one
+            # serialized operation so stdio transports finish unwinding
+            # cancellation before discovery schedules fresh server tasks.
+            new_tools = await loop.run_in_executor(None, reload_mcp_servers)
 
             # Compute what changed
             with _lock:

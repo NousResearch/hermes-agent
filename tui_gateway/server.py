@@ -11622,10 +11622,9 @@ def _(rid, params: dict) -> dict:
                     },
                 )
 
-        from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools
+        from tools.mcp_tool import reload_mcp_servers
 
-        shutdown_mcp_servers()
-        discover_mcp_tools()
+        reload_mcp_servers()
         if session:
             agent = session["agent"]
             # Rebuild the cached agent's tool snapshot so the current session

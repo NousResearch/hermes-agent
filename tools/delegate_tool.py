@@ -1317,6 +1317,25 @@ def _build_child_agent(
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
 
+    # Connect MCP servers scoped to delegation only (scope: delegation).
+    # These were intentionally skipped by the parent agent's startup; we
+    # connect them now so the sub-agent can use them as first-class tools.
+    try:
+        from tools.mcp_tool import _load_mcp_config, register_mcp_servers
+
+        delegation_servers = _load_mcp_config(scope_filter="delegation")
+        if delegation_servers:
+            connected = register_mcp_servers(delegation_servers)
+            if connected:
+                # Add mcp-<server> toolsets for the child so its tool
+                # resolution includes these newly-connected servers.
+                for srv_name in delegation_servers:
+                    ts_name = f"mcp-{srv_name}"
+                    if ts_name not in child_toolsets:
+                        child_toolsets.append(ts_name)
+    except Exception:
+        logger.debug("Sub-agent MCP delegation connect failed", exc_info=True)
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,

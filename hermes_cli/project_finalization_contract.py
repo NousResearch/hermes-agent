@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, List
 
@@ -807,6 +808,18 @@ def validate_sha256(sha: Optional[str]) -> None:
         raise ValueError(f"invalid sha256 (must be 64 lowercase hex): {sha!r}")
 
 
+def validate_cleanup_after(cleanup_after: object) -> None:
+    """Require a timezone-aware ISO-8601 cleanup timestamp before persistence."""
+    if not isinstance(cleanup_after, str) or not cleanup_after:
+        raise ValueError("cleanup_after is required")
+    try:
+        timestamp = datetime.fromisoformat(cleanup_after)
+    except ValueError as error:
+        raise ValueError("cleanup_after must be an ISO-8601 timestamp") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("cleanup_after must be timezone-aware")
+
+
 def validate_generation(generation: int) -> None:
     if not isinstance(generation, int) or generation < 1:
         raise ValueError(f"generation must be >= 1, got {generation}")
@@ -1249,8 +1262,7 @@ def schedule_project_cleanup(
 ) -> ProjectFinalization:
     """Schedule cleanup for a finalized project. Requires cleanup_after."""
     validate_generation(generation)
-    if not cleanup_after:
-        raise ValueError("cleanup_after is required")
+    validate_cleanup_after(cleanup_after)
 
     now = int(time.time())
     with write_txn(conn):

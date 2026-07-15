@@ -117,6 +117,7 @@ def make_tool_progress_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
+    read_snapshots_cache: Dict[str, str | None],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
@@ -154,7 +155,7 @@ def make_tool_progress_cb(
         queue.append(tc_id)
 
         snapshot = None
-        if name in {"read_file", "write_file", "patch", "skill_manage"}:
+        if name in {"read_file", "write_file", "patch", "skill_manage", "terminal"}:
             try:
                 from agent.display import capture_local_edit_snapshot
 
@@ -168,6 +169,30 @@ def make_tool_progress_cb(
             if rp:
                 meta_entry["_read_path"] = str(Path(rp).resolve())
         tool_call_meta[tc_id] = meta_entry
+
+        # Cross-turn snapshot cache — so terminal in later API calls can build
+        # composite snapshots.  All keys are absolute resolved paths.
+        # write_file / patch / skill_manage: save before-state (only if path
+        #   not already cached — first writer wins, preserving the original
+        #   baseline across multiple edits).
+        # read_file: save current disk content (only if path not cached).
+        if name in {"write_file", "patch", "skill_manage"}:
+            if snapshot is not None and snapshot.before is not None:
+                from pathlib import Path as _P
+                for rp, before_text in snapshot.before.items():
+                    rk = str(_P(rp).resolve())
+                    if rk not in read_snapshots_cache:
+                        read_snapshots_cache[rk] = before_text
+        elif name == "read_file":
+            rp = args.get("path", "")
+            if rp:
+                from pathlib import Path as _P
+                rk = str(_P(rp).resolve())
+                if rk not in read_snapshots_cache:
+                    try:
+                        read_snapshots_cache[rk] = _P(rk).read_text(encoding="utf-8")
+                    except (FileNotFoundError, OSError):
+                        read_snapshots_cache[rk] = None
 
         edit_diff = None
         if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
@@ -218,6 +243,7 @@ def make_step_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
+    read_snapshots_cache: Dict[str, str | None],
 ) -> Callable:
     """Create a ``step_callback`` for AIAgent.
 
@@ -227,7 +253,9 @@ def make_step_cb(
     """
 
     def _step(api_call_count: int, prev_tools: Any = None) -> None:
+
         if prev_tools and isinstance(prev_tools, list):
+            from pathlib import Path
             for tool_info in prev_tools:
                 tool_name = None
                 result = None
@@ -258,27 +286,21 @@ def make_step_cb(
                 if tool_name and queue:
                     tc_id = queue.popleft()
 
-                    # For terminal: build composite snapshot from read_file snapshots
-                    # accumulated during this turn. read_file entries are still in
-                    # tool_call_meta (not yet popped).
-                    if tool_name == "terminal":
-                        known: dict[str, str | None] = {}
-                        for tc, m in list(tool_call_meta.items()):
-                            rp = m.get("_read_path")
-                            if rp:
-                                snap = m.get("snapshot")
-                                if snap is not None and hasattr(snap, "before") and rp in snap.before:
-                                    known[rp] = snap.before[rp]
+                    # Build composite snapshot from cross-turn cache for terminal.
+                    # The cache persists across API calls — read_file in call #1
+                    # fills it, terminal in call #4 reads it.  No ordering bug
+                    # because entries are never popped from the cache.
+                    if tool_name == "terminal" and read_snapshots_cache:
+                        from agent.display import LocalEditSnapshot
+                        known = {p: b for p, b in read_snapshots_cache.items() if b is not None}
                         if known:
-                            from pathlib import Path
-                            from agent.display import LocalEditSnapshot
                             tool_call_meta.setdefault(tc_id, {})["snapshot"] = LocalEditSnapshot(
-                                paths=[Path(p) for p in known],
+                                paths=[Path(p) for p in known.keys()],
                                 before=known,
                             )
                             logger.debug(
-                                "terminal composite snapshot: %d paths from %d reads",
-                                len(known), sum(1 for m in tool_call_meta.values() if m.get("_read_path")),
+                                "terminal composite snapshot: %d paths from cache",
+                                len(known),
                             )
 
                     meta = tool_call_meta.pop(tc_id, {})
@@ -296,6 +318,36 @@ def make_step_cb(
                             _send_update(conn, session_id, loop, plan_update)
                     if not queue:
                         tool_call_ids.pop(tool_name, None)
+
+                    # Refresh cross-turn cache from disk after tool completes.
+                    # After terminal: update all cached paths so the next
+                    # terminal starts from post-change state.
+                    # After write_file/patch/skill_manage: update the affected
+                    # path so approve/reject reset works correctly.
+                    if tool_name == "terminal":
+                        for p in list(read_snapshots_cache.keys()):
+                            try:
+                                disk = Path(p).read_text(encoding="utf-8")
+                                read_snapshots_cache[p] = disk
+                            except FileNotFoundError:
+                                read_snapshots_cache.pop(p, None)
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to refresh snapshot cache for %s: %s", p, e
+                                )
+                    elif tool_name in {"write_file", "patch", "skill_manage"}:
+                        path_arg = (function_args or {}).get("path", "")
+                        if path_arg:
+                            rk = str(Path(path_arg).resolve())
+                            try:
+                                read_snapshots_cache[rk] = Path(rk).read_text(encoding="utf-8")
+                            except FileNotFoundError:
+                                read_snapshots_cache.pop(rk, None)
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to refresh snapshot cache for %s after %s: %s",
+                                    rk, tool_name, e,
+                                )
 
     return _step
 

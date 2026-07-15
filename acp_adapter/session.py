@@ -170,6 +170,7 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    read_snapshots_cache: dict = field(default_factory=dict)
 
 
 class SessionManager:
@@ -196,13 +197,23 @@ class SessionManager:
 
     # ---- public API ---------------------------------------------------------
 
-    def create_session(self, cwd: str = ".") -> SessionState:
-        """Create a new session with a unique ID and a fresh AIAgent."""
+    def create_session(self, cwd: str = ".", parent_session_id: str | None = None) -> SessionState:
+        """Create a new session with a unique ID and a fresh AIAgent.
+
+        Args:
+            cwd: Working directory for the session.
+            parent_session_id: If set, the new session becomes a branch
+                (child) of the given parent session.
+        """
         import threading
 
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        agent = self._make_agent(
+            session_id=session_id,
+            cwd=cwd,
+            parent_session_id=parent_session_id or "",
+        )
         state = SessionState(
             session_id=session_id,
             agent=agent,
@@ -213,8 +224,9 @@ class SessionManager:
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
-        self._persist(state)
-        logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
+        self._persist(state, parent_session_id=parent_session_id)
+        logger.info("Created ACP session %s (cwd=%s%s)", session_id, cwd,
+                     ", parent=%s" % parent_session_id if parent_session_id else "")
         return state
 
     def get_session(self, session_id: str) -> Optional[SessionState]:
@@ -409,7 +421,7 @@ class SessionManager:
             logger.debug("SessionDB unavailable for ACP persistence", exc_info=True)
             return None
 
-    def _persist(self, state: SessionState) -> None:
+    def _persist(self, state: SessionState, parent_session_id: str | None = None) -> None:
         """Write session state to the database.
 
         Creates the session record if it doesn't exist, then replaces all
@@ -442,6 +454,7 @@ class SessionManager:
                     source="acp",
                     model=model_str,
                     model_config={"cwd": state.cwd},
+                    parent_session_id=parent_session_id,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -590,6 +603,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        parent_session_id: str | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -624,6 +638,7 @@ class SessionManager:
             "session_id": session_id,
             "session_db": self._get_db(),
             "model": model or default_model,
+            "parent_session_id": parent_session_id or "",
         }
 
         try:

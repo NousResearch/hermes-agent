@@ -63,7 +63,7 @@ wake_word:
 ```yaml
 wake_word:
   enabled: false
-  surface: auto               # which surface owns the listener: "auto" | "cli" | "tui" | "gui"
+  surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
   provider: openwakeword      # "openwakeword" (free, local) | "porcupine"
   phrase: "hey jarvis"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.5            # 0.0-1.0 — raise to reduce false triggers
@@ -85,15 +85,19 @@ owns the listener and opens the new session when it fires:
 
 | `surface` | Behavior |
 |-----------|----------|
-| `auto` (default) | Whichever surface you launch arms the listener. |
+| `auto` (default) | All local surfaces are eligible; the first one to arm owns the listener. |
 | `cli` | Only the classic `hermes` CLI. |
 | `tui` | Only `hermes --tui`. |
 | `gui` | Only the desktop app. |
 
-The detector is on-device and single-mic, so only one surface listens at a time
-— `surface` is how you pin it. The TUI and desktop GUI share the same Python
-backend (`tui_gateway`), which runs the detector server-side and yields the mic
-to voice capture while a command records.
+The detector is on-device and single-mic, so only one surface listens at a time,
+including when Hermes surfaces run in separate processes. Ownership is sticky:
+the first eligible claimant keeps the listener until it stops, disconnects, or
+its process exits. Hermes does not silently fail over to another open surface.
+Set `surface` when you want to pin ownership instead of using first-claim wins.
+The TUI and desktop GUI share the same Python backend (`tui_gateway`), which
+runs the detector server-side and yields the mic to voice capture while a
+command records.
 
 ## Using a real "Hey Hermes"
 

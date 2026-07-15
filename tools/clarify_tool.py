@@ -32,18 +32,21 @@ def _flatten_choice(c) -> str:
     fixes the whole class in one place instead of per-adapter.
 
     Dict unwrap order is the canonical LLM tool-call user-facing keys:
-    ``label`` → ``description`` → ``text`` → ``title``. ``name`` and ``value``
-    are deliberately excluded — they're component-shaped fields that could
-    carry raw enum values or short identifiers, not human-readable labels. A
-    dict with none of the canonical keys is dropped (returns ""), since a
-    garbage label is worse than no choice at all.
+    ``label`` → ``description`` → ``text`` → ``title`` → ``value``. ``name``
+    is still excluded (raw enum / short identifier). ``value`` was added as a
+    last-resort fallback because some models (e.g. GLM-5.2 via the xiaomi
+    provider) emit the human-readable choice text in ``value``
+    (``[{"value": "A. Option text"}]``) rather than ``label``/``text``. It
+    stays last so canonical keys still win when present. A dict with none of
+    these keys is dropped (returns ""), since a garbage label is worse than no
+    choice at all.
     """
     if c is None:
         return ""
     if isinstance(c, str):
         return c.strip()
     if isinstance(c, dict):
-        for key in ("label", "description", "text", "title"):
+        for key in ("label", "description", "text", "title", "value"):
             v = c.get(key)
             if isinstance(v, str) and v.strip():
                 return v.strip()

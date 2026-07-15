@@ -380,7 +380,8 @@
    "feels": 18.9,
    "humidity": 58,
    "wind": 14.3,
-   "code": 2
+   "code": 2,
+   "aqi": 42
   },
   "hourly": [
    {
@@ -578,7 +579,11 @@
     "code": 1,
     "precipProb": 10
    }
-  ]
+  ],
+  "sun": {
+   "sunrise": "05:47",
+   "sunset": "20:29"
+  }
  },
  "markets": {
   "assets": [

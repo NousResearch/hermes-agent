@@ -9,11 +9,13 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import assistant  # noqa: E402
+import ics  # noqa: E402
 import server  # noqa: E402
 
 
@@ -745,6 +747,224 @@ class AuthHttpTests(unittest.TestCase):
         status, _ = self.request("/api/state", payload={
             "state": {"version": 1, "layout": []}, "token": "nope"})
         self.assertEqual(status, 401)
+
+
+ICS_SAMPLE = "\r\n".join([
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "BEGIN:VEVENT",
+    "SUMMARY:One-off meeting with a very long",
+    " ly folded line",
+    "DTSTART:20260720T093000Z",
+    "END:VEVENT",
+    "BEGIN:VEVENT",
+    "SUMMARY:All-day thing",
+    "DTSTART;VALUE=DATE:20260722",
+    "END:VEVENT",
+    "END:VCALENDAR",
+])
+
+
+class IcsParserTests(unittest.TestCase):
+    WINDOW = (date(2026, 7, 14), date(2026, 8, 14))
+
+    def parse(self, body_lines, window=None):
+        text = "\n".join(["BEGIN:VCALENDAR", "BEGIN:VEVENT", *body_lines,
+                          "END:VEVENT", "END:VCALENDAR"])
+        start, end = window or self.WINDOW
+        return ics.parse_ics(text, "Test", start, end)
+
+    def test_unfolding_and_timed_plus_allday(self):
+        events = ics.parse_ics(ICS_SAMPLE, "Work", *self.WINDOW)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["title"], "One-off meeting with a very longly folded line")
+        self.assertEqual(events[0]["date"], "2026-07-20")
+        self.assertEqual(events[0]["time"], "09:30")
+        self.assertEqual(events[1]["time"], None)
+        self.assertEqual(events[1]["calendar"], "Work")
+
+    def test_single_event_outside_window_dropped(self):
+        events = self.parse(["SUMMARY:Old", "DTSTART:20250101T100000"])
+        self.assertEqual(events, [])
+
+    def test_daily_rrule_fast_forwards_old_start(self):
+        events = self.parse([
+            "SUMMARY:Run", "DTSTART:20240101T070000", "RRULE:FREQ=DAILY"])
+        self.assertEqual(len(events), 32)  # every day of the window
+        self.assertEqual(events[0]["date"], "2026-07-14")
+        self.assertTrue(all(e["time"] == "07:00" for e in events))
+
+    def test_count_semantics_count_from_dtstart(self):
+        # 5 occurrences starting 2 days before the window → only 3 land inside.
+        start = self.WINDOW[0] - timedelta(days=2)
+        events = self.parse([
+            "SUMMARY:Sprint", f"DTSTART:{start.strftime('%Y%m%d')}T090000",
+            "RRULE:FREQ=DAILY;COUNT=5"])
+        self.assertEqual(len(events), 3)
+
+    def test_until_is_inclusive(self):
+        events = self.parse([
+            "SUMMARY:Ends", "DTSTART;VALUE=DATE:20260714",
+            "RRULE:FREQ=DAILY;UNTIL=20260716"])
+        self.assertEqual([e["date"] for e in events],
+                         ["2026-07-14", "2026-07-15", "2026-07-16"])
+
+    def test_exdate_removes_occurrence(self):
+        events = self.parse([
+            "SUMMARY:Standup", "DTSTART;VALUE=DATE:20260714",
+            "RRULE:FREQ=DAILY;UNTIL=20260717", "EXDATE;VALUE=DATE:20260715"])
+        self.assertEqual([e["date"] for e in events],
+                         ["2026-07-14", "2026-07-16", "2026-07-17"])
+
+    def test_weekly_byday(self):
+        events = self.parse([
+            "SUMMARY:Sync", "DTSTART:20260713T100000",  # a Monday
+            "RRULE:FREQ=WEEKLY;BYDAY=MO,FR",
+        ], window=(date(2026, 7, 13), date(2026, 7, 26)))
+        self.assertEqual([e["date"] for e in events],
+                         ["2026-07-13", "2026-07-17", "2026-07-20", "2026-07-24"])
+
+    def test_weekly_interval(self):
+        events = self.parse([
+            "SUMMARY:Payday", "DTSTART;VALUE=DATE:20260701",
+            "RRULE:FREQ=WEEKLY;INTERVAL=2",
+        ], window=(date(2026, 7, 1), date(2026, 8, 1)))
+        self.assertEqual([e["date"] for e in events],
+                         ["2026-07-01", "2026-07-15", "2026-07-29"])
+
+    def test_monthly_and_yearly(self):
+        monthly = self.parse([
+            "SUMMARY:Rent", "DTSTART;VALUE=DATE:20260115", "RRULE:FREQ=MONTHLY",
+        ], window=(date(2026, 7, 1), date(2026, 9, 30)))
+        self.assertEqual([e["date"] for e in monthly],
+                         ["2026-07-15", "2026-08-15", "2026-09-15"])
+        yearly = self.parse([
+            "SUMMARY:Birthday", "DTSTART;VALUE=DATE:19900722", "RRULE:FREQ=YEARLY",
+        ])
+        self.assertEqual([e["date"] for e in yearly], ["2026-07-22"])
+
+    def test_summary_unescaping_and_missing_fields(self):
+        events = self.parse([
+            "SUMMARY:Dinner\\, wine \\; cheese", "DTSTART;VALUE=DATE:20260720"])
+        self.assertEqual(events[0]["title"], "Dinner, wine ; cheese")
+        self.assertEqual(self.parse(["DTSTART;VALUE=DATE:20260720"]), [])
+        self.assertEqual(self.parse(["SUMMARY:No date"]), [])
+
+
+class CalendarConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "calendars.json"
+        self.config = server.CalendarConfig(self.path)
+
+    def test_add_list_remove_roundtrip(self):
+        self.config.add("Personal", "https://example.org/basic.ics")
+        self.assertEqual(self.config.list(), [
+            {"name": "Personal", "url": "https://example.org/basic.ics"}])
+        self.config.remove("https://example.org/basic.ics")
+        self.assertEqual(self.config.list(), [])
+
+    def test_webcal_rewritten_to_https(self):
+        self.config.add("Apple", "webcal://p01-cal.icloud.com/pub.ics")
+        self.assertTrue(self.config.list()[0]["url"].startswith("https://"))
+
+    def test_validation(self):
+        with self.assertRaises(server.ApiError):
+            self.config.add("Bad", "ftp://example.org/cal.ics")
+        with self.assertRaises(server.ApiError):
+            self.config.add("", "https://example.org/cal.ics")
+        with self.assertRaises(server.ApiError):
+            self.config.remove("https://example.org/never-added.ics")
+        self.config.add("Dup", "https://example.org/cal.ics")
+        with self.assertRaises(server.ApiError):
+            self.config.add("Dup again", "https://example.org/cal.ics")
+
+    def test_limit_enforced(self):
+        for i in range(server.CalendarConfig.MAX_CALENDARS):
+            self.config.add(f"c{i}", f"https://example.org/{i}.ics")
+        with self.assertRaises(server.ApiError):
+            self.config.add("extra", "https://example.org/extra.ics")
+
+    def test_persistence_survives_reload(self):
+        self.config.add("Keep", "https://example.org/keep.ics")
+        reloaded = server.CalendarConfig(self.path)
+        self.assertEqual(reloaded.list(), self.config.list())
+
+
+class CalendarHttpTests(unittest.TestCase):
+    """Subscribe to the demo.ics the server itself hosts, then read /api/events."""
+
+    @classmethod
+    def setUpClass(cls):
+        server.CACHE.clear()
+        cls.httpd = server.make_server(
+            "127.0.0.1", 0, offline=True, data_dir=Path(tempfile.mkdtemp()))
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def request(self, path, payload=None):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers={"Content-Type": "application/json"},
+            method="POST" if payload is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read())
+
+    def test_demo_ics_served_with_calendar_mime(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/demo.ics") as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("text/calendar", resp.headers["Content-Type"])
+
+    def test_subscribe_events_unsubscribe_flow(self):
+        status, data = self.request("/api/calendars")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["calendars"], [])
+
+        demo_url = f"http://127.0.0.1:{self.port}/demo.ics"
+        status, data = self.request("/api/calendars", {"op": "add", "name": "Demo", "url": demo_url})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["calendars"][0]["name"], "Demo")
+
+        status, data = self.request("/api/events?days=7")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["failures"], [])
+        titles = {e["title"] for e in data["events"]}
+        self.assertIn("Demo: morning run", titles)  # FREQ=DAILY reaches any window
+        run = next(e for e in data["events"] if e["title"] == "Demo: morning run")
+        self.assertEqual(run["time"], "07:00")
+        self.assertEqual(run["calendar"], "Demo")
+
+        # cache is epoch-keyed: removing the calendar empties the next read
+        status, data = self.request("/api/calendars", {"op": "remove", "url": demo_url})
+        self.assertEqual(status, 200)
+        status, data = self.request("/api/events?days=7")
+        self.assertEqual(data["events"], [])
+
+    def test_calendars_op_validation(self):
+        status, data = self.request("/api/calendars", {"op": "add", "name": "Bad", "url": "not-a-url"})
+        self.assertEqual(status, 400)
+        status, data = self.request("/api/calendars", {"op": "bogus"})
+        self.assertEqual(status, 400)
+        status, data = self.request("/api/events?days=zero")
+        self.assertEqual(status, 400)
+
+    def test_weather_sample_includes_aqi_and_sun(self):
+        status, data = self.request("/api/weather?lat=40.7&lon=-74")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["source"], "sample")
+        self.assertIsInstance(data["current"]["aqi"], int)
+        self.assertRegex(data["sun"]["sunrise"], r"^\d\d:\d\d$")
+        self.assertRegex(data["sun"]["sunset"], r"^\d\d:\d\d$")
 
 
 if __name__ == "__main__":

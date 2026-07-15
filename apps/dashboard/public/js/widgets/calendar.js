@@ -18,9 +18,19 @@ export default {
     let viewYear = today.getFullYear();
     let viewMonth = today.getMonth();
     let selected = ymd(today);
+    let external = []; // read-only events from subscribed ICS calendars
 
     const eventsOn = (dateStr) =>
       store.state.calendar.events.filter((ev) => ev.date === dateStr);
+    const externalOn = (dateStr) => external.filter((ev) => ev.date === dateStr);
+
+    const loadExternal = async () => {
+      try {
+        const res = await ctx.api.icsEvents(90);
+        external = res.events;
+        draw();
+      } catch { /* offline or none subscribed */ }
+    };
 
     const draw = () => {
       const first = new Date(viewYear, viewMonth, 1);
@@ -52,6 +62,7 @@ export default {
         const dateStr = ymd(new Date(viewYear, viewMonth, day));
         const isToday = dateStr === ymd(today);
         const hasEvents = eventsOn(dateStr).length > 0;
+        const hasExternal = externalOn(dateStr).length > 0;
         grid.append(
           h("button.cal-cell", {
             type: "button",
@@ -61,11 +72,12 @@ export default {
               isToday ? "cal-today" : "",
               dateStr === selected ? "cal-selected" : "",
             ].filter(Boolean).join(" "),
-            "aria-label": dateStr + (hasEvents ? ", has events" : ""),
+            "aria-label": dateStr + (hasEvents || hasExternal ? ", has events" : ""),
             onclick: () => { selected = dateStr; draw(); },
           },
             String(day),
             hasEvents ? h("span.cal-dot", { "aria-hidden": "true" }) : null,
+            hasExternal && !hasEvents ? h("span.cal-dot.cal-dot-ext", { "aria-hidden": "true" }) : null,
           ),
         );
       }
@@ -73,6 +85,7 @@ export default {
       const selDate = new Date(selected + "T12:00:00");
       const selLabel = selDate.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
       const dayEvents = eventsOn(selected);
+      const dayExternal = externalOn(selected);
 
       const input = h("input.input", {
         type: "text",
@@ -107,14 +120,26 @@ export default {
             }, "✕"),
           ),
         ),
-        !dayEvents.length ? h("li.muted.small", {}, `Nothing on ${selLabel}.`) : null,
+        dayExternal.map((event) =>
+          h("li.cal-event.cal-event-ext", {},
+            h("span.cal-dot.cal-dot-ext", { "aria-hidden": "true" }),
+            h("span.cal-event-title", {},
+              event.time ? `${event.time} ` : "", event.title),
+            h("span.muted.small.cal-event-cal", {}, event.calendar),
+          ),
+        ),
+        !dayEvents.length && !dayExternal.length
+          ? h("li.muted.small", {}, `Nothing on ${selLabel}.`) : null,
       );
 
-      // Next few upcoming events across the whole calendar.
-      const upcoming = store.state.calendar.events
+      // Next few upcoming events across local + subscribed calendars.
+      const upcoming = [
+        ...store.state.calendar.events,
+        ...external.map((e) => ({ ...e, ext: true })),
+      ]
         .filter((event) => event.date >= ymd(today))
-        .sort((a, b) => a.date.localeCompare(b.date))
-        .slice(0, 3);
+        .sort((a, b) => a.date.localeCompare(b.date) || (a.time || "").localeCompare(b.time || ""))
+        .slice(0, 4);
 
       clear(body).append(nav, grid, form, list);
       if (upcoming.length) {
@@ -124,7 +149,9 @@ export default {
             upcoming.map((event) =>
               h("div.small", {},
                 new Date(event.date + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-                " — ", event.title),
+                event.time ? ` ${event.time}` : "",
+                " — ", event.title,
+                event.ext ? h("span.muted.small", {}, ` (${event.calendar})`) : null),
             ),
           ),
         );
@@ -134,7 +161,8 @@ export default {
     ctx.onSummarize(() => ({
       kind: "calendar",
       title: "Events",
-      content: store.state.calendar.events
+      content: [...external.map((e) => ({ ...e, title: `${e.title} [${e.calendar}]` })),
+        ...store.state.calendar.events]
         .slice()
         .sort((a, b) => a.date.localeCompare(b.date))
         .map((e) => `${e.date}: ${e.title}`)
@@ -143,6 +171,9 @@ export default {
     ctx.onStore((topic) => {
       if (topic === "calendar-external") draw();
     });
+    window.addEventListener("hub:calendars-changed", loadExternal);
     draw();
+    loadExternal();
+    ctx.every(15 * 60_000, loadExternal);
   },
 };

@@ -137,9 +137,12 @@ export default {
     const { store } = ctx;
     let showingSearch = false;
 
+    const locations = () => store.state.weather.locations || [];
+    const activeLoc = () => locations()[store.state.weather.active] || null;
+
     const draw = async () => {
       clear(body).append(h("div.widget-loading", {}, "Loading forecast…"));
-      const loc = store.state.weather.location;
+      const loc = activeLoc();
       let data;
       try {
         data = loc
@@ -153,10 +156,52 @@ export default {
       ctx._track?.(data);
       const { icon, label } = weatherInfo(data.current.code);
 
+      // city tabs (shown once the user has saved at least one city)
+      const cityTabs = h("div.note-tabs.weather-cities", { role: "tablist", "aria-label": "Cities" });
+      if (locations().length) {
+        locations().forEach((place, idx) => {
+          const tab = h("button.note-tab", {
+            type: "button",
+            role: "tab",
+            "aria-selected": String(idx === store.state.weather.active),
+            onclick: () => {
+              store.update((state) => { state.weather.active = idx; }, "weather");
+              draw();
+            },
+          }, place.name);
+          if (store.state.editMode && locations().length > 0) {
+            tab.append(h("span.weather-city-x", {
+              title: `Remove ${place.name}`,
+              onclick: (ev) => {
+                ev.stopPropagation();
+                store.update((state) => {
+                  state.weather.locations.splice(idx, 1);
+                  state.weather.active = Math.max(0, Math.min(
+                    state.weather.active, state.weather.locations.length - 1));
+                }, "weather");
+                draw();
+              },
+            }, " ✕"));
+          }
+          cityTabs.append(tab);
+        });
+        cityTabs.append(h("button.note-tab.note-new", {
+          type: "button", "aria-label": "Add city",
+          onclick: () => { showingSearch = !showingSearch; draw(); },
+        }, "+"));
+      }
+
       const changeBtn = h("button.link-btn", {
         type: "button",
         onclick: () => { showingSearch = !showingSearch; draw(); },
-      }, showingSearch ? "close" : "change");
+      }, showingSearch ? "close" : (locations().length ? "" : "set city"));
+
+      const aqi = data.current.aqi;
+      const aqiChip = aqi == null ? null : h("span.aqi-chip", {
+        class: `aqi-chip ${aqi <= 50 ? "level-stable" : aqi <= 100 ? "level-watch"
+          : aqi <= 150 ? "level-elevated" : "level-critical"} level-chip`,
+        title: "US Air Quality Index",
+      }, `AQI ${aqi} ${aqi <= 50 ? "GOOD" : aqi <= 100 ? "MODERATE" : aqi <= 150 ? "SENSITIVE" : "UNHEALTHY"}`);
 
       const head = h("div.weather-now", {},
         h("div.weather-icon", { "aria-hidden": "true" }, icon),
@@ -168,6 +213,10 @@ export default {
           h("div.weather-loc", {}, data.location.name, " ", changeBtn),
           h("div.muted", {},
             `Feels ${Math.round(data.current.feels)}° · ${data.current.humidity}% humidity · wind ${Math.round(data.current.wind)} ${data.units.wind}`),
+          h("div.weather-extras", {},
+            data.sun ? h("span.muted.small", {}, `☀ ${data.sun.sunrise} · ☾ ${data.sun.sunset}`) : null,
+            aqiChip,
+          ),
         ),
       );
 
@@ -185,10 +234,22 @@ export default {
         }),
       );
 
-      clear(body).append(head);
+      clear(body);
+      if (locations().length) body.append(cityTabs);
+      body.append(head);
       if (showingSearch) {
         body.append(citySearch(ctx, (place) => {
-          store.update((state) => { state.weather.location = place; }, "weather");
+          store.update((state) => {
+            const exists = state.weather.locations.findIndex(
+              (l) => l.name === place.name && l.lat === place.lat);
+            if (exists >= 0) {
+              state.weather.active = exists;
+            } else {
+              state.weather.locations.push(place);
+              state.weather.active = state.weather.locations.length - 1;
+            }
+            state.weather.locations = state.weather.locations.slice(0, 5);
+          }, "weather");
           showingSearch = false;
           draw();
         }));
@@ -208,6 +269,7 @@ export default {
     }));
     ctx._track = (data) => { lastWeather = data; };
 
+    ctx.onStore((topic) => { if (topic === "editMode") draw(); });
     ctx.onRefresh(draw);
     draw();
     ctx.every(10 * 60_000, draw);

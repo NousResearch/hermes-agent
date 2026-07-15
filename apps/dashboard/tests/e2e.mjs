@@ -92,6 +92,15 @@ await page.evaluate(async () => {
       body: JSON.stringify({ op: "delete", id: rule.id }),
     });
   }
+  // clear calendar subscriptions from previous (possibly aborted) runs
+  const { calendars } = await (await fetch("/api/calendars")).json();
+  for (const cal of calendars) {
+    await fetch("/api/calendars", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "remove", url: cal.url }),
+    });
+  }
 });
 await page.waitForTimeout(1600); // debounced sync push of the reset
 await page.reload({ waitUntil: "networkidle" });
@@ -341,6 +350,39 @@ await page.evaluate(async () => {
     body: JSON.stringify({ op: "remove_topic", name: "e2e-custom" }) });
 });
 await page.locator(".tab", { hasText: "Top" }).click();
+
+// ---- weather extras (AQI + sun, from sample data offline) -----------------------
+check("weather sun line shown", /☀ \d\d:\d\d · ☾ \d\d:\d\d/.test(
+  await page.locator(".weather-extras").innerText()));
+check("weather AQI chip shown", /AQI \d+/.test(await page.locator(".aqi-chip").innerText()));
+
+// ---- calendar feeds (ICS subscriptions) ------------------------------------------
+await page.locator(".topbar-actions .menu-wrap .btn").click();
+await page.locator(".menu-item", { hasText: "Calendar feeds" }).click();
+await page.waitForSelector(".sources-pop", { timeout: 10000 });
+check("calendar feeds panel opens", true);
+await page.locator("input[aria-label='Calendar name']").fill("Demo");
+await page.locator("input[aria-label='Calendar URL']").fill(`${BASE}/demo.ics`);
+await page.locator(".sources-add .btn-primary").click();
+await page.waitForSelector(".sources-row .sources-name:has-text('Demo')", { timeout: 10000 });
+check("calendar subscribed", true);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".sources-pop", { state: "detached" });
+// demo.ics has a daily 07:00 event → today (selected by default) shows it read-only
+await page.waitForSelector(".cal-event-ext", { timeout: 10000 });
+check("external event listed for today", (await page.locator(".cal-event-ext").allInnerTexts()).join(" ").includes("Demo: morning run"));
+// .cal-event-cal renders uppercase (text-transform), innerText reflects that
+check("external event shows calendar name", (await page.locator(".cal-event-cal").first().innerText()).toUpperCase() === "DEMO");
+check("upcoming merges subscribed calendar", (await page.locator(".cal-upcoming").innerText()).includes("(Demo)"));
+await shot(page, "09-calendar-feeds");
+// unsubscribe so the rest of the run (and reruns) see a clean calendar
+await page.evaluate(async (base) => {
+  await fetch("/api/calendars", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ op: "remove", url: `${base}/demo.ics` }) });
+  window.dispatchEvent(new CustomEvent("hub:calendars-changed"));
+}, BASE);
+await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000 });
+check("unsubscribe clears external events", true);
 
 // ---- markets watchlist editor ---------------------------------------------------
 await page.waitForSelector(".market-row");

@@ -40,6 +40,7 @@ from pathlib import Path
 
 import assistant as assistant_module
 from automations import Automations
+from ics import parse_ics
 
 APP_DIR = Path(__file__).resolve().parent
 PUBLIC_DIR = APP_DIR / "public"
@@ -194,6 +195,7 @@ MARKETS_TTL = 3 * 60
 GEOCODE_TTL = 24 * 60 * 60
 WORLDSTATE_TTL = 10 * 60
 READER_TTL = 30 * 60
+ICS_TTL = 15 * 60
 
 # ---------------------------------------------------------------------------
 # "State of the world" heuristic model.
@@ -281,6 +283,7 @@ MIME_TYPES = {
     ".png": "image/png",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
+    ".ics": "text/calendar; charset=utf-8",
     ".webmanifest": "application/manifest+json",
 }
 
@@ -313,6 +316,60 @@ class TTLCache:
 
 
 CACHE = TTLCache()
+
+
+class CalendarConfig:
+    """Read-only ICS calendar subscriptions, persisted in data/calendars.json."""
+
+    MAX_CALENDARS = 8
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._lock = threading.Lock()
+        self._calendars: list[dict[str, str]] = []
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    self._calendars = [
+                        {"name": str(c["name"]), "url": str(c["url"])}
+                        for c in loaded if isinstance(c, dict) and c.get("url")
+                    ]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                pass
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(self._calendars, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def list(self) -> list[dict[str, str]]:
+        with self._lock:
+            return [dict(c) for c in self._calendars]
+
+    def add(self, name: str, url: str) -> None:
+        name = name.strip()[:60]
+        url = url.strip().replace("webcal://", "https://", 1)
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ApiError(400, "calendar url must be http(s) or webcal")
+        if not name:
+            raise ApiError(400, "calendar needs a name")
+        with self._lock:
+            if len(self._calendars) >= self.MAX_CALENDARS:
+                raise ApiError(400, f"calendar limit ({self.MAX_CALENDARS}) reached")
+            if any(c["url"] == url for c in self._calendars):
+                raise ApiError(400, "that calendar is already subscribed")
+            self._calendars.append({"name": name, "url": url})
+            self._save()
+
+    def remove(self, url: str) -> None:
+        with self._lock:
+            before = len(self._calendars)
+            self._calendars = [c for c in self._calendars if c["url"] != url]
+            if len(self._calendars) == before:
+                raise ApiError(404, "no such calendar")
+            self._save()
 
 
 class StateStore:
@@ -741,7 +798,8 @@ def live_weather(lat: float, lon: float, name: str | None) -> dict:
             "longitude": f"{lon:.4f}",
             "current": "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m",
             "hourly": "temperature_2m,precipitation_probability,weather_code",
-            "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+            "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
+                     "precipitation_probability_max,sunrise,sunset",
             "forecast_days": "7",
             "timezone": "auto",
         }
@@ -779,6 +837,20 @@ def live_weather(lat: float, lon: float, name: str | None) -> dict:
                 "precipProb": daily["precipitation_probability_max"][i],
             }
         )
+    aqi = None
+    try:  # air quality is a separate no-key API; missing data must not sink weather
+        aq_query = urllib.parse.urlencode(
+            {"latitude": f"{lat:.4f}", "longitude": f"{lon:.4f}", "current": "us_aqi"})
+        aq = json.loads(fetch_url(
+            f"https://air-quality-api.open-meteo.com/v1/air-quality?{aq_query}", timeout=6))
+        aqi = round(aq["current"]["us_aqi"])
+    except Exception:
+        pass
+
+    sun = None
+    if daily.get("sunrise") and daily.get("sunset"):
+        sun = {"sunrise": daily["sunrise"][0][-5:], "sunset": daily["sunset"][0][-5:]}
+
     return {
         "source": "live",
         "location": {"name": name or f"{lat:.2f}, {lon:.2f}", "lat": lat, "lon": lon},
@@ -789,7 +861,9 @@ def live_weather(lat: float, lon: float, name: str | None) -> dict:
             "humidity": current["relative_humidity_2m"],
             "wind": current["wind_speed_10m"],
             "code": current["weather_code"],
+            "aqi": aqi,
         },
+        "sun": sun,
         "hourly": hours,
         "daily": days,
     }
@@ -854,6 +928,8 @@ class Api:
         self.state_store = state_store
         self.automations = Automations(self.data_dir / "automations.json", self)
         self.feeds = FeedConfig(self.data_dir / "feeds.json")
+        self.calendars = CalendarConfig(self.data_dir / "calendars.json")
+        self._ics_epoch = 0
         self._memory_lock = threading.Lock()
 
     # -- agent memory (a plain markdown file the agent reads/writes) --------
@@ -919,6 +995,45 @@ class Api:
             lambda: live_news(topic, limit, sources),
             lambda: sample_news(topic, limit),
         )
+
+    # -- ICS calendar subscriptions ------------------------------------------
+    def calendars_list(self, params: dict) -> dict:
+        return {"calendars": self.calendars.list()}
+
+    def calendars_op(self, body: dict) -> dict:
+        op = body.get("op")
+        if op == "add":
+            self.calendars.add(str(body.get("name", "")), str(body.get("url", "")))
+        elif op == "remove":
+            self.calendars.remove(str(body.get("url", "")))
+        else:
+            raise ApiError(400, "op must be add or remove")
+        self._ics_epoch += 1  # invalidates every cached merged-events window
+        return {"calendars": self.calendars.list()}
+
+    def ics_events(self, params: dict) -> dict:
+        try:
+            days = max(1, min(int(params.get("days", ["60"])[0]), 365))
+        except ValueError:
+            raise ApiError(400, "days must be an integer") from None
+        cache_key = f"ics-events:{self._ics_epoch}:{days}"
+        cached = CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        window_start = datetime.now().date() - timedelta(days=1)
+        window_end = window_start + timedelta(days=days + 1)
+        events: list[dict] = []
+        failures: list[str] = []
+        for cal in self.calendars.list():
+            try:
+                raw = fetch_url(cal["url"]).decode("utf-8", errors="replace")
+                events.extend(parse_ics(raw, cal["name"], window_start, window_end))
+            except Exception:
+                failures.append(cal["name"])
+        events.sort(key=lambda e: (e["date"], e.get("time") or ""))
+        result = {"events": events[:500], "failures": failures}
+        CACHE.set(cache_key, result, ICS_TTL)
+        return result
 
     def feeds_config(self, params: dict) -> dict:
         return self.feeds.snapshot()
@@ -1179,6 +1294,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/automations": "automations_list",
         "/api/notifications": "notifications",
         "/api/feeds": "feeds_config",
+        "/api/calendars": "calendars_list",
+        "/api/events": "ics_events",
     }
 
     POST_ROUTES = {
@@ -1189,6 +1306,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/assistant/tool": "assistant_tool",
         "/api/automations": "automations_op",
         "/api/feeds": "feeds_op",
+        "/api/calendars": "calendars_op",
     }
 
     # POST endpoints that write their own (streaming) response.

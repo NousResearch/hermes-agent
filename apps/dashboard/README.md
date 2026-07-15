@@ -58,6 +58,19 @@ Note: iOS treats plain-HTTP sites as insecure for some PWA features; over
 Tailscale it works, but for the full experience put HTTPS in front (Caddy
 with a local CA, or Cloudflare Tunnel).
 
+### Docker (always-on box, NAS, VPS)
+
+```bash
+cd apps/dashboard
+HERMES_HUB_TOKEN=my-secret-code docker compose up -d   # → port 8787
+```
+
+The image is `python:3.12-slim` plus the optional `anthropic` SDK; state
+persists in the `hub-data` volume. Set `HERMES_HUB_API_KEY` in the
+environment (or an `.env` file next to `compose.yaml`) to enable the live
+agent, and `HERMES_HUB_MODEL` to override the model. Plain `docker build`
+works too — mount something at `/data` to keep your data.
+
 ## The agent (optional AI mode)
 
 The **◆ Agent** widget is a Jarvis-style operator for the dashboard. It ships
@@ -112,7 +125,13 @@ Rules live in `data/automations.json`; triggers are `daily`, `market` and
 - **Apps launcher** — tiles for your most-used sites, opening in the in-app
   viewer; add/edit/remove in edit mode.
 - **Weather** — Open-Meteo (no key needed), 24 h temperature chart with hover
-  tooltip, 7-day outlook, city search.
+  tooltip, 7-day outlook, air-quality (US AQI) chip, sunrise/sunset, and up to
+  5 saved cities as tabs (city search to add, ✕ in edit mode to remove).
+- **Calendar feeds** — subscribe to read-only ICS calendars (⚙ → *Calendar
+  feeds…*): Google/Apple/Outlook private iCal addresses, webcal links, any
+  .ics URL. Events (including daily/weekly/monthly/yearly recurrence) merge
+  into the Calendar widget, upcoming list, briefings and the agent's context.
+  Config is server-side (`data/calendars.json`), refreshed every 15 min.
 - **Markets** — editable watchlist (up to 15 assets; "+ watch asset" with any
   CoinGecko id, remove in edit mode) with price, 24 h change and 7-day
   sparkline (CoinGecko, no key needed). The watchlist syncs across devices.
@@ -134,15 +153,17 @@ Rules live in `data/automations.json`; triggers are `daily`, `market` and
 server.py          stdlib HTTP server: static files + JSON API + live/sample fallback
 assistant.py       AI layer: Claude (optional SDK) or local rule-based engines
 automations.py     standing rules engine (daily/market/worldstate → notify/briefing)
+ics.py             minimal RFC 5545 parser for subscribed calendars
 sample_data.json   bundled offline data (news, weather, markets, geocode)
+Dockerfile         container build (with compose.yaml for one-command deploys)
 public/            zero-build frontend (ES modules, design-system CSS)
   js/widgets/      one module per widget (clock, worldstate, agent, …)
   js/viewer.js     in-app reader/embed overlay
   js/actions.js    executes agent tool calls against local state
 tests/
-  test_server.py   75 unit tests (feeds+sources, worldstate, reader, assistant,
-                   sync, auth, automations, memory, watchlist, SSE, HTTP)
-  e2e.mjs          80-check Playwright suite (needs playwright-core + Chromium)
+  test_server.py   94 unit tests (feeds+sources, worldstate, reader, assistant,
+                   sync, auth, automations, memory, watchlist, SSE, ICS, HTTP)
+  e2e.mjs          88-check Playwright suite (needs playwright-core + Chromium)
                    — also runs in CI (.github/workflows/dashboard.yml)
 ```
 

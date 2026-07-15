@@ -245,6 +245,14 @@ class Automations:
         except Exception:
             pass
         try:
+            ics = self.api.ics_events({"days": ["7"]})
+            context["events"] = list(context.get("events") or []) + [
+                {"date": e["date"],
+                 "title": (f"{e['time']} " if e.get("time") else "") + f"{e['title']} [{e['calendar']}]"}
+                for e in ics["events"]]
+        except Exception:
+            pass
+        try:
             context["headlines"] = [
                 i["title"] for i in self.api.news({"topic": ["top"], "limit": ["6"]})["items"]]
             world = self.api.worldstate({})

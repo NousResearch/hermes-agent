@@ -65,7 +65,7 @@ function defaultState() {
     },
     calendar: { events: [] },
     agent: { history: [] },
-    weather: { location: null }, // null → server default until the user picks a city
+    weather: { locations: [], active: 0 }, // empty → server default city
     news: { topic: "top" },
     reading: { items: [] },
     newsRead: {}, // url → timestamp of first open (bounded in markRead)
@@ -82,10 +82,21 @@ function load() {
     if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.layout)) {
       return defaultState();
     }
+    migrate(parsed);
     // Merge unknown/missing top-level sections from defaults (forward compat).
     return { ...defaultState(), ...parsed, editMode: false };
   } catch {
     return defaultState();
+  }
+}
+
+/** In-place upgrades for state shapes from older builds. */
+function migrate(parsed) {
+  if (parsed.weather && !Array.isArray(parsed.weather.locations)) {
+    parsed.weather = {
+      locations: parsed.weather.location ? [parsed.weather.location] : [],
+      active: 0,
+    };
   }
 }
 
@@ -117,6 +128,7 @@ export const store = {
   /** Replace the whole state (sync adopting another device's copy). */
   replace(incoming) {
     if (!incoming || !Array.isArray(incoming.layout)) return;
+    migrate(incoming);
     this.state = { ...defaultState(), ...incoming, editMode: false };
     this.save();
     for (const listener of listeners) listener("replace", this.state);

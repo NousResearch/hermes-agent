@@ -31,6 +31,15 @@ async function fullContext() {
         .join(", ") || null,
     };
   } catch { /* context stays partial if feeds are down */ }
+  try {
+    const ics = await api.icsEvents(7);
+    if (ics.events.length) {
+      context.events = [
+        ...(context.events || []),
+        ...ics.events.map((e) => ({ date: e.date, title: `${e.time ? e.time + " " : ""}${e.title} [${e.calendar}]` })),
+      ];
+    }
+  } catch { /* no subscriptions or offline */ }
   return context;
 }
 

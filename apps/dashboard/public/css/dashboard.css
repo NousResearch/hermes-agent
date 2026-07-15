@@ -434,6 +434,18 @@ a { color: inherit; }
 .weather-cond { color: var(--ink-2); font-size: 12px; }
 .weather-meta { margin-left: auto; text-align: right; min-width: 0; }
 .weather-loc { font-weight: 600; }
+.weather-cities { margin-bottom: 6px; }
+.weather-city-x { color: var(--muted); }
+.weather-city-x:hover { color: var(--critical, #e5484d); }
+.weather-extras {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+.aqi-chip { font-size: 10px; padding: 1px 6px; }
 
 .weather-chart-wrap { position: relative; margin-top: 10px; }
 .weather-chart { width: 100%; height: auto; display: block; }
@@ -695,6 +707,13 @@ a { color: inherit; }
   border-radius: 50%;
   background: var(--accent);
 }
+.cal-dot-ext {
+  background: transparent;
+  border: 1px solid var(--accent);
+  width: 5px;
+  height: 5px;
+}
+.cal-cell .cal-dot + .cal-dot-ext { left: calc(50% + 7px); }
 .cal-form { display: flex; gap: 8px; margin: 10px 0 6px; }
 .cal-events { list-style: none; margin: 0; padding: 0; }
 .cal-event { display: flex; align-items: center; gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--hairline); }
@@ -703,6 +722,8 @@ a { color: inherit; }
 .cal-event-title { flex: 1; }
 .cal-event .icon-btn { opacity: 0; }
 .cal-event:hover .icon-btn { opacity: 1; }
+.cal-event-ext .cal-event-title { color: var(--ink-2); }
+.cal-event-cal { flex: 0 0 auto; letter-spacing: 0.06em; text-transform: uppercase; font-size: 10px; }
 .cal-upcoming { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hairline); display: grid; gap: 3px; }
 
 /* ---------- markets ---------- */

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import signal
 import subprocess
 import sys
@@ -11,13 +12,20 @@ from pathlib import Path
 from typing import BinaryIO, Sequence, TextIO
 
 
+_TIMESTAMP_PREFIX = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)"
+)
+
+
 def _timestamp() -> str:
     """Match logging.Formatter's default ``%(asctime)s`` timestamp shape."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:23]
 
 
 def _write_timestamped_line(log_file: TextIO, line: str) -> None:
-    log_file.write(f"{_timestamp()} {line.rstrip(chr(10))}\n")
+    rendered = line.rstrip("\r\n")
+    prefix = "" if _TIMESTAMP_PREFIX.match(rendered) else f"{_timestamp()} "
+    log_file.write(f"{prefix}{rendered}\n")
     log_file.flush()
 
 

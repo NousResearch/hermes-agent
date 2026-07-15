@@ -624,7 +624,7 @@ def _handle_complete(args: dict, **kw) -> str:
                     )
 
             try:
-                ok = kb.complete_task(
+                ok = kb.request_review(
                     conn, tid,
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,

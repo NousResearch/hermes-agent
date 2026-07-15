@@ -580,6 +580,34 @@ auditable in `~/.hermes/logs/agent.log`. Plugins load after built-in
 tools, so the registration order is correct: your handler replaces the
 built-in one.
 
+**Non-bundled plugins also need an operator grant.** For any plugin that
+does not ship with Hermes core (user, project, or pip source),
+`override=True` against an existing built-in tool additionally requires a
+per-plugin opt-in in `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:                    # the plugin's registry key from `hermes plugins list`
+      allow_tool_override: true
+```
+
+Without the grant, `ctx.register_tool(..., override=True)` raises
+`PluginToolOverrideError`; since `register()` exceptions are caught by the
+loader, the plugin is disabled and Hermes continues. The gate exists
+because an enabled plugin that silently replaces a privileged built-in
+like `shell_exec` or `write_file` could intercept everything the model
+routes through it. Bundled plugins are exempt: an override there is a
+maintainer decision. If config cannot be loaded, the gate fails closed.
+
+You normally never edit this key by hand. `hermes plugins enable <name>`
+asks whether to grant the capability when enabling a non-bundled plugin
+(defaulting to no), and the `--allow-tool-override` /
+`--no-allow-tool-override` flags skip the prompt for scripted installs.
+The same grant also gates `deregister()`: without it, a plugin cannot
+remove a tool it does not own (which would otherwise be a way around the
+override check).
+
 ### Register multiple hooks
 
 ```python
@@ -601,6 +629,9 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
+| `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
+| `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
+| `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
@@ -614,6 +645,8 @@ Most hooks are fire-and-forget observers — their return values are ignored. Th
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
+
+The **API request hooks** are observers for the raw provider request, one level below the per-turn `pre_llm_call` / `post_llm_call` pair: a single turn that calls tools makes several API requests, and these hooks fire around each one. They exist for observability plugins (tracing, cost accounting, latency dashboards). The `request` and `response` kwargs are sanitized, size-capped JSON views of the provider payload (sensitive keys redacted, long strings truncated, SDK objects normalized), and `usage` is a plain token-summary dict. Every payload carries the correlation fields `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count`, so a plugin can stitch requests, tool calls, and turns together. `api_request_error` fires when a provider call raises and adds `status_code`, `retry_count` / `max_retries`, `retryable`, `reason`, and an `error` dict with `type` and `message`.
 
 ### `pre_llm_call` context injection
 
@@ -725,6 +758,44 @@ def register(ctx):
 #### Multiple plugins returning context
 
 When multiple plugins return context from `pre_llm_call`, their outputs are joined with double newlines and appended to the user message together. The order follows plugin discovery order (alphabetical by plugin directory name).
+
+### Middleware: change what happens
+
+Hooks observe the agent loop (with the few documented steering shapes above). **Middleware changes what happens**: request middleware rewrites the effective payload before anything downstream sees it, and execution middleware wraps the actual call. Register it from the same `register(ctx)` entry point:
+
+```python
+def cap_find_output(tool_name, args, **kwargs):
+    """Rewrite terminal find commands to cap their output."""
+    command = args.get("command", "")
+    if tool_name == "terminal" and command.startswith("find "):
+        return {
+            "args": {**args, "command": command + " | head -100"},
+            "source": "my-plugin",
+            "reason": "cap find output",
+        }
+    return None  # leave the call unchanged
+
+def register(ctx):
+    ctx.register_middleware("tool_request", cap_find_output)
+```
+
+The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
+
+| Kind | Receives | Return contract |
+|------|----------|-----------------|
+| `tool_request` | `tool_name`, `args`, `original_args`, context kwargs | Return `{"args": {...}}` to replace the effective tool arguments before hooks, guardrails, approvals, and execution see them. Return `None` to leave the call unchanged. |
+| `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Hermes sends them. |
+| `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |
+| `llm_execution` | the payload plus `next_call` | Same shape, wrapping the provider call. |
+
+**Rules that matter in practice:**
+
+- Request middleware chains: each callback sees the payload as rewritten by earlier callbacks, while `original_args` / `original_request` always carries the pre-middleware copy. Payloads are copied between callbacks, so mutate freely.
+- You can include `source`, `reason`, and `name` strings in the returned dict. They land in the middleware trace, which downstream observer hooks receive as the `middleware_trace` kwarg.
+- `next_call` in execution middleware is **single-use**. Calling it twice raises, because it would re-run the provider or tool.
+- A middleware callback that raises is logged and skipped; the chain continues. A downstream failure raised after your `next_call` propagates as itself. Middleware can never break the base runtime path.
+- Middleware payloads carry `middleware_schema_version` (`hermes.middleware.v1`) alongside the observer telemetry fields.
+- Unknown kinds register with a warning instead of failing, so a plugin written against a newer Hermes still loads on an older one.
 
 ### Register CLI commands
 

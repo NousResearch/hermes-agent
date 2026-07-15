@@ -181,6 +181,9 @@ class _SecondaryRecoveryAdapter:
     def set_authorization_check(self, handler):
         self.authorization_check = handler
 
+    def set_admin_policy_check(self, handler):
+        self.admin_policy_check = handler
+
 
 def _secondary_recovery_runner(*, running=True):
     runner = GatewayRunner.__new__(GatewayRunner)

@@ -934,55 +934,50 @@ class TelegramAdapter(BasePlatformAdapter):
         actions that only the owner/admin may take (e.g. approving a dangerous
         command via the exec-approval buttons).
 
-        Resolved via the SAME ``slash_access.policy_for_source().is_admin()``
-        that gates admin-only *typed* slash commands, so the button and the
-        typed ``/approve`` share one definition of "is this user an admin"
+        Resolved via ``self._is_admin_for_gated_action`` (``BasePlatformAdapter``),
+        which delegates to a profile-bound ``slash_access.policy_for_source()
+        .is_admin()`` callback GatewayRunner registers per adapter instance at
+        connection time (:meth:`set_admin_policy_check`) -- so the button and
+        the typed ``/approve`` share one definition of "is this user an admin"
         (closing the gap where a button click skipped the admin gate the typed
-        command enforced). When the operator hasn't configured
-        ``allow_admin_from`` for the scope the policy is disabled and
-        ``is_admin`` returns True for every authorized user -- so single-tier
-        installs keep today's behavior (any authorized user may approve).
-        Caller must already have passed :meth:`_is_callback_user_authorized`.
+        command enforced), and a SECONDARY multiplexed adapter resolves ITS
+        OWN profile's ``allow_admin_from`` rather than introspecting
+        ``_message_handler.__self__`` (which is ``None`` for a multiplexed
+        adapter's closure-based handler, and would silently apply the
+        primary profile's tier or none at all). When the operator hasn't
+        configured ``allow_admin_from`` for the scope the policy is disabled
+        and ``is_admin`` returns True for every authorized user -- so
+        single-tier installs keep today's behavior (any authorized user may
+        approve). Caller must already have passed
+        :meth:`_is_callback_user_authorized`.
         """
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
             return False
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        runner_config = getattr(runner, "config", None)
-        if runner_config is None:
-            # No runner/config to consult (e.g. bare-adapter test paths). Fall
-            # back to "authorized == allowed" -- no tier to enforce.
-            return True
-        try:
-            from gateway.session import SessionSource
-            from gateway.slash_access import policy_for_source
+        from gateway.session import SessionSource
 
-            normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-            if normalized_chat_type == "private":
-                normalized_chat_type = "dm"
-            elif normalized_chat_type == "supergroup":
-                normalized_chat_type = "forum" if thread_id is not None else "group"
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
 
-            source = SessionSource(
-                platform=Platform.TELEGRAM,
-                chat_id=str(chat_id or normalized_user_id),
-                chat_type=normalized_chat_type,
-                user_id=normalized_user_id,
-                user_name=str(user_name).strip() if user_name else None,
-                thread_id=str(thread_id) if thread_id is not None else None,
-            )
-            return bool(policy_for_source(runner_config, source).is_admin(normalized_user_id))
-        except Exception:
-            # Fail toward existing behavior: if the tier policy can't be
-            # resolved, don't newly lock out an already-authorized approver.
-            logger.debug(
-                "[Telegram] Admin-tier check failed for callback user %s; "
-                "allowing (authorized-user fallback)",
-                normalized_user_id,
-                exc_info=True,
-            )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(chat_id or normalized_user_id),
+            chat_type=normalized_chat_type,
+            user_id=normalized_user_id,
+            user_name=str(user_name).strip() if user_name else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+        )
+        result = self._is_admin_for_gated_action(source)
+        if result is None:
+            # No admin-policy check registered (e.g. bare-adapter test
+            # paths) -- fall back to "authorized == allowed", no tier to
+            # enforce, matching the pre-existing single-tier behavior.
             return True
+        return result
 
     def _source_from_message_for_auth(self, message: Message):
         """Build the same Telegram source shape the gateway auth path expects.

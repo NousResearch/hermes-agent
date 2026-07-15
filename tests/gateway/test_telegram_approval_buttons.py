@@ -655,6 +655,19 @@ class _TierRunner:
         return True  # authorized to chat; admin-ness handled by slash_access
 
 
+def _wire_admin_policy_check(adapter, runner) -> None:
+    """Register the admin-tier check the same way GatewayRunner does at
+    adapter-connection time (set_admin_policy_check), rather than relying on
+    ``_message_handler.__self__`` introspection -- that path was removed
+    specifically because it fails open for a secondary multiplexed adapter
+    (closure-based handler, no ``__self__``). ``GatewayRunner``'s real
+    factory only reads ``self.config`` when ``profile_home`` is None, so
+    ``_TierRunner``'s lightweight ``.config`` duck-types fine here.
+    """
+    from gateway.run import GatewayRunner
+    adapter.set_admin_policy_check(GatewayRunner._make_adapter_admin_policy_check(runner))
+
+
 def _tiered_gateway_config(admin_ids):
     """A gateway-config-like object policy_for_source can read."""
     from gateway.config import Platform
@@ -692,6 +705,7 @@ class TestApprovalButtonAdminGate:
         adapter._approval_state[41] = "agent:main:telegram:dm:12345:99"
         runner = _TierRunner(_tiered_gateway_config(admin_ids=["999"]))
         adapter._message_handler = runner._handle_message
+        _wire_admin_policy_check(adapter, runner)
 
         update, query = _make_ea_query(caller_id="12345", approval_id=41)  # not admin
         context = MagicMock()
@@ -712,6 +726,7 @@ class TestApprovalButtonAdminGate:
         adapter._approval_state[42] = "agent:main:telegram:dm:12345:99"
         runner = _TierRunner(_tiered_gateway_config(admin_ids=["999"]))
         adapter._message_handler = runner._handle_message
+        _wire_admin_policy_check(adapter, runner)
 
         update, query = _make_ea_query(caller_id="999", approval_id=42)  # admin
         context = MagicMock()
@@ -730,6 +745,7 @@ class TestApprovalButtonAdminGate:
         adapter._approval_state[43] = "agent:main:telegram:dm:12345:99"
         runner = _TierRunner(_tiered_gateway_config(admin_ids=[]))  # tier disabled
         adapter._message_handler = runner._handle_message
+        _wire_admin_policy_check(adapter, runner)
 
         update, query = _make_ea_query(caller_id="12345", approval_id=43)
         context = MagicMock()

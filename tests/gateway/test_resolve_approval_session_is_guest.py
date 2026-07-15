@@ -96,7 +96,7 @@ class TestGuestPredicateDrivesRealApprovalDenial:
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
-        mod._gateway_guest_sessions.clear()
+        mod._gateway_approval_blocked.clear()
         mod._session_approved.clear()
         mod._permanent_approved.clear()
 
@@ -115,7 +115,7 @@ class TestGuestPredicateDrivesRealApprovalDenial:
         from tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
-        mod._gateway_guest_sessions.clear()
+        mod._gateway_approval_blocked.clear()
         for k, v in self._saved_env.items():
             if v is None:
                 os.environ.pop(k, None)

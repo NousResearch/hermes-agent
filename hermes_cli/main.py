@@ -5164,6 +5164,118 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
+def _desktop_macos_built_app_bundle(desktop_dir: Path) -> Optional[Path]:
+    """Return the built macOS ``Hermes.app`` bundle for this checkout."""
+    if sys.platform != "darwin":
+        return None
+    executable = _desktop_packaged_executable(desktop_dir)
+    if executable is None:
+        return None
+    app_bundle = executable.parents[2]
+    if app_bundle.name != "Hermes.app" or not app_bundle.is_dir():
+        return None
+    return app_bundle
+
+
+def _desktop_macos_installed_app_candidates(home: Optional[Path] = None) -> list[Path]:
+    """Return existing installed app bundles that should track CLI updates."""
+    if sys.platform != "darwin":
+        return []
+    user_home = home or Path.home()
+    candidates = [
+        Path("/Applications/Hermes.app"),
+        user_home / "Applications" / "Hermes.app",
+    ]
+    seen: set[Path] = set()
+    installed: list[Path] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.is_dir():
+            installed.append(candidate)
+    return installed
+
+
+def _same_filesystem_path(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
+
+
+def _install_macos_desktop_app_bundle(rebuilt_app: Path, target_app: Path) -> None:
+    """Replace an installed ``Hermes.app`` while preserving it on failure."""
+    if sys.platform != "darwin":
+        return
+    if rebuilt_app.name != "Hermes.app" or target_app.name != "Hermes.app":
+        raise ValueError(
+            f"refusing to install non-Hermes.app bundle: {rebuilt_app} -> {target_app}"
+        )
+    if not rebuilt_app.is_dir():
+        raise FileNotFoundError(f"rebuilt desktop app not found: {rebuilt_app}")
+    if _same_filesystem_path(rebuilt_app, target_app):
+        return
+
+    parent = target_app.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staged = parent / f"{target_app.name}.hermes-update-new"
+    backup = parent / f"{target_app.name}.hermes-update-old"
+    for stale in (staged, backup):
+        if stale.exists():
+            shutil.rmtree(stale, ignore_errors=True)
+
+    shutil.copytree(rebuilt_app, staged, symlinks=True)
+    moved_old = False
+    try:
+        if target_app.exists():
+            target_app.rename(backup)
+            moved_old = True
+        staged.rename(target_app)
+    except Exception:
+        if moved_old and backup.exists() and not target_app.exists():
+            try:
+                backup.rename(target_app)
+            except Exception:
+                pass
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+
+    shutil.rmtree(backup, ignore_errors=True)
+    try:
+        subprocess.run(
+            ["xattr", "-dr", "com.apple.quarantine", str(target_app)],
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def _electron_owns_macos_update_swap() -> bool:
+    """Return whether Electron will rebuild and swap the running app itself."""
+    return os.environ.get("HERMES_DESKTOP_UPDATE_OWNER") == "electron"
+
+
+def _sync_macos_installed_desktop_app(desktop_dir: Path) -> None:
+    """Install a CLI-rebuilt app into existing macOS Applications bundles."""
+    if sys.platform != "darwin" or _electron_owns_macos_update_swap():
+        return
+    rebuilt_app = _desktop_macos_built_app_bundle(desktop_dir)
+    if rebuilt_app is None:
+        return
+    for target in _desktop_macos_installed_app_candidates():
+        if _same_filesystem_path(rebuilt_app, target):
+            continue
+        try:
+            print(f"→ Installing rebuilt Hermes Desktop app: {rebuilt_app} -> {target}")
+            _install_macos_desktop_app_bundle(rebuilt_app, target)
+            print(f"  ✓ Updated installed Desktop app at {target}")
+        except Exception as exc:
+            print(f"  ⚠ Could not update installed Desktop app at {target}: {exc}")
+            print("    The backend was updated, but this installed app may stay stale.")
+            print(f"    To fix manually: ditto {rebuilt_app} {target}")
+
+
 def _electron_download_cache_dirs() -> list[Path]:
     """Return the per-user Electron download cache directories for this OS.
 
@@ -10085,7 +10197,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # never run ``hermes desktop`` shouldn't be forced into a full
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+        has_desktop_app = (
+            _desktop_packaged_executable(desktop_dir) is not None
+            or _desktop_dist_exists(desktop_dir)
+            or bool(_desktop_macos_installed_app_candidates())
+        )
+        desktop_build_ok = False
         from hermes_constants import find_node_executable
 
         if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
@@ -10108,7 +10225,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 from hermes_constants import display_hermes_home as _dhh
                 print(f"  Full build log: {_dhh()}/logs/update.log")
             else:
+                desktop_build_ok = True
                 print("  ✓ Desktop app up to date")
+
+        # A standalone CLI update owns syncing the rebuilt app into the user's
+        # installed bundle. The Electron in-app updater tags its subprocess and
+        # performs its own post-exit swap, so it must never race this copy.
+        if desktop_build_ok:
+            _sync_macos_installed_desktop_app(desktop_dir)
 
         print()
         print("✓ Code updated!")

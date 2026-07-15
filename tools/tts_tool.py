@@ -649,6 +649,36 @@ def _iter_command_providers(tts_config: Dict[str, Any]):
                 yield name, cfg
 
 
+def _iter_plugin_providers():
+    """Yield the name of every registered plugin TTS provider.
+
+    Plugin providers (registered via ``PluginContext.register_tts_provider``)
+    are dispatched to by :func:`_dispatch_to_plugin_provider`, so they must
+    also count as available for enumeration — otherwise a working plugin
+    backend would be advertised nowhere and rejected by callers that gate on
+    availability before dispatch. Discovery failures are non-fatal (yields
+    nothing), matching the dispatcher's defensiveness.
+    """
+    try:
+        from agent.tts_registry import list_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = list_providers()
+    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+        logger.debug("tts plugin enumeration skipped (discovery failed): %s", exc)
+        return
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if isinstance(name, str) and name.strip():
+            key = name.strip().lower()
+            # Built-ins always win; the registry blocks shadowing names at
+            # registration, but re-check defensively so enumeration can't
+            # advertise a shadowed built-in name.
+            if key not in BUILTIN_TTS_PROVIDERS:
+                yield key
+
+
 def _get_command_tts_timeout(config: Dict[str, Any]) -> float:
     """Return timeout in seconds, falling back when invalid."""
     raw = config.get("timeout", config.get("timeout_seconds", DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS))
@@ -2555,8 +2585,11 @@ def _iter_available_tts_providers(
     every backend. Cheap, no-API-key providers are yielded first to keep that
     hot path fast.
 
-    Yields built-in provider names (``edge``, ``openai`` …) plus any
-    user-declared ``type: command`` providers (by their config name).
+    Yields built-in provider names (``edge``, ``openai`` …), any user-declared
+    ``type: command`` providers (by their config name), and any plugin-
+    registered providers. Plugins are yielded **last** so the
+    :func:`check_tts_requirements` hot path short-circuits on a cheap built-in
+    (usually edge) without paying for plugin discovery.
     """
     if tts_config is None:
         tts_config = _load_tts_config()
@@ -2621,6 +2654,11 @@ def _iter_available_tts_providers(
     if _check_piper_available():
         yield "piper"
 
+    # Plugin-registered providers, yielded last: triggers plugin discovery, so
+    # keeping it after the cheap built-ins preserves the check_tts_requirements
+    # short-circuit (it stops at the first available provider).
+    yield from _iter_plugin_providers()
+
 
 def check_tts_requirements() -> bool:
     """
@@ -2643,9 +2681,9 @@ def list_available_tts_providers(
     """Return the sorted names of every TTS provider usable right now.
 
     Unlike :func:`check_tts_requirements`, this enumerates *all* available
-    providers (built-ins with satisfied credentials plus user-declared
-    command providers). Used to advertise ``tts/<provider>`` models on the
-    OpenAI-compatible ``/v1/models`` endpoint.
+    providers (built-ins with satisfied credentials, user-declared command
+    providers, and plugin-registered providers). Used to advertise
+    ``tts/<provider>`` models on the OpenAI-compatible ``/v1/models`` endpoint.
     """
     return sorted(set(_iter_available_tts_providers(tts_config)))
 

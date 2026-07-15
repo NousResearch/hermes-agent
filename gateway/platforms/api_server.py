@@ -1575,14 +1575,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
 
-            result_str = await asyncio.to_thread(
-                text_to_speech_tool,
-                text=text,
-                provider=provider_override,
-                voice=voice,
-                speed=speed,
-                response_format=response_format,
-            )
+            # Synthesis is CPU/IO-heavy work offloaded to a thread; gate it on
+            # the same concurrency cap the agent-serving endpoints use so a
+            # burst of TTS requests can't exhaust the shared thread pool. The
+            # counter is bracketed around only the synthesis so validation
+            # errors above return without consuming a slot.
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
+
+            self._inflight_agent_runs += 1
+            try:
+                result_str = await asyncio.to_thread(
+                    text_to_speech_tool,
+                    text=text,
+                    provider=provider_override,
+                    voice=voice,
+                    speed=speed,
+                    response_format=response_format,
+                )
+            finally:
+                self._inflight_agent_runs -= 1
             result = json.loads(result_str)
 
             if not result.get("success"):

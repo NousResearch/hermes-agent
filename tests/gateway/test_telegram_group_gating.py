@@ -621,6 +621,62 @@ def test_allowed_topics_treat_missing_thread_as_general_topic():
     assert adapter._should_process_message(_group_message("hello", thread_id=8)) is False
 
 
+def _forum_message(*, chat_id, thread_id, is_topic_message, is_forum, chat_type="supergroup"):
+    """Build a message with independently-controlled topic/forum flags.
+
+    The shared ``_group_message`` fixture couples ``is_topic_message`` and
+    ``is_forum`` to ``thread_id is not None``, which cannot express a plain
+    reply-UI anchor (``message_thread_id`` set, ``is_topic_message=False``,
+    ``is_forum=False``). This helper decouples them for gating regressions.
+    """
+    return SimpleNamespace(
+        message_id=42,
+        text="hello",
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        message_thread_id=thread_id,
+        is_topic_message=is_topic_message,
+        chat=SimpleNamespace(id=chat_id, type=chat_type, title="T", is_forum=is_forum),
+        from_user=SimpleNamespace(id=111, full_name="Alice", first_name="Alice"),
+        reply_to_message=None,
+        date=None,
+    )
+
+
+def test_gating_ignores_non_forum_reply_anchor_thread_id():
+    """A plain group reply's ``message_thread_id`` is a UI anchor, not a topic.
+
+    Before the shared ``_effective_message_thread_id`` normalizer, gating read
+    the raw ``message_thread_id`` — so a non-forum group reply whose anchor id
+    happened to match an ``ignored_threads`` entry was wrongly dropped, and its
+    anchor id was treated as a routable topic under ``allowed_topics``. The
+    normalizer drops reply anchors (non-forum, ``is_topic_message=False``), so
+    such a reply gates as the General topic instead.
+    """
+    # ignored_threads: reply anchor 55 must NOT be treated as thread 55.
+    adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[55])
+    reply_anchor = _forum_message(
+        chat_id=-200, thread_id=55, is_topic_message=False, is_forum=False, chat_type="group"
+    )
+    assert adapter._should_process_message(reply_anchor) is True
+
+    # allowed_topics: reply anchor 55 normalizes to General ("1"), so a group
+    # that only allows topic "1" still processes the reply.
+    adapter2 = _make_adapter(require_mention=False, allowed_chats=["-200"], allowed_topics=["1"])
+    assert adapter2._should_process_message(reply_anchor) is True
+
+
+def test_gating_forum_general_topic_normalizes_to_one():
+    """Forum General-topic messages (thread_id=None) gate as topic "1"."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["1"])
+    general = _forum_message(chat_id=-100, thread_id=None, is_topic_message=False, is_forum=True)
+    assert adapter._should_process_message(general) is True
+
+    adapter2 = _make_adapter(require_mention=False, allowed_chats=["-100"], allowed_topics=["8"])
+    assert adapter2._should_process_message(general) is False
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 
@@ -634,6 +690,66 @@ def test_invalid_regex_patterns_are_ignored():
 
     assert adapter._should_process_message(_group_message("chompy status")) is True
     assert adapter._should_process_message(_group_message("hello everyone")) is False
+
+
+def test_bot_self_messages_are_ignored_in_dm_and_group():
+    """Bot-authored messages must not re-enter as fresh user turns (issue #11905).
+
+    Telegram echoes the bot's own outbound messages back through getUpdates.
+    Without a self-author guard, those echoes — including
+    ``[SYSTEM: Background process ...]`` watcher notifications — get ingested
+    as new inbound turns, producing the "haunted topic" loop. The guard keys
+    on ``from_user.id == self._bot.id`` (bot id is 999 in ``_make_adapter``).
+    """
+    adapter = _make_adapter(require_mention=False)
+
+    # Control: a real user in the same group IS processed.
+    assert adapter._should_process_message(_group_message("hi", chat_id=-100)) is True
+
+    # The exact reported symptom: a bot-authored DM-topic watcher echo.
+    self_dm = _group_message(
+        "[SYSTEM: Background process matched watch pattern ...]",
+        chat_id=555,
+        from_user_id=999,
+    )
+    self_dm.chat.type = "private"
+    assert adapter._should_process_message(self_dm) is False
+
+    # Same guard applies in groups/supergroups.
+    self_group = _group_message("status tick", chat_id=-100, from_user_id=999)
+    assert adapter._should_process_message(self_group) is False
+
+
+def test_other_bots_are_still_processed():
+    """A different bot's message must not be over-filtered.
+
+    Distinguishes the self-id guard from a blanket ``from_user.is_bot`` check,
+    which would incorrectly drop unrelated bots (weather, music, etc.) sharing
+    the same chat.
+    """
+    adapter = _make_adapter(require_mention=False)
+    other_bot = _group_message("weather update", chat_id=-100, from_user_id=555)
+    other_bot.from_user = SimpleNamespace(id=555, is_bot=True)
+    assert adapter._should_process_message(other_bot) is True
+
+
+def test_self_message_guard_skips_observe_path():
+    """Bot-authored messages are not stored via the observe-unmentioned path.
+
+    When ``_should_process_message`` rejects a message, dispatch falls through
+    to ``_should_observe_unmentioned_group_message``; the self-guard must also
+    sit there so a self-echo is neither dispatched nor stored.
+    """
+    adapter = _make_adapter(require_mention=True, observe_unmentioned_group_messages=True)
+    self_group = _group_message("status tick", chat_id=-100, from_user_id=999)
+    assert adapter._should_observe_unmentioned_group_message(self_group) is False
+
+
+def test_missing_from_user_does_not_crash():
+    adapter = _make_adapter(require_mention=False)
+    anon = _group_message("channel post", chat_id=-100)
+    anon.from_user = None
+    assert adapter._should_process_message(anon) is True
 
 
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
@@ -659,36 +775,48 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
-    monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
-    monkeypatch.delenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", raising=False)
-    monkeypatch.delenv("TELEGRAM_GUEST_MODE", raising=False)
-    monkeypatch.delenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
-    monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
-    monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-    monkeypatch.delenv("TELEGRAM_GROUP_ALLOWED_CHATS", raising=False)
-    monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
+    # Clear the TELEGRAM_* vars this test exercises so a developer's ambient
+    # shell/.env values don't pre-empt the YAML→env bridge (env-over-YAML
+    # precedence, adapter.py::_apply_yaml_config). The authoritative assertions
+    # below read the returned config object, which is immune to env pollution
+    # from third-party import-time load_dotenv calls; see the note at the asserts.
+    for _var in (
+        "TELEGRAM_REQUIRE_MENTION",
+        "TELEGRAM_MENTION_PATTERNS",
+        "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
+        "TELEGRAM_GUEST_MODE",
+        "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
+        "TELEGRAM_FREE_RESPONSE_CHATS",
+        "TELEGRAM_ALLOWED_CHATS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "TELEGRAM_ALLOWED_TOPICS",
+    ):
+        monkeypatch.delenv(_var, raising=False)
 
     config = load_gateway_config()
 
+    # Assert against the returned config object — the authoritative result of the
+    # bridge. We deliberately do NOT assert on os.environ here: a third-party
+    # import (microsoft_teams/apps/app.py) runs load_dotenv(find_dotenv(usecwd=True))
+    # at import time, which walks up from cwd and can repopulate TELEGRAM_* vars
+    # from a developer's real ~/.hermes/.env, defeating the env-over-YAML bridge
+    # for any key present there. The PlatformConfig.extra values below are parsed
+    # straight from the test's config.yaml and are immune to that ambient leak.
     assert config is not None
-    assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
-    assert __import__("os").environ["TELEGRAM_GUEST_MODE"] == "true"
-    assert __import__("os").environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] == "true"
-    assert __import__("os").environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] == "true"
-    assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
-    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
-    assert __import__("os").environ["TELEGRAM_ALLOWED_CHATS"] == "-100"
-    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
-    assert __import__("os").environ["TELEGRAM_ALLOWED_TOPICS"] == "8"
     tg_cfg = config.platforms.get(Platform.TELEGRAM)
     assert tg_cfg is not None
+    assert tg_cfg.extra.get("require_mention") is True
     assert tg_cfg.extra.get("guest_mode") is True
+    assert tg_cfg.extra.get("exclusive_bot_mentions") is True
+    assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
+    assert tg_cfg.extra.get("mention_patterns") == [r"^\s*chompy\b"]
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
-    assert tg_cfg.extra.get("exclusive_bot_mentions") is True
-    assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
+    # free_response_chats is bridged to the env var only (not PlatformConfig.extra).
+    # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
+    # files, so asserting it via os.environ stays deterministic.
+    assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
@@ -716,7 +844,13 @@ def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
     assert config is not None
     assert __import__("os").environ["TELEGRAM_ALLOWED_USERS"] == "111,222"
     assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_USERS"] == "333"
-    assert __import__("os").environ["TELEGRAM_GROUP_ALLOWED_CHATS"] == "-100"
+    # group_allowed_chats via the config object, not os.environ: the
+    # microsoft_teams import-time load_dotenv(find_dotenv(usecwd=True)) can
+    # repopulate TELEGRAM_GROUP_ALLOWED_CHATS from a developer's real
+    # ~/.hermes/.env, which would defeat the env-over-YAML bridge here.
+    tg_cfg = config.platforms.get(Platform.TELEGRAM)
+    assert tg_cfg is not None
+    assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
 
 
 def test_config_env_overrides_telegram_user_allowlists(monkeypatch, tmp_path):
@@ -1180,7 +1314,7 @@ def test_unmentioned_large_document_observed_without_download(monkeypatch):
     asyncio.run(_run())
 
 
-def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
+def test_unmentioned_unsupported_document_observed_and_cached(monkeypatch):
     async def _run():
         adapter = _make_adapter(
             require_mention=True, allowed_chats=["-100"],
@@ -1188,14 +1322,14 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         )
         store = _FakeSessionStore()
         adapter._session_store = store
-        cache_doc = Mock(return_value="/tmp/malware.exe")
+        cache_doc = Mock(return_value="/tmp/program.exe")
         monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
         file_obj = SimpleNamespace(
-            file_path="documents/malware.exe",
+            file_path="documents/program.exe",
             download_as_bytearray=AsyncMock(return_value=bytearray(b"MZ")),
         )
         document = SimpleNamespace(
-            file_name="malware.exe", mime_type="application/x-msdownload",
+            file_name="program.exe", mime_type="application/x-msdownload",
             file_size=2, get_file=AsyncMock(return_value=file_obj),
         )
         update = SimpleNamespace(
@@ -1204,8 +1338,10 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
 
         await adapter._handle_media_message(update, SimpleNamespace())
 
-        cache_doc.assert_not_called()
+        # Any file type is now cached — authorization is the gate, not the
+        # extension. The observed message records a path-pointing note.
+        cache_doc.assert_called_once()
         _, message, _ = store.messages[0]
-        assert "unsupported" in message["content"].lower()
+        assert "program.exe" in message["content"]
 
     asyncio.run(_run())

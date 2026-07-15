@@ -14,11 +14,10 @@
  *
  *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
  *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
- *      the dashboard fanned out.  This is how `tool.start/progress/
- *      complete` from the agent loop reach the sidebar even though the
- *      PTY child runs three processes deep from us.  The `channel` id
- *      ties this listener to the same chat tab's PTY child — see
- *      `ChatPage.tsx` for where the id is generated.
+ *      the dashboard fanned out.  The sidebar uses it for `session.info`
+ *      (live chat title) and `dashboard.new_session_requested`.  The
+ *      `channel` id ties this listener to the same chat tab's PTY child —
+ *      see `ChatPage.tsx` for where the id is generated.
  *
  * Best-effort throughout: WS failures show in the badge / banner, the
  * terminal pane keeps working unimpaired.
@@ -31,9 +30,9 @@ import { Card } from "@nous-research/ui/ui/components/card";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
-import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { api, buildWsUrl } from "@/lib/api";
+import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -44,14 +43,13 @@ interface SessionInfo {
   model?: string;
   provider?: string;
   credential_warning?: string;
+  title?: string;
 }
 
 interface RpcEnvelope {
   method?: string;
   params?: { type?: string; payload?: unknown };
 }
-
-const TOOL_LIMIT = 20;
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "idle",
@@ -74,16 +72,11 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
-  /** Management profile from the dashboard switcher — scopes session.create. */
+  /** Chat profile from the dashboard switcher / URL scope. */
   profile?: string;
   className?: string;
   onDashboardNewSessionRequest?: () => void;
-  /**
-   * Render the tool-call activity card. Defaults to true. The dashboard Chat
-   * tab sets this false so the right rail stays a thin model + session-list
-   * column; the model picker and its event plumbing are unaffected.
-   */
-  showTools?: boolean;
+  onSessionTitleChange?: (title: string | null) => void;
 }
 
 export function ChatSidebar({
@@ -91,7 +84,7 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
-  showTools = true,
+  onSessionTitleChange,
 }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
@@ -103,7 +96,6 @@ export function ChatSidebar({
 
   const [state, setState] = useState<ConnectionState>("idle");
   const [info, setInfo] = useState<SessionInfo>({});
-  const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The badge shows config.yaml's main model (`model.default`) via
@@ -111,8 +103,9 @@ export function ChatSidebar({
   // session boots from. We deliberately don't use the sidecar's `session.info`
   // model: that's a one-time snapshot of the throwaway sidecar agent taken when
   // its session is created, and it never updates when the model is changed
-  // elsewhere, so the badge would go stale. `/api/model/info` is profile-scoped
-  // by `fetchJSON`, so it reads the same profile this sidebar is scoped to.
+  // elsewhere, so the badge would go stale. Pass the chat profile explicitly so
+  // this card stays scoped to the PTY even if the global dashboard switcher
+  // changes while the chat is open.
   const [effectiveModel, setEffectiveModel] = useState("");
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
@@ -133,7 +126,7 @@ export function ChatSidebar({
 
   const refreshEffectiveModel = useCallback(() => {
     void api
-      .getModelInfo()
+      .getModelInfo(profile)
       .then((r) => {
         if (r?.model) setEffectiveModel(String(r.model));
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
@@ -143,7 +136,7 @@ export function ChatSidebar({
       .catch(() => {
         // Best-effort: keep the last known label rather than blanking it.
       });
-  }, []);
+  }, [profile]);
 
   // Profile or PTY channel change tears down both WebSockets. Bump `version`
   // (same path as the manual Reconnect button) so the gateway client is
@@ -159,7 +152,6 @@ export function ChatSidebar({
     if (prevScopeKey.current === scopeKey) return;
     prevScopeKey.current = scopeKey;
     setError(null);
-    setTools([]);
     setVersion((v) => v + 1);
   }, [scopeKey]);
 
@@ -217,6 +209,7 @@ export function ChatSidebar({
       gw.close();
     };
     // `profile` is read from render; scope changes bump `version` → new `gw`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
@@ -239,15 +232,11 @@ export function ChatSidebar({
     let unmounting = false;
     let ws: WebSocket | null = null;
     void (async () => {
-      const [authName, authValue] = await buildWsAuthParam();
-      if (!authValue || unmounting) {
+      const url = await buildWsUrl("/api/events", { channel });
+      if (unmounting) {
         return;
       }
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const qs = new URLSearchParams({ [authName]: authValue, channel });
-      ws = new WebSocket(
-        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
-      );
+      ws = new WebSocket(url);
 
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
@@ -266,91 +255,28 @@ export function ChatSidebar({
       });
 
       ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
+        let frame: RpcEnvelope;
 
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "dashboard.new_session_requested") {
-        onDashboardNewSessionRequest?.();
-      } else if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
+        try {
+          frame = JSON.parse(ev.data);
+        } catch {
           return;
         }
 
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
+        if (frame.method !== "event" || !frame.params) {
           return;
         }
 
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
-          | undefined;
+        const { type, payload } = frame.params;
 
-        if (!p?.tool_id) {
-          return;
+        if (type === "session.info") {
+          const title = titleFromSessionInfoPayload(payload);
+          if (title !== undefined) {
+            onSessionTitleChange?.(title);
+          }
+        } else if (type === "dashboard.new_session_requested") {
+          onDashboardNewSessionRequest?.();
         }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
       });
     })();
 
@@ -358,7 +284,7 @@ export function ChatSidebar({
       unmounting = true;
       ws?.close();
     };
-  }, [channel, onDashboardNewSessionRequest, version]);
+  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).
@@ -368,7 +294,6 @@ export function ChatSidebar({
 
   const reconnect = useCallback(() => {
     setError(null);
-    setTools([]);
     setModelNotice(null);
     setPendingReloadModel(null);
     setVersion((v) => v + 1);
@@ -421,6 +346,7 @@ export function ChatSidebar({
         <Card className="py-0">
           <ReasoningPicker
             currentModel={modelName}
+            profile={profile}
             refreshKey={modelRefreshKey}
             onChanged={(effort) =>
               setModelNotice(
@@ -456,26 +382,8 @@ export function ChatSidebar({
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect
+                reconnect tools feed
               </Button>
-            )}
-          </div>
-        </Card>
-      )}
-
-      {showTools && (
-        <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
-          <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
-            tools
-          </div>
-
-          <div className="flex min-h-0 flex-col gap-1.5">
-            {tools.length === 0 ? (
-              <div className="px-2 py-4 text-center text-xs text-text-secondary">
-                no tool calls yet
-              </div>
-            ) : (
-              tools.map((t) => <ToolCall key={t.id} tool={t} />)
             )}
           </div>
         </Card>
@@ -486,17 +394,20 @@ export function ChatSidebar({
           // Same path the Models page uses (REST /api/model/set), not the
           // sidecar config.set RPC, which didn't reliably land in the
           // config.yaml the agent boots from. Always persisted (alwaysGlobal).
-          loader={api.getModelOptions}
+          loader={() => api.getModelOptions(profile)}
           alwaysGlobal
           onApply={async ({ provider, model, confirmExpensiveModel }) => {
             setModelNotice(null);
             setPendingReloadModel(null);
-            const result = await api.setModelAssignment({
-              confirm_expensive_model: confirmExpensiveModel,
-              scope: "main",
-              provider,
-              model,
-            });
+            const result = await api.setModelAssignment(
+              {
+                confirm_expensive_model: confirmExpensiveModel,
+                scope: "main",
+                provider,
+                model,
+              },
+              profile,
+            );
             // confirm_required => the dialog shows the expensive-model prompt
             // and calls back; don't announce until the user confirms.
             if (!result.confirm_required) {

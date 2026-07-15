@@ -35,6 +35,9 @@ class _RecordingProvider(VideoGenProvider):
     def default_model(self) -> Optional[str]:
         return "model-a"
 
+    def capabilities(self) -> Dict[str, Any]:
+        return {"modalities": ["text", "image"]}
+
     def generate(self, prompt, **kwargs):
         self.last_kwargs = {"prompt": prompt, **kwargs}
         modality = "image" if kwargs.get("image_url") else "text"
@@ -113,14 +116,25 @@ class TestUnifiedDispatch:
         assert "error" in result
         assert "prompt" in result["error"].lower()
 
+    def test_edit_extend_args_are_rejected_by_generate_tool(self):
+        provider = _RecordingProvider("rec")
+        video_gen_registry.register_provider(provider)
+        result = self._run({
+            "prompt": "make it rain",
+            "operation": "edit",
+            "video_url": "https://example.com/in.mp4",
+        })
+        assert "error" in result
+        assert "provider-specific tool" in result["error"]
+
     def test_provider_exception_caught(self):
         video_gen_registry.register_provider(_RaisingProvider())
         result = self._run({"prompt": "x"})
         assert result["success"] is False
         assert result["error_type"] == "provider_exception"
 
-    def test_operation_field_not_in_schema(self):
-        """Make sure we removed the operation field from the schema."""
+    def test_edit_extend_fields_not_in_schema(self):
         from tools.video_generation_tool import VIDEO_GENERATE_SCHEMA
-        assert "operation" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
-        assert "video_url" not in VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        props = VIDEO_GENERATE_SCHEMA["parameters"]["properties"]
+        assert "operation" not in props
+        assert "video_url" not in props

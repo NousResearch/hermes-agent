@@ -231,6 +231,18 @@ class TestIRCGatewaySetupFreshInstall:
 
             monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *a, **kw: False)
             monkeypatch.setattr(setup_mod, "prompt_choice", lambda *a, **kw: 0)
+            # Select ONLY the IRC row. Without this, the non-TTY checklist
+            # falls back to its cancel value (the pre-selected "configured"
+            # platforms) — on a dev machine with real platforms configured
+            # that runs their interactive setup_fn, which calls input() and
+            # dies under captured stdin. IRC's setup_fn is a no-op lambda.
+            monkeypatch.setattr(
+                setup_mod,
+                "prompt_checklist",
+                lambda title, items, pre=None: [
+                    i for i, item in enumerate(items) if "IRC" in item
+                ],
+            )
             monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
             monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
             monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)

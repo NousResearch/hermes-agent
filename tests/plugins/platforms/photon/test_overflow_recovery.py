@@ -12,6 +12,8 @@ dying (issue #50185):
      ``retryable=True`` fatal so the gateway reconnect watcher revives the
      platform — instead of returning silently and leaving ``_inbound_loop``
      spinning against a dead port.
+  4. ``_monitor_sidecar_health`` promotes degraded upstream stream health
+     reported by ``/healthz`` into the same retryable reconnect path.
 
 No Node sidecar is spawned and no ports are bound.
 """
@@ -195,3 +197,40 @@ async def test_clean_shutdown_does_not_raise_fatal(
 
     assert adapter.has_fatal_error is False
     assert notified == []
+
+
+@pytest.mark.asyncio
+async def test_degraded_stream_health_raises_retryable_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    adapter._inbound_running = True
+    adapter._sidecar_health_interval = 0.0
+
+    async def _fake_call(path: str, payload: Dict[str, Any]) -> Any:
+        assert path == "/healthz"
+        return {
+            "ok": True,
+            "stream": {
+                "ok": False,
+                "state": "degraded",
+                "degradedForMs": 120000,
+                "lastIssue": "[spectrum.stream] stream interrupted; reconnecting",
+            },
+        }
+
+    notified: list[bool] = []
+
+    async def _fake_notify() -> None:
+        notified.append(True)
+        adapter._inbound_running = False
+
+    monkeypatch.setattr(adapter, "_sidecar_call", _fake_call)
+    monkeypatch.setattr(adapter, "_notify_fatal_error", _fake_notify)
+
+    await adapter._monitor_sidecar_health()
+
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "UPSTREAM_STREAM_DEGRADED"
+    assert adapter.fatal_error_retryable is True
+    assert notified == [True]

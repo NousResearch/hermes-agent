@@ -25,7 +25,6 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime
@@ -1501,20 +1500,15 @@ def anthropic_prompt_cache_policy(
         # through to ``(False, False)`` and re-bills the full prompt every
         # turn. The docstring above already documents that Zhipu GLM honours
         # cache_control; this branch makes the code match.
-        # Kill-switch: ``HERMES_ZAI_PROMPT_CACHE=0`` disables instantly.
-        _zai_cache_off = os.environ.get(
-            "HERMES_ZAI_PROMPT_CACHE", ""
-        ).strip().lower() in {"0", "false", "no", "off"}
-        if not _zai_cache_off:
-            is_zai_provider = provider_lower in {
-                "zai", "glm", "z-ai", "z.ai", "zhipu",
-            }
-            is_zai_host = (
-                base_url_host_matches(eff_base_url, "z.ai")
-                or base_url_host_matches(eff_base_url, "bigmodel.cn")
-            )
-            if is_zai_provider or is_zai_host:
-                return True, True
+        is_zai_provider = provider_lower in {
+            "zai", "glm", "z-ai", "z.ai", "zhipu",
+        }
+        is_zai_host = (
+            base_url_host_matches(eff_base_url, "z.ai")
+            or base_url_host_matches(eff_base_url, "bigmodel.cn")
+        )
+        if is_zai_provider or is_zai_host:
+            return True, True
 
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
     # transport that accepts Anthropic-style cache_control markers and

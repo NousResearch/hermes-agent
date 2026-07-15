@@ -220,17 +220,6 @@ class TestZAIGLMAnthropicWire:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
-    def test_kill_switch_disables_zai_cache(self, monkeypatch):
-        monkeypatch.setenv("HERMES_ZAI_PROMPT_CACHE", "0")
-        agent = _make_agent(
-            provider="zai",
-            base_url="https://api.z.ai/api/anthropic",
-            api_mode="anthropic_messages",
-            model="glm-5.2",
-        )
-        assert agent._anthropic_prompt_cache_policy() == (False, False)
-
-
 class TestOpenAIWireFormatOnCustomProvider:
     """A custom provider using chat_completions (OpenAI wire) should NOT get caching."""
 

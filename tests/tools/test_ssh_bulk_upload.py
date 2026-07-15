@@ -1,7 +1,9 @@
 """Tests for SSH bulk upload via tar pipe."""
 
+import io
 import os
 import subprocess
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +24,23 @@ def _mock_proc(*, returncode=0, poll_return=0, communicate_return=(b"", b""),
     m.stderr = MagicMock()
     m.stderr.read.return_value = stderr_read
     return m
+
+
+def _mock_download_proc(
+    data: bytes = b"fake-tar-data", *, returncode: int | None = 0, stderr: bytes = b""
+):
+    proc = MagicMock()
+    proc.stdout = io.BytesIO(data)
+    proc.stderr = io.BytesIO(stderr)
+    proc.returncode = returncode
+    proc.poll.side_effect = lambda: proc.returncode
+    proc.wait.side_effect = lambda: proc.returncode
+
+    def kill():
+        proc.returncode = -9
+
+    proc.kill.side_effect = kill
+    return proc
 
 
 @pytest.fixture
@@ -492,20 +511,41 @@ class TestSSHBulkDownload:
 
         def fake_run(cmd, **kwargs):
             run_calls.append(cmd)
-            if len(run_calls) == 1:
-                return subprocess.CompletedProcess(cmd, 0, stdout="99\n", stderr="")
-            kwargs["stdout"].write(b"tar-bytes")
-            return subprocess.CompletedProcess(cmd, 0, stderr=b"")
+            return subprocess.CompletedProcess(cmd, 0, stdout="99\n", stderr="")
 
         dest = tmp_path / "remote.tar"
-        with patch.object(subprocess, "run", side_effect=fake_run):
+        proc = _mock_download_proc(b"tar-bytes")
+        with patch.object(subprocess, "run", side_effect=fake_run), \
+             patch.object(subprocess, "Popen", return_value=proc) as mock_popen:
             mock_env._ssh_bulk_download(dest)
 
         assert dest.read_bytes() == b"tar-bytes"
-        assert len(run_calls) == 2
+        assert len(run_calls) == 1
         assert "du -sb" in run_calls[0][-1]
         assert "du -sk" in run_calls[0][-1]
-        assert "tar cf - -C / home/testuser/.hermes" in run_calls[1][-1]
+        assert "tar cf - -C / home/testuser/.hermes" in mock_popen.call_args.args[0][-1]
+
+    def test_actual_tar_stream_over_cap_is_killed_even_when_preflight_passes(
+        self, mock_env, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(ssh_env, "_SYNC_BACK_MAX_BYTES", 100)
+        estimate = subprocess.CompletedProcess([], 0, stdout="99\n", stderr="")
+        monkeypatch.setattr(
+            mock_env,
+            "_build_ssh_command",
+            lambda: [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'x' * 101)",
+            ],
+        )
+        dest = tmp_path / "remote.tar"
+
+        with patch.object(subprocess, "run", return_value=estimate):
+            with pytest.raises(RuntimeError, match="actual tar stream exceeded cap"):
+                mock_env._ssh_bulk_download(dest)
+
+        assert dest.stat().st_size <= 100
 
     def test_size_preflight_failure_raises_clear_error(self, mock_env, tmp_path):
         def fake_run(cmd, **kwargs):

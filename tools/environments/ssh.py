@@ -7,6 +7,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _popen_bash
@@ -20,6 +21,20 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SYNC_BACK_READ_CHUNK_BYTES = 1024 * 1024
+_SYNC_BACK_STDERR_MAX_BYTES = 64 * 1024
+
+
+def _drain_bounded_stderr(stream, output: bytearray) -> None:
+    """Drain a subprocess stderr pipe without retaining unbounded output."""
+    while True:
+        chunk = stream.read(8192)
+        if not chunk:
+            return
+        output.extend(chunk)
+        if len(output) > _SYNC_BACK_STDERR_MAX_BYTES:
+            del output[:-_SYNC_BACK_STDERR_MAX_BYTES]
 
 
 def _remote_size_bytes_command(remote_path: str) -> str:
@@ -354,16 +369,78 @@ class SSHEnvironment(BaseEnvironment):
         rel_base = remote_hermes.lstrip("/")
         ssh_cmd = self._build_ssh_command()
         ssh_cmd.append(f"tar cf - -C / {shlex.quote(rel_base)}")
-        with open(dest, "wb") as f:
-            result = subprocess.run(
-                ssh_cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=f,
-                stderr=subprocess.PIPE,
-                timeout=120,
+        proc = subprocess.Popen(
+            ssh_cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.stdout is None or proc.stderr is None:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError("SSH bulk download failed to open process pipes")
+        stdout_stream = proc.stdout
+        stderr_stream = proc.stderr
+        stderr_buffer = bytearray()
+        stderr_thread = threading.Thread(
+            target=_drain_bounded_stderr,
+            args=(stderr_stream, stderr_buffer),
+            daemon=True,
+        )
+        stderr_thread.start()
+
+        timed_out = threading.Event()
+
+        def kill_on_timeout() -> None:
+            if proc.poll() is None:
+                timed_out.set()
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+
+        timer = threading.Timer(120, kill_on_timeout)
+        timer.daemon = True
+        timer.start()
+        received = 0
+        oversized = False
+        try:
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = stdout_stream.read(_SYNC_BACK_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    if received + len(chunk) > _SYNC_BACK_MAX_BYTES:
+                        oversized = True
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                        break
+                    f.write(chunk)
+                    received += len(chunk)
+            stdout_stream.close()
+            returncode = proc.wait()
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                proc.wait()
+            stderr_thread.join(timeout=5)
+
+        stderr_text = bytes(stderr_buffer).decode(errors="replace").strip()
+        if timed_out.is_set():
+            raise RuntimeError("SSH bulk download timed out")
+        if oversized:
+            raise RuntimeError(
+                f"SSH sync-back skipped: actual tar stream exceeded cap "
+                f"{_SYNC_BACK_MAX_BYTES} bytes"
             )
-        if result.returncode != 0:
-            raise RuntimeError(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}")
+        if returncode != 0:
+            raise RuntimeError(f"SSH bulk download failed: {stderr_text}")
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files in one SSH call."""

@@ -11693,7 +11693,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
+            # Fix #10581: /sethome persists to .env + self.config, but .env only
+            # enters os.environ after a restart, so os.getenv() missed it and the
+            # "No home channel" prompt refired every new session. Fall back to
+            # self.config (updated immediately by sethome). (@Mason-zy)
+            _home_set = bool(os.getenv(env_key))
+            if not _home_set:
+                _pcfg = None
+                try:
+                    _pcfg = self.config.platforms.get(source.platform)
+                except Exception:
+                    _pcfg = None
+                if _pcfg and getattr(_pcfg, "home_channel", None):
+                    _home_set = True
+            if not _home_set:
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".

@@ -838,34 +838,43 @@ class TestSegmentBreakOnToolBoundary:
         consumer.finish()
         await task
 
-        # The fallback should send the post-tool response via
+        # The fallback should deliver the post-tool response via
         # _send_fallback_final.
         await consumer._send_fallback_final(post_tool_response)
 
-        # Verify the final text was sent (not silently dropped)
-        sent = False
-        for call in adapter.send.call_args_list:
-            content = call[1].get("content", call[0][0] if call[0] else "")
-            if "timed out" in str(content):
-                sent = True
-                break
-        assert sent, (
+        # Verify the final text was delivered (not silently dropped) — either
+        # by editing the stale partial in place (preferred when it fits in a
+        # single message) or by sending a new message.
+        delivered_via_send = any(
+            "timed out" in str(call[1].get("content", call[0][0] if call[0] else ""))
+            for call in adapter.send.call_args_list
+        )
+        delivered_via_edit = any(
+            "timed out" in str(call.kwargs.get("content", ""))
+            for call in adapter.edit_message.call_args_list
+        )
+        assert delivered_via_send or delivered_via_edit, (
             "Post-tool timeout response was silently dropped by "
             "_send_fallback_final — the #10807 fix should prevent this"
         )
 
     @pytest.mark.asyncio
     async def test_fallback_final_deletes_partial_after_full_resend(self):
-        """After fallback re-sends the COMPLETE response, the frozen partial
-        must be deleted so the user sees only the complete response (#16668).
+        """When the complete response doesn't fit the edit-in-place path (or
+        that edit fails), fallback re-sends the COMPLETE response as a new
+        message and the frozen partial is deleted, so the user sees only the
+        complete response (#16668) — not the stale partial plus a duplicate.
         Full resend happens when the visible prefix doesn't match the final
         text (e.g. post-segment-break content, #10807)."""
         adapter = MagicMock()
         adapter.send = AsyncMock(
             return_value=SimpleNamespace(success=True, message_id="msg_new"),
         )
+        # Edit-in-place is tried first when the stale partial exists and the
+        # final text fits in one message; force it to fail here so this test
+        # exercises the send+delete fallback specifically.
         adapter.edit_message = AsyncMock(
-            return_value=SimpleNamespace(success=True),
+            return_value=SimpleNamespace(success=False, error="edit failed"),
         )
         adapter.delete_message = AsyncMock(return_value=None)
         adapter.MAX_MESSAGE_LENGTH = 4096
@@ -884,11 +893,11 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer._final_response_sent is True
 
     @pytest.mark.asyncio
-    async def test_fallback_final_keeps_partial_after_tail_only_send(self):
-        """When the fallback sends only the missing TAIL (visible prefix
-        matches the final text), the partial message IS the head of the
-        answer — deleting it would leave the user with only the last part
-        of the response (the 'model sent only the second half' bug)."""
+    async def test_fallback_final_edits_stale_partial_in_place_when_it_fits(self):
+        """When the complete response fits in one message, fallback edits
+        the stale partial in place instead of sending a new message and
+        deleting the old one — same outcome (only the complete response is
+        visible), no extra API calls, message keeps its position."""
         adapter = MagicMock()
         adapter.send = AsyncMock(
             return_value=SimpleNamespace(success=True, message_id="msg_new"),
@@ -902,19 +911,47 @@ class TestSegmentBreakOnToolBoundary:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        # Visible partial is a true prefix of the final response — the
-        # fallback dedup sends only the tail.
+        consumer._message_id = "msg_partial"
+        consumer._last_sent_text = "Let me check that for you…"
+
+        await consumer._send_fallback_final("Working on it. Done!")
+
+        adapter.edit_message.assert_awaited_once()
+        assert adapter.edit_message.call_args.kwargs["content"] == "Working on it. Done!"
+        adapter.send.assert_not_awaited()
+        adapter.delete_message.assert_not_awaited()
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_keeps_partial_after_tail_only_send(self):
+        """When the visible prefix is a true prefix of the final text, the
+        partial message IS the head of the answer — it must end up showing
+        the complete response (via edit-in-place, when it fits) rather than
+        being deleted or left holding only the head (the 'model sent only
+        the second half' bug)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_new"),
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True),
+        )
+        adapter.delete_message = AsyncMock(return_value=None)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Visible partial is a true prefix of the final response.
         consumer._message_id = "msg_partial"
         consumer._last_sent_text = "Working on i"
 
         await consumer._send_fallback_final("Working on it. Done!")
 
-        # Tail was sent...
-        sent_contents = [
-            c.kwargs.get("content", "") for c in adapter.send.call_args_list
-        ]
-        assert any("Done!" in s and "Working on i" not in s for s in sent_contents)
-        # ...and the head-bearing partial was NOT deleted.
+        # The partial was edited in place to the complete text...
+        adapter.edit_message.assert_awaited_once()
+        assert adapter.edit_message.call_args.kwargs["content"] == "Working on it. Done!"
+        # ...not deleted, and no separate tail message was sent.
         adapter.delete_message.assert_not_awaited()
         assert consumer._final_response_sent is True
 

@@ -133,18 +133,38 @@ def test_worktree_map_materializes_configured_repo_even_when_base_cwd_elsewhere(
     assert _git(worktree, "branch", "--show-current").startswith("hermes/gateway/")
 
 
-def test_concurrent_session_setup_keeps_event_loop_responsive_and_isolates_worktrees(tmp_path):
+def test_concurrent_session_setup_keeps_event_loop_responsive_and_isolates_worktrees(
+    tmp_path, monkeypatch
+):
+    import time
+
+    import gateway.run as gateway_run
+
     repo = _repo(tmp_path)
     cfg = {"gateway": {"auto_worktrees": {"enabled": True, "sync_base": False}}}
+    real_subprocess_run = subprocess.run
+    loop_ticks = [0]
+    delay_observations = []
+
+    def delayed_subprocess_run(command, *args, **kwargs):
+        if "worktree" in command and "add" in command:
+            ticks_before_delay = loop_ticks[0]
+            time.sleep(0.1)
+            delay_observations.append(loop_ticks[0] > ticks_before_delay)
+        return real_subprocess_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(gateway_run.subprocess, "run", delayed_subprocess_run)
 
     async def run_setups():
-        loop_advanced = asyncio.Event()
+        stop_ticker = asyncio.Event()
 
-        async def prove_loop_is_responsive():
-            await asyncio.sleep(0)
-            loop_advanced.set()
+        async def tick_while_setup_runs():
+            while not stop_ticker.is_set():
+                loop_ticks[0] += 1
+                await asyncio.sleep(0)
 
-        setup_a, setup_b, _ = await asyncio.gather(
+        ticker = asyncio.create_task(tick_while_setup_runs())
+        setup_a, setup_b = await asyncio.gather(
             _prepare_gateway_session_worktrees_async(
                 base_cwd=str(repo),
                 user_config=cfg,
@@ -157,13 +177,15 @@ def test_concurrent_session_setup_keeps_event_loop_responsive_and_isolates_workt
                 session_key="agent:main:slack:dm:U2",
                 session_id="session-b",
             ),
-            prove_loop_is_responsive(),
         )
-        assert loop_advanced.is_set()
+        stop_ticker.set()
+        await ticker
         return setup_a, setup_b
 
     (cwd_a, map_a), (cwd_b, map_b) = asyncio.run(run_setups())
 
+    assert delay_observations
+    assert all(delay_observations)
     assert cwd_a != cwd_b
     assert Path(cwd_a).parent == repo / ".worktrees"
     assert Path(cwd_b).parent == repo / ".worktrees"

@@ -381,6 +381,7 @@ def test_redact_docker_env_args_preserves_keys_only():
         "NO_VALUE",
         "--env=TOKEN=oauth-token",
         "-ePASSWORD=hunter2",
+        "-e=USERNAME=alice",
         "--env-file",
         "/tmp/env.list",
     ])
@@ -392,6 +393,7 @@ def test_redact_docker_env_args_preserves_keys_only():
         "NO_VALUE",
         "--env=TOKEN=***",
         "-ePASSWORD=***",
+        "-e=USERNAME=***",
         "--env-file",
         "/tmp/env.list",
     ]
@@ -414,6 +416,23 @@ def test_redact_subprocess_error_preserves_keys_only():
     assert "oauth-token" not in message
     assert "MY_SECRET=***" in message
     assert "--env=TOKEN=***" in message
+
+
+def test_redact_subprocess_error_preserves_tuple_commands():
+    cmd = (
+        "/usr/bin/docker",
+        "run",
+        "-e",
+        "MY_SECRET=sk-test-12345",
+        "python:3.11",
+    )
+    error = subprocess.CalledProcessError(125, cmd, stderr="daemon error")
+
+    message = docker_env._redact_subprocess_error(error)
+
+    assert "sk-test-12345" not in message
+    assert "MY_SECRET=***" in message
+    assert "('/usr/bin/docker'" in message
 
 
 def test_docker_env_values_are_redacted_from_logs(monkeypatch, caplog):

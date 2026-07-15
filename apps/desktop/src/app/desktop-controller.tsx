@@ -106,7 +106,7 @@ import { $terminalTakeover } from './right-sidebar/store'
 import { TerminalPaneChrome } from './right-sidebar/terminal/chrome'
 import { PersistentTerminal } from './right-sidebar/terminal/persistent'
 import { closeActiveTerminal } from './right-sidebar/terminal/terminals'
-import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { CRON_ROUTE, KANBAN_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
@@ -134,6 +134,7 @@ const AgentsView = lazy(async () => ({ default: (await import('./agents')).Agent
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
+const KanbanView = lazy(async () => ({ default: (await import('./kanban')).KanbanView }))
 const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
@@ -1209,6 +1210,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <KanbanView setStatusbarItemGroup={setStatusbarItemGroup} />
+              </Suspense>
+            }
+            path="kanban"
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />

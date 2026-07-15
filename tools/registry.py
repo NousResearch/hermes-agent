@@ -743,6 +743,17 @@ class ToolRegistry:
                     result[ts]["env_vars"].append(env)
         return result
 
+    def recheck_availability(self) -> None:
+        """Force re-probe of all tool availability checks on next query.
+
+        Invalidates the module-level ``check_fn`` cache so that the next
+        ``get_tool_definitions()`` / ``check_tool_availability()`` call
+        re-evaluates every toolset's ``is_available()`` check from scratch.
+        Call after events that may change tool availability — compression
+        boundaries (dedup cache resets), config changes, credential refreshes.
+        """
+        invalidate_check_fn_cache()
+
     def check_tool_availability(self, quiet: bool = False):
         """Return (available_toolsets, unavailable_info) like the old function."""
         available = []

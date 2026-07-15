@@ -1095,6 +1095,19 @@ def compress_context(
         except Exception:
             pass
 
+        # Force re-availability probe after compression boundary.
+        # Tool availability checks (Docker daemon, API keys, etc.) are
+        # cached for 30 s with a 60 s grace window. After a compression
+        # pause — which can span minutes — those caches may be stale and
+        # pin a false-negative "unavailable" verdict from a transient
+        # failure during the summarisation. Invalidate the cache so the
+        # next get_tool_definitions() re-probes fresh.
+        try:
+            from tools.registry import registry
+            registry.recheck_availability()
+        except Exception:
+            pass
+
         logger.info(
             "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
             agent.session_id or "none", _pre_msg_count, len(compressed),
@@ -1215,6 +1228,14 @@ def _compress_context_via_codex_app_server(
         from tools.file_tools import reset_file_dedup
 
         reset_file_dedup(task_id)
+    except Exception:
+        pass
+
+    # Force re-availability probe after compression boundary
+    # (see same block in compress_context above for rationale).
+    try:
+        from tools.registry import registry
+        registry.recheck_availability()
     except Exception:
         pass
 

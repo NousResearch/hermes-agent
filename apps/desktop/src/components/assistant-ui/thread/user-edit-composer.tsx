@@ -12,6 +12,7 @@ import {
   useRef,
   useState
 } from 'react'
+import { flushSync } from 'react-dom'
 
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
@@ -82,6 +83,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const dragDepthRef = useRef(0)
+  const composingRef = useRef(false)
   const [dragActive, setDragActive] = useState(false)
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
   const [triggerActive, setTriggerActive] = useState(0)
@@ -473,6 +475,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       editor.replaceChildren()
     }
 
+    // IME input events contain uncommitted preedit text. Keep it in the DOM
+    // until compositionend, when the finalized text is flushed to the draft.
+    if (composingRef.current) {
+      return
+    }
+
     syncDraftFromEditor(editor)
     window.setTimeout(refreshTrigger, 0)
   }
@@ -526,6 +534,12 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // During IME composition, Enter confirms the candidate instead of
+    // submitting the edited message.
+    if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -639,6 +653,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onCompositionEnd={event => {
+                composingRef.current = false
+                flushSync(() => {
+                  syncDraftFromEditor(event.currentTarget)
+                })
+                window.setTimeout(refreshTrigger, 0)
+              }}
+              onCompositionStart={() => {
+                composingRef.current = true
+              }}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}

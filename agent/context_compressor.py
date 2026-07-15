@@ -795,6 +795,7 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -833,6 +834,7 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -857,6 +859,7 @@ class ContextCompressor(ContextEngine):
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
@@ -1005,6 +1008,7 @@ class ContextCompressor(ContextEngine):
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -2288,6 +2292,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _is_timeout = (
                 _status in {408, 429, 502, 504}
                 or "timeout" in _err_str
+                or "timed out" in _err_str
             )
             # Non-JSON / malformed-body responses from misconfigured providers
             # or proxies (e.g. an HTML 502 page returned with
@@ -2377,7 +2382,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
-            _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
+            # Timeout-class failures escalate with consecutive occurrences:
+            # a session whose transcript structurally exceeds what the
+            # summary route can produce within its deadline will fail the
+            # same way every time, and re-burning the full timeout every
+            # 60s turns each subsequent turn into a multi-minute stall
+            # (#62452). 60s → 300s → 900s (capped); any successful summary
+            # resets the streak via _clear_compression_failure_cooldown().
+            # Timeout takes precedence over the streaming-closed short rung:
+            # a "timed out" error also matches _is_connection_error, but a
+            # deadline exhaustion is the structural repeat-offender class,
+            # not a transient mid-stream drop.
+            if _is_timeout:
+                self._consecutive_timeout_failures = (
+                    getattr(self, "_consecutive_timeout_failures", 0) + 1
+                )
+                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
+                    min(self._consecutive_timeout_failures,
+                        len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+                ]
+            elif _is_json_decode or _is_streaming_closed:
+                _transient_cooldown = 30
+            else:
+                _transient_cooldown = 60
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."

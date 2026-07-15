@@ -93,12 +93,13 @@ describe('Hermes REST session helpers', () => {
     )
   })
 
-  it('gives slow startup data calls the long timeout', async () => {
+  it('gives the whole startup data burst the long timeout, not just profiles', async () => {
     api.mockResolvedValue({})
 
     const bootCalls: [() => Promise<unknown>, string][] = [
       [getHermesConfig, '/api/config'],
       [getHermesConfigDefaults, '/api/config/defaults'],
+      [getGlobalModelInfo, '/api/model/info'],
       [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
       [getCronJobs, '/api/cron/jobs']
     ]
@@ -110,10 +111,10 @@ describe('Hermes REST session helpers', () => {
     }
   })
 
-  it('bounds the optional live model metadata probe', async () => {
+  it('allows Settings to bound its optional live model metadata probe', async () => {
     api.mockResolvedValue({})
 
-    await getGlobalModelInfo()
+    await getGlobalModelInfo({ timeoutMs: 5_000 })
 
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({ path: '/api/model/info', timeoutMs: 5_000 })

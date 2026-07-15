@@ -71,7 +71,6 @@ import type {
 export const STARTUP_REQUEST_TIMEOUT_MS = 60_000
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
-const MODEL_INFO_REQUEST_TIMEOUT_MS = 5_000
 // prompt.submit is effectively fire-and-forget: turn completion is signaled by
 // stream / message.complete events, NOT by the RPC return. A long turn (MoA
 // presets running references + aggregator in series, deep reasoning, large tool
@@ -426,11 +425,11 @@ export function renameSession(
   })
 }
 
-export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
+export function getGlobalModelInfo(opts?: { timeoutMs?: number }): Promise<ModelInfoResponse> {
   return window.hermesDesktop.api<ModelInfoResponse>({
     ...profileScoped(),
     path: '/api/model/info',
-    timeoutMs: MODEL_INFO_REQUEST_TIMEOUT_MS
+    timeoutMs: opts?.timeoutMs ?? STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

@@ -187,6 +187,8 @@ interface ModelSettingsProps {
   onMainModelChanged?: (provider: string, model: string) => void
 }
 
+const MODEL_SETTINGS_METADATA_TIMEOUT_MS = 5_000
+
 export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
@@ -225,76 +227,100 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     setLoading(true)
     setError('')
 
-    try {
-      const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
-        getGlobalModelInfo(),
-        getGlobalModelOptions(),
-        getAuxiliaryModels(),
-        getMoaModels()
-      ])
+    const isCurrent = () => profileEpoch.current === epoch
 
-      if (profileEpoch.current !== epoch) {
+    const reportFailure = (reason: unknown) => {
+      if (!isCurrent()) {
         return
       }
 
-      const failures: string[] = []
+      const message = reason instanceof Error ? reason.message : String(reason)
+      setError(prev => (prev ? `${prev}; ${message}` : message))
+    }
 
-      const settledValue = <T,>(result: PromiseSettledResult<T>, reportFailure = true): T | null => {
-        if (result.status === 'fulfilled') {
-          return result.value
+    const modelInfoRequest = getGlobalModelInfo({ timeoutMs: MODEL_SETTINGS_METADATA_TIMEOUT_MS })
+      .then(modelInfo => {
+        if (!isCurrent() || !modelInfo.model) {
+          return
         }
 
-        if (reportFailure) {
-          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
-        }
-
-        return null
-      }
-
-      const modelInfo = settledValue(modelInfoResult)
-      const modelOptions = settledValue(modelOptionsResult)
-      const auxiliaryModels = settledValue(auxiliaryModelsResult)
-      const moaModels = settledValue(moaModelsResult, false)
-      const resolvedMain = modelInfo?.model ? modelInfo : auxiliaryModels?.main
-
-      if (resolvedMain?.model) {
-        setMainModel({ model: resolvedMain.model, provider: resolvedMain.provider })
+        setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
 
         if (replaceSelection) {
-          setSelectedProvider(resolvedMain.provider)
-          setSelectedModel(resolvedMain.model)
+          setSelectedProvider(modelInfo.provider)
+          setSelectedModel(modelInfo.model)
         } else {
-          setSelectedProvider(prev => prev || resolvedMain.provider)
-          setSelectedModel(prev => prev || resolvedMain.model)
+          setSelectedProvider(prev => prev || modelInfo.provider)
+          setSelectedModel(prev => prev || modelInfo.model)
         }
-      }
+      })
+      .catch(reportFailure)
+      .finally(() => {
+        if (isCurrent()) {
+          setLoading(false)
+        }
+      })
 
-      if (modelOptions) {
-        setProviders(modelOptions.providers || [])
-      }
+    const modelOptionsRequest = getGlobalModelOptions()
+      .then(modelOptions => {
+        if (isCurrent()) {
+          setProviders(modelOptions.providers || [])
+        }
+      })
+      .catch(reportFailure)
 
-      if (auxiliaryModels) {
+    const auxiliaryModelsRequest = getAuxiliaryModels()
+      .then(auxiliaryModels => {
+        if (!isCurrent()) {
+          return
+        }
+
         setAuxiliary(auxiliaryModels)
-      }
 
-      setMoa(moaModels)
-      setError(failures.join('; '))
+        if (auxiliaryModels.main?.model) {
+          setMainModel(prev =>
+            prev ?? {
+              model: auxiliaryModels.main.model,
+              provider: auxiliaryModels.main.provider
+            }
+          )
+          setSelectedProvider(prev => prev || auxiliaryModels.main.provider)
+          setSelectedModel(prev => prev || auxiliaryModels.main.model)
+        }
+      })
+      .catch(reportFailure)
+      .finally(() => {
+        if (isCurrent()) {
+          setLoading(false)
+        }
+      })
 
-      if (moaModels) {
-        setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
-      }
+    const moaModelsRequest = getMoaModels()
+      .then(moaModels => {
+        if (!isCurrent()) {
+          return
+        }
 
+        setMoa(moaModels)
+
+        if (moaModels) {
+          setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+        }
+      })
+      .catch(() => undefined)
+
+    await Promise.allSettled([
+      modelInfoRequest,
+      modelOptionsRequest,
+      auxiliaryModelsRequest,
+      moaModelsRequest
+    ])
+
+    if (isCurrent()) {
       // The config record loads via its own shared query; a model switch can
       // change it server-side (aux slots), so nudge that cache to refetch.
       void invalidateHermesConfig()
-    } catch (err) {
-      if (profileEpoch.current === epoch) {
-        setError(err instanceof Error ? err.message : String(err))
-      }
-    } finally {
-      if (profileEpoch.current === epoch) {
-        setLoading(false)
-      }
+      setLoading(false)
     }
   }, [])
 

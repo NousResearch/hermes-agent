@@ -1,22 +1,15 @@
 'use client'
 
-import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
+import { type SmoothOptions, TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
 import {
   parseMarkdownIntoBlocks,
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
-  type SyntaxHighlighterProps
+  type SyntaxHighlighterProps,
+  tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import {
-  type ComponentProps,
-  memo,
-  type ReactNode,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useState
-} from 'react'
+import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -37,7 +30,6 @@ import {
   mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
-import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
 
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
@@ -57,8 +49,8 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
-// flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
-// module-scope so the prop identity is stable across renders.
+// flush) with a tail-bounded repair. Must stay module-scope so the prop
+// identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
   try {
     return tailBoundedRemend(preprocessMarkdown(text))
@@ -70,8 +62,7 @@ function preprocessWithTailRepair(text: string): string {
 // Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
 // `marked` lex of the entire message, ~1.6ms per 28KB) inside a useMemo keyed
 // on the text — but the same text is re-lexed every time a message REMOUNTS
-// (virtualizer scroll, session switch) and whenever multiple surfaces render
-// the same content (deferred + smooth reveal republish). A small module-level
+// (virtualizer scroll, session switch). A small module-level
 // LRU keyed by the exact source string removes all of those repeat parses
 // with zero correctness risk (same input → same output). Streaming tail
 // growth misses the cache by design (every flush is a new string) — that
@@ -347,44 +338,11 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
   )
 }
 
-/**
- * Re-publish the active message-part context with React's `useDeferredValue`
- * applied to the streaming text and status. The outer wrapper still re-renders
- * on every token, but the work it does is trivial (one hook, one provider).
- *
- * The expensive subtree (Streamdown → micromark → mdast → hast → React) lives
- * inside `<TextMessagePartProvider>` and reads the deferred text via the
- * normal `useMessagePartText` hook. React's concurrent scheduler then has
- * permission to:
- *   - skip intermediate token states when the next token arrives mid-render
- *     (it abandons the in-flight deferred render and starts over)
- *   - deprioritize the markdown render when the main thread is busy with an
- *     urgent task (typing, scrolling, layout work elsewhere)
- *
- * Net effect: per-token CPU is unchanged but the *blocking* part of that work
- * goes away — typing-while-streaming stays a single-frame paint, scroll
- * stutter disappears, and the longtask histogram tightens because long
- * commits can be interrupted and discarded.
- *
- * Industry standard (Streamdown's own block-array setState already uses
- * `useTransition`); this just lifts the deferral up to the consumer text
- * boundary so it covers the whole pipeline, not just the inner setState.
- */
-function DeferStreamingText({ children }: { children: ReactNode }) {
-  const { text, status } = useMessagePartText()
-  const deferredText = useDeferredValue(text)
-  const isRunning = status.type === 'running'
-
-  return (
-    <TextMessagePartProvider isRunning={isRunning} text={deferredText}>
-      {children}
-    </TextMessagePartProvider>
-  )
-}
-
 interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
+  defer?: boolean
+  smooth?: boolean | SmoothOptions
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -433,7 +391,7 @@ function HugeTextFallback({ containerClassName, text }: { containerClassName?: s
   )
 }
 
-function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
+function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
@@ -561,24 +519,27 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
       components={components}
       containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
       containerProps={containerProps}
+      defer={defer}
       lineNumbers={false}
       mode="streaming"
-      // Incomplete-markdown repair is handled by `preprocessWithTailRepair`
-      // below (tail-bounded remend) instead of Streamdown's built-in pass,
-      // which re-runs remend over the ENTIRE message on every flush — ~18%
-      // of streaming script time on 50KB+ messages. The repair itself stays
-      // always-on (even between flushes / for completed messages): an
-      // unclosed ```python ... ``` whose body contains `$` (shell snippets,
-      // JS template strings, dollar amounts) would otherwise leak those
-      // dollars to the math parser and render broken inline math. Shiki is
-      // independently deferred via `defer={isStreaming}` on the
-      // SyntaxHighlighter component.
+      // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+      // full accumulated text; the built-in tail-bounded remend is disabled
+      // because a custom parseMarkdownIntoBlocksFn is supplied, and
+      // parseIncompleteMarkdown stays false to avoid a second full-text
+      // remend pass.
       parseIncompleteMarkdown={false}
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
+      smooth={smooth}
     />
   )
+}
+
+const SMOOTH_OPTIONS: SmoothOptions = {
+  drainMs: 500,
+  maxCharsPerFrame: 30,
+  minCommitMs: 33
 }
 
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
@@ -592,19 +553,13 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
   // the whole message), blanking the Thinking widget.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <DeferStreamingText>
-        <MarkdownTextSurface {...surfaceProps} />
-      </DeferStreamingText>
+      <MarkdownTextSurface defer smooth={SMOOTH_OPTIONS} {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }
 
 const MarkdownTextImpl = () => {
-  return (
-    <DeferStreamingText>
-      <MarkdownTextSurface />
-    </DeferStreamingText>
-  )
+  return <MarkdownTextSurface defer />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

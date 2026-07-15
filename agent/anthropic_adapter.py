@@ -1936,7 +1936,11 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     # (the reason this channel exists); only forbidden sibling fields are
     # dropped, leaving thinking signatures and tool_use id/name/input intact.
     ordered_blocks = m.get("anthropic_content_blocks")
-    if isinstance(ordered_blocks, list) and ordered_blocks:
+    if (
+        not m.get("_thinking_signature_invalidated")
+        and isinstance(ordered_blocks, list)
+        and ordered_blocks
+    ):
         # Re-source each tool_use input from the stored tool_calls map rather
         # than the captured block. The ordered-blocks list captures tool_use
         # input from the RAW API response (normalize_response), which is NOT
@@ -2033,7 +2037,10 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     effective = blocks or content
     if not effective or effective == "":
         effective = [{"type": "text", "text": "(empty)"}]
-    return {"role": "assistant", "content": effective}
+    assistant = {"role": "assistant", "content": effective}
+    if m.get("_thinking_signature_invalidated"):
+        assistant["_thinking_signature_invalidated"] = True
+    return assistant
 
 
 def _convert_tool_message_to_result(

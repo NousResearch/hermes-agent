@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, build_memory_context_block
 from agent.memory_provider import MemoryProvider
 
 
@@ -143,3 +143,21 @@ def test_build_metadata_callback_is_merged_per_op():
             "metadata": {"session_id": "s1", "tool_name": "memory"},
         }
     ]
+
+
+def test_notify_memory_tool_write_scrubs_recalled_content_and_old_text():
+    mgr, provider = _manager_with_provider()
+    leaked = build_memory_context_block("operator-only peer card")
+
+    mgr.notify_memory_tool_write(
+        json.dumps({"success": True}),
+        {
+            "action": "replace",
+            "target": "memory",
+            "content": leaked,
+            "old_text": leaked,
+        },
+    )
+
+    assert "operator-only peer card" not in provider.calls[0]["content"]
+    assert "operator-only peer card" not in provider.calls[0]["metadata"]["old_text"]

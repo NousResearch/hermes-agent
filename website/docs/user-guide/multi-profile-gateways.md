@@ -189,6 +189,18 @@ Kanban workers only ever see their own profile's secrets). Kanban,
 profile-scoped skills/memory/SOUL, and model routing all behave per-profile
 exactly as they do with separate gateways.
 
+:::caution Memory recall on multi-user instances
+Profiles isolate memory *between profiles*. They do **not** isolate it between
+multiple **users** talking to the **same** profile. Some memory providers can
+scope identity with gateway user ids or provider-specific templates, but that
+depends on configuration, and a shared profile can still share recall state
+between speakers. If you run a memory provider on a profile that serves several
+people, set
+[`memory.auto_inject_recall: false`](./features/memory-providers.md#controlling-recall-injection-auto_inject_recall)
+on those channels to stop recall injection there. It is containment, not a full
+per-user isolation guarantee.
+:::
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

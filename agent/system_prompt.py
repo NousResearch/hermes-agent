@@ -483,7 +483,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             if user_block:
                 volatile_parts.append(user_block)
 
-    # External memory provider system prompt block (additive to built-in)
+    # Provider-controlled static input stays separate from curated builtin
+    # MemoryStore authority and from per-turn external recall.
     if agent._memory_manager:
         try:
             _ext_mem_block = agent._memory_manager.build_system_prompt()

@@ -38,6 +38,53 @@ When a memory provider is active, Hermes automatically:
 
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
+## Controlling recall injection (`auto_inject_recall`)
+
+Step 2 above — prefetching recalled memories into each turn — is wrapped in a
+`<memory-context>` block and injected into the model's prompt. `auto_inject_recall`
+controls whether that automatic injection happens.
+
+It defaults to `true`, so existing behaviour is unchanged. Set it to `false` to stop
+the silent recall injection:
+
+```yaml
+memory:
+  auto_inject_recall: false            # disable globally
+# ...or per platform (per-platform wins over global):
+platforms:
+  whatsapp:
+    memory:
+      auto_inject_recall: false
+```
+
+Both `platforms.<name>.memory.auto_inject_recall` and
+`gateway.platforms.<name>.memory.auto_inject_recall` are honoured; a present
+per-platform value overrides the global default.
+
+**`false` does not mean "provider off."** Completed-turn sync still runs and the
+provider's tools stay available per `enabled_toolsets`. The flag only stops the
+automatic, silent injection of recalled context into the prompt — the agent can still
+search and store memories deliberately.
+
+### When to disable it
+
+The main case is a **shared instance**: one Hermes agent serving multiple people, a
+team gateway or a customer-facing channel. Some providers can scope memory with
+`user_id`, `user_id_alt`, session keys, or bank templates, but that isolation depends on
+how the provider and profile are configured. If a channel shares identity state, one
+user's recalled context can surface in a reply to a different user. Setting
+`auto_inject_recall: false` on those channels stops that recalled context from being
+injected at all.
+
+:::caution Containment, not isolation
+This flag is **containment**, not a complete isolation guarantee. It keeps recalled
+context out of prompts on channels where memory should stay silent, but it does not
+prove that your provider identity, session strategy, or bank layout are speaker-scoped.
+It also does not defend against a deliberate jailbreak attempt to extract context. Treat
+it as a blunt off-switch for recall injection on channels where memory should not
+surface, not as a multi-tenant security boundary.
+:::
+
 ## Available Providers
 
 ### Honcho

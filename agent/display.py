@@ -17,6 +17,7 @@ from typing import Any
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
+from agent.memory_manager import sanitize_recall_payload
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -400,8 +401,8 @@ def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | No
     if tool_name == "browser_type" and isinstance(args.get("text"), str):
         safe_args = dict(args)
         safe_args["text"] = redact_sensitive_text(args["text"], force=True)
-        return safe_args
-    return args
+        return sanitize_recall_payload(safe_args)
+    return sanitize_recall_payload(args)
 
 
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:

@@ -23,6 +23,7 @@ import json
 
 import pytest
 
+from agent.memory_manager import build_memory_context_block
 from run_agent import (
     AIAgent,
     _FILE_MUTATING_TOOLS,
@@ -152,6 +153,27 @@ class TestRecordFileMutationResult:
         assert "/tmp/a.md" in state
         assert state["/tmp/a.md"]["tool"] == "patch"
         assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+
+    def test_failure_path_scrubs_recalled_context_before_footer_state(self):
+        agent = _bare_agent()
+        recalled_path = (
+            f"{build_memory_context_block('operator-only peer card')}/tmp/recovered.md"
+        )
+
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": recalled_path, "content": "safe"},
+            json.dumps({"error": "write failed"}),
+            is_error=True,
+        )
+
+        assert set(agent._turn_failed_file_mutations) == {"/tmp/recovered.md"}
+        footer = AIAgent._format_file_mutation_failure_footer(
+            agent._turn_failed_file_mutations
+        )
+        assert "/tmp/recovered.md" in footer
+        assert "operator-only peer card" not in footer
+        assert "<memory-context>" not in footer
 
     def test_success_removes_prior_failure(self):
         agent = _bare_agent()

@@ -145,7 +145,12 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import (
+    MemoryManager,
+    sanitize_context,
+    sanitize_recall_payload,
+    strip_injected_recall_blocks,
+)
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
@@ -1936,9 +1941,13 @@ class AIAgent:
                 # base64 images would bloat the session DB and aren't useful
                 # for cross-session replay.
                 if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
+                    content = sanitize_recall_payload(_multimodal_text_summary(content))
                 elif isinstance(content, list):
                     # List of OpenAI-style content parts: strip images, keep text.
+                    cleaned_parts = sanitize_recall_payload(content)
+                    if cleaned_parts != content:
+                        msg["content"] = cleaned_parts
+                    content = cleaned_parts
                     _txt = []
                     for p in content:
                         if isinstance(p, dict) and p.get("type") == "text":
@@ -1946,14 +1955,33 @@ class AIAgent:
                         elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
                             _txt.append("[screenshot]")
                     content = "\n".join(_txt) if _txt else None
+                elif isinstance(content, str):
+                    cleaned_content = strip_injected_recall_blocks(content)
+                    if cleaned_content != content:
+                        msg["content"] = cleaned_content
+                        content = cleaned_content
+                raw_reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                persisted_reasoning_details = sanitize_recall_payload(raw_reasoning_details)
+                if (
+                    role == "assistant"
+                    and persisted_reasoning_details != raw_reasoning_details
+                    and isinstance(raw_reasoning_details, list)
+                    and any(
+                        isinstance(detail, dict)
+                        and detail.get("type") in {"thinking", "redacted_thinking"}
+                        and (detail.get("signature") or detail.get("data"))
+                        for detail in raw_reasoning_details
+                    )
+                ):
+                    msg["_thinking_signature_invalidated"] = True
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
-                    tool_calls_data = [
+                    tool_calls_data = sanitize_recall_payload([
                         {"name": tc.function.name, "arguments": tc.function.arguments}
                         for tc in msg.tool_calls
-                    ]
+                    ])
                 elif isinstance(msg.get("tool_calls"), list):
-                    tool_calls_data = msg["tool_calls"]
+                    tool_calls_data = sanitize_recall_payload(msg["tool_calls"])
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -1962,11 +1990,36 @@ class AIAgent:
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                    reasoning=(
+                        sanitize_recall_payload(msg.get("reasoning"))
+                        if role == "assistant"
+                        else None
+                    ),
+                    reasoning_content=(
+                        sanitize_recall_payload(msg.get("reasoning_content"))
+                        if role == "assistant"
+                        else None
+                    ),
+                    reasoning_details=(
+                        persisted_reasoning_details
+                        if role == "assistant"
+                        else None
+                    ),
+                    thinking_signature_invalidated=(
+                        bool(msg.get("_thinking_signature_invalidated"))
+                        if role == "assistant"
+                        else None
+                    ),
+                    codex_reasoning_items=(
+                        sanitize_recall_payload(msg.get("codex_reasoning_items"))
+                        if role == "assistant"
+                        else None
+                    ),
+                    codex_message_items=(
+                        sanitize_recall_payload(msg.get("codex_message_items"))
+                        if role == "assistant"
+                        else None
+                    ),
                     timestamp=_row_timestamp,
                 )
                 msg[_DB_PERSISTED_MARKER] = True
@@ -2284,7 +2337,6 @@ class AIAgent:
         """
         if not error_msg:
             return "Unknown error"
-            
         # Remove HTML content (common with CloudFlare and gateway error pages)
         if error_msg.strip().startswith('<!DOCTYPE html') or '<html' in error_msg:
             return "Service temporarily unavailable (HTML error page returned)"
@@ -2450,7 +2502,7 @@ class AIAgent:
 
     @classmethod
     def _sanitize_hook_payload(cls, value: Any) -> Any:
-        payload = cls._hook_jsonable(value)
+        payload = sanitize_recall_payload(cls._hook_jsonable(value))
         limit = cls._hook_payload_max_chars()
         try:
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
@@ -2458,7 +2510,9 @@ class AIAgent:
             return str(payload)[:limit]
         if len(encoded) <= limit:
             return payload
-        payload = cls._hook_jsonable(value, max_string=1000, max_sequence=50)
+        payload = sanitize_recall_payload(
+            cls._hook_jsonable(value, max_string=1000, max_sequence=50)
+        )
         try:
             encoded = json.dumps(payload, ensure_ascii=False, default=str)
         except Exception:
@@ -2491,13 +2545,6 @@ class AIAgent:
         *,
         finish_reason: Optional[str],
     ) -> Dict[str, Any]:
-        # ``tool_calls`` is the raw list of provider SDK objects (e.g.
-        # OpenAI ``ChatCompletionMessageToolCall``).  We deliberately hand
-        # the raw objects to ``_sanitize_hook_payload`` and rely on
-        # ``_hook_jsonable`` to normalise them via ``model_dump`` /
-        # ``__dict__`` / dataclass introspection — a future refactor of
-        # the sanitiser MUST preserve that capability or hook subscribers
-        # will receive opaque ``str(obj)`` blobs here.
         tool_calls = getattr(assistant_message, "tool_calls", None) or []
         return self._sanitize_hook_payload(
             {
@@ -2510,6 +2557,79 @@ class AIAgent:
                 },
                 "usage": self._usage_summary_for_api_request_hook(response),
             }
+        )
+
+    def _sanitize_tool_calls_for_hook(self, tool_calls: Any) -> list[SimpleNamespace]:
+        safe_tool_calls = self._hook_jsonable(tool_calls)
+        if not isinstance(safe_tool_calls, list):
+            return []
+
+        def _to_namespace(value: Any) -> Any:
+            if isinstance(value, dict):
+                return SimpleNamespace(
+                    **{key: _to_namespace(item) for key, item in value.items()}
+                )
+            if isinstance(value, list):
+                return [_to_namespace(item) for item in value]
+            return value
+
+        normalized = []
+        for tool_call in safe_tool_calls:
+            if isinstance(tool_call, dict):
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    function = {
+                        "name": tool_call.get("name"),
+                        "arguments": tool_call.get("arguments"),
+                    }
+                tool_call = dict(tool_call)
+                tool_call["function"] = function
+                normalized.append(_to_namespace(tool_call))
+        return normalized
+
+    def _sanitize_assistant_message_for_hook(self, assistant_message: Any) -> Any:
+        safe_tool_calls = sanitize_recall_payload(
+            getattr(assistant_message, "tool_calls", None)
+        )
+        return SimpleNamespace(
+            role=getattr(assistant_message, "role", "assistant"),
+            content=(
+                str(
+                    sanitize_recall_payload(
+                        getattr(assistant_message, "content", "") or ""
+                    )
+                )
+                or None
+            ),
+            tool_calls=self._sanitize_tool_calls_for_hook(safe_tool_calls),
+            reasoning=(
+                str(
+                    sanitize_recall_payload(
+                        getattr(assistant_message, "reasoning", "") or ""
+                    )
+                )
+                or None
+            ),
+            reasoning_content=(
+                str(
+                    sanitize_recall_payload(
+                        getattr(assistant_message, "reasoning_content", "") or ""
+                    )
+                )
+                or None
+            ),
+            reasoning_details=sanitize_recall_payload(
+                getattr(assistant_message, "reasoning_details", None)
+            ),
+            anthropic_content_blocks=sanitize_recall_payload(
+                getattr(assistant_message, "anthropic_content_blocks", None)
+            ),
+            codex_message_items=sanitize_recall_payload(
+                getattr(assistant_message, "codex_message_items", None)
+            ),
+            codex_reasoning_items=sanitize_recall_payload(
+                getattr(assistant_message, "codex_reasoning_items", None)
+            ),
         )
 
     def _invoke_api_request_error_hook(
@@ -2655,6 +2775,7 @@ class AIAgent:
         try:
             cleaned = []
             for msg in messages:
+                msg = sanitize_recall_payload(msg)
                 # Mirror the SQLite flush: ephemeral recovery scaffolding is
                 # internal retry state, never durable transcript content.
                 if _is_ephemeral_scaffolding(msg):
@@ -2896,14 +3017,25 @@ class AIAgent:
         state = getattr(self, "_turn_failed_file_mutations", None)
         if state is None:
             return
-        targets = _extract_file_mutation_targets(tool_name, args)
+        targets = []
+        for path in _extract_file_mutation_targets(tool_name, args):
+            safe_path = str(sanitize_recall_payload(path)).strip()
+            if safe_path:
+                targets.append(safe_path)
         if not targets:
             return
         landed = file_mutation_result_landed(tool_name, result)
         if landed:
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
-                changed.update(_extract_landed_file_mutation_paths(tool_name, args, result))
+                changed.update(
+                    safe_path
+                    for safe_path in (
+                        str(path).strip()
+                        for path in _extract_landed_file_mutation_paths(tool_name, args, result)
+                    )
+                    if safe_path
+                )
         if is_error and not landed:
             preview = _extract_error_preview(result)
             for path in targets:
@@ -3441,9 +3573,10 @@ class AIAgent:
 
         Called at the end of ``run_conversation`` with the cleaned user
         message (``original_user_message``) and the finalised assistant
-        response.  The external memory backend gets both ``sync_all`` (to
-        persist the exchange) and ``queue_prefetch_all`` (to start
-        warming context for the next turn) in one shot.
+        response.  The external memory backend always gets ``sync_all``
+        to persist the exchange.  ``queue_prefetch_all`` only runs when
+        automatic recall injection is enabled for this agent, because it
+        warms recall for the next prompt turn.
 
         Uses ``original_user_message`` rather than ``user_message``
         because the latter may carry injected skill content that bloats
@@ -3472,21 +3605,23 @@ class AIAgent:
         # memory, vs the default space-join used for log/trajectory previews).
         user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
         response_text = _summarize_user_message_for_log(final_response, sep="\n")
+        response_text = strip_injected_recall_blocks(response_text).strip()
         if not (user_text and response_text):
             return
         try:
             sync_kwargs = {"session_id": self.session_id or ""}
             if messages is not None:
-                sync_kwargs["messages"] = messages
+                sync_kwargs["messages"] = MemoryManager._scrub_messages_for_provider(messages)
             self._memory_manager.sync_all(
                 user_text,
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            if getattr(self, "_memory_auto_inject_recall", True):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 
@@ -4713,6 +4848,14 @@ class AIAgent:
                     except Exception:
                         pass
                 self._record_streamed_assistant_text(tail)
+        reasoning_scrubber = getattr(self, "_reasoning_context_scrubber", None)
+        if reasoning_scrubber is not None and self.reasoning_callback is not None:
+            tail = reasoning_scrubber.flush()
+            if tail:
+                try:
+                    self.reasoning_callback(tail)
+                except Exception:
+                    pass
         self._current_streamed_assistant_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
@@ -4810,6 +4953,12 @@ class AIAgent:
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
         cb = self.reasoning_callback
+        scrubber = getattr(self, "_reasoning_context_scrubber", None)
+        if isinstance(text, str):
+            if scrubber is not None:
+                text = scrubber.feed(text)
+        if not text:
+            return
         if cb is not None:
             try:
                 cb(text)

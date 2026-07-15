@@ -25,6 +25,40 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.memory_manager import sanitize_recall_payload, strip_injected_recall_blocks
+
+
+def _sanitize_current_turn_assistant_messages(messages) -> None:
+    """Strip an echoed recall block from the current turn's assistant messages.
+
+    Walks back from the end to the most recent user message and scrubs the
+    signed injected block in place, so it never reaches stored turns,
+    trajectory, or the in-memory state replayed next turn.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str) and content:
+            msg["content"] = strip_injected_recall_blocks(content).strip()
+        ordered_blocks = msg.get("anthropic_content_blocks")
+        if ordered_blocks is None:
+            continue
+        sanitized_blocks = sanitize_recall_payload(ordered_blocks)
+        if sanitized_blocks != ordered_blocks:
+            msg["anthropic_content_blocks"] = sanitized_blocks
+            if any(
+                isinstance(block, dict)
+                and block.get("type") in {"thinking", "redacted_thinking"}
+                and (block.get("signature") or block.get("data"))
+                for block in ordered_blocks
+            ):
+                msg["_thinking_signature_invalidated"] = True
 
 
 def finalize_turn(
@@ -156,6 +190,10 @@ def finalize_turn(
         )
     )
 
+    if isinstance(final_response, str) and final_response:
+        final_response = strip_injected_recall_blocks(final_response).strip()
+    _sanitize_current_turn_assistant_messages(messages)
+
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
     # surfaces — file I/O / JSON serialization (_save_trajectory), remote
@@ -240,7 +278,10 @@ def finalize_turn(
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
         _cleanup_errors.append(f"persist_session: {_persist_err}")
-        logger.error("finalize_turn: _persist_session failed: %s", _persist_err, exc_info=True)
+        logger.error(
+            "finalize_turn: _persist_session failed: %s",
+            _persist_err,
+        )
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
@@ -390,7 +431,10 @@ def finalize_turn(
                     _response_transformed = True
                     break  # First non-empty string wins
         except Exception as exc:
-            logger.warning("transform_llm_output hook failed: %s", exc)
+            logger.warning(
+                "transform_llm_output hook failed: %s",
+                exc,
+            )
 
     # Plugin hook: post_llm_call
     # Fired once per turn after the tool-calling loop completes.
@@ -406,12 +450,15 @@ def finalize_turn(
                 turn_id=turn_id,
                 user_message=original_user_message,
                 assistant_response=final_response,
-                conversation_history=list(messages),
+                conversation_history=sanitize_recall_payload(list(messages)),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
         except Exception as exc:
-            logger.warning("post_llm_call hook failed: %s", exc)
+            logger.warning(
+                "post_llm_call hook failed: %s",
+                exc,
+            )
 
     # Extract reasoning from the CURRENT turn only.  Walk backwards
     # but stop at the user message that started this turn — anything

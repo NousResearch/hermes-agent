@@ -1,10 +1,15 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import logging
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.memory_manager import build_memory_context_block
+from hermes_cli.plugins import get_pre_tool_call_block_message
+from model_tools import _emit_post_tool_call_hook
+import run_agent
 from run_agent import AIAgent
 
 
@@ -236,6 +241,358 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     mock_hfc.assert_not_called()
     assert "plugin policy" in messages[0]["content"]
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
+
+
+def test_sequential_tool_callbacks_scrub_recall_blocks_but_execution_keeps_raw_args():
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    args = {"query": leaked}
+    starts = []
+    completes = []
+    progress = []
+    executed = []
+    agent.tool_start_callback = lambda tool_call_id, name, cb_args: starts.append(
+        (tool_call_id, name, cb_args)
+    )
+    agent.tool_complete_callback = (
+        lambda tool_call_id, name, cb_args, result: completes.append(
+            (tool_call_id, name, cb_args, result)
+        )
+    )
+    agent.tool_progress_callback = lambda event, name, preview, cb_args, **kw: progress.append(
+        (event, name, preview, cb_args, kw)
+    )
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-seq")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    def fake_handle(name, raw_args, task_id, **kwargs):
+        executed.append((name, raw_args, kwargs["tool_call_id"]))
+        return json.dumps({"ok": True})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert executed == [("web_search", args, "c-seq")]
+    assert starts == [("c-seq", "web_search", {"query": ""})]
+    assert completes == [("c-seq", "web_search", {"query": ""}, '{"ok": true}')]
+    started = [event for event in progress if event[0] == "tool.started"]
+    assert started == [("tool.started", "web_search", None, {"query": ""}, {})]
+
+
+def test_concurrent_tool_callbacks_scrub_recall_blocks_but_execution_keeps_raw_args():
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    args = {"query": leaked}
+    starts = []
+    completes = []
+    progress = []
+    executed = []
+    agent.tool_start_callback = lambda tool_call_id, name, cb_args: starts.append(
+        (tool_call_id, name, cb_args)
+    )
+    agent.tool_complete_callback = (
+        lambda tool_call_id, name, cb_args, result: completes.append(
+            (tool_call_id, name, cb_args, result)
+        )
+    )
+    agent.tool_progress_callback = lambda event, name, preview, cb_args, **kw: progress.append(
+        (event, name, preview, cb_args, kw)
+    )
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-con")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    def fake_handle(name, raw_args, task_id, **kwargs):
+        executed.append((name, raw_args, kwargs["tool_call_id"]))
+        return json.dumps({"ok": True})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert executed == [("web_search", args, "c-con")]
+    assert starts == [("c-con", "web_search", {"query": ""})]
+    assert completes == [("c-con", "web_search", {"query": ""}, '{"ok": true}')]
+    started = [event for event in progress if event[0] == "tool.started"]
+    assert started == [("tool.started", "web_search", None, {"query": ""}, {})]
+
+
+def test_sequential_tool_results_scrub_recall_blocks_before_callbacks_and_messages():
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    completes = []
+    progress = []
+    tc = _mock_tool_call("web_search", json.dumps({"query": "safe"}), "c-seq-result")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    agent.tool_complete_callback = (
+        lambda tool_call_id, name, cb_args, result: completes.append(
+            (tool_call_id, name, cb_args, result)
+        )
+    )
+    agent.tool_progress_callback = lambda event, name, preview, cb_args, **kw: progress.append(
+        (event, name, preview, cb_args, kw)
+    )
+
+    with patch("run_agent.handle_function_call", return_value=leaked):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    completed = [event for event in progress if event[0] == "tool.completed"]
+    assert len(completed) == 1
+    assert completed[0][0:4] == ("tool.completed", "web_search", None, None)
+    assert completed[0][4]["is_error"] is False
+    assert completed[0][4]["result"] == ""
+    assert completes == [("c-seq-result", "web_search", {"query": "safe"}, "")]
+    assert "operator-only peer card" not in messages[0]["content"]
+
+
+def test_concurrent_tool_results_scrub_recall_blocks_before_callbacks_and_messages():
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    completes = []
+    progress = []
+    tc = _mock_tool_call("web_search", json.dumps({"query": "safe"}), "c-con-result")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    agent.tool_complete_callback = (
+        lambda tool_call_id, name, cb_args, result: completes.append(
+            (tool_call_id, name, cb_args, result)
+        )
+    )
+    agent.tool_progress_callback = lambda event, name, preview, cb_args, **kw: progress.append(
+        (event, name, preview, cb_args, kw)
+    )
+
+    with patch("run_agent.handle_function_call", return_value=leaked):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    completed = [event for event in progress if event[0] == "tool.completed"]
+    assert len(completed) == 1
+    assert completed[0][0:4] == ("tool.completed", "web_search", None, None)
+    assert completed[0][4]["is_error"] is False
+    assert completed[0][4]["result"] == ""
+    assert completes == [("c-con-result", "web_search", {"query": "safe"}, "")]
+    assert "operator-only peer card" not in messages[0]["content"]
+
+
+def test_concurrent_tool_error_logs_scrub_recall_blocks(caplog):
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    tc = _mock_tool_call("web_search", json.dumps({"query": "safe"}), "c-con-log")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        caplog.at_level(logging.INFO, logger="agent.tool_executor"),
+        patch("run_agent.handle_function_call", return_value=json.dumps({"error": leaked})),
+    ):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert "operator-only peer card" not in caplog.text
+    assert "operator-only peer card" not in messages[0]["content"]
+
+
+def test_sequential_tool_error_logs_scrub_recall_blocks(caplog):
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    tc = _mock_tool_call("web_search", json.dumps({"query": "safe"}), "c-seq-log")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        caplog.at_level(logging.ERROR, logger="agent.tool_executor"),
+        patch(
+            "run_agent.handle_function_call",
+            side_effect=RuntimeError(leaked),
+        ),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert "operator-only peer card" not in caplog.text
+    assert "operator-only peer card" not in messages[0]["content"]
+
+
+def test_context_engine_tool_error_logs_scrub_recall_blocks(caplog):
+    agent = _make_agent("lcm_grep")
+    leaked = build_memory_context_block("operator-only peer card")
+    agent._context_engine_tool_names = {"lcm_grep"}
+    agent.context_compressor = SimpleNamespace(
+        handle_tool_call=MagicMock(side_effect=RuntimeError(leaked))
+    )
+    tc = _mock_tool_call("lcm_grep", json.dumps({"query": "safe"}), "c-ce-log")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with caplog.at_level(logging.ERROR, logger="agent.tool_executor"):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert "operator-only peer card" not in caplog.text
+    assert "operator-only peer card" not in messages[0]["content"]
+
+
+def test_memory_provider_tool_error_logs_scrub_recall_blocks(caplog):
+    agent = _make_agent("honcho_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    memory_manager = MagicMock()
+    memory_manager.has_tool.return_value = True
+    memory_manager.handle_tool_call.side_effect = RuntimeError(leaked)
+    agent._memory_manager = memory_manager
+    tc = _mock_tool_call("honcho_search", json.dumps({"query": "safe"}), "c-mem-log")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with caplog.at_level(logging.ERROR, logger="agent.tool_executor"):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert "operator-only peer card" not in caplog.text
+    assert "operator-only peer card" not in messages[0]["content"]
+
+
+def test_sequential_multimodal_tool_result_preview_does_not_crash():
+    agent = _make_agent("web_search")
+    agent.quiet_mode = False
+    agent.verbose_logging = False
+    multimodal_result = {
+        "_multimodal": True,
+        "content": [{"type": "text", "text": "Visible result"}],
+    }
+    tc = _mock_tool_call("web_search", json.dumps({"query": "safe"}), "c-seq-mm")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with (
+        patch("run_agent.handle_function_call", return_value=multimodal_result),
+        patch.object(agent, "_append_guardrail_observation", lambda *args, **kwargs: multimodal_result),
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert messages
+
+
+def test_sequential_quiet_todo_message_scrubs_recall_blocks(monkeypatch):
+    agent = _make_agent("todo")
+    leaked = build_memory_context_block("operator-only peer card")
+    tc = _mock_tool_call("todo", json.dumps({"todos": []}), "c-todo-quiet")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    printed = []
+    agent._vprint = printed.append
+    agent._should_emit_quiet_tool_messages = lambda: True
+
+    with patch("tools.todo_tool.todo_tool", return_value=leaked):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert printed
+    assert all("operator-only peer card" not in line for line in printed)
+
+
+def test_sequential_quiet_generic_message_scrubs_recall_blocks():
+    agent = _make_agent("web_search")
+    leaked = build_memory_context_block("operator-only peer card")
+    tc = _mock_tool_call("web_search", json.dumps({"query": leaked}), "c-generic-quiet")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    printed = []
+    agent._vprint = printed.append
+    agent._should_emit_quiet_tool_messages = lambda: True
+
+    with patch("run_agent.handle_function_call", return_value=leaked):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert printed
+    assert all("operator-only peer card" not in line for line in printed)
+
+
+def test_file_mutation_verifier_footer_scrubs_recalled_error_previews():
+    agent = _make_agent("write_file")
+    leaked = build_memory_context_block("operator-only peer card")
+    tc = _mock_tool_call(
+        "write_file",
+        json.dumps({"path": "test.txt", "content": "hello"}),
+        "c-write-leak",
+    )
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+    recorded = []
+
+    agent._record_file_mutation_result = (
+        lambda function_name, function_args, function_result, is_error: recorded.append(
+            (function_name, function_args, function_result, is_error)
+        )
+    )
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"error": leaked})):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert recorded
+    assert "operator-only peer card" not in recorded[0][2]
+
+
+def test_pre_tool_hook_receives_scrubbed_args(monkeypatch):
+    captured = []
+    leaked = build_memory_context_block("operator-only peer card")
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda hook_name, **kwargs: captured.append((hook_name, kwargs)) or [],
+    )
+
+    block = get_pre_tool_call_block_message("web_search", {"query": leaked})
+
+    assert block is None
+    assert captured[0][0] == "pre_tool_call"
+    assert captured[0][1]["args"] == {"query": ""}
+
+
+def test_post_tool_hook_receives_scrubbed_args(monkeypatch):
+    captured = []
+    leaked = build_memory_context_block("operator-only peer card")
+
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: name == "post_tool_call")
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda hook_name, **kwargs: captured.append((hook_name, kwargs)) or [],
+    )
+
+    _emit_post_tool_call_hook(
+        function_name="web_search",
+        function_args={"query": leaked},
+        result=leaked,
+    )
+
+    assert captured[0][0] == "post_tool_call"
+    assert captured[0][1]["args"] == {"query": ""}
+    assert captured[0][1]["result"] == ""
+    assert captured[0][1]["error_message"] is None
+
+
+def test_transform_tool_result_hook_receives_scrubbed_args_and_result(monkeypatch):
+    captured = []
+    leaked = build_memory_context_block("operator-only peer card")
+
+    monkeypatch.setattr(
+        "hermes_cli.plugins.has_hook",
+        lambda name: name == "transform_tool_result",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.invoke_hook",
+        lambda hook_name, **kwargs: captured.append((hook_name, kwargs)) or [],
+    )
+
+    with patch("model_tools.registry.dispatch", return_value=leaked):
+        result = run_agent.handle_function_call(
+            "web_search",
+            {"query": "safe"},
+            "task-1",
+            skip_pre_tool_call_hook=True,
+            skip_tool_request_middleware=True,
+        )
+
+    assert result == leaked
+    assert captured[0][0] == "transform_tool_result"
+    assert captured[0][1]["args"] == {"query": "safe"}
+    assert captured[0][1]["result"] == ""
+    assert captured[0][1]["error_message"] is None
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():

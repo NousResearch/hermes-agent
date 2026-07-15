@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import json
 import sqlite3
 import time
 import json
@@ -1376,6 +1377,98 @@ class TestMessageStorage:
         msg = conv[0]
         assert msg["reasoning"] == "Thinking about what to say"
         assert msg["reasoning_details"] == details
+
+    def test_thinking_signature_invalidation_persisted_and_restored(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hello",
+            reasoning_details=[
+                {
+                    "type": "thinking",
+                    "thinking": "Visible plan after scrub.",
+                    "signature": "sig_dead",
+                },
+            ],
+            thinking_signature_invalidated=True,
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0]["_thinking_signature_invalidated"] is True
+
+    def test_replay_loader_scrubs_restored_assistant_fields(self, db):
+        from agent.memory_manager import build_memory_context_block
+
+        db.create_session(session_id="s1", source="cli")
+        leaked = build_memory_context_block("operator-only peer card")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Visible answer",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        "arguments": json.dumps({"path": leaked}),
+                    },
+                }
+            ],
+            reasoning=leaked,
+            reasoning_content=leaked,
+            reasoning_details=[
+                {
+                    "type": "thinking",
+                    "thinking": leaked,
+                    "signature": "sig_dead",
+                },
+            ],
+            codex_message_items=[
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": leaked}],
+                },
+            ],
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        replayed = conv[0]
+        replay_json = json.dumps(replayed, ensure_ascii=False)
+        assert "operator-only peer card" not in replay_json
+        assert "<memory-context>" not in replay_json
+        assert replayed["reasoning"] == ""
+        assert replayed["reasoning_content"] == ""
+        assert replayed["reasoning_details"][0]["signature"] == "sig_dead"
+
+    def test_replace_messages_scrubs_assistant_fields_before_sqlite_write(self, db):
+        from agent.memory_manager import build_memory_context_block
+
+        db.create_session(session_id="s1", source="cli")
+        leaked = build_memory_context_block("operator-only peer card")
+        db.replace_messages("s1", [{
+            "role": "assistant",
+            "content": "Visible answer",
+            "reasoning": leaked,
+            "reasoning_content": leaked,
+            "reasoning_details": [{"thinking": leaked}],
+            "tool_calls": [{"function": {"arguments": json.dumps({"input": leaked})}}],
+            "codex_reasoning_items": [{"summary": leaked}],
+            "codex_message_items": [{"content": [{"text": leaked}]}],
+        }])
+
+        with db._lock:
+            row = db._conn.execute(
+                "SELECT reasoning, reasoning_content, reasoning_details, tool_calls, "
+                "codex_reasoning_items, codex_message_items FROM messages WHERE session_id = ?",
+                ("s1",),
+            ).fetchone()
+        assert "operator-only peer card" not in json.dumps(dict(row), ensure_ascii=False)
 
     def test_finish_reason_restored_by_get_messages_as_conversation(self, db):
         """finish_reason on assistant messages must survive conversation replay.

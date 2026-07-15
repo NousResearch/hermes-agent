@@ -995,6 +995,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  authMcpServer: (name: string) =>
+    fetchJSON<McpTestResult>(
+      `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+      { method: "POST" },
+    ),
   removeMcpServer: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
@@ -1407,7 +1412,7 @@ export interface McpServer {
   command: string | null;
   args: string[];
   env: Record<string, string>;
-  auth: string | null;
+  auth: "header" | "oauth" | null;
   enabled: boolean;
   tools: string[] | null;
 }
@@ -1442,13 +1447,16 @@ export interface McpCatalogDiagnostic {
 }
 
 
+export type McpHttpAuth = "none" | "header" | "oauth";
+
 export interface McpServerCreate {
   name: string;
   url?: string;
   command?: string;
   args?: string[];
   env?: Record<string, string>;
-  auth?: string;
+  auth?: McpHttpAuth;
+  bearer_token?: string;
 }
 
 export interface McpTestResult {
@@ -2301,6 +2309,8 @@ export interface AuxiliaryModelsResponse {
 export interface MoaModelSlot {
   provider: string;
   model: string;
+  /** Optional per-slot reasoning effort — round-tripped, not edited here. */
+  reasoning_effort?: string;
 }
 
 export interface MoaConfigResponse {
@@ -2312,6 +2322,10 @@ export interface MoaConfigResponse {
     reference_temperature: number;
     aggregator_temperature: number;
     max_tokens: number;
+    /** Optional advisor output cap — round-tripped, not edited here. */
+    reference_max_tokens?: number | null;
+    /** Fan-out cadence (per_iteration | user_turn) — round-tripped. */
+    fanout?: string;
     enabled: boolean;
   }>;
   reference_models: MoaModelSlot[];

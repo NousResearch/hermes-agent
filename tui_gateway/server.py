@@ -2117,7 +2117,15 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    return "anthropic/claude-sonnet-4"
+    # No env seed and no config preference: fall back to the cost-safe silent
+    # default (catalog-labeled, cache-only read), never an expensive Anthropic
+    # flagship the user didn't pick.
+    try:
+        from hermes_cli.models import get_preferred_silent_default_model
+
+        return get_preferred_silent_default_model()
+    except Exception:
+        return "z-ai/glm-5.2"
 
 
 def _resolve_session_platform() -> str:
@@ -8455,7 +8463,11 @@ def _(rid, params: dict) -> dict:
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
-    sid, text = params.get("session_id", ""), params.get("text", "")
+    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+
+    sid = params.get("session_id", "")
+    raw_text = params.get("text", "")
+    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     session, err = _sess_nowait(params, rid)
     if err:

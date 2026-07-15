@@ -99,7 +99,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, SecretStr
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -115,7 +115,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, SecretStr
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -996,6 +996,9 @@ class ModelAssignment(BaseModel):
 class MoaModelSlot(BaseModel):
     provider: str = ""
     model: str = ""
+    # Optional per-slot reasoning effort. Declared so a client round-tripping
+    # the GET payload doesn't have it stripped at parse time and wiped on save.
+    reasoning_effort: Optional[str] = None
 
 
 class MoaPresetPayload(BaseModel):
@@ -1006,6 +1009,11 @@ class MoaPresetPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    # Newer per-preset knobs (see moa_config._normalize_preset). Optional so
+    # older clients that never send them keep working; declared so clients
+    # that round-trip the GET payload don't silently erase hand-set values.
+    reference_max_tokens: Optional[int] = None
+    fanout: Optional[str] = None
     enabled: bool = True
 
 
@@ -1020,6 +1028,8 @@ class MoaConfigPayload(BaseModel):
     reference_temperature: Optional[float] = None
     aggregator_temperature: Optional[float] = None
     max_tokens: int = 4096
+    reference_max_tokens: Optional[int] = None
+    fanout: Optional[str] = None
     enabled: bool = True
     profile: Optional[str] = None
 
@@ -5576,6 +5586,7 @@ def get_recommended_default_model(provider: str = ""):
                 get_pricing_for_provider,
                 check_nous_free_tier,
                 partition_nous_models_by_tier,
+                pick_silent_default_model,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
             )
@@ -5604,21 +5615,25 @@ def get_recommended_default_model(provider: str = ""):
                     model_ids, pricing, portal_url
                 )
 
-            model = model_ids[0] if model_ids else ""
+            model = pick_silent_default_model(model_ids, provider="nous")
             return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
         except Exception:
             _log.exception("GET /api/model/recommended-default (nous) failed")
             return {"provider": "nous", "model": "", "free_tier": None}
 
-    # Non-Nous: first curated model for the provider, matching prior behaviour.
+    # Non-Nous: preferred silent default when the provider's curated list
+    # carries it, else the first curated model. Aggregator lists lead with the
+    # priciest Anthropic flagship (claude-fable-5), which must never be the
+    # model a user lands on without explicitly picking it.
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.models import pick_silent_default_model
 
         payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
-                models = row.get("models") or []
-                return {"provider": slug, "model": models[0] if models else "", "free_tier": None}
+                models = [str(m) for m in (row.get("models") or [])]
+                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
         return {"provider": slug, "model": "", "free_tier": None}
     except Exception:
         _log.exception("GET /api/model/recommended-default failed")
@@ -5696,7 +5711,23 @@ def get_moa_models(profile: Optional[str] = None):
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     try:
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
+
+        def _slot_dict(slot: MoaModelSlot) -> dict:
+            # Drop unset optionals so saved slots stay minimal ({provider, model}).
+            return {k: v for k, v in slot.dict().items() if v is not None}
+
+        def _preset_dict(preset: MoaPresetPayload) -> dict:
+            return {
+                "reference_models": [_slot_dict(slot) for slot in preset.reference_models],
+                "aggregator": _slot_dict(preset.aggregator),
+                "reference_temperature": preset.reference_temperature,
+                "aggregator_temperature": preset.aggregator_temperature,
+                "max_tokens": preset.max_tokens,
+                "reference_max_tokens": preset.reference_max_tokens,
+                "fanout": preset.fanout,
+                "enabled": preset.enabled,
+            }
 
         with _profile_scope(body.profile or profile):
             cfg = load_config()
@@ -5704,27 +5735,35 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raw = {
                     "default_preset": body.default_preset,
                     "active_preset": body.active_preset,
-                    "presets": {
-                        name: {
-                            "reference_models": [slot.dict() for slot in preset.reference_models],
-                            "aggregator": preset.aggregator.dict(),
-                            "reference_temperature": preset.reference_temperature,
-                            "aggregator_temperature": preset.aggregator_temperature,
-                            "max_tokens": preset.max_tokens,
-                            "enabled": preset.enabled,
-                        }
-                        for name, preset in body.presets.items()
-                    },
+                    "presets": {name: _preset_dict(preset) for name, preset in body.presets.items()},
                 }
             else:
-                raw = {
-                    "reference_models": [slot.dict() for slot in body.reference_models],
-                    "aggregator": body.aggregator.dict(),
-                    "reference_temperature": body.reference_temperature,
-                    "aggregator_temperature": body.aggregator_temperature,
-                    "max_tokens": body.max_tokens,
-                    "enabled": body.enabled,
-                }
+                raw = _preset_dict(
+                    MoaPresetPayload(
+                        reference_models=body.reference_models,
+                        aggregator=body.aggregator,
+                        reference_temperature=body.reference_temperature,
+                        aggregator_temperature=body.aggregator_temperature,
+                        max_tokens=body.max_tokens,
+                        reference_max_tokens=body.reference_max_tokens,
+                        fanout=body.fanout,
+                        enabled=body.enabled,
+                    )
+                )
+
+            # Reject-don't-repair: normalize_moa_config() silently swaps any
+            # preset containing incomplete slots for the hardcoded defaults —
+            # correct tolerance for hand-edited configs at READ time, silent
+            # data loss at WRITE time (#64156: desktop autosave of a
+            # half-filled slot replaced the user's whole preset). Refuse the
+            # save loudly so no client can corrupt config through this route.
+            problems = validate_moa_payload(raw)
+            if problems:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Invalid MoA config: " + "; ".join(problems),
+                )
+
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized
             save_config(cfg)
@@ -10904,8 +10943,10 @@ class MCPServerCreate(BaseModel):
     args: List[str] = []
     # env: KEY=VALUE map for stdio servers (API keys, etc.)
     env: Dict[str, str] = {}
-    # auth: "oauth" | "header" | None
+    # auth: "none" | "oauth" | "header" | None
     auth: Optional[str] = None
+    # One-time provisioning input; persisted only to the profile's .env.
+    bearer_token: Optional[SecretStr] = None
     profile: Optional[str] = None
 
 
@@ -10913,6 +10954,77 @@ class MCPServersReplace(BaseModel):
     # Whole-map replace (name → raw server config) for the GUI mcp.json editor.
     servers: Dict[str, Dict[str, Any]] = {}
     profile: Optional[str] = None
+
+
+def _normalize_mcp_server_create(
+    body: MCPServerCreate,
+) -> tuple[str, Dict[str, Any], Optional[str]]:
+    """Validate a Dashboard MCP create request and build its safe config.
+
+    The returned config never contains the submitted Bearer token. Callers
+    persist the token with the shared Bearer helper only after they enter the
+    intended profile scope. Keeping this conversion shared makes the
+    standalone MCP page and the Profile Builder enforce the same
+    transport/auth contract.
+    """
+    from hermes_cli.mcp_config import (
+        _bearer_auth_headers,
+        _strip_bearer_prefix,
+    )
+    from hermes_cli.mcp_security import validate_mcp_server_entry
+
+    name = (body.name or "").strip()
+    if not name:
+        raise ValueError("Server name is required")
+
+    url = (body.url or "").strip()
+    command = (body.command or "").strip()
+    auth = (body.auth or "none").strip().lower()
+    bearer_token = (
+        body.bearer_token.get_secret_value()
+        if body.bearer_token is not None
+        else None
+    )
+
+    if bool(url) == bool(command):
+        raise ValueError("Provide exactly one of URL (HTTP/SSE) or command (stdio)")
+    if auth not in {"none", "header", "oauth"}:
+        raise ValueError(f"Unsupported auth mode: {auth}")
+
+    server_config: Dict[str, Any] = {}
+    if url:
+        if body.args:
+            raise ValueError("Arguments are only supported for stdio MCP servers")
+        if body.env:
+            raise ValueError(
+                "Environment variables are only supported for stdio MCP servers"
+            )
+        if auth == "header":
+            normalized = _strip_bearer_prefix(bearer_token) if bearer_token else ""
+            if not normalized or normalized.lower() == "bearer":
+                raise ValueError("Bearer token is required")
+            server_config["headers"] = _bearer_auth_headers(name)
+        elif body.bearer_token is not None:
+            raise ValueError("Bearer token requires header authentication")
+
+        server_config["url"] = url
+        if auth == "oauth":
+            server_config["auth"] = "oauth"
+    else:
+        if auth != "none" or body.bearer_token is not None:
+            raise ValueError(
+                "HTTP authentication is not supported for stdio MCP servers"
+            )
+        server_config["command"] = command
+        if body.args:
+            server_config["args"] = list(body.args)
+        if body.env:
+            server_config["env"] = dict(body.env)
+
+    issues = validate_mcp_server_entry(name, server_config)
+    if issues:
+        raise ValueError(f"Server '{name}' rejected: {'; '.join(issues)}")
+    return name, server_config, bearer_token
 
 
 def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
@@ -10928,6 +11040,12 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
 
 def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    auth = cfg.get("auth")
+    headers = cfg.get("headers") or {}
+    if not auth and isinstance(headers, dict) and any(
+        str(key).lower() == "authorization" for key in headers
+    ):
+        auth = "header"
     return {
         "name": name,
         "transport": transport,
@@ -10935,7 +11053,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "command": cfg.get("command"),
         "args": list(cfg.get("args") or []),
         "env": _redact_mcp_env(cfg.get("env") or {}),
-        "auth": cfg.get("auth"),
+        "auth": auth,
         "enabled": cfg.get("enabled", True) is not False,
         # Tool selection: list of enabled tool names, or None = all.
         "tools": cfg.get("tools"),
@@ -10957,35 +11075,26 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
 @app.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+    from hermes_cli.mcp_config import (
+        _get_mcp_servers,
+        _save_bearer_auth_token,
+        _save_mcp_server,
+    )
 
-    name = (body.name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Server name is required")
+    try:
+        name, server_config, bearer_token = _normalize_mcp_server_create(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     with _profile_scope(body.profile or profile):
         existing = _get_mcp_servers()
     if name in existing:
         raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
-    if not body.url and not body.command:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either a URL (HTTP/SSE server) or a command (stdio server)",
-        )
-
-    server_config: Dict[str, Any] = {}
-    if body.url:
-        server_config["url"] = body.url.strip()
-    if body.command:
-        server_config["command"] = body.command.strip()
-        if body.args:
-            server_config["args"] = list(body.args)
-    if body.env:
-        server_config["env"] = dict(body.env)
-    if body.auth:
-        server_config["auth"] = body.auth
 
     try:
         with _profile_scope(body.profile or profile):
+            if bearer_token is not None:
+                server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
             if not _save_mcp_server(name, server_config):
                 raise HTTPException(
                     status_code=400,
@@ -12925,7 +13034,7 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
     Returns the number of servers written.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from hermes_cli.mcp_security import validate_mcp_server_entry
+    from hermes_cli.mcp_config import _save_bearer_auth_token
 
     written = 0
     token = set_hermes_home_override(str(profile_dir))
@@ -12933,28 +13042,18 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
         cfg = load_config()
         mcp = cfg.setdefault("mcp_servers", {})
         for server in servers:
-            name = (server.name or "").strip()
-            if not name:
+            try:
+                name, entry, bearer_token = _normalize_mcp_server_create(server)
+            except ValueError as exc:
+                display_name = (server.name or "").strip() or "<unnamed>"
+                _log.warning(
+                    "Profile-create: skipping MCP server '%s': %s",
+                    display_name,
+                    exc,
+                )
                 continue
-            entry: Dict[str, Any] = {}
-            if server.url:
-                entry["url"] = server.url
-            if server.command:
-                entry["command"] = server.command
-            if server.args:
-                entry["args"] = list(server.args)
-            if server.env:
-                entry["env"] = dict(server.env)
-            if server.auth:
-                entry["auth"] = server.auth
-            if not entry:
-                # Nothing usable to write (neither url nor command) — skip
-                # rather than persist an empty, unusable server stanza.
-                continue
-            issues = validate_mcp_server_entry(name, entry)
-            if issues:
-                _log.warning("Profile-create: skipping MCP server '%s': %s", name, "; ".join(issues))
-                continue
+            if bearer_token is not None:
+                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
             mcp[name] = entry
             written += 1
         if written:
@@ -14143,7 +14242,9 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
-            save_config(parsed)
+            # Full-document replacement: the editor owns the whole file; do not
+            # merge omitted sections back from disk (#62723).
+            save_config(parsed, merge_existing=False)
         return {"ok": True}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")

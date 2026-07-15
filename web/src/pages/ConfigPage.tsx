@@ -157,7 +157,7 @@ export default function ConfigPage() {
   }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
-    if (cat === "messaging") return "Messaging";
+    if (cat === "messaging") return t.common.messaging;
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
     return cat.charAt(0).toUpperCase() + cat.slice(1);

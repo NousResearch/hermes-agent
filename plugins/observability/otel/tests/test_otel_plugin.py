@@ -241,6 +241,12 @@ def test_subagent_and_approval_spans_use_safe_summaries(monkeypatch):
         session_key="parent",
         choice="deny",
     )
+    plugin.on_post_llm_call(
+        session_id="parent",
+        turn_id="turn",
+        assistant_response="done",
+    )
+    plugin.on_session_end(session_id="parent", completed=True, interrupted=False)
 
     spans = {span.name: span for span in runtime.exporter.get_finished_spans()}
     subagent = spans["hermes.subagent"]

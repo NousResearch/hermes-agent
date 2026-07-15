@@ -77,6 +77,7 @@ def _ids(kwargs: dict[str, Any]) -> dict[str, str]:
 class _SpanEntry:
     span: Any
     started_ns: int
+    session_id: str = ""
 
 
 class SpanBuilder:
@@ -121,7 +122,11 @@ class SpanBuilder:
             attributes={key: value for key, value in attributes.items() if value is not None},
             start_time=start_ns,
         )
-        return _SpanEntry(span=span, started_ns=start_ns)
+        return _SpanEntry(
+            span=span,
+            started_ns=start_ns,
+            session_id=_text(attributes.get("hermes.session_id")),
+        )
 
     def _end(
         self,
@@ -167,13 +172,13 @@ class SpanBuilder:
     def mark_session_end(self, kwargs: dict[str, Any]) -> None:
         session_id = _text(kwargs.get("session_id"))
         with self._lock:
-            entry = self._sessions.get(session_id)
-            if entry is None:
-                return
+            entry = self._sessions.pop(session_id, None)
+            attributes: dict[str, Any] = {}
             for key in ("completed", "interrupted"):
                 value = kwargs.get(key)
                 if isinstance(value, bool):
-                    entry.span.set_attribute(f"hermes.session.{key}", value)
+                    attributes[f"hermes.session.{key}"] = value
+            self._end(entry, attributes, error=bool(kwargs.get("interrupted")))
 
     def finalize_session(self, kwargs: dict[str, Any]) -> None:
         session_id = _text(kwargs.get("session_id") or kwargs.get("old_session_id"))
@@ -183,7 +188,9 @@ class SpanBuilder:
 
     def _finish_session_children(self, session_id: str) -> None:
         for mapping in (self._turns, self._requests, self._tools, self._subagents):
-            stale = [key for key, entry in mapping.items() if entry.span.attributes.get("hermes.session_id") == session_id]
+            stale = [
+                key for key, entry in mapping.items() if entry.session_id == session_id
+            ]
             for key in stale:
                 self._end(mapping.pop(key, None), {"hermes.incomplete": True}, error=True)
 
@@ -195,6 +202,8 @@ class SpanBuilder:
             if turn_id in self._turns:
                 return
             session_id = _text(kwargs.get("session_id"))
+            if session_id not in self._sessions:
+                self.start_session(kwargs)
             attributes = _ids(kwargs)
             attributes.update(
                 {

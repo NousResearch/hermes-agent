@@ -3417,3 +3417,119 @@ class TestEndToEndOverride(unittest.TestCase):
         self.assertEqual(existing_creds["base_url"], "https://openrouter.ai/api/v1")
         self.assertEqual(existing_creds["api_key"], "sk-existing-key")
         self.assertEqual(existing_creds["api_mode"], "chat_completions")
+
+
+class TestCrossProfileGuard(unittest.TestCase):
+    """Tests for the delegation.allow_cross_profile config guard."""
+
+    def setUp(self):
+        self.parent = MagicMock()
+        self.parent.base_url = "https://openrouter.ai/api/v1"
+        self.parent.api_key = "sk-parent-test-key"
+        self.parent.provider = "openrouter"
+        self.parent.api_mode = "chat_completions"
+        self.parent.model = "anthropic/claude-sonnet-4"
+        self.parent.platform = "cli"
+        self.parent.max_iterations = 50
+        self.parent._delegate_depth = 0
+        self.parent.session_id = "test-session"
+        self.parent._fallback_chain = None
+        self.parent._safe_print = lambda x: None
+        self.parent._client_kwargs = {}
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_cross_profile_disabled_with_profile_returns_error(self, mock_resolve):
+        """When allow_cross_profile is false and profile is set, reject."""
+        mock_resolve.return_value = {"model": None, "provider": None, "base_url": None,
+                                     "api_key": None, "api_mode": None, "request_overrides": None,
+                                     "max_output_tokens": None, "command": None, "args": None}
+
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"allow_cross_profile": False}):
+            result = delegate_task(
+                goal="Test cross-profile rejected",
+                model="deepseek-v4-flash",
+                provider="opencode-go",
+                profile="coder",
+                parent_agent=self.parent,
+            )
+        self.assertIn("Cross-profile delegation is disabled", result)
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_cross_profile_enabled_with_profile_succeeds(self, mock_run, mock_build, mock_resolve):
+        """When allow_cross_profile is true (or unset) and profile is set, allow."""
+        mock_resolve.return_value = {"model": None, "provider": None, "base_url": None,
+                                     "api_key": None, "api_mode": None, "request_overrides": None,
+                                     "max_output_tokens": None, "command": None, "args": None}
+        mock_child = MagicMock()
+        mock_child.session_prompt_tokens = 100
+        mock_child.session_completion_tokens = 50
+        mock_child.session_estimated_cost_usd = 0.01
+        mock_build.return_value = mock_child
+        mock_run.return_value = {"status": "completed", "summary": "done"}
+
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"allow_cross_profile": True}):
+            result = delegate_task(
+                goal="Test cross-profile allowed",
+                model="deepseek-v4-flash",
+                provider="opencode-go",
+                profile="coder",
+                parent_agent=self.parent,
+            )
+        result_data = json.loads(result)
+        self.assertEqual(result_data["results"][0]["status"], "completed")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_cross_profile_disabled_without_profile_succeeds(self, mock_run, mock_build, mock_resolve):
+        """When allow_cross_profile is false but no profile arg, existing path works."""
+        mock_resolve.return_value = {"model": None, "provider": None, "base_url": None,
+                                     "api_key": None, "api_mode": None, "request_overrides": None,
+                                     "max_output_tokens": None, "command": None, "args": None}
+        mock_child = MagicMock()
+        mock_child.session_prompt_tokens = 100
+        mock_child.session_completion_tokens = 50
+        mock_child.session_estimated_cost_usd = 0.01
+        mock_build.return_value = mock_child
+        mock_run.return_value = {"status": "completed", "summary": "done"}
+
+        with patch("tools.delegate_tool._load_config",
+                   return_value={"allow_cross_profile": False}):
+            result = delegate_task(
+                goal="Test no-profile still works",
+                model="deepseek-v4-flash",
+                parent_agent=self.parent,
+            )
+        result_data = json.loads(result)
+        self.assertEqual(result_data["results"][0]["status"], "completed")
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_cross_profile_default_is_true(self, mock_run, mock_build, mock_resolve):
+        """When allow_cross_profile is not in config, default is true (backward compat)."""
+        mock_resolve.return_value = {"model": None, "provider": None, "base_url": None,
+                                     "api_key": None, "api_mode": None, "request_overrides": None,
+                                     "max_output_tokens": None, "command": None, "args": None}
+        mock_child = MagicMock()
+        mock_child.session_prompt_tokens = 100
+        mock_child.session_completion_tokens = 50
+        mock_child.session_estimated_cost_usd = 0.01
+        mock_build.return_value = mock_child
+        mock_run.return_value = {"status": "completed", "summary": "done"}
+
+        with patch("tools.delegate_tool._load_config",
+                   return_value={}):  # no allow_cross_profile key
+            result = delegate_task(
+                goal="Test default allows cross-profile",
+                model="deepseek-v4-flash",
+                provider="opencode-go",
+                profile="coder",
+                parent_agent=self.parent,
+            )
+        result_data = json.loads(result)
+        self.assertEqual(result_data["results"][0]["status"], "completed")

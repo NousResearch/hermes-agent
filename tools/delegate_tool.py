@@ -2459,6 +2459,19 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Cross-profile guard: allow_cross_profile controls whether delegate_task
+    # accepts an explicit profile argument. When false, any caller-supplied
+    # profile is rejected. This is a security boundary for multi-profile
+    # deployments where profiles may hold credentials for different users or
+    # trust levels. Default is true (backward compatible, single-user default).
+    allow_cross_profile = cfg.get("allow_cross_profile", True)
+    if profile and not allow_cross_profile:
+        return tool_error(
+            "Cross-profile delegation is disabled by config. "
+            "Set delegation.allow_cross_profile: true in config.yaml to enable "
+            "profile overrides from within delegate_task."
+        )
+
     # Per-call model/provider/profile override — applied before task building
     # so all children in a batch inherit the same override. When model is set,
     # resolves credentials from the specified profile's .env and config.yaml.
@@ -3237,6 +3250,13 @@ def _resolve_per_call_credentials(
     Compatible with the shape returned by _resolve_delegation_credentials
     so the caller can swap the result in.
 
+    Security Note:
+        This function assumes all profiles are owned by the same user.
+        Cross-profile access is controlled by the ``delegation.allow_cross_profile``
+        config key (default: ``true``). Set it to ``false`` to prevent
+        delegate_task from accepting explicit profile arguments. In multi-tenant
+        deployments, additional authorization and audit logging are required.
+
     Examples:
         >>> _resolve_per_call_credentials(model="deepseek-v4-flash")
         {...}  # model-only override, inherits parent's provider
@@ -3257,10 +3277,8 @@ def _resolve_per_call_credentials(
         profile_dir = hermes_home / "profiles" / profile
         if not profile_dir.exists():
             logger.warning(
-                "Per-call override profile directory not found: %s. "
-                "Falling back to default profile directories. "
-                "Check that the profile name is correct and exists under ~/.hermes/profiles/.",
-                profile_dir,
+                "Per-call override profile not found, falling back to default. "
+                "Verify the profile name exists under ~/.hermes/profiles/."
             )
             profile_dir = hermes_home
     else:

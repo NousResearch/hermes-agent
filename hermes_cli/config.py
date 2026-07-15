@@ -2298,6 +2298,14 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+
+        # Cross-profile guard: controls whether delegate_task accepts an explicit
+        # profile argument for credential resolution. When true (default), the
+        # model can route subagents to any profile's credentials — useful for
+        # single-user setups with multiple profiles (e.g. "coder", "researcher").
+        # When false, any caller-supplied profile is rejected with a tool error
+        # to prevent credential cross-access in multi-tenant deployments.
+        "allow_cross_profile": True,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

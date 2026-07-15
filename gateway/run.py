@@ -1331,27 +1331,24 @@ def _runtime_status_indicates_previous_gateway(status: Optional[dict[str, Any]])
     return state in _PREVIOUS_GATEWAY_ACTIVE_STATES
 
 
-def _crash_scan_window_hours(status: Optional[dict[str, Any]]) -> int:
-    """Bound the crash-record scan to the previous gateway's lifetime.
-
-    The crash that killed the previous gateway must postdate its last runtime
-    status write, so older OS crash records (e.g. an unrelated Python crash
-    yesterday) cannot be the cause. Falls back to 24h when the timestamp is
-    missing or unparsable.
-    """
-    fallback_hours = 24
+def _previous_gateway_crash_identity(
+    status: Optional[dict[str, Any]],
+) -> Optional[tuple[int, datetime]]:
+    """Return the prior gateway PID and exact last status timestamp."""
+    if not isinstance(status, dict):
+        return None
     try:
-        raw = str((status or {}).get("updated_at") or "").strip()
-        if not raw:
-            return fallback_hours
+        pid = int(str(status.get("pid")))
+        raw = str(status.get("updated_at") or "").strip()
         updated_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=timezone.utc)
-        elapsed = datetime.now(timezone.utc) - updated_at
-        hours = int(elapsed.total_seconds() // 3600) + 1
-        return max(1, min(fallback_hours, hours))
-    except Exception:
-        return fallback_hours
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0 or updated_at.tzinfo is None:
+        return None
+    try:
+        return pid, updated_at.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return None
 
 
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
@@ -15216,6 +15213,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _restart_crash_notice(
         self, previous_status: Optional[dict[str, Any]] = None
     ) -> str:
+        identity = _previous_gateway_crash_identity(previous_status)
+        if identity is None:
+            return ""
+        expected_pid, since = identity
         try:
             from gateway.crash_diagnostics import restart_notice
         except Exception:
@@ -15224,7 +15225,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             notice = await asyncio.to_thread(
                 restart_notice,
                 name_filter="python",
-                since_hours=_crash_scan_window_hours(previous_status),
+                expected_pid=expected_pid,
+                since=since,
             )
         except Exception:
             return ""

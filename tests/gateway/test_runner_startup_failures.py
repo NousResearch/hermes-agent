@@ -145,9 +145,21 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_runner_appends_crash_notice_after_unclean_previous_gateway(
+@pytest.mark.parametrize(
+    ("crash_notice", "expected_suffix"),
+    [
+        (
+            "\n\nCrash cause: segmentation fault (Python, SIGSEGV)",
+            "\n\nCrash cause: segmentation fault (Python, SIGSEGV)",
+        ),
+        ("", ""),
+    ],
+)
+async def test_runner_notifies_after_unclean_previous_gateway(
     monkeypatch,
     tmp_path,
+    crash_notice,
+    expected_suffix,
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     write_runtime_status(gateway_state="running", exit_reason=None)
@@ -171,9 +183,7 @@ async def test_runner_appends_crash_notice_after_unclean_previous_gateway(
     monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
     monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
     monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
-    runner._restart_crash_notice = AsyncMock(
-        return_value="\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
-    )
+    runner._restart_crash_notice = AsyncMock(return_value=crash_notice)
 
     ok = await runner.start()
 
@@ -184,9 +194,8 @@ async def test_runner_appends_crash_notice_after_unclean_previous_gateway(
     assert adapter.sent == [
         (
             "ops-home",
-            "♻️ Gateway online — Hermes is back and ready."
-            "\n\nCrash cause: segmentation fault (Python, SIGSEGV)",
-            None,
+            "♻️ Gateway online — Hermes is back and ready." + expected_suffix,
+            {"non_conversational": True},
         )
     ]
 
@@ -223,6 +232,87 @@ async def test_runner_does_not_report_crash_notice_on_first_start(monkeypatch, t
     assert ok is True
     runner._restart_crash_notice.assert_not_awaited()
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_notify_after_clean_previous_gateway(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    (tmp_path / ".clean_shutdown").touch()
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    runner._restart_crash_notice = AsyncMock(return_value="unexpected")
+
+    ok = await runner.start()
+
+    assert ok is True
+    runner._restart_crash_notice.assert_not_awaited()
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_runner_preserves_planned_restart_notice_without_crash_scan(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    (tmp_path / ".clean_shutdown").touch()
+    (tmp_path / ".restart_pending.json").write_text("{}", encoding="utf-8")
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    runner._restart_crash_notice = AsyncMock(return_value="unexpected")
+
+    ok = await runner.start()
+
+    assert ok is True
+    runner._restart_crash_notice.assert_not_awaited()
+    assert adapter.sent == [
+        (
+            "ops-home",
+            "♻️ Gateway online — Hermes is back and ready.",
+            {"non_conversational": True},
+        )
+    ]
+    assert not (tmp_path / ".restart_pending.json").exists()
 
 
 @pytest.mark.asyncio

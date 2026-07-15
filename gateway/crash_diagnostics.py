@@ -9,17 +9,20 @@ import shutil
 import signal
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 _DEFAULT_TIMEOUT_SECONDS = 2.0
 _MAX_BACKTRACE_FRAMES = 4
+_MAX_CANDIDATE_RECORDS = 100
 
 
 def recent_crashes(
     name_filter: str = "python",
-    since_hours: int = 24,
+    *,
+    expected_pid: int | None = None,
+    since: datetime | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     """Return newest-first OS crash records.
@@ -28,13 +31,31 @@ def recent_crashes(
     parse failures, permission errors, and timeouts all degrade to ``[]``.
     """
     try:
+        pid = _coerce_pid(expected_pid)
+        if pid is None or not isinstance(since, datetime) or since.tzinfo is None:
+            return []
         system = platform.system().lower()
         if system == "darwin":
-            return _macos_recent_crashes(name_filter, since_hours, limit)
+            return _macos_recent_crashes(
+                name_filter,
+                expected_pid=pid,
+                since=since,
+                limit=limit,
+            )
         if system == "linux":
-            return _linux_recent_crashes(name_filter, since_hours, limit)
+            return _linux_recent_crashes(
+                name_filter,
+                expected_pid=pid,
+                since=since,
+                limit=limit,
+            )
         if system == "windows":
-            return _windows_recent_crashes(name_filter, since_hours, limit)
+            return _windows_recent_crashes(
+                name_filter,
+                expected_pid=pid,
+                since=since,
+                limit=limit,
+            )
     except Exception:
         return []
     return []
@@ -42,11 +63,21 @@ def recent_crashes(
 
 def restart_notice(
     name_filter: str = "python",
-    since_hours: int = 24,
+    *,
+    expected_pid: int | None = None,
+    since: datetime | None = None,
 ) -> str:
     """Format the newest crash as a restart-notification suffix."""
     try:
-        crashes = recent_crashes(name_filter=name_filter, since_hours=since_hours, limit=1)
+        pid = _coerce_pid(expected_pid)
+        if pid is None or not isinstance(since, datetime) or since.tzinfo is None:
+            return ""
+        crashes = recent_crashes(
+            name_filter=name_filter,
+            expected_pid=pid,
+            since=since,
+            limit=1,
+        )
         if not crashes:
             return ""
         return _format_restart_notice(crashes[0])
@@ -76,10 +107,12 @@ def _format_restart_notice(record: dict[str, Any]) -> str:
 
 def _macos_recent_crashes(
     name_filter: str,
-    since_hours: int,
+    *,
+    expected_pid: int,
+    since: datetime,
     limit: int,
 ) -> list[dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, int(since_hours)))
+    cutoff = _as_utc(since)
     reports: list[Path] = []
     for directory in (
         Path.home() / "Library" / "Logs" / "DiagnosticReports",
@@ -100,6 +133,8 @@ def _macos_recent_crashes(
                 continue
             parsed = _parse_macos_ips(report)
             if not parsed or not _matches_filter(parsed, name_filter):
+                continue
+            if not _matches_identity(parsed, expected_pid, cutoff):
                 continue
             records.append(parsed)
         except Exception:
@@ -147,6 +182,7 @@ def _parse_macos_ips(path: Path) -> dict[str, Any] | None:
             _safe_mtime(path),
             timezone.utc,
         ).isoformat(),
+        "_pid": body.get("pid"),
         "process": process,
         "signal": signal,
         "cause": _infer_cause(signal, backtrace),
@@ -155,8 +191,10 @@ def _parse_macos_ips(path: Path) -> dict[str, Any] | None:
 
 
 def _macos_triggered_backtrace(body: dict[str, Any]) -> list[str]:
-    images = body.get("usedImages") if isinstance(body.get("usedImages"), list) else []
-    threads = body.get("threads") if isinstance(body.get("threads"), list) else []
+    raw_images = body.get("usedImages")
+    images: list[Any] = raw_images if isinstance(raw_images, list) else []
+    raw_threads = body.get("threads")
+    threads: list[Any] = raw_threads if isinstance(raw_threads, list) else []
     selected = None
     for thread in threads:
         if isinstance(thread, dict) and thread.get("triggered"):
@@ -183,7 +221,7 @@ def _macos_triggered_backtrace(body: dict[str, Any]) -> list[str]:
 def _macos_image_name(frame: dict[str, Any], images: list[Any]) -> str:
     image_index = frame.get("imageIndex")
     try:
-        image = images[int(image_index)]
+        image = images[int(str(image_index))]
     except Exception:
         image = None
     if isinstance(image, dict):
@@ -196,10 +234,13 @@ def _macos_image_name(frame: dict[str, Any], images: list[Any]) -> str:
 
 def _linux_recent_crashes(
     name_filter: str,
-    since_hours: int,
+    *,
+    expected_pid: int,
+    since: datetime,
     limit: int,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    since_arg = _as_utc(since).isoformat()
     if shutil.which("coredumpctl"):
         output = _run(
             [
@@ -208,12 +249,20 @@ def _linux_recent_crashes(
                 "--json=short",
                 "--reverse",
                 "--since",
-                f"{max(1, int(since_hours))} hours ago",
+                since_arg,
             ]
         )
-        records.extend(_parse_coredumpctl_json(output, name_filter, limit))
+        records.extend(
+            _parse_coredumpctl_json(
+                output,
+                name_filter,
+                limit,
+                expected_pid=expected_pid,
+                since=since,
+            )
+        )
         for record in records[:limit]:
-            pid = record.pop("_pid", None)
+            pid = record.get("_pid")
             if not pid or record.get("backtrace"):
                 continue
             info = _run(["coredumpctl", "--no-pager", "info", str(pid)])
@@ -229,14 +278,22 @@ def _linux_recent_crashes(
                 "-k",  # kernel log only — segfault/oom lines drown in the full journal
                 "--no-pager",
                 "--since",
-                f"{max(1, int(since_hours))} hours ago",
+                since_arg,
                 "-n",
                 "200",
                 "-o",
                 "short-iso",
             ]
         )
-        records.extend(_parse_journal_crashes(output, name_filter, limit))
+        records.extend(
+            _parse_journal_crashes(
+                output,
+                name_filter,
+                limit,
+                expected_pid=expected_pid,
+                since=since,
+            )
+        )
 
     return records[:limit]
 
@@ -245,6 +302,9 @@ def _parse_coredumpctl_json(
     text: str,
     name_filter: str,
     limit: int,
+    *,
+    expected_pid: int | None = None,
+    since: datetime | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for row in _coredumpctl_json_rows(text):
@@ -275,6 +335,9 @@ def _parse_coredumpctl_json(
         }
         if not _matches_filter(record, name_filter):
             continue
+        if expected_pid is not None and since is not None:
+            if not _matches_identity(record, expected_pid, since):
+                continue
         record["cause"] = _infer_cause(record.get("signal"), backtrace)
         records.append(record)
     return records
@@ -341,6 +404,9 @@ def _parse_journal_crashes(
     text: str,
     name_filter: str,
     limit: int,
+    *,
+    expected_pid: int | None = None,
+    since: datetime | None = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     patterns = ("segfault", "core dumped", "oom-killer", "out of memory", "killed process")
@@ -352,20 +418,27 @@ def _parse_journal_crashes(
             continue
         process = _extract_process_name(line)
         record = {
-            "when": line[:25].strip(),
+            "when": line.split(maxsplit=1)[0] if line.strip() else "",
             "process": process,
             "signal": _extract_signal(line),
             "cause": _infer_cause(_extract_signal(line), [line]),
             "backtrace": [line.strip()],
+            "_pid": _extract_pid(line),
         }
-        if _matches_filter(record, name_filter):
-            records.append(record)
+        if not _matches_filter(record, name_filter):
+            continue
+        if expected_pid is not None and since is not None:
+            if not _matches_identity(record, expected_pid, since):
+                continue
+        records.append(record)
     return records
 
 
 def _windows_recent_crashes(
     name_filter: str,
-    since_hours: int,
+    *,
+    expected_pid: int,
+    since: datetime,
     limit: int,
 ) -> list[dict[str, Any]]:
     if sys.platform != "win32":
@@ -374,11 +447,12 @@ def _windows_recent_crashes(
     if not shell:
         return []
 
-    hours = max(1, int(since_hours))
+    since_arg = _as_utc(since).isoformat()
     command = (
+        f"$start = [DateTimeOffset]::Parse('{since_arg}').UtcDateTime; "
         "$events = Get-WinEvent -FilterHashtable "
-        f"@{{LogName='Application'; Id=1000,1001; StartTime=(Get-Date).AddHours(-{hours})}} "
-        f"-MaxEvents {max(1, int(limit))}; "
+        "@{LogName='Application'; Id=1000,1001; StartTime=$start} "
+        f"-MaxEvents {max(_MAX_CANDIDATE_RECORDS, int(limit))}; "
         "$events | Select-Object TimeCreated,ProviderName,Message | ConvertTo-Json -Depth 4 -Compress"
     )
     output = _run([shell, "-NoProfile", "-NonInteractive", "-Command", command])
@@ -403,9 +477,13 @@ def _windows_recent_crashes(
             "signal": "Windows Error Reporting",
             "cause": _infer_cause(None, [message]),
             "backtrace": _split_backtrace(message),
+            "_pid": _extract_windows_faulting_pid(message),
         }
-        if _matches_filter(record, name_filter):
-            records.append(record)
+        if not _matches_filter(record, name_filter):
+            continue
+        if not _matches_identity(record, expected_pid, since):
+            continue
+        records.append(record)
     return records
 
 
@@ -440,6 +518,75 @@ def _matches_filter(record: dict[str, Any], name_filter: str) -> bool:
     if isinstance(backtrace, list):
         haystack_parts.extend(str(item) for item in backtrace[:_MAX_BACKTRACE_FRAMES])
     return needle in "\n".join(haystack_parts).lower()
+
+
+def _matches_identity(
+    record: dict[str, Any],
+    expected_pid: int,
+    since: datetime,
+) -> bool:
+    pid = _coerce_pid(record.get("_pid") or record.get("pid"))
+    occurred_at = _parse_record_time(record.get("when"))
+    if pid != expected_pid or occurred_at is None:
+        return False
+    return occurred_at >= _as_utc(since)
+
+
+def _coerce_pid(value: Any) -> int | None:
+    try:
+        pid = int(str(value).strip(), 0)
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _parse_record_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            timestamp = int(text)
+        except (TypeError, ValueError):
+            timestamp = None
+        if timestamp is not None:
+            if abs(timestamp) >= 100_000_000_000_000:
+                seconds = timestamp / 1_000_000
+            elif abs(timestamp) >= 100_000_000_000:
+                seconds = timestamp / 1_000
+            else:
+                seconds = timestamp
+            try:
+                parsed = datetime.fromtimestamp(seconds, timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                return None
+        else:
+            windows_date = re.fullmatch(r"/Date\(([-+]?\d+)(?:[-+]\d{4})?\)/", text)
+            if windows_date:
+                try:
+                    parsed = datetime.fromtimestamp(
+                        int(windows_date.group(1)) / 1_000,
+                        timezone.utc,
+                    )
+                except (OverflowError, OSError, ValueError):
+                    return None
+            else:
+                text = re.sub(r"\s+(Z|[-+]\d{2}:?\d{2})$", r"\1", text)
+                try:
+                    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        raise ValueError("timestamp must include a timezone")
+    return value.astimezone(timezone.utc)
 
 
 def _infer_cause(signal: Any, lines: list[str]) -> str:
@@ -482,6 +629,17 @@ def _extract_process_name(line: str) -> str:
     return ""
 
 
+def _extract_pid(line: str) -> int | None:
+    for pattern in (
+        r"\b[A-Za-z0-9_.-]+\[(\d+)\]",
+        r"\b(?:killed process|process|pid)[\s:=]+(\d+)\b",
+    ):
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            return _coerce_pid(match.group(1))
+    return None
+
+
 def _extract_signal(line: str) -> str:
     match = re.search(r"\bSIG[A-Z0-9]+\b", line)
     if match:
@@ -496,6 +654,15 @@ def _extract_windows_faulting_app(message: str) -> str:
     if match:
         return match.group(1).strip()
     return ""
+
+
+def _extract_windows_faulting_pid(message: str) -> int | None:
+    match = re.search(
+        r"Faulting application process id:\s*(0x[0-9a-f]+|\d+)",
+        message,
+        re.IGNORECASE,
+    )
+    return _coerce_pid(match.group(1)) if match else None
 
 
 def _clean_text(value: Any) -> str:

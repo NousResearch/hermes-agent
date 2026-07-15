@@ -1,7 +1,7 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -75,16 +75,40 @@ def test_runtime_status_indicates_previous_gateway_only_for_active_states():
     )
 
 
-def test_crash_scan_window_hours_bounds_to_previous_status():
-    fresh = datetime.now(timezone.utc).isoformat()
-    assert gateway_run._crash_scan_window_hours({"updated_at": fresh}) == 1
+def test_previous_gateway_crash_identity_requires_pid_and_exact_timestamp():
+    expected_since = datetime(2026, 7, 15, 10, 30, 30, tzinfo=timezone.utc)
+    status = {
+        "pid": "4242",
+        "updated_at": "2026-07-15T18:30:30+08:00",
+    }
 
-    stale = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
-    assert gateway_run._crash_scan_window_hours({"updated_at": stale}) == 24
+    assert gateway_run._previous_gateway_crash_identity(status) == (
+        4242,
+        expected_since,
+    )
+    assert gateway_run._previous_gateway_crash_identity(None) is None
+    assert gateway_run._previous_gateway_crash_identity({}) is None
+    assert (
+        gateway_run._previous_gateway_crash_identity(
+            {"pid": 4242, "updated_at": "garbage"}
+        )
+        is None
+    )
+    assert (
+        gateway_run._previous_gateway_crash_identity(
+            {"pid": 0, "updated_at": expected_since.isoformat()}
+        )
+        is None
+    )
 
-    assert gateway_run._crash_scan_window_hours(None) == 24
-    assert gateway_run._crash_scan_window_hours({}) == 24
-    assert gateway_run._crash_scan_window_hours({"updated_at": "garbage"}) == 24
+
+def test_previous_gateway_crash_identity_rejects_unrepresentable_utc_time():
+    status = {
+        "pid": 4242,
+        "updated_at": "0001-01-01T00:00:00+14:00",
+    }
+
+    assert gateway_run._previous_gateway_crash_identity(status) is None
 
 
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
@@ -368,6 +392,7 @@ async def test_restart_crash_notice_swallows_import_failures(monkeypatch):
 async def test_restart_crash_notice_uses_thread_for_best_effort_lookup(monkeypatch):
     runner, _adapter = make_restart_runner()
     calls = []
+    since = datetime(2026, 7, 15, 10, 30, 30, tzinfo=timezone.utc)
 
     async def _fake_to_thread(func, *args, **kwargs):
         calls.append((func, args, kwargs))
@@ -380,30 +405,46 @@ async def test_restart_crash_notice_uses_thread_for_best_effort_lookup(monkeypat
     )
 
     assert (
-        await runner._restart_crash_notice()
+        await runner._restart_crash_notice(
+            {"pid": 4242, "updated_at": since.isoformat()}
+        )
         == "\n\nCrash cause: process aborted (Python, SIGABRT)"
     )
     assert calls
-    assert calls[0][2] == {"name_filter": "python", "since_hours": 24}
+    assert calls[0][2] == {
+        "name_filter": "python",
+        "expected_pid": 4242,
+        "since": since,
+    }
 
 
 @pytest.mark.asyncio
-async def test_restart_crash_notice_narrows_window_to_previous_status(monkeypatch):
-    # A crash record older than the previous gateway's last status write
-    # cannot be its cause — the scan window shrinks accordingly.
+async def test_restart_crash_notice_skips_lookup_without_complete_identity(monkeypatch):
     runner, _adapter = make_restart_runner()
-    captured = {}
+    calls = []
 
     async def _fake_to_thread(func, *args, **kwargs):
-        captured.update(kwargs)
+        calls.append((func, args, kwargs))
         return ""
 
     monkeypatch.setattr(gateway_run.asyncio, "to_thread", _fake_to_thread)
 
-    status = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    await runner._restart_crash_notice(status)
+    assert await runner._restart_crash_notice(None) == ""
+    assert await runner._restart_crash_notice({}) == ""
+    assert (
+        await runner._restart_crash_notice(
+            {"pid": 4242, "updated_at": "garbage"}
+        )
+        == ""
+    )
+    assert (
+        await runner._restart_crash_notice(
+            {"updated_at": datetime.now(timezone.utc).isoformat()}
+        )
+        == ""
+    )
 
-    assert captured["since_hours"] == 1
+    assert calls == []
 
 
 @pytest.mark.asyncio

@@ -117,12 +117,12 @@ def test_background_review_installs_thread_local_whitelist():
         agent._spawn_background_review(
             messages_snapshot=[],
             review_memory=True,
-            review_skills=False,
+            review_skills=True,
         )
 
     assert "whitelist" in captured, "set_thread_tool_whitelist was not called"
     whitelist = captured["whitelist"]
-    # memory + skills tools must be allowed
+    # memory + skills tools must be allowed (both flags were on)
     assert "memory" in whitelist
     assert "skill_manage" in whitelist
     assert "skill_view" in whitelist

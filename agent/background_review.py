@@ -618,6 +618,8 @@ def _run_review_in_thread(
     agent: Any,
     messages_snapshot: List[Dict],
     prompt: str,
+    review_memory: bool = False,
+    review_skills: bool = False,
 ) -> None:
     """Worker function executed in the background-review daemon thread.
 
@@ -799,13 +801,24 @@ def _run_review_in_thread(
                 clear_thread_tool_whitelist,
             )
 
-            # Gate the built-in memory tool on the profile's memory_enabled flag.
-            # Hardcoding ["memory", "skills"] granted the review LLM the MEMORY.md
-            # read/write tool even when a profile set memory_enabled: false,
-            # contaminating a memory-disabled profile (#54937 layer 2).
-            review_toolsets = ["skills"]
-            if review_agent._memory_enabled or review_agent._user_profile_enabled:
+            # Gate toolsets on what was actually requested.  A memory-only
+            # review must not get skill_manage (it could auto-patch skills
+            # the user never asked to change), and a skill-only review does
+            # not need memory tools.
+            review_toolsets = []
+            if review_skills:
+                review_toolsets.append("skills")
+            if review_memory and (review_agent._memory_enabled or review_agent._user_profile_enabled):
                 review_toolsets.insert(0, "memory")
+
+            # Build a user-facing tool label for the deny message + prompt.
+            _labels = []
+            if review_memory:
+                _labels.append("memory")
+            if review_skills:
+                _labels.append("skill")
+            _tool_label = " and ".join(_labels)
+
             review_whitelist = {
                 t["function"]["name"]
                 for t in get_tool_definitions(
@@ -817,7 +830,9 @@ def _run_review_in_thread(
                 review_whitelist,
                 deny_msg_fmt=(
                     "Background review denied non-whitelisted tool: "
-                    "{tool_name}. Only memory/skill tools are allowed."
+                    "{tool_name}. Only "
+                    + _tool_label
+                    + " management tools are allowed."
                 ),
             )
             try:
@@ -838,8 +853,9 @@ def _run_review_in_thread(
                 review_agent.run_conversation(
                     user_message=(
                         prompt
-                        + "\n\nYou can only call memory and skill "
-                        "management tools. Other tools will be denied "
+                        + "\n\nYou can only call "
+                        + _tool_label
+                        + " management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
                     conversation_history=_review_history,
@@ -963,7 +979,8 @@ def spawn_background_review_thread(
         prompt = getattr(agent, "_SKILL_REVIEW_PROMPT", _SKILL_REVIEW_PROMPT)
 
     def _target() -> None:
-        _run_review_in_thread(agent, messages_snapshot, prompt)
+        _run_review_in_thread(agent, messages_snapshot, prompt,
+                              review_memory=review_memory, review_skills=review_skills)
 
     return _target, prompt
 

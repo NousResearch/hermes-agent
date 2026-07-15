@@ -438,7 +438,7 @@ def test_stream_upload_large_file_under_cap_succeeds(forced_files_client, monkey
     assert file_path.read_bytes() == payload
 
 
-def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client):
+def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client, tmp_path):
     """Dangling symlinks should appear in listings with broken_link: true."""
     client, root = forced_files_client
     root.mkdir(parents=True, exist_ok=True)
@@ -447,8 +447,12 @@ def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client)
     valid.write_text("hello")
 
     broken = root / "broken_link"
-    nonexistent = root / "nonexistent_target"
-    broken.symlink_to(str(nonexistent))
+    outside_broken = root / "outside_broken_link"
+    try:
+        broken.symlink_to(root / "nonexistent_target")
+        outside_broken.symlink_to(tmp_path / "outside_nonexistent_target")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
 
     resp = client.get("/api/files", params={"path": str(root)})
     assert resp.status_code == 200
@@ -456,13 +460,19 @@ def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client)
     names = [e["name"] for e in entries]
     assert "valid.txt" in names
     assert "broken_link" in names
+    assert "outside_broken_link" in names
 
     broken_entry = next(e for e in entries if e["name"] == "broken_link")
     assert broken_entry["broken_link"] is True
+    assert broken_entry["path"] == str(broken)
     assert broken_entry["size"] is None
     assert broken_entry["mtime"] is None
     assert broken_entry["mime_type"] is None
     assert broken_entry["is_directory"] is False
+
+    outside_entry = next(e for e in entries if e["name"] == "outside_broken_link")
+    assert outside_entry["broken_link"] is True
+    assert outside_entry["path"] == str(outside_broken)
 
 
 def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):

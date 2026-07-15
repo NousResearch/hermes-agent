@@ -1500,25 +1500,34 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
         resolved = target.resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
-    if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
-        raise HTTPException(status_code=403, detail="Path outside managed files root")
 
-    try:
-        st = resolved.stat()
-    except OSError as exc:
-        # Dangling symlink: resolve() succeeded but the target does not exist.
-        # Return a placeholder entry instead of a 500 so the rest of the
-        # directory listing is still usable.
-        if target.is_symlink() and not resolved.exists():
+    # A dangling symlink is still a directory entry even when its missing
+    # target resolves outside the managed root. Classify only a definite
+    # missing target before checking the resolved-target boundary so one safe
+    # placeholder does not abort the whole listing. Permission and other I/O
+    # errors still pass through the existing boundary/error handling below.
+    if target.is_symlink():
+        try:
+            resolved.stat()
+        except FileNotFoundError:
             return {
                 "name": target.name or resolved.name or str(resolved),
-                "path": str(resolved),
+                "path": str(target),
                 "is_directory": False,
                 "broken_link": True,
                 "size": None,
                 "mtime": None,
                 "mime_type": None,
             }
+        except OSError:
+            pass
+
+    if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
+        raise HTTPException(status_code=403, detail="Path outside managed files root")
+
+    try:
+        st = resolved.stat()
+    except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
     is_dir = resolved.is_dir()

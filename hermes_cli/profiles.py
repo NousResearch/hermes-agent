@@ -785,8 +785,15 @@ def _count_skills(profile_dir: Path) -> int:
     ):
         return cached[2]
 
+    # Walk with pruning instead of rglob: .venv/node_modules/__pycache__
+    # subtrees can contain thousands of files and dominated rglob latency.
+    _PRUNE_DIRS = frozenset({".venv", "venv", "node_modules", "__pycache__"})
     count = 0
-    for md in skills_dir.rglob("SKILL.md"):
+    for root, dirs, files in os.walk(skills_dir):
+        dirs[:] = [d for d in dirs if d not in _PRUNE_DIRS]
+        if "SKILL.md" not in files:
+            continue
+        md = Path(root) / "SKILL.md"
         if is_excluded_skill_path(md):
             continue
         count += 1

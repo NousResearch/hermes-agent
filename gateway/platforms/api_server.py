@@ -2142,6 +2142,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _approval_notify(approval_data: Dict[str, Any]) -> None:
+            event = dict(approval_data or {})
+            # Redact credentials before the command reaches the SSE wire.
+            if "command" in event:
+                from gateway.run import _redact_approval_command
+                event["command"] = _redact_approval_command(event.get("command"))
+            event.update({
+                "message_id": message_id,
+                "choices": ["once", "session", "always", "deny"],
+            })
+            # Fires on the agent's executor thread; hop to the loop. Inline
+            # put_nowait (not _enqueue) keeps redaction and sink together.
+            payload = _event_payload("approval.request", event)
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, payload)
+            except Exception:
+                pass
+
+        # Register this streaming turn in the shared run maps so the runs-API
+        # control endpoints act on it — POST /v1/runs/{run_id}/approval and
+        # /stop (run_id is announced in run.started). See #58853.
+        approval_session_key = gateway_session_key or session_id or run_id
+        self._run_approval_sessions[run_id] = approval_session_key
+        self._set_run_status(
+            run_id, "running", session_id=session_id, model=self._model_name,
+        )
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
@@ -2155,6 +2182,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    approval_notify_callback=_approval_notify,
+                    run_id=run_id,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2182,12 +2211,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 await queue.put(None)
 
         task = asyncio.create_task(_run_and_signal())
+        # Expose the run to the stop/approval endpoints; the done callback
+        # below undoes it (_active_run_agents is handled in _run_agent).
+        self._active_run_tasks[run_id] = task
+
+        def _cleanup_run(_fut: "asyncio.Future") -> None:
+            self._active_run_tasks.pop(run_id, None)
+            self._run_approval_sessions.pop(run_id, None)
+            self._run_statuses.pop(run_id, None)
+
         try:
             self._background_tasks.add(task)
         except TypeError:
             pass
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(_cleanup_run)
 
         headers = {
             "Content-Type": "text/event-stream",
@@ -4206,6 +4245,8 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        approval_notify_callback=None,
+        run_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4221,6 +4262,12 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        *approval_notify_callback* / *run_id* wire the turn like a ``/v1/runs``
+        run: the callback is registered as the gateway approval notifier (so
+        guarded tools surface ``approval.request`` instead of failing closed),
+        and the agent is published to ``_active_run_agents[run_id]`` so
+        ``POST /v1/runs/{run_id}/stop`` can interrupt it.
         """
         loop = asyncio.get_running_loop()
 
@@ -4245,12 +4292,41 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
+                if run_id is not None:
+                    self._active_run_agents[run_id] = agent
                 effective_task_id = session_id or str(uuid.uuid4())
-                result = agent.run_conversation(
-                    user_message=user_message,
-                    conversation_history=conversation_history,
-                    task_id=effective_task_id,
+                approval_token = None
+                approval_session_key = (
+                    gateway_session_key or session_id or effective_task_id
                 )
+                try:
+                    if approval_notify_callback is not None:
+                        from tools.approval import (
+                            register_gateway_notify,
+                            reset_current_session_key,
+                            set_current_session_key,
+                            unregister_gateway_notify,
+                        )
+                        approval_token = set_current_session_key(approval_session_key)
+                        register_gateway_notify(
+                            approval_session_key, approval_notify_callback
+                        )
+                    result = agent.run_conversation(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        task_id=effective_task_id,
+                    )
+                finally:
+                    if approval_notify_callback is not None:
+                        try:
+                            unregister_gateway_notify(approval_session_key)
+                        except Exception:
+                            pass
+                    if approval_token is not None:
+                        try:
+                            reset_current_session_key(approval_token)
+                        except Exception:
+                            pass
                 usage = {
                     "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                     "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -4265,6 +4341,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return result, usage
             finally:
                 clear_session_vars(tokens)
+                if run_id is not None:
+                    self._active_run_agents.pop(run_id, None)
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1

@@ -36,7 +36,9 @@ class FakeAgent:
         self._persist_user_message_override: Any = None
         self._persist_user_message_timestamp: float | None = None
 
-    def _handle_max_iterations(self, messages, api_call_count):
+    def _handle_max_iterations(
+        self, messages, api_call_count, *, current_user_context=""
+    ):
         raise AssertionError("not expected")
 
     def _emit_status(self, *_args, **_kwargs):

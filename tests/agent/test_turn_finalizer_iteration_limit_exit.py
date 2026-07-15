@@ -45,10 +45,14 @@ class _LimitAgent:
         self.valid_tool_names = []
         self.persisted_messages = None
         self._handle_max_iterations_called = False
+        self._handle_max_iterations_context = None
         self._completion_explainer = completion_explainer
 
-    def _handle_max_iterations(self, messages, api_call_count):
+    def _handle_max_iterations(
+        self, messages, api_call_count, *, current_user_context=""
+    ):
         self._handle_max_iterations_called = True
+        self._handle_max_iterations_context = current_user_context
         return "summary from extra call"
 
     def _emit_status(self, *_args, **_kwargs):
@@ -95,6 +99,7 @@ def _finalize(
     exit_reason,
     api_call_count=60,
     pending_verification_response=None,
+    current_user_context="",
 ):
     return finalize_turn(
         agent,
@@ -111,6 +116,7 @@ def _finalize(
         _should_review_memory=False,
         _turn_exit_reason=exit_reason,
         _pending_verification_response=pending_verification_response,
+        current_user_context=current_user_context,
     )
 
 
@@ -165,10 +171,26 @@ def test_empty_pending_verification_response_uses_summary_fallback(monkeypatch):
     assert agent._handle_max_iterations_called is True
 
 
+def test_summary_fallback_receives_current_user_context(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    current_context = "[System note: Current time is TEST.]"
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="unknown",
+        current_user_context=current_context,
+    )
+
+    assert result["final_response"] == "summary from extra call"
+    assert agent._handle_max_iterations_context == current_context
+
+
 def test_short_generated_summary_keeps_abnormal_turn_explainer(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = _LimitAgent(completion_explainer=True)
-    agent._handle_max_iterations = lambda *_args: "The"
+    agent._handle_max_iterations = MagicMock(return_value="The")
 
     result = _finalize(agent, final_response=None, exit_reason="unknown")
 

@@ -133,3 +133,14 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+_CURRENT_TIME_NOTE_PREFIX = "[System note: Current time is "
+
+
+def format_current_time_note(current: Optional[datetime] = None) -> str:
+    """Return the standard ephemeral current-time note for an LLM turn."""
+    current = current or now()
+    formatted = current.strftime("%A, %B %d, %Y %I:%M %p")
+    tz_label = current.strftime("%Z").strip()
+    if tz_label:
+        formatted = f"{formatted} {tz_label}"
+    return f"{_CURRENT_TIME_NOTE_PREFIX}{formatted}.]"

@@ -103,6 +103,26 @@ class TestHermesTimeNow:
         assert r2.utcoffset() == timedelta(hours=5, minutes=30)
 
 
+class TestCurrentTimeContext:
+    """Current-time context has a stable, deterministic request-note shape."""
+
+    def test_format_current_time_note_includes_wall_clock_and_timezone(self):
+        current = datetime(
+            2026,
+            7,
+            13,
+            9,
+            45,
+            tzinfo=timezone(timedelta(hours=8), name="SGT"),
+        )
+
+        note = hermes_time.format_current_time_note(current)
+
+        assert note == (
+            "[System note: Current time is Monday, July 13, 2026 09:45 AM SGT.]"
+        )
+
+
 class TestGetTimezone:
     """Test get_timezone()."""
 

@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from agent.memory_manager import build_memory_context_block
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +100,31 @@ class TestFlushDeduplication:
                 agent._flush_messages_to_session_db(messages, conversation_history)
                 rows = db.get_messages(agent.session_id)
                 assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
+            finally:
+                db.close()
+
+    def test_flush_strips_signed_recall_block_from_assistant_rows(self):
+        """Incremental flush must not persist signed recall content to SQLite."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+            try:
+                agent = self._make_agent(db)
+                leaked = (
+                    "Visible intro\n\n"
+                    + build_memory_context_block("operator-only peer card")
+                    + "\n\nVisible answer"
+                )
+                messages = [{"role": "assistant", "content": leaked}]
+
+                agent._flush_messages_to_session_db(messages, [])
+
+                rows = db.get_messages(agent.session_id)
+                assert len(rows) == 1
+                assert rows[0]["content"] == "Visible intro\n\nVisible answer"
+                assert messages[0]["content"] == "Visible intro\n\nVisible answer"
             finally:
                 db.close()
 

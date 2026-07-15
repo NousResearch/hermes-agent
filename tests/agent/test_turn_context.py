@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
+from agent.memory_manager import build_memory_context_block
 from agent.turn_context import TurnContext, build_turn_context
 from hermes_state import SessionDB
 
@@ -296,6 +297,24 @@ def test_ensure_db_session_runs_after_system_prompt_restore():
     # The prompt was populated before the DB row was created.
     assert agent._ensure_db_prompt_at_call == "REBUILT-SYSTEM"
     assert agent._cached_system_prompt == "REBUILT-SYSTEM"
+
+
+def test_pre_llm_call_hook_receives_scrubbed_conversation_history():
+    agent = _FakeAgent()
+    leaked = build_memory_context_block("operator-only peer card")
+    captured = {}
+    history = [{"role": "assistant", "content": leaked}]
+
+    def _invoke_hook(_event, **kwargs):
+        captured["history"] = kwargs["conversation_history"]
+        return []
+
+    with patch("hermes_cli.plugins.invoke_hook", side_effect=_invoke_hook):
+        _build(agent, conversation_history=history)
+
+    assert captured["history"][0]["role"] == "assistant"
+    assert "operator-only peer card" not in captured["history"][0]["content"]
+    assert "operator-only peer card" in history[0]["content"]
 
 
 # ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────

@@ -2264,6 +2264,48 @@ class TestThinkingBlockSignatureManagement:
         assert thinking[0]["signature"] == "sig_live"
         assert "_thinking_signature_invalidated" not in assistant
 
+    def test_signature_invalidation_demotes_scrubbed_signed_thinking_to_text(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "_thinking_signature_invalidated": True,
+                "anthropic_content_blocks": [
+                    {
+                        "type": "thinking",
+                        "thinking": "stale raw block",
+                        "signature": "sig_dead",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tc_1",
+                        "name": "tool_a",
+                        "input": {"raw": True},
+                    },
+                ],
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "tool_a", "arguments": "{}"}},
+                ],
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Visible plan after scrub.",
+                        "signature": "sig_dead",
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result A"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant = next(m for m in result if m["role"] == "assistant")
+        blocks = assistant["content"]
+
+        assert not any(b.get("type") == "thinking" for b in blocks if isinstance(b, dict))
+        assert any(b.get("type") == "text" and b.get("text") == "Visible plan after scrub." for b in blocks)
+        assert any(b.get("type") == "tool_use" and b.get("id") == "tc_1" for b in blocks)
+        assert "_thinking_signature_invalidated" not in assistant
+
 
 # ---------------------------------------------------------------------------
 # Tool choice

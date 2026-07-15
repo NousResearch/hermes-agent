@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.memory_manager import sanitize_recall_payload
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -644,6 +645,7 @@ def _sanitize_tool_error(error_msg: str) -> str:
     sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
+    sanitized = sanitize_recall_payload(sanitized)
     if len(sanitized) > _TOOL_ERROR_MAX_LEN:
         sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
     return f"[TOOL_ERROR] {sanitized}"
@@ -1000,13 +1002,18 @@ def _emit_post_tool_call_hook(
         from hermes_cli.plugins import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
             return
+        safe_args = sanitize_recall_payload(function_args)
+        safe_result = sanitize_recall_payload(result)
+        safe_error_message = sanitize_recall_payload(error_message)
         if status is None:
-            status, error_type, error_message = _tool_result_observer_fields(result)
+            status, error_type, safe_error_message = _tool_result_observer_fields(
+                safe_result
+            )
         invoke_hook(
             "post_tool_call",
             tool_name=function_name,
-            args=function_args,
-            result=result,
+            args=safe_args,
+            result=safe_result,
             task_id=task_id or "",
             session_id=session_id or "",
             tool_call_id=tool_call_id or "",
@@ -1015,7 +1022,7 @@ def _emit_post_tool_call_hook(
             duration_ms=duration_ms,
             status=status,
             error_type=error_type,
-            error_message=error_message,
+            error_message=safe_error_message,
             middleware_trace=list(middleware_trace or []),
         )
     except Exception as _hook_err:
@@ -1321,12 +1328,16 @@ def handle_function_call(
         try:
             from hermes_cli.plugins import has_hook, invoke_hook
             if has_hook("transform_tool_result"):
-                status, error_type, error_message = _tool_result_observer_fields(result)
+                safe_args = sanitize_recall_payload(function_args)
+                safe_result = sanitize_recall_payload(result)
+                status, error_type, error_message = _tool_result_observer_fields(
+                    safe_result
+                )
                 hook_results = invoke_hook(
                     "transform_tool_result",
                     tool_name=function_name,
-                    args=function_args,
-                    result=result,
+                    args=safe_args,
+                    result=safe_result,
                     task_id=task_id or "",
                     session_id=session_id or "",
                     tool_call_id=tool_call_id or "",
@@ -1347,9 +1358,15 @@ def handle_function_call(
         return result
 
     except Exception as e:
-        error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.exception(error_msg)
-        return json.dumps({"error": _sanitize_tool_error(error_msg)}, ensure_ascii=False)
+        error_msg = _sanitize_tool_error(
+            f"Error executing {function_name}: {str(e)}"
+        )
+        logger.error(
+            "%s (%s)",
+            error_msg,
+            type(e).__name__,
+        )
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
 # =============================================================================

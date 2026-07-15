@@ -1029,6 +1029,80 @@ class TestInit:
             )
             assert a._cache_ttl == "5m"
 
+    def test_memory_auto_recall_platform_override_keeps_memory_tools(self):
+        """Disabling automatic recall must not disable explicit memory tools."""
+        class _Provider:
+            name = "fake"
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                self.init_kwargs = {"session_id": session_id, **kwargs}
+
+            def get_tool_schemas(self):
+                return [
+                    {
+                        "name": "fact_store",
+                        "description": "store facts",
+                        "parameters": {"type": "object", "properties": {}},
+                    }
+                ]
+
+        cfg = {
+            "memory": {"provider": "fake", "auto_inject_recall": True},
+            "gateway": {
+                "platforms": {
+                    "whatsapp": {
+                        "memory": {"auto_inject_recall": False},
+                    }
+                }
+            },
+        }
+        provider = _Provider()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+        ):
+            a = AIAgent(
+                **{"api" + "_key": "test-k...7890"},
+                base_url="https://openrouter.ai/api/v1",
+                platform="whatsapp",
+                enabled_toolsets=["memory"],
+                quiet_mode=True,
+                skip_context_files=True,
+            )
+
+        assert a._memory_auto_inject_recall is False
+        assert "fact_store" in a.valid_tool_names
+        assert any(t["function"]["name"] == "fact_store" for t in a.tools)
+
+    def test_memory_auto_recall_flat_platform_override_precedence(self):
+        """Flattened platform config wins if both platform config shapes exist."""
+        from agent.agent_init import _resolve_memory_auto_inject_recall
+
+        cfg = {
+            "memory": {"auto_inject_recall": True},
+            "gateway": {
+                "platforms": {
+                    "whatsapp": {
+                        "memory": {"auto_inject_recall": False},
+                    }
+                }
+            },
+            "platforms": {
+                "whatsapp": {
+                    "memory": {"auto_inject_recall": True},
+                }
+            },
+        }
+
+        assert _resolve_memory_auto_inject_recall(cfg, "whatsapp") is True
+
     def test_prompt_caching_cache_ttl_custom_1h(self):
         """prompt_caching.cache_ttl 1h is applied when present in config."""
         with (
@@ -2269,24 +2343,6 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == "No thinking here."
 
-    def test_memory_context_in_stored_content_is_preserved(self, agent):
-        """`_build_assistant_message` must not silently mutate model output
-        containing literal <memory-context> markers — that's legitimate text
-        (e.g. documentation, code) that the model may emit.  Streaming-path
-        leak prevention is handled by StreamingContextScrubber upstream."""
-        original = (
-            "<memory-context>\n"
-            "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
-            "## Honcho Context\n"
-            "stale memory\n"
-            "</memory-context>\n\n"
-            "Visible answer"
-        )
-        msg = _mock_assistant_msg(content=original)
-        result = agent._build_assistant_message(msg, "stop")
-        assert "<memory-context>" in result["content"]
-        assert "Visible answer" in result["content"]
-
     def test_unterminated_think_block_stripped(self, agent):
         """Unterminated <think> block (MiniMax / NIM dropped close tag) is
         fully stripped from stored content."""
@@ -2376,6 +2432,34 @@ class TestExecuteToolCalls:
         assert metadata["old_text"] == old_text
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
+
+    def test_sequential_memory_add_scrubs_recalled_content_before_builtin_store_write(self, agent):
+        from agent.memory_manager import build_memory_context_block
+
+        leaked = build_memory_context_block("operator-only peer card")
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps({
+                "action": "add",
+                "target": "memory",
+                "content": leaked,
+            }),
+            call_id="mem-2",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent._memory_store = object()
+        seen = {}
+
+        def _fake_memory_tool(**kwargs):
+            seen.update(kwargs)
+            return json.dumps({"success": True})
+
+        with patch("tools.memory_tool.memory_tool", side_effect=_fake_memory_tool):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert seen["content"] == ""
+        assert "operator-only peer card" not in (seen.get("old_text") or "")
 
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
@@ -4136,18 +4220,65 @@ class TestRunConversation:
         agent.compression_enabled = False
         agent.save_trajectories = False
 
-    def test_stop_finish_reason_returns_response(self, agent):
-        self._setup_agent(agent)
-        resp = _mock_response(content="Final answer", finish_reason="stop")
-        agent.client.chat.completions.create.return_value = resp
+    def _run_single_turn(self, agent, user_message="hello"):
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            result = agent.run_conversation("hello")
+            return agent.run_conversation(user_message)
+
+    def test_stop_finish_reason_returns_response(self, agent):
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        result = self._run_single_turn(agent)
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_default_memory_auto_recall_prefetches_and_appends(self, agent):
+        self._setup_agent(agent)
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.prefetch_all.return_value = "## Recall\n- user likes tea"
+        agent._memory_auto_inject_recall = True
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        result = self._run_single_turn(agent, "hello")
+
+        assert result["final_response"] == "Final answer"
+        agent._memory_manager.prefetch_all.assert_called_once_with("hello")
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_user = next(m for m in sent_messages if m.get("role") == "user")
+        assert "<memory-context>" in sent_user["content"]
+        assert "user likes tea" in sent_user["content"]
+
+    def test_disabled_customer_memory_auto_recall_skips_prefetch_and_append(self, agent):
+        self._setup_agent(agent)
+        agent.platform = "whatsapp"
+        agent._memory_manager = MagicMock()
+        agent._memory_manager.prefetch_all.return_value = "## Recall\n- customer recall"
+        agent._memory_auto_inject_recall = False
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "plugin user context"}],
+        ):
+            result = self._run_single_turn(agent, "hello")
+
+        assert result["final_response"] == "Final answer"
+        agent._memory_manager.prefetch_all.assert_not_called()
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        sent_user = next(m for m in sent_messages if m.get("role") == "user")
+        assert "<memory-context>" not in sent_user["content"]
+        assert "customer recall" not in sent_user["content"]
+        assert "plugin user context" in sent_user["content"]
 
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
@@ -4254,6 +4385,46 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+
+    def test_pre_api_request_hook_scrubs_request_payload_and_request_messages(self, agent):
+        from agent.memory_manager import build_memory_context_block
+
+        self._setup_agent(agent)
+        leaked = "Visible intro\n\n" + build_memory_context_block("operator-only peer card")
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Done",
+            finish_reason="stop",
+        )
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("hermes_cli.plugins.has_hook", side_effect=lambda name: name == "pre_api_request"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(leaked)
+
+        assert result["final_response"] == "Done"
+        pre_request_calls = [kw for name, kw in hook_calls if name == "pre_api_request"]
+        assert len(pre_request_calls) == 1
+        assert "operator-only peer card" not in json.dumps(
+            pre_request_calls[0]["request"],
+            ensure_ascii=False,
+        )
+        assert "operator-only peer card" not in json.dumps(
+            pre_request_calls[0]["request_messages"],
+            ensure_ascii=False,
+        )
+        assert "operator-only peer card" not in json.dumps(
+            pre_request_calls[0]["conversation_history"],
+            ensure_ascii=False,
+        )
 
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False
@@ -5963,6 +6134,72 @@ class TestRetryExhaustion:
         # Crucial regression guard: a deterministic refusal is NOT retried —
         # exactly one API call, no empty-response retry loop.
         assert agent.client.chat.completions.create.call_count == 1
+
+    def test_private_thinking_signature_flag_is_not_sent_to_non_anthropic_api(self, agent):
+        self._setup_agent(agent)
+        captured = {}
+        history = [
+            {
+                "role": "assistant",
+                "content": "Visible answer",
+                "reasoning_details": [{"type": "thinking", "thinking": "Visible plan", "signature": "sig"}],
+                "_thinking_signature_invalidated": True,
+            }
+        ]
+
+        def _fake_build_api_kwargs(api_messages):
+            captured["api_messages"] = api_messages
+            return {"model": agent.model, "messages": api_messages}
+
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Done",
+            finish_reason="stop",
+        )
+
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello", conversation_history=history)
+
+        assert "_thinking_signature_invalidated" not in captured["api_messages"][0]
+
+    def test_private_thinking_signature_flag_is_preserved_for_anthropic_api(self, agent):
+        self._setup_agent(agent)
+        agent.api_mode = "anthropic_messages"
+        captured = {}
+        history = [
+            {
+                "role": "assistant",
+                "content": "Visible answer",
+                "reasoning_details": [{"type": "thinking", "thinking": "Visible plan", "signature": "sig"}],
+                "_thinking_signature_invalidated": True,
+            }
+        ]
+
+        def _fake_build_api_kwargs(api_messages):
+            captured["api_messages"] = api_messages
+            return {"model": agent.model, "messages": api_messages}
+
+        response = _mock_response(content="Done", finish_reason="stop")
+        response.stop_reason = "end_turn"
+        agent._anthropic_messages_create = MagicMock(return_value=response)
+
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello", conversation_history=history)
+
+        assistant_msg = next(
+            msg for msg in captured["api_messages"]
+            if msg.get("role") == "assistant"
+        )
+        assert assistant_msg["_thinking_signature_invalidated"] is True
 
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""

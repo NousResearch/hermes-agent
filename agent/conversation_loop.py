@@ -34,7 +34,11 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import (
+    build_memory_context_block,
+    sanitize_recall_payload,
+    strip_injected_recall_blocks,
+)
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -1245,23 +1249,12 @@ def run_conversation(
                             request_messages = api_kwargs.get("input")
                         if not isinstance(request_messages, list):
                             request_messages = api_messages
-                        # Shallow-copy the outer list so plugins that retain the
-                        # reference for async snapshotting don't observe later
-                        # mutations of api_messages.  The inner dicts are not
-                        # mutated by the agent loop, so a shallow copy is
-                        # sufficient; a deepcopy would walk every tool result
-                        # and base64 image on every API call.
-                        #
-                        # The ``request_messages`` and ``conversation_history``
-                        # kwargs below are pre-existing raw passthroughs
-                        # consumed by the bundled langfuse plugin
-                        # (``plugins/observability/langfuse/__init__.py:_coerce_request_messages``).
-                        # They predate ``request`` and are intentionally NOT
-                        # sanitised — secrets are not expected here because
-                        # ``api_kwargs`` is the same object passed to the
-                        # provider client.  New consumers should read the
-                        # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
+                        _hook_request_messages = sanitize_recall_payload(
+                            _request_payload.get("body", {}).get(
+                                "messages", _request_payload.get("body", {}).get("input", [])
+                            )
+                        )
                         _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
@@ -1269,15 +1262,15 @@ def run_conversation(
                             api_request_id=api_request_id,
                             session_id=agent.session_id or "",
                             user_message=original_user_message,
-                            conversation_history=list(messages),
+                            conversation_history=sanitize_recall_payload(list(messages)),
                             platform=agent.platform or "",
                             model=agent.model,
                             provider=agent.provider,
                             base_url=agent.base_url,
                             api_mode=agent.api_mode,
                             api_call_count=api_call_count,
-                            request_messages=list(request_messages)
-                            if isinstance(request_messages, list)
+                            request_messages=_hook_request_messages
+                            if isinstance(_hook_request_messages, list)
                             else [],
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),
@@ -1936,8 +1929,17 @@ def run_conversation(
                             length_continue_retries += 1
                             interim_msg = agent._build_assistant_message(assistant_message, finish_reason)
                             messages.append(interim_msg)
-                            if assistant_message.content:
-                                truncated_response_parts.append(assistant_message.content)
+                            _partial_chunk = interim_msg.get("content")
+                            if isinstance(_partial_chunk, str) and _partial_chunk:
+                                _partial_chunk = _sanitize_surrogates(
+                                    getattr(assistant_message, "content", "")
+                                )
+                                _partial_chunk = agent._strip_think_blocks(_partial_chunk)
+                                if _partial_chunk:
+                                    from agent.redact import redact_sensitive_text
+                                    truncated_response_parts.append(
+                                        redact_sensitive_text(_partial_chunk)
+                                    )
 
                             if length_continue_retries < 4:
                                 _is_partial_stream_stub = (
@@ -1979,7 +1981,9 @@ def run_conversation(
                                 _retry.restart_with_length_continuation = True
                                 break
 
-                            partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
+                            partial_response = strip_injected_recall_blocks(
+                                agent._strip_think_blocks("".join(truncated_response_parts))
+                            ).strip()
                             agent._cleanup_task_resources(effective_task_id)
                             agent._persist_session(messages, conversation_history)
                             return {
@@ -2342,8 +2346,10 @@ def run_conversation(
                 # record of the half-finished reply on screen, so the next turn
                 # the model "forgets" what it just said — exactly what users hit
                 # when they stop to redirect mid-response.
-                _partial = agent._strip_think_blocks(
-                    getattr(agent, "_current_streamed_assistant_text", "") or ""
+                _partial = strip_injected_recall_blocks(
+                    agent._strip_think_blocks(
+                        getattr(agent, "_current_streamed_assistant_text", "") or ""
+                    )
                 ).strip()
                 if _partial:
                     messages.append({"role": "assistant", "content": _partial})
@@ -4961,7 +4967,9 @@ def run_conversation(
                     )
                     if agent._has_content_after_think_block(_partial_streamed):
                         _turn_exit_reason = "partial_stream_recovery"
-                        _recovered = agent._strip_think_blocks(_partial_streamed).strip()
+                        _recovered = strip_injected_recall_blocks(
+                            agent._strip_think_blocks(_partial_streamed)
+                        ).strip()
                         logger.info(
                             "Partial stream content delivered (%d chars) "
                             "— using as final response",
@@ -5267,7 +5275,9 @@ def run_conversation(
                     truncated_response_parts = []
                     length_continue_retries = 0
                 
-                final_response = agent._strip_think_blocks(final_response).strip()
+                final_response = strip_injected_recall_blocks(
+                    agent._strip_think_blocks(final_response)
+                ).strip()
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

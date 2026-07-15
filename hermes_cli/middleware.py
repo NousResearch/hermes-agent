@@ -10,7 +10,10 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
+
+from agent.memory_manager import sanitize_recall_payload
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +47,10 @@ class RequestMiddlewareResult:
     trace: List[Dict[str, Any]] = field(default_factory=list)
 
 
+class _SanitizedString(str):
+    """Marker subclass so execution middleware can see scrubbed text safely."""
+
+
 def observer_payload(**kwargs: Any) -> Dict[str, Any]:
     kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
     return kwargs
@@ -74,6 +81,167 @@ def _safe_copy(payload: Any) -> Any:
         return payload
 
 
+def _restore_sanitized_payload(raw_payload: Any, safe_payload: Any, current_payload: Any) -> Any:
+    """Reapply scrubbed branches when middleware leaves them unchanged."""
+    if (
+        hasattr(raw_payload, "arguments")
+        and hasattr(raw_payload, "name")
+        and hasattr(current_payload, "function")
+        and hasattr(safe_payload, "function")
+    ):
+        restored = _safe_copy(raw_payload)
+        current_function = getattr(current_payload, "function", None)
+        safe_function = getattr(safe_payload, "function", None)
+        current_name = getattr(current_payload, "name", None)
+        current_arguments = getattr(current_payload, "arguments", None)
+        safe_name = getattr(safe_payload, "name", None)
+        safe_arguments = getattr(safe_payload, "arguments", None)
+        if current_function is not None and safe_function is not None:
+            if getattr(current_function, "name", None) != getattr(safe_function, "name", None):
+                current_name = getattr(current_function, "name", None)
+            if getattr(current_function, "arguments", None) != getattr(safe_function, "arguments", None):
+                current_arguments = getattr(current_function, "arguments", None)
+            try:
+                setattr(
+                    restored,
+                    "name",
+                    _restore_sanitized_payload(
+                        getattr(raw_payload, "name", None),
+                        safe_name,
+                        current_name,
+                    ),
+                )
+            except Exception:
+                pass
+            try:
+                setattr(
+                    restored,
+                    "arguments",
+                    _restore_sanitized_payload(
+                        getattr(raw_payload, "arguments", None),
+                        safe_arguments,
+                        current_arguments,
+                    ),
+                )
+            except Exception:
+                pass
+        current_dict = vars(current_payload) if hasattr(current_payload, "__dict__") else {}
+        safe_dict = vars(safe_payload) if hasattr(safe_payload, "__dict__") else {}
+        raw_dict = vars(raw_payload) if hasattr(raw_payload, "__dict__") else {}
+        for key, value in current_dict.items():
+            if key in {"function", "name", "arguments"}:
+                continue
+            if key in raw_dict and key in safe_dict:
+                merged = _restore_sanitized_payload(raw_dict[key], safe_dict[key], value)
+            else:
+                merged = value
+            try:
+                setattr(restored, key, merged)
+            except Exception:
+                pass
+        return restored
+
+    if isinstance(current_payload, SimpleNamespace):
+        restored = _safe_copy(raw_payload) if hasattr(raw_payload, "__dict__") else SimpleNamespace()
+        safe_dict = vars(safe_payload) if hasattr(safe_payload, "__dict__") else {}
+        raw_dict = vars(raw_payload) if hasattr(raw_payload, "__dict__") else {}
+        for key, value in vars(current_payload).items():
+            if key in raw_dict and key in safe_dict:
+                merged = _restore_sanitized_payload(raw_dict[key], safe_dict[key], value)
+            else:
+                merged = value
+            try:
+                setattr(restored, key, merged)
+            except Exception:
+                pass
+        return restored
+
+    if isinstance(current_payload, dict):
+        restored: Dict[str, Any] = {}
+        for key, value in current_payload.items():
+            if (
+                isinstance(raw_payload, dict)
+                and isinstance(safe_payload, dict)
+                and key in raw_payload
+                and key in safe_payload
+            ):
+                restored[key] = _restore_sanitized_payload(
+                    raw_payload[key],
+                    safe_payload[key],
+                    value,
+                )
+            else:
+                restored[key] = value
+        return restored
+
+    if isinstance(current_payload, list):
+        restored_list: List[Any] = []
+        for idx, value in enumerate(current_payload):
+            if (
+                isinstance(raw_payload, list)
+                and isinstance(safe_payload, list)
+                and idx < len(raw_payload)
+                and idx < len(safe_payload)
+            ):
+                restored_list.append(
+                    _restore_sanitized_payload(raw_payload[idx], safe_payload[idx], value)
+                )
+            else:
+                restored_list.append(value)
+        return restored_list
+
+    if current_payload == safe_payload and raw_payload != safe_payload:
+        return _safe_copy(raw_payload)
+    return current_payload
+
+
+def _sanitize_execution_result(value: Any) -> Any:
+    if isinstance(value, str):
+        sanitized = sanitize_recall_payload(value)
+        return _SanitizedString(sanitized)
+    if isinstance(value, list):
+        return [_sanitize_execution_result(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_execution_result(item)
+            for key, item in value.items()
+        }
+    if hasattr(value, "arguments") and hasattr(value, "name"):
+        sanitized_arguments = sanitize_recall_payload(getattr(value, "arguments", None))
+        provider_data = _sanitize_execution_result(getattr(value, "provider_data", None))
+        tool_call = SimpleNamespace(
+            id=getattr(value, "id", None),
+            type=getattr(value, "type", None) or "function",
+            name=getattr(value, "name", None),
+            arguments=sanitized_arguments,
+            provider_data=provider_data,
+            function=SimpleNamespace(
+                name=getattr(value, "name", None),
+                arguments=sanitized_arguments,
+            ),
+        )
+        for attr_name in ("call_id", "response_item_id", "extra_content"):
+            attr_value = getattr(value, attr_name, None)
+            if attr_value is not None:
+                setattr(tool_call, attr_name, _sanitize_execution_result(attr_value))
+        return tool_call
+    if isinstance(value, SimpleNamespace):
+        return SimpleNamespace(
+            **{
+                key: _sanitize_execution_result(val)
+                for key, val in value.__dict__.items()
+            }
+        )
+    if hasattr(value, "__dict__") and not isinstance(value, type):
+        return SimpleNamespace(
+            **{
+                key: _sanitize_execution_result(val)
+                for key, val in vars(value).items()
+            }
+        )
+    return value
+
+
 def apply_llm_request_middleware(
     request: Dict[str, Any],
     **context: Any,
@@ -92,13 +260,14 @@ def apply_llm_request_middleware(
         )
 
     original_request = _safe_copy(request)
-    current_request = _safe_copy(original_request)
+    safe_original_request = sanitize_recall_payload(_safe_copy(original_request))
+    current_request = _safe_copy(safe_original_request)
     trace: List[Dict[str, Any]] = []
 
     for result in _invoke_middleware(
         LLM_REQUEST_MIDDLEWARE,
         request=current_request,
-        original_request=original_request,
+        original_request=safe_original_request,
         **context,
     ):
         if not isinstance(result, dict):
@@ -110,8 +279,8 @@ def apply_llm_request_middleware(
         trace.append(_trace_entry(result))
 
     return RequestMiddlewareResult(
-        payload=current_request,
-        original_payload=original_request,
+        payload=_restore_sanitized_payload(request, safe_original_request, current_request),
+        original_payload=safe_original_request,
         changed=bool(trace),
         trace=trace,
     )
@@ -136,14 +305,15 @@ def apply_tool_request_middleware(
         )
 
     original_args = _safe_copy(args)
-    current_args = _safe_copy(original_args)
+    safe_original_args = sanitize_recall_payload(_safe_copy(original_args))
+    current_args = _safe_copy(safe_original_args)
     trace: List[Dict[str, Any]] = []
 
     for result in _invoke_middleware(
         TOOL_REQUEST_MIDDLEWARE,
         tool_name=tool_name,
         args=current_args,
-        original_args=original_args,
+        original_args=safe_original_args,
         **context,
     ):
         if not isinstance(result, dict):
@@ -155,8 +325,8 @@ def apply_tool_request_middleware(
         trace.append(_trace_entry(result))
 
     return RequestMiddlewareResult(
-        payload=current_args,
-        original_payload=original_args,
+        payload=_restore_sanitized_payload(args, safe_original_args, current_args),
+        original_payload=safe_original_args,
         changed=bool(trace),
         trace=trace,
     )
@@ -179,12 +349,38 @@ def run_llm_execution_middleware(
     callbacks = _get_middleware_callbacks(LLM_EXECUTION_MIDDLEWARE)
     if not callbacks:
         return next_call(request)
+    original_request = context.pop("original_request", request)
+    safe_request = sanitize_recall_payload(_safe_copy(request))
+    safe_original_request = sanitize_recall_payload(_safe_copy(original_request))
+    exposed_results: Dict[int, tuple[Any, Any]] = {}
+
+    def _terminal_call(next_request: Dict[str, Any]) -> Any:
+        restored_request = _restore_sanitized_payload(request, safe_request, next_request)
+        raw_result = next_call(restored_request)
+        exposed_result = _sanitize_execution_result(raw_result)
+        if exposed_result is raw_result:
+            return raw_result
+        exposed_results[id(exposed_result)] = (raw_result, _safe_copy(exposed_result))
+        return exposed_result
+
+    def _unwrap_result(value: Any) -> Any:
+        stored = exposed_results.get(id(value))
+        if stored is None:
+            return value
+        raw_result, safe_snapshot = stored
+        return (
+            raw_result
+            if value == safe_snapshot
+            else _restore_sanitized_payload(raw_result, safe_snapshot, value)
+        )
+
     return _run_execution_chain(
         LLM_EXECUTION_MIDDLEWARE,
         callbacks,
-        next_call,
-        request=request,
-        original_request=context.pop("original_request", request),
+        _terminal_call,
+        unwrap_result=_unwrap_result,
+        request=safe_request,
+        original_request=safe_original_request,
         **context,
     )
 
@@ -199,13 +395,39 @@ def run_tool_execution_middleware(
     callbacks = _get_middleware_callbacks(TOOL_EXECUTION_MIDDLEWARE)
     if not callbacks:
         return next_call(args)
+    original_args = context.pop("original_args", args)
+    safe_args = sanitize_recall_payload(_safe_copy(args))
+    safe_original_args = sanitize_recall_payload(_safe_copy(original_args))
+    exposed_results: Dict[int, tuple[Any, Any]] = {}
+
+    def _terminal_call(next_args: Dict[str, Any]) -> Any:
+        restored_args = _restore_sanitized_payload(args, safe_args, next_args)
+        raw_result = next_call(restored_args)
+        exposed_result = _sanitize_execution_result(raw_result)
+        if exposed_result is raw_result:
+            return raw_result
+        exposed_results[id(exposed_result)] = (raw_result, _safe_copy(exposed_result))
+        return exposed_result
+
+    def _unwrap_result(value: Any) -> Any:
+        stored = exposed_results.get(id(value))
+        if stored is None:
+            return value
+        raw_result, safe_snapshot = stored
+        return (
+            raw_result
+            if value == safe_snapshot
+            else _restore_sanitized_payload(raw_result, safe_snapshot, value)
+        )
+
     return _run_execution_chain(
         TOOL_EXECUTION_MIDDLEWARE,
         callbacks,
-        next_call,
+        _terminal_call,
+        unwrap_result=_unwrap_result,
         tool_name=tool_name,
-        args=args,
-        original_args=context.pop("original_args", args),
+        args=safe_args,
+        original_args=safe_original_args,
         **context,
     )
 
@@ -244,6 +466,7 @@ def _run_execution_chain(
     **kwargs: Any,
 ) -> Any:
     payload_key = "request" if "request" in kwargs else "args"
+    unwrap_result = kwargs.pop("unwrap_result", None)
 
     class _DownstreamExecutionError(Exception):
         def __init__(self, original: BaseException) -> None:
@@ -283,7 +506,8 @@ def _run_execution_chain(
         call_kwargs[payload_key] = payload
         call_kwargs["next_call"] = next_call
         try:
-            return callback(**call_kwargs)
+            result = callback(**call_kwargs)
+            return unwrap_result(result) if callable(unwrap_result) else result
         except _DownstreamExecutionError as exc:
             raise exc.original
         except Exception as exc:
@@ -294,12 +518,13 @@ def _run_execution_chain(
                 exc,
             )
             if next_succeeded:
-                return next_result
+                return unwrap_result(next_result) if callable(unwrap_result) else next_result
             if next_called:
                 raise
             return call_at(index + 1, payload)
 
-    return call_at(0, kwargs[payload_key])
+    result = call_at(0, kwargs[payload_key])
+    return unwrap_result(result) if callable(unwrap_result) else result
 
 
 def _trace_entry(result: Dict[str, Any]) -> Dict[str, Any]:

@@ -17,9 +17,12 @@ These tests exercise the helper directly on a bare ``AIAgent`` built
 via ``__new__`` so the full ``run_conversation`` machinery isn't needed
 — the method is pure logic and three state arguments.
 """
+import json
 from unittest.mock import MagicMock
 
 import pytest
+
+from agent.memory_manager import build_memory_context_block
 
 
 def _bare_agent():
@@ -31,6 +34,7 @@ def _bare_agent():
 
     agent = AIAgent.__new__(AIAgent)
     agent._memory_manager = MagicMock()
+    agent._memory_auto_inject_recall = True
     # session_id is now propagated into sync_all / queue_prefetch_all so
     # providers that cache per-session state can update it mid-process
     # (see #6672).
@@ -91,6 +95,24 @@ class TestSyncExternalMemoryForTurn:
             session_id="test_session_001",
         )
 
+    def test_completed_turn_syncs_but_skips_prefetch_when_auto_recall_disabled(self):
+        """Customer channels can persist memory without warming auto recall."""
+        agent = _bare_agent()
+        agent._memory_auto_inject_recall = False
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="I need a refund",
+            final_response="I can help with that.",
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "I need a refund",
+            "I can help with that.",
+            session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     def test_completed_turn_syncs_messages_when_present(self):
         agent = _bare_agent()
         messages = [
@@ -123,12 +145,52 @@ class TestSyncExternalMemoryForTurn:
             messages=messages,
         )
 
-        agent._memory_manager.sync_all.assert_called_once_with(
-            "run tests",
-            "tests passed",
-            session_id="test_session_001",
+        call = agent._memory_manager.sync_all.call_args
+        assert call.args == ("run tests", "tests passed")
+        assert call.kwargs["session_id"] == "test_session_001"
+        synced_messages = call.kwargs["messages"]
+        assert synced_messages is not messages
+        assert synced_messages[0]["tool_calls"][0]["function"]["arguments"] == "{\"command\":\"pytest\"}"
+
+    def test_completed_turn_sync_scrubs_recalled_blocks_from_messages(self):
+        agent = _bare_agent()
+        leaked = build_memory_context_block("operator-only peer card")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Visible answer",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": "{\"command\":"
+                            + json.dumps(leaked)
+                            + "}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call-1",
+                "content": leaked,
+            },
+        ]
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="run tests",
+            final_response="tests passed",
+            interrupted=False,
             messages=messages,
         )
+
+        synced_messages = agent._memory_manager.sync_all.call_args.kwargs["messages"]
+        assert "operator-only peer card" not in synced_messages[0]["tool_calls"][0]["function"]["arguments"]
+        assert "operator-only peer card" not in synced_messages[1]["content"]
+        assert "operator-only peer card" in messages[0]["tool_calls"][0]["function"]["arguments"]
+        assert "operator-only peer card" in messages[1]["content"]
 
     def test_completed_skill_turn_keeps_original_message_for_memory_manager(self):
         """Provider-specific query shaping belongs inside the provider.
@@ -160,6 +222,26 @@ class TestSyncExternalMemoryForTurn:
         )
         agent._memory_manager.queue_prefetch_all.assert_called_once_with(
             skill_message,
+            session_id="test_session_001",
+        )
+
+    def test_completed_turn_sync_strips_signed_recall_block_from_response(self):
+        agent = _bare_agent()
+        leaked = (
+            "Visible intro\n\n"
+            + build_memory_context_block("operator-only peer card")
+            + "\n\nVisible answer"
+        )
+
+        agent._sync_external_memory_for_turn(
+            original_user_message="help me",
+            final_response=leaked,
+            interrupted=False,
+        )
+
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "help me",
+            "Visible intro\n\nVisible answer",
             session_id="test_session_001",
         )
 

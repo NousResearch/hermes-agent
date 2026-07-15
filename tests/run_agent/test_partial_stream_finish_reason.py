@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.memory_manager import build_memory_context_block
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.conversation_loop import _get_continuation_prompt
 
@@ -362,6 +363,43 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+
+    def test_truncated_partial_response_scrubs_signed_recall_block(self, loop_agent):
+        from tests.run_agent.test_run_agent import _mock_assistant_msg
+
+        leaked = (
+            "Visible intro\n\n"
+            + build_memory_context_block("operator-only peer card")
+            + "\n\nVisible answer"
+        )
+        partial_stub = SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            model="test/model",
+            choices=[SimpleNamespace(
+                index=0,
+                message=_mock_assistant_msg(content=leaked),
+                finish_reason=FINISH_REASON_LENGTH,
+            )],
+            usage=None,
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            partial_stub,
+            partial_stub,
+            partial_stub,
+            partial_stub,
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("ask me something")
+
+        assert result["partial"] is True
+        assert "operator-only peer card" not in (result["final_response"] or "")
+        assert "Visible answer" in (result["final_response"] or "")
 
 
 class TestContentFilterStallActivatesFallback:

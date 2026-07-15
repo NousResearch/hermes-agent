@@ -1,5 +1,6 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
+import json
 import logging
 import sys
 import types
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from agent.memory_manager import build_memory_context_block
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
@@ -26,6 +28,7 @@ from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
     apply_llm_request_middleware,
     apply_tool_request_middleware,
+    run_llm_execution_middleware,
     run_tool_execution_middleware,
 )
 
@@ -188,6 +191,197 @@ class TestPluginDiscovery:
         assert result.original_payload == args
         assert result.changed is True
         assert result.trace == [{"source": "same-payload"}]
+
+    def test_llm_request_middleware_scrubs_observed_payload_but_restores_execution_request(self, monkeypatch):
+        leaked = build_memory_context_block("operator-only peer card")
+        seen = {}
+
+        def middleware(**kwargs):
+            seen["request"] = kwargs["request"]
+            seen["original_request"] = kwargs["original_request"]
+            return {"request": {**kwargs["request"], "mw": True}}
+
+        manager = types.SimpleNamespace(
+            _middleware={"llm_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        request = {
+            "messages": [
+                {"role": "user", "content": leaked},
+            ]
+        }
+        result = apply_llm_request_middleware(request)
+
+        assert "operator-only peer card" not in str(seen["request"])
+        assert "operator-only peer card" not in str(seen["original_request"])
+        assert result.payload["messages"][0]["content"] == leaked
+        assert result.payload["mw"] is True
+        assert "operator-only peer card" not in str(result.original_payload)
+
+    def test_tool_request_middleware_scrubs_observed_args_but_restores_execution_args(self, monkeypatch):
+        leaked = build_memory_context_block("operator-only peer card")
+        seen = {}
+
+        def middleware(**kwargs):
+            seen["args"] = kwargs["args"]
+            seen["original_args"] = kwargs["original_args"]
+            return {"args": {**kwargs["args"], "mw": True}}
+
+        manager = types.SimpleNamespace(
+            _middleware={"tool_request": [middleware]},
+            invoke_middleware=lambda kind, **kwargs: [middleware(**kwargs)],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        args = {"query": leaked}
+        result = apply_tool_request_middleware("web_search", args)
+
+        assert seen["args"] == {"query": ""}
+        assert seen["original_args"] == {"query": ""}
+        assert result.payload == {"query": leaked, "mw": True}
+        assert result.original_payload == {"query": ""}
+
+    def test_llm_execution_middleware_scrubs_observed_payload_but_restores_execution_request(self, monkeypatch):
+        leaked = build_memory_context_block("operator-only peer card")
+        seen = {}
+        executed = {}
+
+        def middleware(**kwargs):
+            seen["request"] = kwargs["request"]
+            seen["original_request"] = kwargs["original_request"]
+            seen["result"] = kwargs["next_call"]({**kwargs["request"], "mw": True})
+            return seen["result"]
+
+        manager = types.SimpleNamespace(_middleware={"llm_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        request = {"messages": [{"role": "user", "content": leaked}]}
+        result = run_llm_execution_middleware(
+            request,
+            lambda payload: executed.setdefault("request", payload) or payload,
+        )
+
+        assert "operator-only peer card" not in str(seen["request"])
+        assert "operator-only peer card" not in str(seen["original_request"])
+        assert "operator-only peer card" not in str(seen["result"])
+        assert executed["request"]["messages"][0]["content"] == leaked
+        assert executed["request"]["mw"] is True
+        assert result["messages"][0]["content"] == leaked
+
+    def test_tool_execution_middleware_scrubs_observed_args_but_restores_execution_args(self, monkeypatch):
+        leaked = build_memory_context_block("operator-only peer card")
+        seen = {}
+        executed = {}
+
+        def middleware(**kwargs):
+            seen["args"] = kwargs["args"]
+            seen["original_args"] = kwargs["original_args"]
+            seen["result"] = kwargs["next_call"]({**kwargs["args"], "mw": True})
+            return seen["result"]
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        args = {"query": leaked}
+        result = run_tool_execution_middleware(
+            "web_search",
+            args,
+            lambda payload: executed.setdefault("args", payload) or payload,
+        )
+
+        assert seen["args"] == {"query": ""}
+        assert seen["original_args"] == {"query": ""}
+        assert seen["result"] == {"query": "", "mw": True}
+        assert executed["args"] == {"query": leaked, "mw": True}
+        assert result == {"query": leaked, "mw": True}
+
+    def test_llm_execution_middleware_scrubs_normalized_response_tool_calls(self, monkeypatch):
+        from agent.transports.types import NormalizedResponse, ToolCall
+
+        leaked = build_memory_context_block("operator-only peer card")
+        seen = {}
+
+        def middleware(**kwargs):
+            seen["result"] = kwargs["next_call"](kwargs["request"])
+            return seen["result"]
+
+        manager = types.SimpleNamespace(_middleware={"llm_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        raw_response = NormalizedResponse(
+            content="Visible answer",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="web_search",
+                    arguments=json.dumps({"query": leaked}),
+                    provider_data={"call_id": "call-opaque"},
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+        result = run_llm_execution_middleware(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            lambda payload: raw_response,
+        )
+
+        assert "operator-only peer card" not in seen["result"].tool_calls[0].function.arguments
+        assert seen["result"].tool_calls[0].provider_data["call_id"] == "call-opaque"
+        assert result is raw_response
+
+    def test_llm_execution_middleware_preserves_normalized_tool_call_function_argument_mutation(self, monkeypatch):
+        from agent.transports.types import NormalizedResponse, ToolCall
+
+        seen = {}
+
+        def middleware(**kwargs):
+            seen["result"] = kwargs["next_call"](kwargs["request"])
+            seen["result"].tool_calls[0].function.arguments = json.dumps({"query": "safe rewrite"})
+            return seen["result"]
+
+        manager = types.SimpleNamespace(_middleware={"llm_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        raw_response = NormalizedResponse(
+            content="Visible answer",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="web_search",
+                    arguments=json.dumps({"query": "raw query"}),
+                    provider_data={"call_id": "call-opaque"},
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+        result = run_llm_execution_middleware(
+            {"messages": [{"role": "user", "content": "hi"}]},
+            lambda payload: raw_response,
+        )
+
+        assert result.tool_calls[0].arguments == json.dumps({"query": "safe rewrite"})
+        assert result.tool_calls[0].provider_data["call_id"] == "call-opaque"
+
+    def test_tool_execution_middleware_preserves_in_place_result_mutations(self, monkeypatch):
+        def middleware(**kwargs):
+            result = kwargs["next_call"](kwargs["args"])
+            result["mw"] = True
+            return result
+
+        manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware]})
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+        result = run_tool_execution_middleware(
+            "web_search",
+            {"query": "safe"},
+            lambda payload: {"ok": True},
+        )
+
+        assert result == {"ok": True, "mw": True}
 
     def test_execution_middleware_post_next_call_error_does_not_retry(self, monkeypatch):
         calls = []

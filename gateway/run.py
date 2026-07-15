@@ -16006,6 +16006,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("compression", "protect_last_n"),
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
+        ("memory", "auto_inject_recall"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (
@@ -16015,7 +16016,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         "honcho.runtime_peer_prefix",
         "honcho.user_peer_aliases",
     )
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
+    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None, int | None, str | None], dict[str, Any]] = {}
 
     @classmethod
     def _empty_honcho_cache_busting_config(cls) -> dict[str, Any]:
@@ -16023,16 +16024,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @classmethod
     def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
-        """Extract Honcho identity keys, memoized by honcho.json mtime."""
+        """Extract Honcho identity keys, memoized by honcho.json content state."""
         try:
+            import hashlib
             from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
 
             path = resolve_config_path()
             try:
-                mtime_ns = path.stat().st_mtime_ns
+                stat = path.stat()
+                mtime_ns = stat.st_mtime_ns
+                size = stat.st_size
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
             except OSError:
                 mtime_ns = None
-            memo_key = (str(path), mtime_ns)
+                size = None
+                digest = None
+            memo_key = (str(path), mtime_ns, size, digest)
             cached = cls._HONCHO_CACHE_BUSTING_MEMO.get(memo_key)
             if cached is not None:
                 return dict(cached)
@@ -16073,6 +16080,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 out[f"{section}.{key}"] = section_val.get(key)
             else:
                 out[f"{section}.{key}"] = None
+        platforms_cfg = cfg.get("platforms")
+        gateway_cfg = cfg.get("gateway")
+        gateway_platforms_cfg = (
+            gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
+        )
+        platform_keys = set()
+        if isinstance(gateway_platforms_cfg, dict):
+            platform_keys.update(str(key) for key in gateway_platforms_cfg)
+        if isinstance(platforms_cfg, dict):
+            platform_keys.update(str(key) for key in platforms_cfg)
+        for platform_key in sorted(platform_keys):
+            out[f"gateway.platforms.{platform_key}.memory.auto_inject_recall"] = cfg_get(
+                cfg,
+                "gateway",
+                "platforms",
+                platform_key,
+                "memory",
+                "auto_inject_recall",
+            )
+            out[f"platforms.{platform_key}.memory.auto_inject_recall"] = cfg_get(
+                cfg,
+                "platforms",
+                platform_key,
+                "memory",
+                "auto_inject_recall",
+            )
         try:
             from tools.registry import registry
 

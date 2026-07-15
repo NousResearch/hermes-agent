@@ -1,3 +1,4 @@
+import logging
 import sys
 import types
 from types import SimpleNamespace
@@ -1886,6 +1887,38 @@ def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
     assert assistant_message.tool_calls == []
 
 
+def test_normalize_codex_response_scrubs_recalled_blocks_from_leak_log(monkeypatch, caplog):
+    from agent.memory_manager import build_memory_context_block
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    leaked = build_memory_context_block("operator-only peer card")
+    leaked_content = (
+        "I'll check the official page directly.\n"
+        "to=functions.exec_command {\"cmd\": \"curl https://example.test\"}\n"
+        f"{leaked}\n"
+        "Extracted: foo@example.test"
+    )
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=leaked_content)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.codex_responses_adapter"):
+        assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert "operator-only peer card" not in caplog.text
+    assert (assistant_message.content or "") == ""
+
+
 def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_present(monkeypatch):
     """If the model emitted BOTH a structured function_call AND some text that
     happens to contain `to=functions.*` (unlikely but possible), trust the
@@ -2335,6 +2368,75 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
     payload = json.loads(dumped_text)
     assert payload["request"]["headers"]["Authorization"].startswith("Bearer sk-ant-p...")
     assert "***" in dumped_text or "..." in dumped_text
+
+
+def test_dump_api_request_debug_strips_signed_recall_blocks(monkeypatch, tmp_path):
+    import json
+    from agent.memory_manager import build_memory_context_block
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+    leaked = build_memory_context_block("operator-only peer card")
+
+    dump_file = agent._dump_api_request_debug(
+        {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": f"Visible intro\n\n{leaked}"}],
+        },
+        reason="preflight",
+    )
+
+    payload = json.loads(dump_file.read_text())
+    dumped_text = json.dumps(payload, ensure_ascii=False)
+    assert "operator-only peer card" not in dumped_text
+
+
+def test_dump_api_request_debug_strips_signed_recall_blocks_from_error_fields(monkeypatch, tmp_path):
+    import json
+    from agent.memory_manager import build_memory_context_block
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-4o",
+        base_url="http://127.0.0.1:9208/v1",
+        api_key="test-key",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.logs_dir = tmp_path
+    leaked = build_memory_context_block("operator-only peer card")
+
+    class ProviderError(RuntimeError):
+        body: object
+        response: object
+
+    error = ProviderError(leaked)
+    error.body = {"message": leaked}
+    error.response = SimpleNamespace(status_code=400, text=leaked)
+
+    dump_file = agent._dump_api_request_debug(
+        {
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "Visible intro"}],
+        },
+        reason="provider_error",
+        error=error,
+    )
+
+    payload = json.loads(dump_file.read_text())
+    dumped_text = json.dumps(payload, ensure_ascii=False)
+    assert "operator-only peer card" not in dumped_text
 
 
 # --- Reasoning-only response tests (fix for empty content retry loop) ---

@@ -1561,8 +1561,11 @@
 
     useEffect(function () {
       // Collapse the panel when the user clicks or taps outside it.
+      // Skip clicks inside portal content (SelectOption dropdowns rendered
+      // by Radix popper) — they live outside the panel's DOM hierarchy.
       function onPointerDown(event) {
         if (!expanded || !panelRef.current) return;
+        if (event.target.closest("[data-radix-popper-content-wrapper]")) return;
         if (!panelRef.current.contains(event.target)) {
           setExpanded(false);
         }

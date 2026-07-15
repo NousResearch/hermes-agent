@@ -661,6 +661,28 @@ DANGEROUS_PATTERNS = [
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
     (rf'>>?\s*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via redirection"),
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
+    # Exec-via-flag escapes on otherwise read-only commands (port of
+    # Kilo-Org/kilocode#11890).  These flags make an innocuous-looking
+    # command execute an ARBITRARY PROGRAM: sort spawns its compressor for
+    # temp runs, rg runs a preprocessor per file, ag/man spawn a pager or
+    # browser.  Without these rules the flag value is opaque argument text,
+    # so `sort --compress-program='rm -rf ~' f` looked like a plain sort.
+    # The payload is additionally surfaced to the hardline floor via
+    # _exec_flag_payloads() in _command_detection_variants below — these
+    # entries make the *mechanism itself* require approval even when the
+    # payload points at a script whose contents we cannot see.
+    (r'\bsort\b[^\n;|&]*--compress-program', "arbitrary program execution via sort --compress-program"),
+    (r'\brg\b[^\n;|&]*--pre[=\s]', "arbitrary program execution via rg --pre"),
+    (r'\brg\b[^\n;|&]*--hostname-bin', "arbitrary program execution via rg --hostname-bin"),
+    (r'\bag\b[^\n;|&]*--pager', "arbitrary program execution via ag --pager"),
+    # man -P/--pager runs an arbitrary pager program; -H/--html runs an
+    # arbitrary browser.  Detection input is lowercased, so `-p` here also
+    # covers the rare legit `man -p` (preprocessor list) — an acceptable
+    # approval-prompt false positive.  `(?!-)` keeps `--help`/`--html` long
+    # flags out of the short-flag branch.
+    (r'\bman\b[^\n;|&]*\s-(?!-)\w*p', "arbitrary program execution via man pager flag"),
+    (r'\bman\b[^\n;|&]*\s--pager', "arbitrary program execution via man pager flag"),
+    (r'\bman\b[^\n;|&]*\s--html', "arbitrary program execution via man --html"),
     # find -exec rm / -execdir rm — the -execdir variant (same semantics,
     # runs in the directory of each match) was previously missed. Claude
     # Code 2.1.113 tightened their equivalent find rule to stop auto-
@@ -1398,10 +1420,57 @@ def _iter_shell_command_word_spans(command: str):
             break
 
 
+_EXEC_FLAG_PAYLOAD_RE = re.compile(
+    r"""(?:--compress-program|--pre|--hostname-bin|--pager|--html)
+        (?:=|\s+)                     # =value or separate word
+        (?P<payload>'[^']*'|"[^"]*"|\S+)""",
+    re.VERBOSE,
+)
+
+# man -P/-H short flags (possibly bundled, e.g. ``man -Psh ls``).  Scoped to a
+# ``man`` command context: ``-P`` is a common flag elsewhere (``grep -P`` is a
+# perl-regex switch) and extracting its argument there would false-positive on
+# legitimate searches for dangerous-looking strings.
+_MAN_EXEC_FLAG_PAYLOAD_RE = re.compile(
+    r"""\bman\b[^\n;|&]*?
+        \s-\w*[PH]
+        (?:=|\s*)                     # bundled (-Psh), separate word, or =
+        (?P<payload>'[^']*'|"[^"]*"|\S+)""",
+    re.VERBOSE,
+)
+
+
+def _exec_flag_payloads(command: str):
+    """Yield the program values passed to exec-via-flag options.
+
+    Flags like ``sort --compress-program``, ``rg --pre``, ``ag --pager`` and
+    ``man -P`` make an otherwise read-only command execute an arbitrary
+    program.  The flag value is normally opaque argument text, so a hardline
+    payload smuggled through it (``sort --compress-program='rm -rf /' f``)
+    never reached the unconditional floor.  Surfacing each payload as its own
+    detection variant lets the hardline/dangerous patterns match the wrapped
+    command directly.  Port of Kilo-Org/kilocode#11890.
+    """
+    for regex in (_EXEC_FLAG_PAYLOAD_RE, _MAN_EXEC_FLAG_PAYLOAD_RE):
+        for match in regex.finditer(command):
+            payload = _strip_optional_shell_quotes(match.group("payload"))
+            payload = payload.strip()
+            if payload and not payload.startswith("-"):
+                yield payload
+
+
 def _command_detection_variants(command: str):
     normalized = _normalize_command_for_detection(command)
     seen = {normalized}
     yield normalized
+    # Exec-via-flag payloads: expose the program argument of flags that make
+    # a read-only command execute an arbitrary program, so a hardline command
+    # hidden inside (e.g.) --compress-program='rm -rf /' anchors at command
+    # position and hits the unconditional floor.
+    for payload in _exec_flag_payloads(normalized):
+        if payload not in seen:
+            seen.add(payload)
+            yield payload
     # Subshell `(cmd)` and brace-group `{ cmd; }` openers put `cmd` at a real
     # command position, but the flat `_CMDPOS`-anchored patterns can't see it:
     # their start-position class deliberately omits `(`/`{` because a bare

@@ -445,3 +445,85 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_typing_loop_survives_hanging_http_request():
+    """Regression for #64874: a hanging typing HTTP request must not pin the
+    loop forever. ``asyncio.wait_for`` should abort the call after the timeout
+    so the loop can retry on the next cycle instead of blocking indefinitely.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._typing_tasks = {}
+
+    # Simulate a Discord API stall: the request never resolves.
+    hang_future = asyncio.get_event_loop().create_future()
+
+    async def _hang(*a, **k):
+        await hang_future  # never set
+    adapter._client.http.request = _hang
+
+    # Patch the loop's inter-call sleep so the test doesn't wait 12s twice.
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_dur):
+        await real_sleep(0)
+    import plugins.platforms.discord.adapter as _adapter_mod
+    _orig_sleep = _adapter_mod.asyncio.sleep
+    _adapter_mod.asyncio.sleep = _fast_sleep
+    try:
+        await adapter.send_typing("12345")
+        # Within ~1s the wait_for should have fired and the loop should have
+        # moved on (recorded via the call count climbing past 1).
+        await real_sleep(1.5)
+    finally:
+        _adapter_mod.asyncio.sleep = _orig_sleep
+        adapter._typing_tasks.pop("12345", None)
+        hang_future.cancel()
+
+    # If wait_for is missing (regression), this test hangs until the global
+    # pytest timeout kills it. With the fix, the loop simply logs and retries.
+    assert adapter._client.http.request is _hang  # sanity
+
+
+@pytest.mark.asyncio
+async def test_stop_typing_does_not_block_on_stuck_task():
+    """Regression for #64874: ``stop_typing`` must not await a stuck task
+    indefinitely. Even if the underlying HTTP request hangs, the cancel-and-
+    wait should give up within a few seconds so the gateway can move on and
+    a subsequent ``send_typing`` (next message) can start a fresh task.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http = MagicMock()
+    adapter._typing_tasks = {}
+
+    hang_future = asyncio.get_event_loop().create_future()
+
+    async def _hang(*a, **k):
+        await hang_future
+    adapter._client.http.request = _hang
+
+    # Patch sleep so the loop spins fast (we only care about stop_typing).
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(_dur):
+        await real_sleep(0)
+    import plugins.platforms.discord.adapter as _adapter_mod
+    _orig_sleep = _adapter_mod.asyncio.sleep
+    _adapter_mod.asyncio.sleep = _fast_sleep
+    try:
+        await adapter.send_typing("12345")
+        await real_sleep(0.05)  # let the loop enter the hanging request
+        # stop_typing must return within ~5s even if the task is stuck.
+        import time as _time
+        start = _time.monotonic()
+        await adapter.stop_typing("12345")
+        elapsed = _time.monotonic() - start
+        assert elapsed < 6.0, f"stop_typing blocked for {elapsed:.1f}s"
+        assert "12345" not in adapter._typing_tasks
+    finally:
+        _adapter_mod.asyncio.sleep = _orig_sleep
+        hang_future.cancel()

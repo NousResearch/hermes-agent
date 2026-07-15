@@ -139,6 +139,47 @@ class TestSessionLifecycle:
         assert session["cwd"] == "/work/repo"
         assert session["git_branch"] == "pets-feature"
 
+    def test_child_session_inherits_cwd_and_git_repo_root_from_parent(self, db):
+        """A parent_session_id child born without cwd/git_repo_root (e.g. the
+        compression-fork path) must inherit both from its parent, so it
+        doesn't silently drop out of the project sidebar (#64709)."""
+        db.create_session(session_id="parent", source="cli")
+        db.update_session_cwd("parent", "/work/repo", git_repo_root="/work/repo")
+
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+
+        child = db.get_session("child")
+        assert child["cwd"] == "/work/repo"
+        assert child["git_repo_root"] == "/work/repo"
+
+    def test_child_session_explicit_cwd_is_not_overwritten_by_parent(self, db):
+        """A child that explicitly sets its own cwd/git_repo_root keeps it —
+        parent inheritance only fills in NULLs, never clobbers."""
+        db.create_session(session_id="parent", source="cli")
+        db.update_session_cwd("parent", "/work/repo-a", git_repo_root="/work/repo-a")
+
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent",
+            cwd="/work/repo-b", git_repo_root="/work/repo-b",
+        )
+
+        child = db.get_session("child")
+        assert child["cwd"] == "/work/repo-b"
+        assert child["git_repo_root"] == "/work/repo-b"
+
+    def test_multi_generation_lineage_inherits_cwd(self, db):
+        """cwd/git_repo_root propagate through a multi-hop compression chain
+        (root -> gen1 -> gen2), mirroring the multi-generation lineage from
+        the reported issue where a single conversation forked repeatedly."""
+        db.create_session(session_id="root", source="cli")
+        db.update_session_cwd("root", "/work/repo", git_repo_root="/work/repo")
+
+        db.create_session(session_id="gen1", source="cli", parent_session_id="root")
+        db.create_session(session_id="gen2", source="cli", parent_session_id="gen1")
+
+        assert db.get_session("gen1")["cwd"] == "/work/repo"
+        assert db.get_session("gen2")["cwd"] == "/work/repo"
+
     def test_update_session_cwd_empty_branch_does_not_clobber(self, db):
         """A failed branch probe (empty string) must not wipe a branch we
         already captured — only the cwd updates."""

@@ -631,6 +631,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/responses/{response_id}/approval", adapter._handle_response_approval)
     return app
 
 
@@ -2446,6 +2447,38 @@ class TestResponsesStreaming:
                 assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
 
     @pytest.mark.asyncio
+    async def test_stream_emits_response_approval_event(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                approval_cb = kwargs.get("approval_notify_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if approval_cb:
+                    approval_cb({
+                        "command": "rm -rf /tmp/demo",
+                        "description": "dangerous command",
+                        "pattern_keys": ["dangerous_command"],
+                    })
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "approve this", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "event: response.approval.requested" in body
+                assert '"type": "response.approval.requested"' in body
+                assert '"command": "rm -rf /tmp/demo"' in body
+                assert '"choices": ["once", "session", "always", "deny"]' in body
+
+    @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2925,6 +2958,47 @@ class TestDeleteResponse:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.delete("/v1/responses/resp_any")
             assert resp.status == 401
+
+
+class TestResponseApproval:
+    @pytest.mark.asyncio
+    async def test_response_approval_endpoint_resolves_pending_approval(self, adapter):
+        app = _create_app(adapter)
+        adapter._response_approval_sessions["resp_pending"] = "sess-123"
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                "tools.approval.resolve_gateway_approval",
+                return_value=1,
+            ) as mock_resolve:
+                resp = await cli.post(
+                    "/v1/responses/resp_pending/approval",
+                    json={"choice": "approve"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "object": "hermes.response.approval_response",
+            "response_id": "resp_pending",
+            "choice": "once",
+            "resolved": 1,
+        }
+        mock_resolve.assert_called_once_with("sess-123", "once", resolve_all=False)
+
+    @pytest.mark.asyncio
+    async def test_response_approval_endpoint_requires_active_session(self, adapter):
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses/resp_missing/approval",
+                json={"choice": "once"},
+            )
+            assert resp.status == 409
+            data = await resp.json()
+
+        assert "Response has no active approval session" in data["error"]["message"]
 
 
 # ---------------------------------------------------------------------------

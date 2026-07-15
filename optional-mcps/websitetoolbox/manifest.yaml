@@ -11,7 +11,7 @@ transport:
   command: "npx"
   args:
     - "-y"
-    - "websitetoolbox-mcp"
+    - "websitetoolbox-mcp@1.1.2"
 
 auth:
   type: api_key

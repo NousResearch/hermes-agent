@@ -1969,34 +1969,62 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count = 0
         self._send_path_degraded = False
 
+    def _observe_polling_request_result(self, request, generation, result):
+        """Record getUpdates progress from an observed do_request result.
+
+        Purely observational: PTB still parses the untouched payload and owns
+        any resulting exception. Kept as its own method so the observation
+        logic is shared and independently testable.
+        """
+        status_code, payload = result
+        if generation is None or not (200 <= status_code < 300):
+            return
+        try:
+            # Use the request's own parser so health observation agrees
+            # exactly with PTB's authoritative response handling (e.g.
+            # UTF-8 replacement decoding and BOM rejection).
+            envelope = request.parse_json_payload(payload)
+        except Exception:
+            return
+        if (
+            isinstance(envelope, dict)
+            and envelope.get("ok") is True
+            and "result" in envelope
+        ):
+            self._record_polling_progress(generation)
+
     def _instrument_polling_request(self, request):
-        """Wrap one dedicated PTB getUpdates request with progress tracking."""
-        do_request = request.do_request
+        """Instrument one dedicated PTB getUpdates request with progress tracking.
 
-        async def _do_request(*args, **kwargs):
-            generation = _POLLING_GENERATION_CONTEXT.get()
-            result = await do_request(*args, **kwargs)
-            status_code, payload = result
-            if generation is not None and 200 <= status_code < 300:
-                try:
-                    # Use the request's own parser so health observation agrees
-                    # exactly with PTB's authoritative response handling (e.g.
-                    # UTF-8 replacement decoding and BOM rejection).
-                    envelope = request.parse_json_payload(payload)
-                except Exception:
-                    # Instrumentation is observational: PTB still parses the
-                    # untouched payload and owns the resulting exception.
-                    pass
-                else:
-                    if (
-                        isinstance(envelope, dict)
-                        and envelope.get("ok") is True
-                        and "result" in envelope
-                    ):
-                        self._record_polling_progress(generation)
-            return result
+        PTB's request classes (``BaseRequest`` / ``HTTPXRequest``) use
+        ``__slots__``. On Python 3.13 their instances no longer carry a
+        ``__dict__`` (the ``AbstractAsyncContextManager`` MRO stopped yielding
+        one), so ``request.do_request = wrapper`` raises
+        ``AttributeError: 'HTTPXRequest' object attribute 'do_request' is
+        read-only`` and the whole Telegram connect fails (#64482). It only
+        appeared to work on Python 3.12, where those instances still had a
+        ``__dict__``.
 
-        request.do_request = _do_request
+        Instead of monkey-patching the instance, re-tag it to a thin subclass
+        that overrides ``do_request``. This is portable across Python versions
+        and works for both the real request and the test doubles. The subclass
+        declares ``__slots__ = ()`` so its instance layout stays identical to
+        the base, which is what makes the ``__class__`` swap legal on a slotted
+        instance.
+        """
+        adapter = self
+        base_cls = type(request)
+
+        class _InstrumentedPollingRequest(base_cls):
+            __slots__ = ()
+
+            async def do_request(self, *args, **kwargs):
+                generation = _POLLING_GENERATION_CONTEXT.get()
+                result = await super().do_request(*args, **kwargs)
+                adapter._observe_polling_request_result(self, generation, result)
+                return result
+
+        request.__class__ = _InstrumentedPollingRequest
         return request
 
     async def _start_polling_once(
@@ -7897,6 +7925,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:

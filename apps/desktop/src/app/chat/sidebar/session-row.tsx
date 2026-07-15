@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
-import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { startSessionDrag } from '@/app/chat/session-drag'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -13,7 +13,8 @@ import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, $unreadFinishedSessionIds } from '@/store/session'
+import { openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -74,10 +75,11 @@ export function SidebarSessionRow({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
-  // Subscribe per-row (the leaf) instead of drilling a set through the list —
-  // the atom is tiny and rarely non-empty. True when a clarify prompt in this
-  // session is waiting on the user.
+  // True when a clarify prompt in this session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  // True when the session's most recent turn finished in the background (while
+  // the user was viewing a different session) and hasn't been opened since.
+  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
 
   return (
     <SessionContextMenu
@@ -92,7 +94,7 @@ export function SidebarSessionRow({
     >
       <SidebarRowShell
         actions={
-          <div className="relative z-2 grid w-[1.375rem] place-items-center">
+          <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
             {!isWorking && (
               <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
                 {age}
@@ -130,21 +132,19 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
-        draggable
-        onDragStart={event => {
-          // Reorder drags belong to dnd-kit (the grab handle) — cancel the
-          // native drag so the two DnD systems don't fight.
-          if ((event.target as HTMLElement).closest('[data-reorder-handle]')) {
-            event.preventDefault()
-
+        onPointerDown={event => {
+          // Reorder drags belong to dnd-kit (the grab handle); the ⋯ actions
+          // cluster keeps its own gestures. Everything else on the row —
+          // including the row-body BUTTON, the natural grab surface — is a
+          // session drag source: a POINTER drag on the shared drag session
+          // (never native HTML5 DnD: no macOS snap-back, Esc aborts
+          // instantly). Sub-threshold releases stay ordinary clicks, so
+          // resume / pin / open-in-window are untouched.
+          if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
             return
           }
 
-          writeSessionDrag(event.dataTransfer, {
-            id: session.id,
-            profile: session.profile || 'default',
-            title
-          })
+          startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
         }}
         ref={ref}
         style={style}
@@ -153,7 +153,40 @@ export function SidebarSessionRow({
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          // Middle-click = open in a new tab (browser muscle memory). Swallow
+          // the mousedown so Chromium doesn't enter autoscroll mode.
+          onAuxClick={event => {
+            if (event.button === 1) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              openSessionTile(session.id, 'center')
+            }
+          }}
           onClick={event => {
+            const mod = event.metaKey || event.ctrlKey
+
+            // ⇧⌘-click → pop into its own window (needs standalone windows).
+            if (mod && event.shiftKey && canOpenSessionWindow()) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              void openSessionInNewWindow(session.id)
+
+              return
+            }
+
+            // ⌘/⌃-click → open in a new tab (stack into main).
+            if (mod) {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              openSessionTile(session.id, 'center')
+
+              return
+            }
+
+            // ⇧-click → pin.
             if (event.shiftKey) {
               event.preventDefault()
               event.stopPropagation()
@@ -163,21 +196,9 @@ export function SidebarSessionRow({
               return
             }
 
-            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window — the universal "open in a new window" gesture. Archive
-            // lives in the row's ⋯ and right-click menus. Falls through to a
-            // normal resume when standalone windows aren't available (web embed).
-            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
-
-              return
-            }
-
             onResume()
           }}
+          onMouseDown={event => event.button === 1 && event.preventDefault()}
         >
           {reorderable ? (
             <SidebarRowGrab
@@ -191,11 +212,12 @@ export function SidebarSessionRow({
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 isWorking={isWorking}
                 needsInput={needsInput}
+                isUnread={isUnread}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} />
+              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} isUnread={isUnread} />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -220,11 +242,13 @@ function SessionRowLeadDot({
   branchStem,
   isWorking,
   needsInput = false,
+  isUnread = false,
   className
 }: {
   branchStem?: string
   isWorking: boolean
   needsInput?: boolean
+  isUnread?: boolean
   className?: string
 }) {
   return (
@@ -234,7 +258,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} isUnread={isUnread} />
     </span>
   )
 }
@@ -242,10 +266,12 @@ function SessionRowLeadDot({
 function SidebarRowDot({
   isWorking,
   needsInput = false,
+  isUnread = false,
   className
 }: {
   isWorking: boolean
   needsInput?: boolean
+  isUnread?: boolean
   className?: string
 }) {
   const { t } = useI18n()
@@ -262,6 +288,21 @@ function SidebarRowDot({
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
         role="status"
         title={r.waitingForAnswer}
+      />
+    )
+  }
+
+  // "Unread finished" wins over the default gray dot: a background session's
+  // turn completed and the user hasn't opened it since. Steady green (no pulse)
+  // reads as "something new here, go look" — distinct from the live accent
+  // pulse of a running turn.
+  if (isUnread) {
+    return (
+      <span
+        aria-label={r.finishedUnread}
+        className={cn('size-1.5 rounded-full bg-emerald-500', className)}
+        role="status"
+        title={r.finishedUnread}
       />
     )
   }

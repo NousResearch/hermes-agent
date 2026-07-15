@@ -36,6 +36,7 @@ Usage:
     content = web_extract_tool(["https://example.com"], format="markdown")
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -402,14 +403,19 @@ def _web_requires_env() -> list[str]:
 # Override via web.extract_char_limit in config.yaml.
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 
-# Per-session exhaustion tracking: backends that have returned credit/quota
-# errors are skipped for the remainder of the session. Cleared on /reset.
-_exhausted_backends: set[str] = set()
+# Session-scoped exhaustion tracking: backends that have returned credit/quota
+# errors are skipped for the remainder of the session. Uses a ContextVar so
+# each session gets its own isolated set — /new, /reset, and session transitions
+# automatically get a fresh set without needing explicit lifecycle hooks.
+# The default factory creates a new empty set per session boundary.
+_exhausted_backends: contextvars.ContextVar[set[str]] = contextvars.ContextVar(
+    "_exhausted_backends", default=set()
+)
 
 
 def _reset_exhausted_backends() -> None:
-    """Clear the exhaustion set. Called on session start (/reset)."""
-    _exhausted_backends.clear()
+    """Clear the exhaustion set for the current session."""
+    _exhausted_backends.set(set())
 
 
 def _is_credit_error(response: dict) -> bool:
@@ -722,7 +728,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         response_data = None
         last_error = None
         for attempt, backend in enumerate(backend_chain):
-            if backend in _exhausted_backends:
+            if backend in _exhausted_backends.get():
                 logger.debug("Skipping exhausted backend '%s'", backend)
                 continue
             provider = _wsp_get_provider(backend) if backend else None
@@ -754,7 +760,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                     "Backend '%s' returned credit error; marking exhausted",
                     provider.name,
                 )
-                _exhausted_backends.add(provider.name)
+                _exhausted_backends.get().add(provider.name)
                 last_error = response_data.get("error", "Credit limit reached")
                 response_data = None
                 continue
@@ -913,14 +919,32 @@ async def web_extract_tool(
             results = None
             last_error = None
             for attempt, backend in enumerate(backend_chain):
-                if backend in _exhausted_backends:
+                if backend in _exhausted_backends.get():
                     logger.debug("Skipping exhausted backend '%s'", backend)
                     continue
 
                 provider = _wsp_get_provider(backend) if backend else None
                 if provider is None or not provider.supports_extract():
                     if attempt == 0:
-                        # First attempt: fall back to active provider
+                        # First attempt: when the configured name IS registered but
+                        # doesn't support extract (search-only providers like
+                        # brave-free / ddgs / searxng), surface that as a typed
+                        # "search-only" error rather than silently switching backends.
+                        # Only fall through to the active-provider walk when the name
+                        # isn't registered at all (typo / uninstalled plugin).
+                        if provider is not None and not provider.supports_extract():
+                            return json.dumps(
+                                {
+                                    "success": False,
+                                    "error": (
+                                        f"{provider.display_name} is a search-only "
+                                        "backend and cannot extract URL content. "
+                                        "Set web.extract_backend to firecrawl, "
+                                        "tavily, exa, or parallel."
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
                         provider = get_active_extract_provider()
                         if provider is None:
                             return json.dumps(
@@ -974,7 +998,7 @@ async def web_extract_tool(
                             "Backend '%s' raised credit error; marking exhausted: %s",
                             provider.name, exc,
                         )
-                        _exhausted_backends.add(provider.name)
+                        _exhausted_backends.get().add(provider.name)
                         last_error = str(exc)
                         results = None
                         continue
@@ -989,7 +1013,7 @@ async def web_extract_tool(
                         "Backend '%s' returned credit errors on all URLs; marking exhausted",
                         provider.name,
                     )
-                    _exhausted_backends.add(provider.name)
+                    _exhausted_backends.get().add(provider.name)
                     last_error = results[0].get("error", "Credit limit reached")
                     results = None
                     continue

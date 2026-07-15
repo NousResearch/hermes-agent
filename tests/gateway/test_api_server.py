@@ -18,6 +18,7 @@ import os
 import stat
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1101,6 +1102,15 @@ class TestMobileControlPlane:
             }],
         ):
             assert adapter._active_mobile_sessions() == []
+
+    def test_mobile_session_title_uses_session_database(self, adapter):
+        adapter._session_db = SimpleNamespace(
+            get_session_title=lambda session_id: (
+                "  Release   Android build  " if session_id == "session-1" else None
+            )
+        )
+
+        assert adapter._mobile_session_title("session-1") == "Release Android build"
 
     def test_run_latest_status_is_bounded_and_safe(self, adapter):
         assert adapter._safe_run_latest_status({

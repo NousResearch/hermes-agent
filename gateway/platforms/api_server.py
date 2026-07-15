@@ -4419,7 +4419,7 @@ class APIServerAdapter(BasePlatformAdapter):
     def _mobile_session_title(self, session_id: str) -> str:
         """Resolve a short session title without exposing message contents."""
         try:
-            db = self._get_session_db()
+            db = self._ensure_session_db()
             title = db.get_session_title(session_id) if db is not None else None
         except Exception:
             title = None

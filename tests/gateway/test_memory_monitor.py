@@ -120,3 +120,108 @@ def test_unavailable_rss_warns_and_does_not_start(caplog, monkeypatch):
     assert started is False
     assert mm.is_running() is False
     assert any("Memory monitoring unavailable" in r.getMessage() for r in caplog.records)
+
+
+def test_default_config_enables_gateway_memory_monitor():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    monitor_cfg = DEFAULT_CONFIG["logging"]["memory_monitor"]
+    assert monitor_cfg["enabled"] is True
+    assert monitor_cfg["interval_seconds"] == 300
+
+
+def test_gateway_memory_monitor_config_defaults_enabled():
+    from gateway.run import _resolve_gateway_memory_monitor_config
+
+    assert _resolve_gateway_memory_monitor_config({}) == (True, 300.0)
+
+
+def test_gateway_memory_monitor_config_can_disable():
+    from gateway.run import _resolve_gateway_memory_monitor_config
+
+    cfg = {"logging": {"memory_monitor": {"enabled": False, "interval_seconds": 30}}}
+    assert _resolve_gateway_memory_monitor_config(cfg) == (False, 30.0)
+
+
+def test_gateway_memory_monitor_config_falls_back_for_bad_interval():
+    from gateway.run import _resolve_gateway_memory_monitor_config
+
+    cfg = {"logging": {"memory_monitor": {"enabled": True, "interval_seconds": 0}}}
+    assert _resolve_gateway_memory_monitor_config(cfg) == (True, 300.0)
+
+
+def test_start_gateway_memory_monitor_passes_config_interval(monkeypatch):
+    from gateway.run import _start_gateway_memory_monitor
+
+    calls = []
+    monkeypatch.setattr(
+        mm,
+        "start_memory_monitoring",
+        lambda interval_seconds: calls.append(interval_seconds) or True,
+    )
+
+    cfg = {"logging": {"memory_monitor": {"enabled": True, "interval_seconds": 42}}}
+    assert _start_gateway_memory_monitor(cfg) is True
+    assert calls == [42.0]
+
+
+def test_start_gateway_memory_monitor_skips_disabled_config(monkeypatch):
+    from gateway.run import _start_gateway_memory_monitor
+
+    calls = []
+    monkeypatch.setattr(
+        mm,
+        "start_memory_monitoring",
+        lambda interval_seconds: calls.append(interval_seconds) or True,
+    )
+
+    cfg = {"logging": {"memory_monitor": {"enabled": False, "interval_seconds": 42}}}
+    assert _start_gateway_memory_monitor(cfg) is False
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_gateway_memory_monitor_tracks_running_lifetime(monkeypatch):
+    from gateway.run import _wait_with_gateway_memory_monitor
+
+    events = []
+
+    class Runner:
+        async def wait_for_shutdown(self):
+            events.append("wait")
+
+    monkeypatch.setattr(
+        "gateway.run._start_gateway_memory_monitor",
+        lambda: events.append("start") or True,
+    )
+    monkeypatch.setattr(
+        "gateway.run._stop_gateway_memory_monitor",
+        lambda: events.append("stop"),
+    )
+
+    await _wait_with_gateway_memory_monitor(Runner())
+
+    assert events == ["start", "wait", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_memory_monitor_stops_when_shutdown_wait_fails(monkeypatch):
+    from gateway.run import _wait_with_gateway_memory_monitor
+
+    stopped = False
+
+    class Runner:
+        async def wait_for_shutdown(self):
+            raise RuntimeError("shutdown wait failed")
+
+    def stop_monitor():
+        nonlocal stopped
+        stopped = True
+
+    monkeypatch.setattr("gateway.run._start_gateway_memory_monitor", lambda: True)
+    monkeypatch.setattr("gateway.run._stop_gateway_memory_monitor", stop_monitor)
+
+    with pytest.raises(RuntimeError, match="shutdown wait failed"):
+        await _wait_with_gateway_memory_monitor(Runner())
+
+    assert stopped is True

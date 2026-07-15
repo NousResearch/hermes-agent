@@ -69,6 +69,9 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
+_GATEWAY_MEMORY_MONITOR_DEFAULT_ENABLED = True
+_GATEWAY_MEMORY_MONITOR_DEFAULT_INTERVAL_SECONDS = 300.0
+_GATEWAY_MEMORY_MONITOR_MIN_INTERVAL_SECONDS = 1.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -100,6 +103,84 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
 _GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
     {"local", "api_server", "webhook", "msgraph_webhook"}
 )
+
+
+def _coerce_gateway_memory_monitor_enabled(value: Any, default: bool) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        return default
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _coerce_gateway_memory_monitor_interval(value: Any) -> float:
+    try:
+        interval = float(value)
+    except (TypeError, ValueError):
+        return _GATEWAY_MEMORY_MONITOR_DEFAULT_INTERVAL_SECONDS
+    if interval < _GATEWAY_MEMORY_MONITOR_MIN_INTERVAL_SECONDS:
+        return _GATEWAY_MEMORY_MONITOR_DEFAULT_INTERVAL_SECONDS
+    return interval
+
+
+def _resolve_gateway_memory_monitor_config(
+    config: Optional[dict] = None,
+) -> tuple[bool, float]:
+    cfg = config if isinstance(config, dict) else _load_gateway_runtime_config()
+    monitor_cfg = cfg_get(cfg, "logging", "memory_monitor", default=None)
+
+    enabled = _GATEWAY_MEMORY_MONITOR_DEFAULT_ENABLED
+    interval_seconds = _GATEWAY_MEMORY_MONITOR_DEFAULT_INTERVAL_SECONDS
+
+    if isinstance(monitor_cfg, dict):
+        enabled = _coerce_gateway_memory_monitor_enabled(
+            monitor_cfg.get("enabled"),
+            enabled,
+        )
+        interval_seconds = _coerce_gateway_memory_monitor_interval(
+            monitor_cfg.get("interval_seconds", interval_seconds),
+        )
+    elif monitor_cfg is not None:
+        enabled = _coerce_gateway_memory_monitor_enabled(monitor_cfg, enabled)
+
+    return enabled, interval_seconds
+
+
+def _start_gateway_memory_monitor(config: Optional[dict] = None) -> bool:
+    enabled, interval_seconds = _resolve_gateway_memory_monitor_config(config)
+    if not enabled:
+        logger.debug("Gateway memory monitoring disabled by config")
+        return False
+    try:
+        from gateway.memory_monitor import start_memory_monitoring
+
+        return start_memory_monitoring(interval_seconds=interval_seconds)
+    except Exception as exc:
+        logger.warning("[MEMORY] Periodic memory monitoring failed to start: %s", exc)
+        return False
+
+
+def _stop_gateway_memory_monitor() -> None:
+    try:
+        from gateway.memory_monitor import stop_memory_monitoring
+
+        stop_memory_monitoring()
+    except Exception as exc:
+        logger.debug("Gateway memory monitoring stop failed: %s", exc)
+
+
+async def _wait_with_gateway_memory_monitor(runner: Any) -> None:
+    memory_monitor_started = _start_gateway_memory_monitor()
+    try:
+        await runner.wait_for_shutdown()
+    finally:
+        if memory_monitor_started:
+            _stop_gateway_memory_monitor()
 
 
 def _gateway_surface_passes_raw_text(platform: Any) -> bool:
@@ -21139,8 +21220,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     housekeeping_thread.start()
     
-    # Wait for shutdown
-    await runner.wait_for_shutdown()
+    # Monitor only a fully running gateway, and always stop the monitor when
+    # the runner leaves its active lifetime.
+    await _wait_with_gateway_memory_monitor(runner)
 
     try:
         from hermes_cli.nous_auth_keepalive import stop_nous_auth_keepalive

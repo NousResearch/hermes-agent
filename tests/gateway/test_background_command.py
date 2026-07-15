@@ -154,6 +154,39 @@ class TestHandleBackgroundCommand:
         assert long_prompt not in result
 
     @pytest.mark.asyncio
+    async def test_ack_is_ephemeral_so_it_is_never_scanned_for_attachments(self):
+        """The ack must not be scanned by extract_local_files() at all.
+
+        Regression for #64661: the ack text embeds a truncated echo of the
+        user's prompt. If that prompt contains a bare existing file path,
+        extract_local_files() (run by _process_message_background on every
+        *non-ephemeral* response, per gateway/platforms/base.py) would upload
+        it from the ack — and the background task's own intentional delivery
+        of the same file then uploads it a second time. Returning an
+        EphemeralReply (the same mechanism /stop, /restart, /reset and /yolo
+        already use for status notices) makes _process_message_background
+        skip extraction for this reply entirely, regardless of what the
+        echoed preview contains.
+        """
+        from gateway.platforms.base import BasePlatformAdapter, EphemeralReply
+
+        runner = _make_runner()
+        prompt = "use /tmp/bg.png and return it as an image"
+        with patch("gateway.run.asyncio.create_task", side_effect=lambda c, **kw: (c.close(), MagicMock())[1]):
+            event = _make_event(text=f"/background {prompt}")
+            result = await runner._handle_background_command(event)
+
+        assert isinstance(result, EphemeralReply)
+        assert result.ttl_seconds == 0  # no auto-delete — prior behavior preserved
+
+        # Sanity: the path really would be picked up if this weren't skipped
+        # via the is_ephemeral_response guard (confirms the test is not
+        # trivially passing because the path can never match).
+        with patch("os.path.isfile", return_value=True):
+            local_files, _ = BasePlatformAdapter.extract_local_files(str(result))
+        assert local_files == ["/tmp/bg.png"]
+
+    @pytest.mark.asyncio
     async def test_task_id_is_unique(self):
         """Each background task gets a unique task ID."""
         runner = _make_runner()

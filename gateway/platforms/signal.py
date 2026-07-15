@@ -613,6 +613,18 @@ class SignalAdapter(BasePlatformAdapter):
         if text and mentions:
             text = _render_mentions(text, mentions)
 
+        # Extract quote (reply-to) context from Signal dataMessage. Signal's
+        # quote.id is the timestamp of the quoted message; quote.author points
+        # at the quoted sender when available. Preserve both so the gateway can
+        # tell the agent when the user replied to a specific assistant message.
+        # Resolved here (before the mention filter) so reply-to-bot can gate on it.
+        quote_data = data_message.get("quote") or {}
+        reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
+        reply_to_text = quote_data.get("text")
+        reply_to_author = self._extract_quote_author(quote_data)
+        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
+        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
+
         # Mention filter: in groups, only process messages that @mention the bot account
         if is_group and self.require_mention:
             account_norm = self._account_normalized
@@ -626,12 +638,10 @@ class SignalAdapter(BasePlatformAdapter):
             )
             # Reply-to-bot counts as a mention (parity with Telegram/WhatsApp):
             # treat a quote of a message the bot itself sent as "addressed to me".
-            _q = data_message.get("quote") or {}
-            _q_author = _q.get("author") or _q.get("authorNumber") or _q.get("authorUuid")
-            replied_to_bot = bool(_q_author) and _q_author in {
-                account_norm,
-                self.account,
-            }
+            # Reuse the robust resolver (outbound-timestamp cache + number<->uuid
+            # mapping) instead of a raw phone compare, so UUID-only quote authors
+            # and timestamp-only quotes are matched too.
+            replied_to_bot = reply_to_is_own
             # Slash-bypass: let "/cmd" run without an @mention (parity with
             # Telegram/WhatsApp). Slash-access / group_user_allowed_commands still
             # gates which commands a non-owner may actually run.
@@ -667,17 +677,6 @@ class SignalAdapter(BasePlatformAdapter):
                 # Only touches the doubled space the removal introduced, so
                 # intentional newlines in a multi-line message are preserved.
                 text = text.replace("  ", " ").strip()
-
-        # Extract quote (reply-to) context from Signal dataMessage. Signal's
-        # quote.id is the timestamp of the quoted message; quote.author points
-        # at the quoted sender when available. Preserve both so the gateway can
-        # tell the agent when the user replied to a specific assistant message.
-        quote_data = data_message.get("quote") or {}
-        reply_to_id = str(quote_data.get("id")) if quote_data.get("id") else None
-        reply_to_text = quote_data.get("text")
-        reply_to_author = self._extract_quote_author(quote_data)
-        reply_to_author_name = quote_data.get("authorName") or quote_data.get("authorProfileName")
-        reply_to_is_own = self._quote_references_own_message(reply_to_id, reply_to_author)
 
         # Process attachments
         attachments_data = data_message.get("attachments", [])

@@ -273,7 +273,15 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    # Match the platform chat_id OR its raw form. Signal emits
+                    # chat_id="group:<id>" while its allowlist holds the raw <id>
+                    # (also exposed as chat_id_alt), so compare both the raw
+                    # alt id and the "group:"-stripped form, not just chat_id.
+                    group_id_candidates = {source.chat_id, source.chat_id_alt}
+                    if source.chat_id and source.chat_id.startswith("group:"):
+                        group_id_candidates.add(source.chat_id.split("group:", 1)[1])
+                    group_id_candidates.discard(None)
+                    if "*" in allowed_group_ids or (group_id_candidates & allowed_group_ids):
                         return True
 
         if not user_id:

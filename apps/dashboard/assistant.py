@@ -26,7 +26,12 @@ import re
 from collections import Counter
 from datetime import date, datetime
 
+from router import TIERS, Router
+
+# Legacy single-model knob. When set it pins every router tier to one model,
+# preserving the pre-router behaviour; when unset the router picks per task.
 DEFAULT_MODEL = os.environ.get("HERMES_HUB_MODEL", "claude-opus-4-8")
+_MODEL_PIN = os.environ.get("HERMES_HUB_MODEL")  # None → tiered routing
 
 try:  # optional dependency — the dashboard must work without it
     import anthropic
@@ -283,8 +288,23 @@ def _credentials_available() -> bool:
 class Assistant:
     def __init__(self, model: str = DEFAULT_MODEL) -> None:
         self.model = model
+        self.router = Router(pin=_MODEL_PIN)
         self._client = None
         self.services = None  # set by server.Api — access to feeds/memory/automations
+
+    @staticmethod
+    def _last_user_text(messages: list) -> str:
+        for msg in reversed(messages):
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return " ".join(
+                    b.get("text", "") for b in content
+                    if isinstance(b, dict) and b.get("type") == "text")
+        return ""
 
     # -- server-side tools (proxied through /api/assistant/tool) -------------
     def run_server_tool(self, name: str, tool_input: dict) -> str:
@@ -376,11 +396,15 @@ class Assistant:
         return self._client
 
     def status(self) -> dict:
+        claude = self.mode == "claude"
         return {
             "mode": self.mode,
-            "model": self.model if self.mode == "claude" else None,
+            # In tiered mode there's no single model; report the pin or the
+            # default core tier as the headline, with the full table alongside.
+            "model": (self.router.pin or TIERS["core"]) if claude else None,
+            "routing": self.router.snapshot() if claude else None,
             "sdk_installed": _HAVE_SDK,
-            "hint": None if self.mode == "claude" else (
+            "hint": None if claude else (
                 "Local rule-based mode. For full AI: pip install anthropic, "
                 "then set ANTHROPIC_API_KEY (or run `ant auth login`) and restart."
             ),
@@ -398,8 +422,9 @@ class Assistant:
 
     def _chat_claude(self, messages: list, context: dict) -> dict:
         system, request_messages = self._prepare_claude_request(messages, context)
+        decision = self.router.route("chat", self._last_user_text(messages))
         response = self._get_client().messages.create(
-            model=self.model,
+            model=decision["model"],
             max_tokens=4096,
             thinking={"type": "adaptive"},
             system=system,
@@ -408,6 +433,8 @@ class Assistant:
         )
         return {
             "mode": "claude",
+            "tier": decision["tier"],
+            "model": decision["model"],
             "stop_reason": response.stop_reason,
             "content": self._convert_content(response),
         }
@@ -473,8 +500,9 @@ class Assistant:
             return
 
         system, request_messages = self._prepare_claude_request(messages, context)
+        decision = self.router.route("chat", self._last_user_text(messages))
         with self._get_client().messages.stream(
-            model=self.model,
+            model=decision["model"],
             max_tokens=4096,
             thinking={"type": "adaptive"},
             system=system,
@@ -486,6 +514,8 @@ class Assistant:
             response = stream.get_final_message()
         yield "done", {
             "mode": "claude",
+            "tier": decision["tier"],
+            "model": decision["model"],
             "stop_reason": response.stop_reason,
             "content": self._convert_content(response),
         }
@@ -541,7 +571,7 @@ class Assistant:
         content = content[:60_000]
         if self.mode == "claude":
             response = self._get_client().messages.create(
-                model=self.model,
+                model=self.router.route("summarize")["model"],
                 max_tokens=1024,
                 output_config={"effort": "low"},
                 system="You summarize dashboard data for a busy user. Reply with 2-4 tight sentences (or up to 5 bullet lines for lists of items). No preamble.",
@@ -559,7 +589,7 @@ class Assistant:
         context = payload.get("context") or {}
         if self.mode == "claude":
             response = self._get_client().messages.create(
-                model=self.model,
+                model=self.router.route("briefing")["model"],
                 max_tokens=2048,
                 thinking={"type": "adaptive"},
                 system=(

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import assistant  # noqa: E402
 import ics  # noqa: E402
+import router as router_mod  # noqa: E402
 import server  # noqa: E402
 
 
@@ -1026,6 +1027,66 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(len(self.api.backups_list({})["backups"]), 1)
         notifs = self.api.automations.notifications_after(0)["notifications"]
         self.assertTrue(any("Snapshot" in n["body"] for n in notifs))
+
+
+class RouterTests(unittest.TestCase):
+    def test_cheap_by_default(self):
+        r = router_mod.Router()
+        self.assertEqual(r.route("summarize")["tier"], "fast")
+        self.assertEqual(r.route("chat", "what's the weather today")["tier"], "core")
+        self.assertEqual(r.route("briefing")["tier"], "core")
+
+    def test_unknown_task_falls_back_to_core(self):
+        self.assertEqual(router_mod.Router().route("mystery")["tier"], "core")
+
+    def test_escalates_on_hard_patterns(self):
+        r = router_mod.Router()
+        for text in [
+            "design the architecture for a distributed system",
+            "is there a security vulnerability in this code",
+            "review my investment portfolio",
+            "change your own routing config",
+        ]:
+            self.assertEqual(r.route("chat", text)["tier"], "deep", text)
+
+    def test_deep_cap_downgrades_to_core(self):
+        r = router_mod.Router(max_deep_per_hour=2)
+        tiers = [r.route("chat", "security exploit")["tier"] for _ in range(4)]
+        self.assertEqual(tiers, ["deep", "deep", "core", "core"])
+        self.assertEqual(r.deep_calls_last_hour(), 2)
+
+    def test_pin_forces_one_model_but_records_tier(self):
+        r = router_mod.Router(pin="claude-opus-4-8")
+        deep = r.route("chat", "design the architecture")
+        fast = r.route("summarize")
+        self.assertEqual(deep["model"], "claude-opus-4-8")
+        self.assertEqual(fast["model"], "claude-opus-4-8")
+        self.assertTrue(deep["pinned"])
+        self.assertEqual(deep["requested_tier"], "deep")  # tier still tracked
+        self.assertEqual(fast["tier"], "fast")
+
+    def test_snapshot_shape(self):
+        r = router_mod.Router()
+        r.route("chat", "hi")
+        snap = r.snapshot()
+        self.assertEqual(set(snap["tiers"]), {"fast", "core", "deep"})
+        self.assertIn("deep_calls_last_hour", snap)
+        self.assertEqual(len(snap["recent"]), 1)
+
+    def test_assistant_status_exposes_tiers_when_claude(self):
+        from unittest import mock
+        a = assistant.Assistant()
+        # report claude-mode without real credentials/SDK
+        with mock.patch.object(type(a), "mode", new_callable=mock.PropertyMock,
+                               return_value="claude"):
+            status = a.status()
+        self.assertEqual(set(status["routing"]["tiers"]), {"fast", "core", "deep"})
+        self.assertIsNotNone(status["model"])
+
+    def test_assistant_status_local_mode_hides_routing(self):
+        status = assistant.Assistant().status()
+        self.assertEqual(status["mode"], "local")
+        self.assertIsNone(status["routing"])
 
 
 class BackupHttpTests(unittest.TestCase):

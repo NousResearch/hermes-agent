@@ -518,6 +518,7 @@ def build_turn_context(
     plugin_user_context = ""
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from agent.turn_telemetry import empty_telemetry as _empty_turn_telemetry
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -529,6 +530,10 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            # Retrospective self-observation: what the PREVIOUS turn did
+            # (provider used, fallback, tool failures, tools offered). Empty
+            # on the first turn. See agent/turn_telemetry.py for the schema.
+            last_turn=getattr(agent, "_last_turn_telemetry", None) or _empty_turn_telemetry(),
         )
         _ctx_parts: list[str] = []
         # Spill oversized per-hook context to disk so a runaway plugin

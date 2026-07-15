@@ -194,6 +194,33 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
+def test_registered_pre_llm_hook_observes_first_turn_then_prior_outcome(monkeypatch):
+    import hermes_cli.plugins as plugins
+    from agent.turn_telemetry import capture_turn_telemetry
+
+    manager = plugins.PluginManager()
+    observed = []
+
+    def observe(**kwargs):
+        observed.append(kwargs["last_turn"])
+
+    manager._hooks.setdefault("pre_llm_call", []).append(observe)
+    monkeypatch.setattr(plugins, "_plugin_manager", manager)
+
+    agent = _FakeAgent()
+    agent._last_turn_telemetry = None
+    _build(agent)
+    assert observed[-1]["has_data"] is False
+
+    agent._last_turn_telemetry = capture_turn_telemetry(
+        agent, result={"api_calls": 3, "interrupted": False}
+    )
+    _build(agent)
+    assert observed[-1]["has_data"] is True
+    assert observed[-1]["api_calls"] == 3
+    assert observed[-1]["provider"] == "openrouter"
+
+
 def test_task_id_passthrough():
     agent = _FakeAgent()
     ctx = _build(agent, task_id="fixed-task")
@@ -416,4 +443,3 @@ def test_expired_cooldown_allows_preflight(tmp_path):
     assert isinstance(ctx, TurnContext)
     agent._emit_status.assert_called_once()
     agent._compress_context.assert_called()
-

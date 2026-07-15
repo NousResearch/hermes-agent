@@ -527,6 +527,13 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `last_turn` | `dict` | Outcome telemetry for the previous turn on this agent instance; `has_data` is `False` on the first turn |
+
+`last_turn` includes the provider/model used, fallback state, API-call count,
+interrupt state, and unresolved tool-failure counts. It is intentionally
+instance-scoped: request surfaces that create a fresh agent for each request
+(including the API server) receive the first-turn sentinel unless the caller
+reuses the same agent. It is not persisted as session history.
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 

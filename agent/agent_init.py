@@ -2115,6 +2115,10 @@ def init_agent(
     # activates during a turn, the next turn restores these values so the
     # preferred model gets a fresh attempt each time.  Uses a single dict
     # so new state fields are easy to add without N individual attributes.
+    # Retrospective per-turn outcome record (agent/turn_telemetry.py). Stamped
+    # at finalization each turn; read by the next turn's pre_llm_call hook as
+    # last_turn=. None until the first turn completes.
+    agent._last_turn_telemetry = None
     _cc = agent.context_compressor
     agent._primary_runtime = {
         "model": agent.model,

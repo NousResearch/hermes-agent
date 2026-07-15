@@ -492,7 +492,14 @@ hermes gateway status                # Check status
 tail -f ~/.hermes/logs/gateway.log   # View logs
 ```
 
-The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. It includes three environment variables:
+Fresh default-profile installs use the canonical plist and label
+`~/Library/LaunchAgents/io.nousresearch.hermes-agent.gateway.plist` and
+`io.nousresearch.hermes-agent.gateway`. Existing installations that still use
+`ai.hermes.gateway.plist` / `ai.hermes.gateway` remain supported. When both
+identities are present, `hermes gateway start`, `stop`, `restart`, and `status`
+follow the job currently registered with launchd, preferring the actively
+running job when both are registered. The generated plist includes three
+environment variables:
 
 - **PATH** — your full shell PATH at install time, with the venv `bin/` and `node_modules/.bin` prepended. This ensures user-installed tools (Node.js, ffmpeg, etc.) are available to gateway subprocesses like the WhatsApp bridge.
 - **VIRTUAL_ENV** — points to the Python virtualenv so tools can resolve packages correctly.
@@ -503,7 +510,7 @@ launchd plists are static — if you install new tools (e.g. a new Node.js versi
 :::
 
 :::info Multiple installations
-Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. The default `~/.hermes` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
+Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. Fresh default `~/.hermes` installations use `io.nousresearch.hermes-agent.gateway`; legacy default installations keep working with `ai.hermes.gateway`. Other installations use `ai.hermes.gateway-<suffix>`.
 :::
 
 ## Platform-Specific Toolsets

@@ -1211,6 +1211,19 @@ class ProcessRegistry:
                     if evt_session_key != session_key:
                         requeue.append(evt)
                         continue
+                elif evt.get("restored"):
+                    # Legacy unfiltered drain (no ownership callback, no
+                    # session key). That behavior was safe when the in-memory
+                    # queue could only hold events created by this very
+                    # process — but durable restore (#63494) re-enqueues
+                    # completions from PREVIOUS processes at startup, so an
+                    # unfiltered consumer here would adopt a dead, unrelated
+                    # session's conversation payload (#64484). Fail closed:
+                    # leave restored events queued (still 'pending' on disk)
+                    # for a consumer that can positively prove ownership,
+                    # e.g. the owning session's --resume.
+                    requeue.append(evt)
+                    continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))

@@ -194,7 +194,6 @@ def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     base = str(base_url or "")
     return (
         base_url_host_matches(base, "inference-api.nousresearch.com")
-        or base_url_host_matches(base, "inference.nousresearch.com")
     )
 
 
@@ -458,6 +457,21 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+# Continuation nudge for Codex/Responses turns that came back with only
+# internal reasoning (no visible content, no tool calls).  When the interim
+# assistant message also carries no encrypted reasoning items and no
+# replayable message items, _chat_messages_to_responses_input emits nothing
+# for it — a bare retry would be byte-identical to the request that just
+# failed, so the model (observed: grok-4.20 on xai-oauth) deterministically
+# repeats the reasoning-only response until the retry budget is exhausted.
+_CODEX_INCOMPLETE_NUDGE = (
+    "[System: Your previous response contained only internal reasoning and "
+    "never produced a visible answer or tool call. Do not keep thinking. "
+    "Produce your final answer as plain text now (or make the tool call "
+    "you were planning).]"
+)
+
+
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
 # exception path (a provider moderation error classified as
@@ -522,12 +536,12 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
 
 def run_conversation(
     agent,
-    user_message: str,
+    user_message: Any,
     system_message: str = None,
     conversation_history: List[Dict[str, Any]] = None,
     task_id: str = None,
     stream_callback: Optional[callable] = None,
-    persist_user_message: Optional[str] = None,
+    persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -857,10 +871,19 @@ def run_conversation(
 
         if moa_config:
             try:
+                from agent.message_content import flatten_message_text as _flatten_mt
                 from agent.moa_loop import _preset_temperature, aggregate_moa_context
 
                 _moa_context = aggregate_moa_context(
-                    user_prompt=original_user_message if isinstance(original_user_message, str) else str(original_user_message),
+                    user_prompt=(
+                        original_user_message
+                        if isinstance(original_user_message, str)
+                        # Multimodal / decorated content list: extract the
+                        # visible text instead of str()-ing a Python repr of
+                        # the parts (which would leak base64 image payloads
+                        # into the aggregator prompt).
+                        else _flatten_mt(original_user_message)
+                    ),
                     api_messages=api_messages,
                     reference_models=moa_config.get("reference_models") or [],
                     aggregator=moa_config.get("aggregator") or {},
@@ -874,6 +897,14 @@ def run_conversation(
                             _base = _msg.get("content", "")
                             if isinstance(_base, str):
                                 _msg["content"] = _base + "\n\n" + _moa_context
+                            elif isinstance(_base, list):
+                                # Multimodal user turn (text + image parts):
+                                # append the MoA context as a trailing text
+                                # part instead of silently dropping it.
+                                _msg["content"] = [
+                                    *_base,
+                                    {"type": "text", "text": "\n\n" + _moa_context},
+                                ]
                             break
             except Exception as _moa_exc:
                 logger.warning("MoA context aggregation failed: %s", _moa_exc)
@@ -4453,8 +4484,56 @@ def run_conversation(
                         agent._emit_interim_assistant_message(interim_msg)
 
                 if agent._codex_incomplete_retries < 3:
+                    # When the interim message has nothing the Responses
+                    # input converter will replay (no visible content, no
+                    # encrypted reasoning items, no replayable message
+                    # items — plain-text reasoning only), a bare retry is
+                    # byte-identical to the request that just came back
+                    # incomplete and fails the same way every time
+                    # (observed with grok-4.20 on xai-oauth, whose
+                    # reasoning items lack encrypted_content).  Append a
+                    # user-role nudge so the retry actually differs and
+                    # explicitly asks for the final answer.
+                    interim_replayable = (
+                        interim_has_content
+                        or interim_has_codex_reasoning
+                        or interim_has_codex_message_items
+                    )
+                    if not interim_replayable:
+                        _last_msg = messages[-1] if messages else None
+                        _already_nudged = (
+                            isinstance(_last_msg, dict)
+                            and _last_msg.get("role") == "user"
+                            and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
+                        )
+                        # Alternation guard: the nudge is a user-role message,
+                        # so it may only follow an assistant message. When the
+                        # interim was too empty to append (no content AND no
+                        # reasoning), the last message is still the prior
+                        # user/tool turn — appending the nudge there would
+                        # create a user→user / tool→user sequence that strict
+                        # providers reject.
+                        _last_is_assistant = (
+                            isinstance(_last_msg, dict)
+                            and _last_msg.get("role") == "assistant"
+                        )
+                        if not _already_nudged and _last_is_assistant:
+                            messages.append({
+                                "role": "user",
+                                "content": _CODEX_INCOMPLETE_NUDGE,
+                            })
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
+                    # Surface the continuation on the live spinner/status line
+                    # (CLI/TUI/Desktop) and gateway heartbeat: each of these
+                    # retries can spend minutes waiting on the provider, and
+                    # without a distinct notice the user only sees a generic
+                    # thinking spinner ("infinite thinking", #64434).
+                    agent._emit_wait_notice(
+                        f"↻ model returned reasoning with no final answer — "
+                        f"asking it to continue "
+                        f"({agent._codex_incomplete_retries}/3)"
+                    )
                     agent._session_messages = messages
                     continue
 
@@ -4478,7 +4557,9 @@ def run_conversation(
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
-                        logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                        raw_args = tc.function.arguments
+                        args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
+                        logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
@@ -4659,11 +4740,37 @@ def run_conversation(
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
+                turn_content = assistant_message.content or ""
+
+                # Classify tools in this turn to determine if they are all housekeeping.
+                # This classification is needed regardless of whether the turn has visible content,
+                # because a substantive tool-only turn must invalidate any older housekeeping fallback.
+                _HOUSEKEEPING_TOOLS = frozenset({
+                    "memory", "todo", "skill_manage", "session_search",
+                })
+                _all_housekeeping = all(
+                    tc.function.name in _HOUSEKEEPING_TOOLS
+                    for tc in assistant_message.tool_calls
+                )
+
+                # If this turn has substantive tools (non-housekeeping), clear any older fallback.
+                # Prevents a two-turn-old housekeeping narration from being treated as if it belonged
+                # to the immediately preceding substantive tool turn.
+                if assistant_message.tool_calls and not _all_housekeeping:
+                    agent._last_content_with_tools = None
+                    agent._last_content_tools_all_housekeeping = False
+                    # Also clear the mute flag: a prior housekeeping turn may
+                    # have set _mute_post_response (line ~4667), and the
+                    # substantive tools in THIS turn should produce visible
+                    # progress output. Without this reset, _vprint suppresses
+                    # tool progress until the no-tool-call branch clears it at
+                    # line ~4834 — after all tools have finished.
+                    agent._mute_post_response = False
+
                 # If this turn has both content AND tool_calls, capture the content
                 # as a fallback final response. Common pattern: model delivers its
                 # answer and calls memory/skill tools as a side-effect in the same
                 # turn. If the follow-up turn after tools is empty, we use this.
-                turn_content = assistant_message.content or ""
                 if turn_content and agent._has_content_after_think_block(turn_content):
                     agent._last_content_with_tools = turn_content
                     # Only mute subsequent output when EVERY tool call in
@@ -4671,13 +4778,6 @@ def run_conversation(
                     # skill_manage, etc.).  If any substantive tool is present
                     # (search_files, read_file, write_file, terminal, ...),
                     # keep output visible so the user sees progress.
-                    _HOUSEKEEPING_TOOLS = frozenset({
-                        "memory", "todo", "skill_manage", "session_search",
-                    })
-                    _all_housekeeping = all(
-                        tc.function.name in _HOUSEKEEPING_TOOLS
-                        for tc in assistant_message.tool_calls
-                    )
                     agent._last_content_tools_all_housekeeping = _all_housekeeping
                     if _all_housekeeping and agent._has_stream_consumers():
                         agent._mute_post_response = True
@@ -5289,6 +5389,53 @@ def run_conversation(
                     agent._session_messages = messages
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)
+                    _pending_verification_response = final_response
+                    final_response = None
+                    continue
+
+                # ── Kanban worker terminal-tool stop guard ─────────────
+                # Workers must end with kanban_complete / kanban_block.
+                # Models sometimes narrate the next step ("Let me write the
+                # report") and stop with finish_reason=stop — a clean exit
+                # that the dispatcher records as protocol_violation. Nudge
+                # once or twice before allowing that exit.
+                try:
+                    from agent.kanban_stop import build_kanban_stop_nudge
+
+                    _kanban_nudge = build_kanban_stop_nudge(
+                        messages=messages,
+                        attempts=getattr(agent, "_kanban_stop_nudges", 0),
+                    )
+                except Exception:
+                    logger.debug("kanban stop-loop check failed", exc_info=True)
+                    _kanban_nudge = None
+
+                if _kanban_nudge:
+                    agent._kanban_stop_nudges = (
+                        getattr(agent, "_kanban_stop_nudges", 0) + 1
+                    )
+                    final_msg["finish_reason"] = "kanban_terminal_required"
+                    final_msg["_kanban_stop_synthetic"] = True
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _kanban_nudge,
+                        "_kanban_stop_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.info(
+                        "kanban stop-loop nudge issued (attempt %d) task=%s",
+                        agent._kanban_stop_nudges,
+                        os.environ.get("HERMES_KANBAN_TASK", ""),
+                    )
+                    agent._emit_status(
+                        "⚠️ Kanban worker tried to exit without "
+                        "kanban_complete/kanban_block — nudging to finish"
+                    )
+                    # Same finalizer contract as verify-on-stop: clear
+                    # final_response while continuing so a later budget
+                    # exhaustion path does not treat the narrated stop as
+                    # a completed answer.
                     _pending_verification_response = final_response
                     final_response = None
                     continue

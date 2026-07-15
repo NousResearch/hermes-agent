@@ -24,11 +24,17 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from hermes_cli.dashboard_auth import list_session_providers
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
+from hermes_cli.dashboard_auth.base import (
+    DashboardAuthProvider,
+    ProviderError,
+    RefreshExpiredError,
+)
 from hermes_cli.dashboard_auth.cookies import (
     clear_sso_attempt_cookie,
     read_session_cookies,
+    read_session_provider,
     read_sso_attempt_cookie,
+    set_session_provider_cookie,
     set_sso_attempt_cookie,
 )
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
@@ -81,6 +87,22 @@ def _client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""
+
+
+def _ordered_session_providers(
+    provider_hint: str | None,
+) -> list[DashboardAuthProvider]:
+    """Prefer the hinted provider without making the hint authoritative.
+
+    The cookie can outlive a provider rename/removal or become stale after a
+    deployment change. A stable sort moves a matching provider to the front
+    while preserving registration order for every remaining candidate; an
+    unknown hint therefore leaves the normal scan unchanged.
+    """
+    providers = list_session_providers()
+    if provider_hint:
+        providers.sort(key=lambda provider: provider.name != provider_hint)
+    return providers
 
 
 def _unauth_response(request: Request, *, reason: str) -> Response:
@@ -276,6 +298,7 @@ async def gated_auth_middleware(
         return await call_next(request)
 
     at, _rt = read_session_cookies(request)
+    provider_hint = read_session_provider(request)
     if not at and not _rt:
         # Neither token present — no session at all. Nothing to verify or
         # refresh. Before falling back to the /login interstitial, try to
@@ -321,7 +344,7 @@ async def gated_auth_middleware(
         # 503 — distinguishing "transient IDP outage" (don't force re-login)
         # from "token genuinely invalid" (fall through to refresh/relogin).
         unreachable_provider: str | None = None
-        for provider in list_session_providers():
+        for provider in _ordered_session_providers(provider_hint):
             try:
                 session = provider.verify_session(access_token=at)
             except ProviderError as e:
@@ -353,9 +376,22 @@ async def gated_auth_middleware(
         # Access token is expired/invalid. Before forcing re-login, try to
         # rotate it using the refresh token (if the session cookie carries
         # one). On success we re-set the rotated cookies on the response and
-        # serve the request transparently; on RefreshExpiredError (RT dead /
-        # revoked / reuse-detected) we fall through to clear-and-relogin.
-        refreshed = _attempt_refresh(request, refresh_token=_rt)
+        # serve the request transparently; only after every provider rejects
+        # the RT do we fall through to clear-and-relogin.
+        try:
+            refreshed = _attempt_refresh(
+                request,
+                refresh_token=_rt,
+                provider_hint=provider_hint,
+            )
+        except ProviderError as e:
+            # At least one provider could not confirm or reject the RT, and no
+            # other provider refreshed it. Preserve the cookies and surface a
+            # transient outage instead of turning uncertainty into a logout.
+            return JSONResponse(
+                {"detail": f"Auth provider {str(e)!r} unreachable"},
+                status_code=503,
+            )
         if refreshed is not None:
             new_session, refreshing_provider = refreshed
             request.state.session = new_session
@@ -378,6 +414,7 @@ async def gated_auth_middleware(
                 access_token_expires_in=_expires_in_seconds(new_session),
                 use_https=detect_https(request),
                 prefix=prefix_from_request(request),
+                provider=refreshing_provider,
             )
             audit_log(
                 AuditEvent.REFRESH_SUCCESS,
@@ -405,7 +442,18 @@ async def gated_auth_middleware(
         return response
 
     request.state.session = session
-    return await call_next(request)
+    response = await call_next(request)
+    if not provider_hint and session.provider:
+        from hermes_cli.dashboard_auth.cookies import detect_https
+        from hermes_cli.dashboard_auth.prefix import prefix_from_request
+
+        set_session_provider_cookie(
+            response,
+            provider=session.provider,
+            use_https=detect_https(request),
+            prefix=prefix_from_request(request),
+        )
+    return response
 
 
 def _expires_in_seconds(session) -> int:
@@ -421,33 +469,32 @@ def _expires_in_seconds(session) -> int:
     return max(60, int(session.expires_at) - int(time.time()))
 
 
-def _attempt_refresh(request: Request, *, refresh_token):
+def _attempt_refresh(request: Request, *, refresh_token, provider_hint: str | None = None):
     """Try to rotate an expired session via the refresh token.
 
-    Returns ``(new_session, provider_name)`` on success, or ``None`` if
-    there's no RT or every provider's ``refresh_session`` failed with
-    ``RefreshExpiredError`` (dead/revoked/reuse-detected RT → force re-login).
-
-    A ``ProviderError`` (Portal unreachable) is NOT swallowed into a re-login
-    here — re-raising would 500 the request; instead we log and return None so
-    the caller forces a clean re-login, which is the safer UX than a hard
-    error on a transient network blip during the narrow refresh window.
+    The provider hint only changes candidate order. ``RefreshExpiredError``
+    rejects the token for that candidate, but cannot prove ownership because
+    providers such as Basic raise it for foreign opaque tokens too. Likewise,
+    ``ProviderError`` only makes that candidate unavailable. Both are audited
+    and the remaining providers are tried. Returns ``None`` only when there is
+    no RT or every reachable provider rejects it. If no provider succeeds and
+    at least one raised ``ProviderError``, re-raises with that provider's name
+    so the caller can return 503 without clearing potentially valid cookies.
     """
     if not refresh_token:
         return None
-    for provider in list_session_providers():
+    unavailable_provider: str | None = None
+    for provider in _ordered_session_providers(provider_hint):
         try:
             new_session = provider.refresh_session(refresh_token=refresh_token)
         except RefreshExpiredError:
-            # This provider owns the RT but it's dead — stop trying others
-            # (an RT belongs to exactly one provider) and force re-login.
             audit_log(
                 AuditEvent.REFRESH_FAILURE,
                 provider=provider.name,
                 reason="refresh_expired",
                 ip=_client_ip(request),
             )
-            return None
+            continue
         except ProviderError as e:
             _log.warning(
                 "dashboard-auth: provider %r unreachable during refresh: %s",
@@ -459,7 +506,11 @@ def _attempt_refresh(request: Request, *, refresh_token):
                 reason="provider_unreachable",
                 ip=_client_ip(request),
             )
-            return None
+            if unavailable_provider is None:
+                unavailable_provider = provider.name
+            continue
         if new_session is not None:
             return new_session, provider.name
+    if unavailable_provider is not None:
+        raise ProviderError(unavailable_provider)
     return None

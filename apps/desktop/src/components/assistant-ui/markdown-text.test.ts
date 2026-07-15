@@ -94,6 +94,29 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://www.getyourguide.com/culebra-island-l145468/from-fajardo-tour-t19894/>')
   })
 
+  it('rewrites local file image markdown to media attachments', () => {
+    const path = 'file:///home/user/Downloads/iceland.png'
+    const output = preprocessMarkdown(`![Iceland](${path})`)
+
+    expect(output).toBe(`[Iceland](#media:${encodeURIComponent(path)})`)
+  })
+
+  it('does not rewrite local file image markdown inside code', () => {
+    const input = [
+      '`![Iceland](file:///tmp/iceland.png)`',
+      '',
+      '```md',
+      '![Iceland](file:///tmp/iceland.png)',
+      '```'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('`![Iceland](file:///tmp/iceland.png)`')
+    expect(output).toContain('![Iceland](file:///tmp/iceland.png)')
+    expect(output).not.toContain('#media:')
+  })
+
   it('strips orphan numeric citation markers outside code spans', () => {
     const output = preprocessMarkdown('This is the source[0], but keep `items[0]` untouched.')
 

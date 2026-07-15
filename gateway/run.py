@@ -14313,7 +14313,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "\n".join(lines)
 
         except Exception as e:
-            logger.warning("MCP reload failed: %s", e)
+            logger.warning("MCP reload failed: %s", repr(e))
             return t("gateway.reload_mcp.failed", error=e)
 
 

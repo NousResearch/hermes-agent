@@ -10,7 +10,7 @@
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
     "preview": "vite preview",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "tsc -b --force",
     "test": "vitest run",
     "check": "npm run typecheck && npm run test"
   },

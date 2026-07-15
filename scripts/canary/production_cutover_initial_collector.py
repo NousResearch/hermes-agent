@@ -306,7 +306,19 @@ def collect_initial_observations(
         cron_inventory = cron_migration.validate_inventory(
             continuity_derivation.inventory
         )
-        if cron_inventory != observed_cron_inventory:
+        stable_inventory_fields = set(cron_inventory) - {
+            "created_at",
+            "inventory_sha256",
+        }
+        if (
+            stable_inventory_fields
+            != set(observed_cron_inventory)
+            - {"created_at", "inventory_sha256"}
+            or any(
+                cron_inventory[field] != observed_cron_inventory[field]
+                for field in stable_inventory_fields
+            )
+        ):
             raise ValueError("cron store changed during initial collection")
         cron_continuity_plan = (
             cron_continuity.validate_packaged_continuity_plan(

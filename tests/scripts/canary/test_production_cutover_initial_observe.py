@@ -144,6 +144,7 @@ def _cron_continuity_fixture(
     monkeypatch.setattr(cron_migration, "_now", lambda: _iso(now))
     raw, _catalog = _source_store(monkeypatch)
     inventory = cron_migration.inventory_jobs_bytes(raw)
+    monkeypatch.setattr(cron_migration, "_now", lambda: _iso(now + 1))
     build = cron_continuity.build_packaged_continuity_plan(
         source_store=raw,
         collector_package=_collector_package(),
@@ -159,7 +160,7 @@ def _cron_continuity_fixture(
     )
     return inventory, cron_continuity.HostContinuityDerivation(
         build=build,
-        inventory=inventory,
+        inventory=build.inventory,
     )
 
 

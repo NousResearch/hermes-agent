@@ -122,6 +122,7 @@ class ProductionCronContinuityPackageError(RuntimeError):
 class ContinuityPackageBuild:
     plan: Mapping[str, Any]
     replacement_bundle: Mapping[str, Any]
+    inventory: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -642,7 +643,11 @@ def build_packaged_continuity_plan(
         ),
         require_executable=True,
     )
-    return ContinuityPackageBuild(plan=plan, replacement_bundle=bundle)
+    return ContinuityPackageBuild(
+        plan=plan,
+        replacement_bundle=bundle,
+        inventory=copy.deepcopy(inventory),
+    )
 
 
 def validate_packaged_continuity_plan(
@@ -1156,10 +1161,11 @@ def write_packaged_continuity_artifacts(
 ) -> dict[str, Any]:
     """Write a replay-safe, non-installing package consumed by cutover."""
 
+    trusted_inventory = build.inventory if inventory is None else inventory
     plan = validate_packaged_continuity_plan(
         build.plan,
         replacement_bundle=build.replacement_bundle,
-        inventory=inventory,
+        inventory=trusted_inventory,
         require_executable=True,
     )
     bundle = validate_replacement_bundle(build.replacement_bundle)
@@ -1228,7 +1234,7 @@ def write_packaged_continuity_artifacts(
     return validate_packaged_continuity_artifacts(
         output_root=output_root,
         artifact_index=index,
-        inventory=inventory,
+        inventory=trusted_inventory,
     )
 
 
@@ -1316,7 +1322,7 @@ def derive_packaged_continuity_from_host(
     )
     return HostContinuityDerivation(
         build=build,
-        inventory=production_cron_migration.inventory_jobs_bytes(source_store),
+        inventory=copy.deepcopy(build.inventory),
     )
 
 

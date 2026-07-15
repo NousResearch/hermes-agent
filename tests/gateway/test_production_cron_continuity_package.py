@@ -229,8 +229,8 @@ def _build(monkeypatch: pytest.MonkeyPatch) -> tuple[bytes, package.ContinuityPa
 def test_plan_is_exhaustive_primary_model_authored_and_owner_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw, build = _build(monkeypatch)
-    inventory = production_cron_migration.inventory_jobs_bytes(raw)
+    _raw, build = _build(monkeypatch)
+    inventory = build.inventory
     plan = package.validate_packaged_continuity_plan(
         build.plan,
         collector_package=_collector_package(),
@@ -328,6 +328,44 @@ def test_plan_is_exhaustive_primary_model_authored_and_owner_complete(
         assert target["historical_source_delivery_eligible"] is False
 
 
+def test_build_carries_one_exact_inventory_across_clock_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed_at = iter(
+        ("2027-01-15T08:00:00Z", "2027-01-15T08:00:01Z")
+    )
+    monkeypatch.setattr(
+        production_cron_migration,
+        "_now",
+        lambda: next(observed_at),
+    )
+    raw, build = _build(monkeypatch)
+
+    assert build.inventory["inventory_sha256"] == build.plan["inventory_sha256"]
+    assert package.validate_packaged_continuity_plan(
+        build.plan,
+        inventory=build.inventory,
+        require_executable=True,
+    ) == build.plan
+
+    fresh_envelope = production_cron_migration.inventory_jobs_bytes(raw)
+    assert fresh_envelope["source_store_sha256"] == build.inventory[
+        "source_store_sha256"
+    ]
+    assert fresh_envelope["inventory_sha256"] != build.inventory[
+        "inventory_sha256"
+    ]
+    with pytest.raises(
+        package.ProductionCronContinuityPackageError,
+        match="packaged_plan_inventory_drifted",
+    ):
+        package.validate_packaged_continuity_plan(
+            build.plan,
+            inventory=fresh_envelope,
+            require_executable=True,
+        )
+
+
 @pytest.mark.parametrize(
     "source",
     [
@@ -357,8 +395,8 @@ def test_artifact_stage_is_complete_private_and_replay_exact(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    raw, build = _build(monkeypatch)
-    inventory = production_cron_migration.inventory_jobs_bytes(raw)
+    _raw, build = _build(monkeypatch)
+    inventory = build.inventory
     root = tmp_path / "stage"
 
     first = package.write_packaged_continuity_artifacts(
@@ -455,8 +493,8 @@ def test_target_transform_refuses_inflight_disabled_legacy_auto_sync(
 def test_plan_or_bundle_tamper_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    raw, build = _build(monkeypatch)
-    inventory = production_cron_migration.inventory_jobs_bytes(raw)
+    _raw, build = _build(monkeypatch)
+    inventory = build.inventory
     drifted = copy.deepcopy(build.replacement_bundle)
     drifted["records"][0]["model"] = "gpt-5.5"
 

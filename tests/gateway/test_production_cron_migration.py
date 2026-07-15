@@ -264,6 +264,7 @@ def test_continuity_plan_requires_every_incompatible_record_and_forbids_blanket_
 
 def test_apply_preserves_all_records_and_only_makes_incompatible_enabled_inert(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_jobs = [
         _agent_job(),
@@ -275,6 +276,11 @@ def test_apply_preserves_all_records_and_only_makes_incompatible_enabled_inert(
     jobs_path.parent.mkdir()
     jobs_path.write_bytes(original)
     jobs_path.chmod(0o600)
+    monkeypatch.setattr(
+        migration,
+        "_now",
+        lambda: "2027-01-15T08:00:00Z",
+    )
     inventory = migration.inventory_jobs_bytes(original)
     plan = migration.build_owner_approved_plan(
         inventory,
@@ -283,6 +289,11 @@ def test_apply_preserves_all_records_and_only_makes_incompatible_enabled_inert(
         approved_by="owner",
     )
     evidence = tmp_path / "evidence"
+    monkeypatch.setattr(
+        migration,
+        "_now",
+        lambda: "2027-01-15T08:00:01Z",
+    )
 
     receipt = migration.apply_inert_migration(
         jobs_path=jobs_path,

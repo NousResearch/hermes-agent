@@ -176,9 +176,33 @@ def _record_identity(index: int, job: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def inventory_jobs_bytes(raw: bytes) -> dict[str, Any]:
+def _is_utc_second(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return False
+    return (
+        parsed.tzinfo == timezone.utc
+        and parsed.microsecond == 0
+        and value
+        == parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+
+
+def inventory_jobs_bytes(
+    raw: bytes,
+    *,
+    created_at: str | None = None,
+) -> dict[str, Any]:
     """Return a redaction-safe startup-policy inventory without mutation."""
 
+    observed_at = _now() if created_at is None else created_at
+    if not _is_utc_second(observed_at):
+        raise ProductionCronMigrationError(
+            "production_cron_inventory_created_at_invalid"
+        )
     payload = _parse_store(raw)
     compatible: list[dict[str, Any]] = []
     incompatible: list[dict[str, Any]] = []
@@ -256,7 +280,7 @@ def inventory_jobs_bytes(raw: bytes) -> dict[str, Any]:
     }
     result = {
         "schema": INVENTORY_SCHEMA,
-        "created_at": _now(),
+        "created_at": observed_at,
         "source_store_sha256": _sha256(raw),
         "job_count": len(payload["jobs"]),
         "enabled_count": len(compatible) + len(incompatible),
@@ -311,6 +335,7 @@ def validate_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
         not isinstance(inventory, Mapping)
         or set(inventory) != expected_fields
         or inventory.get("schema") != INVENTORY_SCHEMA
+        or not _is_utc_second(inventory.get("created_at"))
         or not isinstance(inventory.get("inventory_sha256"), str)
         or _SHA256.fullmatch(inventory["inventory_sha256"]) is None
         or _sha256(
@@ -1118,7 +1143,10 @@ def apply_inert_migration(
             )
             _publish_receipt(evidence_root, receipt)
             return receipt
-        fresh_inventory = inventory_jobs_bytes(raw)
+        fresh_inventory = inventory_jobs_bytes(
+            raw,
+            created_at=str(trusted_inventory["created_at"]),
+        )
         if fresh_inventory.get("inventory_sha256") != inventory.get(
             "inventory_sha256"
         ):

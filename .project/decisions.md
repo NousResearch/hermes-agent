@@ -215,3 +215,15 @@ Reason: ตรงกติกา relay v2.16 (ผู้ตรวจเดิม+
 - API synerry-engine ใช้ prefix **`/api/v1`** (setGlobalPrefix ใน main.ts) — ยิง `/api/...` เฉยๆ = 404
 - RSF = site_id **78** ใน DB `synerry_engine` (postgres :5438) · ฟอร์ม contact: `POST /api/v1/contact` (public · ต้องส่ง siteId ใน body)
 - วงจรฟอร์ม submit→DB พิสูจน์แล้ว PASS · ข้อมูลทดสอบใช้ป้าย TEST-MW- แล้วลบทิ้ง (ตรวจซ้ำ = 0)
+
+## DEC-MW-007 · ยืนยันติดตั้งบนเครื่องปลายทางจริงก่อนประกาศทีม (2026-07-15 เย็น)
+- **ปฐมเหตุ:** เจ้าของโกรธ ("Fuck you Fable") เพราะ AI จัด "ยืนยันติดตั้ง VPS" เป็น claimed/ไม่ด่วน ทั้งที่ทีมมีคนทำงานบน VPS จริง
+- **ที่เจอเมื่อบังคับรันบน VPS จริง — "ผ่านปลอม" 3 ชั้นซ้อน:**
+  1. `mw-setup.sh` symlink ชี้ `/tmp` ของ installer curl ที่ถูกลบหลังติดตั้ง → เครื่องมือ MW ตายยกชุด exit 127 · smoke-test ตอนติดตั้ง ✅ หลอกเพราะ /tmp ยังไม่ถูกลบ (PR #45)
+  2. เครื่องทีมไม่มี `flow_gate.py` → hook enforce-flow-gate จะ block งาน MW ทุกเครื่อง (แก้พร้อม #45: copy flow_eval/flow_gate/flow-rules เข้า ~/.hermes/mw)
+  3. `check-shortcuts.sh` ฝัง pin `version 2.6` ตายตัว → RESULT: FAIL เงียบทุกเครื่องหลัง prompt อัปเป็น 2.7 (PR #46)
+- **บทเรียนบังคับ (ทุก shortcut/tool ที่แจกทีม):**
+  1. **ต้องรันติดตั้งบนเครื่องปลายทางจริง (VPS/โน้ตบุ๊กจำลอง) + ลบต้นทางแล้วรันซ้ำ** ก่อนบอก "พร้อมแจกทีม" — smoke-test บนเครื่องที่ต้นทางยังอยู่ = หลักฐานปลอม
+  2. **ห้าม symlink ชี้ที่ชั่วคราว** — copy เข้าที่ถาวรก่อน link เสมอ
+  3. **ห้ามฝังเลขรุ่นตายตัวในตัวตรวจ/เทสต์** — เช็คกติกา/พฤติกรรมแทน (บั๊กนี้เกิด 3 ที่วันเดียว: payload tests, check-shortcuts, จะเกิดอีกถ้าไม่เลิก pin)
+- **ผล:** curl จาก main บน linux-nat → RESULT: PASS + 7/7 · verified tier 3

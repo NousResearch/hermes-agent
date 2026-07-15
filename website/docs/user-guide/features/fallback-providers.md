@@ -157,12 +157,24 @@ fallback_providers:
     key_env: LOCAL_API_KEY
 ```
 
-**Codex OAuth as fallback:**
+**Capability-matched Codex OAuth fallback for GPT-5.6 Sol:**
+
 ```yaml
+model:
+  provider: openai-codex
+  default: gpt-5.6-sol
+
 fallback_providers:
   - provider: openai-codex
-    model: gpt-5.6-sol
+    model: gpt-5.6-terra
+  - provider: openai-codex
+    model: gpt-5.5
 ```
+
+Keep primary fallbacks close to the main model's capability tier. GPT-5.6
+Luna and GPT-5.4 Mini are optimized for inexpensive bounded work; configure
+them as auxiliary models rather than silently reducing the main agent's
+intelligence during failover.
 
 ### Where Fallback Works
 
@@ -257,6 +269,32 @@ auxiliary:
 ```
 
 Every task above follows the same **provider / model / base_url** pattern. Each task can also declare its own `fallback_chain`; if omitted, `provider: auto` uses the top-level `fallback_providers` chain before Hermes' built-in auxiliary discovery chain.
+
+For Codex OAuth, GPT-5.6 Luna is the fast, low-cost tier for bounded side
+tasks. Use low reasoning for short labels and drafts, and medium reasoning for
+summaries or judgments where losing a detail would be expensive:
+
+```yaml
+auxiliary:
+  title_generation:
+    provider: openai-codex
+    model: gpt-5.6-luna
+    reasoning_effort: low
+
+  compression:
+    provider: openai-codex
+    model: gpt-5.6-luna
+    reasoning_effort: medium
+
+  approval:
+    provider: openai-codex
+    model: gpt-5.6-luna
+    reasoning_effort: medium
+```
+
+The same split applies to the other auxiliary slots: use low effort for
+title/profile/label generation and medium effort for compression, approval,
+curation, task decomposition, vision, and web extraction.
 
 Context compression is configured under `auxiliary.compression`:
 

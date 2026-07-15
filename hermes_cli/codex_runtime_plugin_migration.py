@@ -1,5 +1,5 @@
 """Migrate Hermes' MCP server config and Codex's installed curated plugins
-to the format Codex expects in ~/.codex/config.toml.
+to the active Codex home (``$CODEX_HOME``, default ``~/.codex``).
 
 When the user enables the codex_app_server runtime, the codex subprocess
 runs its own MCP client and its own plugin runtime (Linear, Atlassian,
@@ -8,7 +8,7 @@ be useful, the user's choices need to be visible to codex too. This
 module:
 
   1. Reads Hermes' YAML and writes equivalent [mcp_servers.<name>]
-     entries to ~/.codex/config.toml.
+     entries to the active Codex ``config.toml``.
   2. Queries codex's `plugin/list` for the openai-curated marketplace
      and writes [plugins."<name>@<marketplace>"] entries for any plugin
      the user has installed=true on their codex CLI. (This is what
@@ -616,11 +616,12 @@ def migrate(
     expose_hermes_tools: bool = True,
 ) -> MigrationReport:
     """Translate Hermes mcp_servers config + Codex curated plugins into
-    ~/.codex/config.toml.
+    the active Codex config.toml.
 
     Args:
         hermes_config: full ~/.hermes/config.yaml dict
-        codex_home: override CODEX_HOME (defaults to ~/.codex)
+        codex_home: explicit CODEX_HOME override. When omitted, use the
+            CODEX_HOME environment variable, then fall back to ~/.codex.
         dry_run: skip the actual write; report what would happen
         discover_plugins: when True (default), query `plugin/list` against
             the live codex CLI to migrate any installed curated plugins
@@ -642,7 +643,13 @@ def migrate(
             codex doesn't have built in. Set False to opt out.
     """
     report = MigrationReport(dry_run=dry_run)
-    codex_home = codex_home or Path.home() / ".codex"
+    if codex_home is None:
+        env_codex_home = os.getenv("CODEX_HOME", "").strip()
+        codex_home = (
+            Path(env_codex_home).expanduser()
+            if env_codex_home
+            else Path.home() / ".codex"
+        )
     target = codex_home / "config.toml"
     report.target_path = target
 

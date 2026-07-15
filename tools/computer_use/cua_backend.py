@@ -1578,6 +1578,7 @@ class CuaDriverBackend(ComputerUseBackend):
         button: str = "left",
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
+        dispatch: Optional[str] = None,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1613,6 +1614,8 @@ class CuaDriverBackend(ComputerUseBackend):
                                 message="click requires element= or x/y.")
         if modifiers:
             args["modifier"] = modifiers
+        if dispatch:
+            args["dispatch"] = dispatch
 
         return self._action(tool, args)
 
@@ -1625,6 +1628,7 @@ class CuaDriverBackend(ComputerUseBackend):
         to_xy: Optional[Tuple[int, int]] = None,
         button: str = "left",
         modifiers: Optional[List[str]] = None,
+        dispatch: Optional[str] = None,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1644,6 +1648,8 @@ class CuaDriverBackend(ComputerUseBackend):
         else:
             return ActionResult(ok=False, action="drag",
                                 message="drag requires from_element/to_element or from_coordinate/to_coordinate.")
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._action("drag", args)
 
     def scroll(
@@ -1655,6 +1661,7 @@ class CuaDriverBackend(ComputerUseBackend):
         x: Optional[int] = None,
         y: Optional[int] = None,
         modifiers: Optional[List[str]] = None,
+        dispatch: Optional[str] = None,
     ) -> ActionResult:
         pid = self._active_pid
         if pid is None:
@@ -1671,17 +1678,22 @@ class CuaDriverBackend(ComputerUseBackend):
         elif x is not None and y is not None:
             args["x"] = x
             args["y"] = y
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._action("scroll", args)
 
     # ── Keyboard ───────────────────────────────────────────────────
-    def type_text(self, text: str) -> ActionResult:
+    def type_text(self, text: str, dispatch: Optional[str] = None) -> ActionResult:
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="type_text",
                                 message="No active window — call capture() first.")
-        return self._action("type_text", {"pid": pid, "text": text})
+        args: Dict[str, Any] = {"pid": pid, "text": text}
+        if dispatch:
+            args["dispatch"] = dispatch
+        return self._action("type_text", args)
 
-    def key(self, keys: str) -> ActionResult:
+    def key(self, keys: str, dispatch: Optional[str] = None) -> ActionResult:
         pid = self._active_pid
         if pid is None:
             return ActionResult(ok=False, action="key",
@@ -1694,12 +1706,19 @@ class CuaDriverBackend(ComputerUseBackend):
 
         if modifiers:
             # hotkey requires at least one modifier + one key.
-            return self._action("hotkey", {"pid": pid, "keys": modifiers + [key_name]})
+            args: Dict[str, Any] = {"pid": pid, "keys": modifiers + [key_name]}
+            if dispatch:
+                args["dispatch"] = dispatch
+            return self._action("hotkey", args)
         else:
-            return self._action("press_key", {"pid": pid, "key": key_name})
+            args = {"pid": pid, "key": key_name}
+            if dispatch:
+                args["dispatch"] = dispatch
+            return self._action("press_key", args)
 
     # ── Value setter ────────────────────────────────────────────────
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+    def set_value(self, value: str, element: Optional[int] = None,
+                  dispatch: Optional[str] = None) -> ActionResult:
         """Set a value on an element. Handles AXPopUpButton selects natively."""
         pid = self._active_pid
         window_id = self._active_window_id
@@ -1715,6 +1734,8 @@ class CuaDriverBackend(ComputerUseBackend):
             "element_index": element,
             "value": value,
         }
+        if dispatch:
+            args["dispatch"] = dispatch
         return self._action("set_value", args)
 
     # ── Introspection ──────────────────────────────────────────────

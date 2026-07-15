@@ -98,6 +98,13 @@ class TestSchema:
         assert prop.get("default") == _DEFAULT_MAX_ELEMENTS
         assert prop.get("maximum") == _MAX_ALLOWED_MAX_ELEMENTS
 
+    def test_schema_exposes_dispatch_param(self):
+        """Schema must expose `dispatch` for all mutating actions (#57623)."""
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert "dispatch" in props
+        assert set(props["dispatch"]["enum"]) == {"background", "foreground", "auto"}
+
 
 class TestRegistration:
     def test_tool_registers_with_registry(self):
@@ -298,6 +305,51 @@ class TestDispatch:
         # Noop backend returns ok=True, so capture should have been called.
         capture_calls = [c for c in noop_backend.calls if c[0] == "capture"]
         assert len(capture_calls) == 1
+
+    # ── dispatch param routing (#57623) ────────────────────────────
+    def test_dispatch_passed_to_click(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "click", "element": 1, "dispatch": "foreground"})
+        click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
+        assert click_kw.get("dispatch") == "foreground"
+
+    def test_dispatch_passed_to_drag(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "drag", "from_coordinate": [10, 10],
+                             "to_coordinate": [50, 50], "dispatch": "foreground"})
+        drag_kw = next(c[1] for c in noop_backend.calls if c[0] == "drag")
+        assert drag_kw.get("dispatch") == "foreground"
+
+    def test_dispatch_passed_to_scroll(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "scroll", "dispatch": "foreground"})
+        scroll_kw = next(c[1] for c in noop_backend.calls if c[0] == "scroll")
+        assert scroll_kw.get("dispatch") == "foreground"
+
+    def test_dispatch_passed_to_type(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "type", "text": "hi", "dispatch": "foreground"})
+        type_kw = next(c[1] for c in noop_backend.calls if c[0] == "type")
+        assert type_kw.get("dispatch") == "foreground"
+
+    def test_dispatch_passed_to_key(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "key", "keys": "cmd+s", "dispatch": "foreground"})
+        key_kw = next(c[1] for c in noop_backend.calls if c[0] == "key")
+        assert key_kw.get("dispatch") == "foreground"
+
+    def test_dispatch_passed_to_set_value(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "set_value", "value": "x", "element": 1,
+                             "dispatch": "foreground"})
+        sv_kw = next(c[1] for c in noop_backend.calls if c[0] == "set_value")
+        assert sv_kw.get("dispatch") == "foreground"
+
+    def test_dispatch_defaults_to_none_when_omitted(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        handle_computer_use({"action": "click", "element": 1})
+        click_kw = next(c[1] for c in noop_backend.calls if c[0] == "click")
+        assert click_kw.get("dispatch") is None
 
 
 # ---------------------------------------------------------------------------

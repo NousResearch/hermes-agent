@@ -406,6 +406,11 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Honor display.memory_notifications (off | on | verbose) like the
+            # messaging gateway and the TUI backend. Without this the classic
+            # CLI always used AIAgent's hardcoded "on" and a user-configured
+            # "off" was silently ignored.
+            self.agent.memory_notifications = getattr(self, "memory_notifications", "on")
             # Hydrate credits notices at session OPEN (parity with the TUI), so a
             # depletion / usage-band warning shows before the first message. The
             # notice_callback is bound above → _on_notice renders the line. Idempotent

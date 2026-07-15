@@ -3729,6 +3729,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # reasoning_full: when reasoning display is on, print the post-response
         # recap box uncollapsed instead of clamping to the first 10 lines.
         self.reasoning_full = CLI_CONFIG["display"].get("reasoning_full", False)
+        # memory_notifications: "off" | "on" | "verbose" — whether the
+        # background self-improvement review surfaces its "💾 Self-improvement
+        # review: …" summary in chat. The messaging gateway (gateway/run.py)
+        # and the TUI/desktop backend (tui_gateway/server.py) already honour
+        # display.memory_notifications; the classic CLI ignored it and always
+        # behaved as "on" (AIAgent's hardcoded default). Parity fix.
+        # YAML 1.1 parses bare `off`/`on` as booleans — normalise to string.
+        # Per-platform override via display.platforms.cli.memory_notifications.
+        _raw_mn = CLI_CONFIG["display"].get("memory_notifications", "on")
+        _plat_mn = (
+            CLI_CONFIG["display"].get("platforms", {}).get("cli", {}).get("memory_notifications")
+            if isinstance(CLI_CONFIG["display"].get("platforms"), dict)
+            else None
+        )
+        if _plat_mn is not None:
+            _raw_mn = _plat_mn
+        if isinstance(_raw_mn, bool):
+            self.memory_notifications = "on" if _raw_mn else "off"
+        else:
+            self.memory_notifications = str(_raw_mn).lower() if _raw_mn else "on"
         _configure_output_history(
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),

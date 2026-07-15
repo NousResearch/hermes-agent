@@ -12,6 +12,7 @@ next turn, drained in ``run``'s tail.
 import threading
 import types
 
+import tools.async_delegation as ad
 from tui_gateway import server
 
 
@@ -72,6 +73,118 @@ def test_busy_queue_mode_queues_without_interrupting(monkeypatch):
     assert resp["result"]["status"] == "queued"
     assert calls["interrupt"] == 0
     assert session["queued_prompt"]["text"] == "later"
+
+
+def test_busy_interrupt_mode_preserves_own_background_delegation(monkeypatch):
+    """A mid-turn message must queue without detaching this tab's subagent."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    calls = {"interrupt": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(agent=agent)
+
+    with ad._records_lock:
+        ad._records["deleg_own"] = {
+            "delegation_id": "deleg_own",
+            "status": "running",
+            "session_key": "session-key",
+            "origin_ui_session_id": "sid",
+        }
+
+    try:
+        resp = server._handle_busy_submit("r1", "sid", session, "follow up", "ws-1")
+    finally:
+        with ad._records_lock:
+            ad._records.clear()
+
+    assert resp["result"]["status"] == "queued"
+    assert calls["interrupt"] == 0
+    assert session["queued_prompt"]["text"] == "follow up"
+
+
+def test_busy_interrupt_mode_preserves_finalizing_background_delegation(monkeypatch):
+    """Completion publication must finish before a new turn interrupts the parent."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    calls = {"interrupt": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(agent=agent)
+
+    with ad._records_lock:
+        ad._records["deleg_finalizing"] = {
+            "delegation_id": "deleg_finalizing",
+            "status": "finalizing",
+            "session_key": "session-key",
+            "origin_ui_session_id": "sid",
+        }
+
+    try:
+        resp = server._handle_busy_submit("r1", "sid", session, "follow up", "ws-1")
+    finally:
+        with ad._records_lock:
+            ad._records.clear()
+
+    assert resp["result"]["status"] == "queued"
+    assert calls["interrupt"] == 0
+    assert session["queued_prompt"]["text"] == "follow up"
+
+
+def test_busy_interrupt_mode_ignores_completed_background_delegation(monkeypatch):
+    """A terminal delegation must not suppress normal busy-turn interruption."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    calls = {"interrupt": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(agent=agent)
+
+    with ad._records_lock:
+        ad._records["deleg_completed"] = {
+            "delegation_id": "deleg_completed",
+            "status": "completed",
+            "session_key": "session-key",
+            "origin_ui_session_id": "sid",
+        }
+
+    try:
+        resp = server._handle_busy_submit("r1", "sid", session, "continue", "ws-1")
+    finally:
+        with ad._records_lock:
+            ad._records.clear()
+
+    assert resp["result"]["status"] == "queued"
+    assert calls["interrupt"] == 1
+    assert session["queued_prompt"]["text"] == "continue"
+
+
+def test_busy_interrupt_mode_ignores_foreign_background_delegation(monkeypatch):
+    """Another tab's background work must not suppress this tab's interrupt."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    calls = {"interrupt": 0}
+    agent = types.SimpleNamespace(
+        interrupt=lambda *a, **k: calls.__setitem__("interrupt", calls["interrupt"] + 1)
+    )
+    session = _session(agent=agent)
+
+    with ad._records_lock:
+        ad._records["deleg_foreign"] = {
+            "delegation_id": "deleg_foreign",
+            "status": "running",
+            "session_key": "foreign-key",
+            "origin_ui_session_id": "foreign-sid",
+        }
+
+    try:
+        resp = server._handle_busy_submit("r1", "sid", session, "interrupt me", "ws-1")
+    finally:
+        with ad._records_lock:
+            ad._records.clear()
+
+    assert resp["result"]["status"] == "queued"
+    assert calls["interrupt"] == 1
+    assert session["queued_prompt"]["text"] == "interrupt me"
 
 
 def test_busy_steer_mode_injects_when_accepted(monkeypatch):

@@ -2390,6 +2390,13 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Hard read-only mode for platform / shared skill mounts. When true,
+        # every runtime skill mutation is refused (skill_manage, background
+        # self-improvement review, curator archive/prune, dashboard skill
+        # editor, hub install/uninstall via API). Listing, viewing, using,
+        # and executing existing skill scripts still work. Independent of
+        # write_approval (which stages writes) — read_only is a hard deny.
+        "read_only": False,
     },
 
     # Curator — background skill maintenance.

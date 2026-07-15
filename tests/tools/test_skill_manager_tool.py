@@ -1348,3 +1348,102 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# skills.read_only hard deny (#64926)
+# ---------------------------------------------------------------------------
+
+
+def _set_skills_read_only(enabled: bool) -> None:
+    import hermes_cli.config as cfg
+    c = cfg.load_config()
+    c.setdefault("skills", {})["read_only"] = enabled
+    cfg.save_config(c)
+
+
+class TestSkillsReadOnly:
+    def test_read_only_blocks_skill_manage_patch(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        skills = hermes_home / "skills"
+        skills.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _set_skills_read_only(True)
+
+        with _skill_dir(skills):
+            _set_skills_read_only(True)
+            created = _create_skill("locked-skill", VALID_SKILL_CONTENT)
+            # create itself should be refused under read_only
+            assert created["success"] is False
+            assert "read_only" in created["error"]
+
+            _set_skills_read_only(False)
+            assert _create_skill("locked-skill", VALID_SKILL_CONTENT)["success"] is True
+
+            _set_skills_read_only(True)
+            result = json.loads(skill_manage(
+                action="patch",
+                name="locked-skill",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Changed.",
+            ))
+            assert result["success"] is False
+            assert "read_only" in result["error"]
+            skill_md = (skills / "locked-skill" / "SKILL.md").read_text(encoding="utf-8")
+            assert "Step 1: Do the thing." in skill_md
+            assert "Step 1: Changed." not in skill_md
+
+    def test_read_only_blocks_direct_helpers(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        skills = hermes_home / "skills"
+        skills.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _set_skills_read_only(False)
+
+        with _skill_dir(skills):
+            assert _create_skill("helper-skill", VALID_SKILL_CONTENT)["success"] is True
+            _set_skills_read_only(True)
+            assert _edit_skill("helper-skill", VALID_SKILL_CONTENT_2)["success"] is False
+            assert _patch_skill(
+                "helper-skill", "Step 1: Do the thing.", "patched"
+            )["success"] is False
+            assert _write_file(
+                "helper-skill", "references/a.md", "x"
+            )["success"] is False
+            assert _delete_skill("helper-skill")["success"] is False
+            assert (skills / "helper-skill" / "SKILL.md").exists()
+
+    def test_read_only_off_allows_writes(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        skills = hermes_home / "skills"
+        skills.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _set_skills_read_only(False)
+
+        with _skill_dir(skills):
+            assert _create_skill("open-skill", VALID_SKILL_CONTENT)["success"] is True
+            patched = _patch_skill(
+                "open-skill", "Step 1: Do the thing.", "Step 1: Allowed."
+            )
+            assert patched["success"] is True
+
+    def test_read_only_blocks_archive_skill(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        skills = hermes_home / "skills"
+        skills.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _set_skills_read_only(False)
+
+        with _skill_dir(skills):
+            assert _create_skill("to-archive", VALID_SKILL_CONTENT)["success"] is True
+            from tools.skill_usage import mark_agent_created, archive_skill
+            mark_agent_created("to-archive")
+            _set_skills_read_only(True)
+            ok, msg = archive_skill("to-archive")
+            assert ok is False
+            assert "read_only" in msg
+            assert (skills / "to-archive" / "SKILL.md").exists()

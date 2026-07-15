@@ -118,6 +118,37 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
+def skills_read_only_enabled() -> bool:
+    """Read skills.read_only from config (default False).
+
+    When true, refuse all runtime skill mutations while still allowing
+    list/view/use/execute. Used by platform deployments that mount a
+    shared skills tree and do not want Hermes to rewrite it (#64926).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "read_only"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
+_READ_ONLY_MESSAGE = (
+    "Skill writes are disabled (skills.read_only: true). "
+    "Skills are read-only — listing, viewing, and using them still works."
+)
+
+
+def _refuse_if_read_only() -> Optional[Dict[str, Any]]:
+    """Return an error dict when skills.read_only is on, else None."""
+    if not skills_read_only_enabled():
+        return None
+    return {"success": False, "error": _READ_ONLY_MESSAGE}
+
+
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None.
 
@@ -792,6 +823,9 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
+    refused = _refuse_if_read_only()
+    if refused:
+        return refused
     # Validate name
     err = _validate_name(name)
     if err:
@@ -860,6 +894,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
+    refused = _refuse_if_read_only()
+    if refused:
+        return refused
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -923,6 +960,9 @@ def _patch_skill(
     Defaults to SKILL.md. Use file_path to patch a supporting file instead.
     Requires a unique match unless replace_all is True.
     """
+    refused = _refuse_if_read_only()
+    if refused:
+        return refused
     if not old_string:
         return {"success": False, "error": "old_string is required for 'patch'."}
     if new_string is None:
@@ -1036,6 +1076,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         target must exist on disk. Validated here so the model can't claim an
         umbrella that doesn't exist.
     """
+    refused = _refuse_if_read_only()
+    if refused:
+        return refused
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
@@ -1131,6 +1174,9 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
+    refused = _refuse_if_read_only()
+    if refused:
+        return refused
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -1193,6 +1239,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
+    refused = _refuse_if_read_only()
+    if refused:
+        return refused
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -1334,6 +1383,11 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    if action in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
+        refused = _refuse_if_read_only()
+        if refused:
+            return tool_error(refused["error"], success=False)
+
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)

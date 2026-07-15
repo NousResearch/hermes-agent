@@ -508,6 +508,29 @@ in the pending JSON file). Memory writes have the same gate under
 > (dangerous-pattern heuristics), not an approval gate — the two are
 > independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
+### Read-only skills (`skills.read_only`)
+
+For platform / shared deployments where skills are managed outside Hermes
+(for example a Kubernetes volume mount) and must never be rewritten at
+runtime, turn on hard read-only mode:
+
+```yaml
+skills:
+  read_only: true
+```
+
+When enabled, Hermes still lists, views, uses, and executes skills, but
+**refuses every runtime skill mutation**, including:
+
+- `skill_manage` create / edit / patch / delete / write_file / remove_file
+- background self-improvement skill patches
+- curator archive / prune of skill directories
+- dashboard / web UI skill create / edit
+- hub install / uninstall through the agent surface
+
+This is independent of `skills.write_approval` (which stages writes for
+review). `read_only` is a hard deny — nothing is staged.
+
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.

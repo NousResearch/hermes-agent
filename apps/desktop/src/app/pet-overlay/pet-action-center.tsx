@@ -436,6 +436,11 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
   function onOpenInApp() {
     if (item && item.allowedActions.includes('open-in-app') && !isSubmitting) {
       send({ type: 'action-center-open-session', itemId: item.id })
+      // The destination is the main Hermes window; keeping this overlay panel
+      // open only lets route/live-status updates grow it in several native
+      // bounds steps after the click. Dismiss immediately so the interaction
+      // has one deterministic collapse transition and focus returns to Hermes.
+      closePanel()
     }
   }
 

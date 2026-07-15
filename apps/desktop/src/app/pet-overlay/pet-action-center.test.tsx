@@ -1088,6 +1088,9 @@ describe('PetActionCenter — Pet-6C2 live actions', () => {
         })}
       />
     )
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: ac.open }))
+    input = screen.getByRole<HTMLInputElement>('textbox', { name: /message session/i })
     expect(input.value).toBe('keep after opening')
 
     rerender(
@@ -1139,7 +1142,7 @@ describe('PetActionCenter — Pet-6C2 live actions', () => {
     expect(emittedControls().at(-1)).toEqual({ type: 'action-center-acknowledge', itemId: failed.id })
   })
 
-  it('renders Open in Hermes for every capable item kind and emits only the opaque item id', () => {
+  it('renders Open in Hermes for every capable item kind, emits only the opaque item id, and dismisses the panel', () => {
     const items = [
       makeApprovalItem({ id: 'approval-open', allowedActions: ['approve-once', 'open-in-app'] }),
       makeClarifyItem({ id: 'clarify-open', allowedActions: ['clarify-respond', 'open-in-app'] }),
@@ -1155,6 +1158,11 @@ describe('PetActionCenter — Pet-6C2 live actions', () => {
     for (const item of items) {
       rerender(<PetActionCenter state={makeState([item], { selectedItemId: item.id })} />)
       fireEvent.click(screen.getByRole('button', { name: /open in hermes/i }))
+      expect(screen.queryByRole('dialog')).toBeNull()
+
+      if (item !== items.at(-1)) {
+        fireEvent.click(screen.getByRole('button', { name: ac.open }))
+      }
     }
 
     expect(emittedControls()).toEqual(

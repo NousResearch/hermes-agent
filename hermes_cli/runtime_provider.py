@@ -261,19 +261,23 @@ def _effective_model(model_cfg: dict[str, Any], target_model: Optional[str]) -> 
 
 
 def _copilot_runtime_api_mode(model_cfg: dict[str, Any], api_key: str, *, target_model: Optional[str] = None) -> str:
+    configured_default = str(model_cfg.get("default") or "").strip()
+    requested_model = str(target_model or "").strip()
+    # Equivalent spellings must preserve the saved mode without requiring a live catalog.
+    target_overrides_default = False
+    if requested_model:
+        try:
+            norm_target = _models.normalize_copilot_model_id(requested_model) or requested_model
+            norm_default = _models.normalize_copilot_model_id(configured_default) or configured_default
+        except Exception:
+            norm_target, norm_default = requested_model, configured_default
+        target_overrides_default = norm_target != norm_default
     configured_mode = _configured_api_mode("copilot", model_cfg)
-    if configured_mode:
-        # A stale/incompatible explicit ``codex_responses`` must not override Copilot's hard
-        # per-model requirement. Copilot serves ``gpt-5-mini`` on chat completions only; a
-        # Responses-API request there silently succeeds but returns no reasoning/thinking
-        # content (#46527). The stale value commonly survives an ordinary flow: the Copilot
-        # OAuth setup writes ``api_mode: codex_responses`` (correct for the gpt-5.4-mini it
-        # initially selects), then the user switches to gpt-5-mini without the mode being
-        # recomputed. The check is the pure-regex Copilot exception — no network call; a
-        # legitimate ``codex_responses`` for GPT-5 variants like gpt-5.4-mini is still honored.
-        model_name = str(_effective_model(model_cfg, target_model)).strip()
-        if (configured_mode == "codex_responses" and model_name
-                and not _models._should_use_copilot_responses_api(model_name)):
+    if configured_mode and not target_overrides_default:
+        # Copilot excludes gpt-5-mini from Responses. Do not veto other
+        # model families whose catalog advertises Responses support.
+        model_name = str(_effective_model(model_cfg, target_model)).strip().lower().rsplit("/", 1)[-1]
+        if configured_mode == "codex_responses" and model_name.startswith("gpt-5-mini"):
             return "chat_completions"
         return configured_mode
     # Use the model being resolved, not the persisted default: a Claude MoA slot inheriting

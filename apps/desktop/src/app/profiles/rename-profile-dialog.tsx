@@ -15,6 +15,7 @@ import { renameProfile } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { renameProfileLocal } from '@/store/profile'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -72,6 +73,10 @@ export function RenameProfileDialog({
 
     try {
       await renameProfile(currentName, trimmed)
+      // Re-point local state (list, cosmetics, gateway routing) at the new
+      // name immediately — the old name's backend was torn down for the
+      // directory rename, so anything still aimed at it would strand.
+      renameProfileLocal(currentName, trimmed)
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)

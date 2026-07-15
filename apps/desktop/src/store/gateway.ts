@@ -259,6 +259,25 @@ export function touchSecondaryGateways(): void {
   }
 }
 
+// Close + evict one profile's secondary socket (e.g. its profile was just
+// deleted). Stops the reconnect backoff loop dead — without this, a socket
+// whose backend can never come back keeps respawning it forever.
+export function dropSecondaryGateway(profile: string): void {
+  const key = normKey(profile)
+  const entry = secondaries.get(key)
+
+  if (!entry) {
+    return
+  }
+
+  entry.wantOpen = false
+  clearTimer(entry)
+  entry.offEvent()
+  entry.offState()
+  entry.gateway.close()
+  secondaries.delete(key)
+}
+
 // Close + evict secondaries whose profile is neither active nor in `keep`
 // (profiles with a running / needs-input session). Bounds cost to live work.
 export function pruneSecondaryGateways(keep: Set<string>): void {

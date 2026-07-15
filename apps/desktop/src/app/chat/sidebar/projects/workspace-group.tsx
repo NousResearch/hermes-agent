@@ -1,6 +1,7 @@
 import type * as React from 'react'
 import { useState } from 'react'
 
+import { ProfileAvatar } from '@/components/profile-avatar'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -43,9 +44,12 @@ export function SidebarWorkspaceGroup({ group, renderRows, onNewSession, onRemov
   const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 
-  // Leading glyph: profile color dot, a home mark for the repo's primary
-  // checkout (labeled by its live branch), or a branch/kanban mark otherwise.
-  const leadingIcon = group.color ? (
+  // Leading glyph: a profile's picture/colored-initial face for profile lanes,
+  // else a profile color dot, a home mark for the repo's primary checkout
+  // (labeled by its live branch), or a branch/kanban mark otherwise.
+  const leadingIcon = isProfileGroup ? (
+    <ProfileAvatar className="size-4 rounded-[4px] text-[0.5625rem]" name={group.id} />
+  ) : group.color ? (
     <span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
   ) : (
     <Codicon

@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
+import { getProfileAvatar, getProfiles, setApiRequestProfile, STARTUP_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import {
   arraysEqual,
@@ -11,7 +11,7 @@ import {
   storedStringArray,
   storedStringRecord
 } from '@/lib/storage'
-import { $gateway, ensureGatewayForProfile } from '@/store/gateway'
+import { $gateway, dropSecondaryGateway, ensureGatewayForProfile } from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -41,6 +41,9 @@ export function setActiveProfile(name: string): void {
 export async function refreshProfiles(): Promise<ProfileInfo[]> {
   const { profiles } = await getProfiles()
   $profiles.set(profiles)
+  // Reconcile the avatar cache on every list refresh so pictures set/removed
+  // elsewhere (or on another window) fetch/drop without an explicit call site.
+  ensureProfileAvatars(profiles)
 
   return profiles
 }
@@ -99,6 +102,170 @@ export function setProfileColor(name: string, color: null | string): void {
   }
 
   $profileColors.set(next)
+}
+
+// ── Rail avatars ───────────────────────────────────────────────────────────
+// Profile pictures, keyed by normalized profile name → data URL. In-memory only
+// (data URLs are far too big for localStorage, and the backend is the source of
+// truth). Fetched lazily by ensureProfileAvatars() whenever the profile list
+// refreshes; ProfileAvatar/ProfileSquare read from here and fall back to the
+// colored initial when a name has no entry.
+export const $profileAvatars = atom<Record<string, string>>({})
+
+// Version (avatar_updated_at) of each cached avatar, so we re-fetch only when
+// the file actually changes. Module-level — never rendered, just bookkeeping.
+const avatarVersions = new Map<string, number>()
+// In-flight fetches, deduped by key so a burst of refreshes issues one request.
+const avatarInFlight = new Map<string, Promise<void>>()
+
+// Reconcile the avatar cache against the latest profile list: fetch pictures for
+// profiles whose avatar is new or changed, and drop entries for profiles that no
+// longer exist or lost their picture (self-heals after rename/delete). Best
+// effort — a failed fetch just leaves the colored-initial fallback in place.
+export function ensureProfileAvatars(profiles: ProfileInfo[]): void {
+  const live = new Set(profiles.map(profile => normalizeProfileKey(profile.name)))
+
+  // Drop stale cache + version entries for profiles that vanished.
+  const current = $profileAvatars.get()
+  let pruned: null | Record<string, string> = null
+
+  for (const key of Object.keys(current)) {
+    if (!live.has(key)) {
+      pruned ??= { ...current }
+      delete pruned[key]
+      avatarVersions.delete(key)
+    }
+  }
+
+  if (pruned) {
+    $profileAvatars.set(pruned)
+  }
+
+  for (const profile of profiles) {
+    const key = normalizeProfileKey(profile.name)
+    const version = profile.avatar_updated_at ?? 0
+
+    if (!profile.has_avatar) {
+      // Picture was removed elsewhere — clear any cached copy.
+      if (key in $profileAvatars.get()) {
+        setProfileAvatarLocal(profile.name, null)
+      }
+
+      avatarVersions.delete(key)
+
+      continue
+    }
+
+    if (avatarVersions.get(key) === version || avatarInFlight.has(key)) {
+      continue
+    }
+
+    const request = getProfileAvatar(profile.name)
+      .then(res => {
+        if (res.data_url) {
+          avatarVersions.set(key, version)
+          $profileAvatars.set({ ...$profileAvatars.get(), [key]: res.data_url })
+        }
+      })
+      .catch(() => {
+        // Leave the fallback in place; a later refresh retries.
+      })
+      .finally(() => {
+        avatarInFlight.delete(key)
+      })
+
+    avatarInFlight.set(key, request)
+  }
+}
+
+// Optimistically set (or, with null, clear) a profile's cached picture after a
+// PUT/DELETE so the UI updates instantly without waiting for the next refresh.
+export function setProfileAvatarLocal(name: string, dataUrl: null | string): void {
+  const key = normalizeProfileKey(name)
+  const next = { ...$profileAvatars.get() }
+
+  if (dataUrl) {
+    next[key] = dataUrl
+    // Bump the version so the next ensureProfileAvatars() doesn't refetch over
+    // our fresh copy; the real mtime arrives on the following list refresh.
+    avatarVersions.set(key, Date.now() / 1000)
+  } else {
+    delete next[key]
+    avatarVersions.delete(key)
+  }
+
+  $profileAvatars.set(next)
+}
+
+// Re-point every live reference at `key` to the `to` profile: its secondary
+// socket, the new-chat target, the statusbar pill, and the active-gateway
+// routing. Shared unwind for delete (→ default) and rename (→ the new name).
+// Skipping this strands the gateway: the primary reconnect loop dials
+// $activeGatewayProfile, and a name whose backend can never come back keeps
+// failing to spawn `--profile <name>` forever.
+function retargetProfileRoutingLocal(key: string, to: string): void {
+  dropSecondaryGateway(key)
+
+  if ($newChatProfile.get() !== null && normalizeProfileKey($newChatProfile.get()) === key) {
+    $newChatProfile.set(to)
+  }
+
+  if (normalizeProfileKey($activeProfile.get()) === key) {
+    setActiveProfile(to)
+  }
+
+  if (normalizeProfileKey($activeGatewayProfile.get()) === key) {
+    selectProfile(to)
+  }
+}
+
+// Optimistically drop a deleted profile from the cached list (and its avatar)
+// so the rail square disappears the moment the DELETE succeeds, and retarget
+// any routing at it to default. The follow-up refreshActiveProfile() is
+// best-effort — if the backend is unreachable (e.g. the deleted profile's own
+// backend was the routed one), the stale list would otherwise keep the dead
+// square on screen indefinitely.
+export function removeProfileLocal(name: string): void {
+  const key = normalizeProfileKey(name)
+
+  $profiles.set($profiles.get().filter(profile => normalizeProfileKey(profile.name) !== key))
+  setProfileAvatarLocal(name, null)
+  retargetProfileRoutingLocal(key, 'default')
+}
+
+// Optimistically apply a confirmed rename: update the cached list, carry the
+// local cosmetics (color override, rail order slot, avatar cache) to the new
+// name, and retarget any routing at the old name — its backend was torn down
+// for the directory rename, so it strands exactly like a delete.
+export function renameProfileLocal(from: string, to: string): void {
+  const fromKey = normalizeProfileKey(from)
+  const toKey = normalizeProfileKey(to)
+
+  if (fromKey === toKey) {
+    return
+  }
+
+  $profiles.set(
+    $profiles.get().map(profile => (normalizeProfileKey(profile.name) === fromKey ? { ...profile, name: to } : profile))
+  )
+
+  const color = $profileColors.get()[fromKey]
+
+  if (color) {
+    setProfileColor(to, color)
+    setProfileColor(from, null)
+  }
+
+  setProfileOrder($profileOrder.get().map(name => (normalizeProfileKey(name) === fromKey ? to : name)))
+
+  const avatar = $profileAvatars.get()[fromKey]
+
+  if (avatar) {
+    setProfileAvatarLocal(to, avatar)
+    setProfileAvatarLocal(from, null)
+  }
+
+  retargetProfileRoutingLocal(fromKey, toKey)
 }
 
 interface ActiveProfileResponse {

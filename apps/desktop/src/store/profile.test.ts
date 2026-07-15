@@ -24,6 +24,8 @@ const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
 
 const profile = (name: string, isDefault = false): ProfileInfo => ({
+  avatar_updated_at: null,
+  has_avatar: false,
   has_env: false,
   is_default: isDefault,
   model: null,

@@ -38,6 +38,7 @@ import type {
   OAuthStartResponse,
   OAuthSubmitResponse,
   PaginatedSessions,
+  ProfileAvatar,
   ProfileCreatePayload,
   ProfileSetupCommand,
   ProfileSoul,
@@ -133,6 +134,7 @@ export type {
   ModelOptionProvider,
   ModelOptionsResponse,
   PaginatedSessions,
+  ProfileAvatar,
   ProfileCreatePayload,
   ProfileInfo,
   ProfileSetupCommand,
@@ -860,6 +862,30 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
 export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
   return window.hermesDesktop.api<ProfileSetupCommand>({
     path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
+  })
+}
+
+export function getProfileAvatar(name: string): Promise<ProfileAvatar> {
+  return window.hermesDesktop.api<ProfileAvatar>({
+    path: `/api/profiles/${encodeURIComponent(name)}/avatar`
+  })
+}
+
+export function updateProfileAvatar(
+  name: string,
+  dataUrl: string
+): Promise<{ avatar_updated_at: null | number; ok: boolean }> {
+  return window.hermesDesktop.api<{ avatar_updated_at: null | number; ok: boolean }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/avatar`,
+    method: 'PUT',
+    body: { data_url: dataUrl }
+  })
+}
+
+export function deleteProfileAvatar(name: string): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/avatar`,
+    method: 'DELETE'
   })
 }
 

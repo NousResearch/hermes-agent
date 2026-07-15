@@ -77,6 +77,7 @@ _SESSION_CHAT_NAME: ContextVar = ContextVar("HERMES_SESSION_CHAT_NAME", default=
 _SESSION_CHAT_TYPE: ContextVar = ContextVar("HERMES_SESSION_CHAT_TYPE", default=_UNSET)
 _SESSION_THREAD_ID: ContextVar = ContextVar("HERMES_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("HERMES_SESSION_USER_ID", default=_UNSET)
+_SESSION_USER_ID_ALT: ContextVar = ContextVar("HERMES_SESSION_USER_ID_ALT", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("HERMES_SESSION_USER_NAME", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("HERMES_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
@@ -129,6 +130,7 @@ _VAR_MAP = {
     "HERMES_SESSION_CHAT_TYPE": _SESSION_CHAT_TYPE,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
+    "HERMES_SESSION_USER_ID_ALT": _SESSION_USER_ID_ALT,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
     "HERMES_SESSION_ID": _SESSION_ID,
@@ -164,6 +166,7 @@ def set_session_vars(
     chat_type: str = "",
     thread_id: str = "",
     user_id: str = "",
+    user_id_alt: str = "",
     user_name: str = "",
     session_key: str = "",
     session_id: str = "",
@@ -201,6 +204,7 @@ def set_session_vars(
         _SESSION_CHAT_TYPE.set(chat_type),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
+        _SESSION_USER_ID_ALT.set(user_id_alt),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
@@ -237,6 +241,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_CHAT_TYPE,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
+        _SESSION_USER_ID_ALT,
         _SESSION_USER_NAME,
         _SESSION_KEY,
         _SESSION_ID,

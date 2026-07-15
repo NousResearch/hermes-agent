@@ -133,7 +133,7 @@ def test_child_task_inherits_parent_delivery_mode(kanban_home):
         parent = kb.create_task(conn, title="root", assignee=None)
         kb.add_notify_sub(
             conn, task_id=parent, platform="telegram", chat_id="chat1",
-            thread_id="42", user_id="u1", notifier_profile="default",
+            thread_id="42", user_id="u1", user_id_alt="alt-u1", notifier_profile="default",
             delivery_mode="notify+wake",
         )
         child = kb.create_task(
@@ -148,6 +148,7 @@ def test_child_task_inherits_parent_delivery_mode(kanban_home):
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "42"
     assert subs[0]["user_id"] == "u1"
+    assert subs[0]["user_id_alt"] == "alt-u1"
     assert subs[0]["notifier_profile"] == "default"
     assert subs[0]["delivery_mode"] == "notify+wake"
 
@@ -188,6 +189,34 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
         conn.close()
 
 
+def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
+    """user_id_alt is persisted with the notify subscription routing tuple and
+    can backfill a pre-existing row created before the alt id was known."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="alt sub", assignee="worker1")
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            user_id="open-id",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+        assert subs[0]["user_id"] == "open-id"
+        assert subs[0]["user_id_alt"] is None
+
+        kb.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1",
+            user_id="open-id", user_id_alt="union-id",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs[0]["user_id"] == "open-id"
+    assert subs[0]["user_id_alt"] == "union-id"
+
+
 def test_child_task_inherits_parent_chat_type(kanban_home):
     """Graph children inherit the parent's chat_type alongside its ACK edge and
     delivery_mode, so a woken child notification keys to the same session as
@@ -199,7 +228,8 @@ def test_child_task_inherits_parent_chat_type(kanban_home):
         parent = kb.create_task(conn, title="root", assignee=None)
         kb.add_notify_sub(
             conn, task_id=parent, platform="telegram", chat_id="chat1",
-            user_id="u1", chat_type="group", delivery_mode="notify+wake",
+            user_id="u1", user_id_alt="alt-u1", chat_type="group",
+            delivery_mode="notify+wake",
         )
         child = kb.create_task(
             conn, title="impl child", assignee="coder", parents=[parent],
@@ -212,6 +242,7 @@ def test_child_task_inherits_parent_chat_type(kanban_home):
     assert subs[0]["chat_type"] == "group"
     assert subs[0]["delivery_mode"] == "notify+wake"
     assert subs[0]["user_id"] == "u1"
+    assert subs[0]["user_id_alt"] == "alt-u1"
 
 
 @pytest.mark.asyncio

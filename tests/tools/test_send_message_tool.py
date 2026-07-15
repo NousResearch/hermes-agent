@@ -3397,6 +3397,9 @@ class TestTriggerGatewayAgentWake:
 
         properties = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
         assert "trigger_agent" not in properties
+        assert "wake" not in properties
+        assert "delivery_mode" not in properties
+        assert "chat_type" not in properties
 
     @pytest.mark.asyncio
     async def test_missing_inputs_return_structured_error(self):
@@ -3456,10 +3459,47 @@ class TestTriggerGatewayAgentWake:
         assert runner._background_tasks == set()
 
     @pytest.mark.asyncio
+    async def test_profile_stamped_wake_fails_closed_without_profile_adapter(self):
+        """A wake stamped for a non-default profile must not fall back to the
+        default profile adapter when that secondary profile has no live adapter.
+        That preserves gateway/authz_mixin.py's wrong-bot chokepoint."""
+        from tools.send_message_tool import _trigger_gateway_agent
+
+        class _DefaultAdapter:
+            async def handle_message(self, event):  # pragma: no cover - must not run
+                raise AssertionError("wrong default adapter fallback was used")
+
+        loop = asyncio.get_running_loop()
+
+        class _FakeRunner:
+            def __init__(self):
+                self.adapters = {Platform.TELEGRAM: _DefaultAdapter()}
+                self._profile_adapters = {}
+                self._gateway_loop = loop
+                self._background_tasks: set = set()
+
+            def _authorization_adapter(self, platform, profile=None):
+                if profile and profile != "default":
+                    return None
+                return self.adapters.get(platform)
+
+        runner = _FakeRunner()
+        with patch("gateway.run._gateway_runner_ref", new=lambda: runner):
+            result = await _trigger_gateway_agent(
+                "telegram", "chat1", "hi", profile="puppy",
+            )
+
+        assert result == {
+            "trigger_error": "no live adapter for telegram in profile puppy"
+        }
+        assert runner._background_tasks == set()
+
+    @pytest.mark.asyncio
     async def test_wake_source_resolves_to_originating_session_key(self):
         """The forged event's source must resolve to the SAME session key as the
-        operator's originating channel, for both DM and group shapes, so a woken
-        turn reuses the real session instead of a parallel one."""
+        operator's originating channel, including sources whose stable
+        participant key lives in user_id_alt, so a woken turn reuses the real
+        session instead of a parallel one."""
         from tools.send_message_tool import _trigger_gateway_agent
         from gateway.session import SessionSource, build_session_key
 
@@ -3481,21 +3521,42 @@ class TestTriggerGatewayAgentWake:
 
         # (originating source, kwargs the watcher forwards from the sub)
         cases = [
-            # DM: build_session_key uses chat_id, not user_id.
+            # DM with chat_id: build_session_key uses chat_id, but replay still
+            # preserves both user identifiers for downstream context.
             (
                 SessionSource(
                     platform=Platform.TELEGRAM, chat_id="dm-123",
-                    chat_type="dm", user_id="op-7",
+                    chat_type="dm", user_id="open-dm", user_id_alt="union-dm",
                 ),
-                {"chat_type": "dm", "user_id": "op-7"},
+                {"chat_type": "dm", "user_id": "open-dm", "user_id_alt": "union-dm"},
             ),
-            # Group: the key includes the real participant user_id.
+            # Isolated group: key prefers user_id_alt over the visible user_id.
             (
                 SessionSource(
                     platform=Platform.TELEGRAM, chat_id="grp-9",
-                    chat_type="group", user_id="op-42",
+                    chat_type="group", user_id="open-group", user_id_alt="union-group",
                 ),
-                {"chat_type": "group", "user_id": "op-42"},
+                {"chat_type": "group", "user_id": "open-group", "user_id_alt": "union-group"},
+            ),
+            # Isolated channel: same participant-isolation rule as group.
+            (
+                SessionSource(
+                    platform=Platform.TELEGRAM, chat_id="chan-9",
+                    chat_type="channel", user_id="open-channel", user_id_alt="union-channel",
+                ),
+                {"chat_type": "channel", "user_id": "open-channel", "user_id_alt": "union-channel"},
+            ),
+            # Threaded group/channel default to shared thread sessions (no
+            # participant suffix), but replay must still preserve user_id_alt.
+            (
+                SessionSource(
+                    platform=Platform.TELEGRAM, chat_id="grp-9", thread_id="thread-1",
+                    chat_type="group", user_id="open-thread", user_id_alt="union-thread",
+                ),
+                {
+                    "thread_id": "thread-1", "chat_type": "group",
+                    "user_id": "open-thread", "user_id_alt": "union-thread",
+                },
             ),
         ]
 
@@ -3517,6 +3578,55 @@ class TestTriggerGatewayAgentWake:
             assert captured[0].internal is True
             assert woke.chat_type == original.chat_type
             assert woke.user_id == original.user_id
+            assert woke.user_id_alt == original.user_id_alt
             assert build_session_key(woke) == build_session_key(original)
             # Never a synthetic placeholder user_id.
             assert woke.user_id != "hermes-internal-trigger"
+
+    @pytest.mark.asyncio
+    async def test_wake_source_resolves_to_shared_group_session_key(self):
+        """When group sessions are shared instead of isolated per user, replaying
+        user_id_alt must still preserve the source fields while resolving to the
+        same shared ``build_session_key`` as the original event."""
+        from tools.send_message_tool import _trigger_gateway_agent
+        from gateway.session import SessionSource, build_session_key
+
+        captured: list = []
+
+        class _CaptureAdapter:
+            async def handle_message(self, event):
+                captured.append(event)
+
+        loop = asyncio.get_running_loop()
+
+        class _FakeRunner:
+            def __init__(self):
+                self.adapters = {Platform.TELEGRAM: _CaptureAdapter()}
+                self._gateway_loop = loop
+                self._background_tasks: set = set()
+
+        original = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="shared-grp",
+            chat_type="group",
+            user_id="open-shared",
+            user_id_alt="union-shared",
+        )
+        with patch("gateway.run._gateway_runner_ref", new=lambda: _FakeRunner()):
+            result = await _trigger_gateway_agent(
+                "telegram", original.chat_id, "task done",
+                chat_type="group", user_id="open-shared", user_id_alt="union-shared",
+            )
+
+        assert result == {"triggered_agent": True}
+        for _ in range(20):
+            if captured:
+                break
+            await asyncio.sleep(0)
+        assert captured, "wake task did not run"
+        woke = captured[0].source
+        assert woke.user_id == original.user_id
+        assert woke.user_id_alt == original.user_id_alt
+        assert build_session_key(
+            woke, group_sessions_per_user=False,
+        ) == build_session_key(original, group_sessions_per_user=False)

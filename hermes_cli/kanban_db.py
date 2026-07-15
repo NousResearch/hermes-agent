@@ -1258,6 +1258,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     chat_id       TEXT NOT NULL,
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
+    user_id_alt   TEXT,
     chat_type     TEXT NOT NULL DEFAULT 'dm',
     notifier_profile TEXT,
     delivery_mode TEXT NOT NULL DEFAULT 'notify',
@@ -2047,6 +2048,19 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 "chat_type",
                 "chat_type TEXT NOT NULL DEFAULT 'dm'",
             )
+        if "user_id_alt" not in notify_cols:
+            # Records the originating source's platform-specific stable alt ID
+            # (Signal UUID, Feishu union_id, ...) alongside ``user_id`` so an
+            # active-wake replay reconstructs the SAME ``build_session_key`` as
+            # the original event. ``build_session_key`` prefers ``user_id_alt``
+            # over ``user_id`` when both are present (gateway/session.py); a
+            # wake that only replayed ``user_id`` would key to a different,
+            # context-less session whenever the two diverge. Legacy rows
+            # default to NULL, which is inert: ``user_id_alt or user_id`` falls
+            # back to the already-persisted ``user_id``.
+            _add_column_if_missing(
+                conn, "kanban_notify_subs", "user_id_alt", "user_id_alt TEXT"
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2169,7 +2183,7 @@ _REBUILD_SPECS = {
     "kanban_notify_subs": (
         "CREATE TABLE kanban_notify_subs ("
         " task_id TEXT NOT NULL, platform TEXT NOT NULL, chat_id TEXT NOT NULL,"
-        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT,"
+        " thread_id TEXT NOT NULL DEFAULT '', user_id TEXT, user_id_alt TEXT,"
         " chat_type TEXT NOT NULL DEFAULT 'dm',"
         " notifier_profile TEXT, delivery_mode TEXT NOT NULL DEFAULT 'notify',"
         " created_at INTEGER NOT NULL,"
@@ -2711,9 +2725,9 @@ def create_task(
                         conn.execute(
                             """
                             INSERT OR IGNORE INTO kanban_notify_subs
-                                (task_id, platform, chat_id, thread_id, user_id,
+                                (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
                                  chat_type, notifier_profile, delivery_mode, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 task_id,
@@ -2721,6 +2735,7 @@ def create_task(
                                 psub["chat_id"],
                                 psub["thread_id"] or "",
                                 psub["user_id"],
+                                psub["user_id_alt"],
                                 psub_chat_type,
                                 psub["notifier_profile"],
                                 psub_mode,
@@ -8721,12 +8736,20 @@ def add_notify_sub(
     chat_id: str,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    user_id_alt: Optional[str] = None,
     chat_type: Optional[str] = None,
     notifier_profile: Optional[str] = None,
     delivery_mode: Optional[str] = None,
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread).
+
+    ``user_id_alt`` records the originating source's platform-specific stable
+    alt ID (Signal UUID, Feishu union_id, ...) alongside ``user_id``. Active-wake
+    replay must reproduce it so the woken turn's ``build_session_key`` matches
+    the original event's — ``build_session_key`` prefers ``user_id_alt`` over
+    ``user_id`` (gateway/session.py), so replaying only ``user_id`` would key a
+    wake into a different session whenever the two diverge for this source.
 
     ``chat_type`` records the originating source's chat_type ("dm", "group",
     "channel", "thread"); the active-wake delivery modes replay it so the woken
@@ -8748,10 +8771,10 @@ def add_notify_sub(
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, chat_type, notifier_profile, delivery_mode, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id, user_id_alt, chat_type, notifier_profile, delivery_mode, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, insert_chat_type, notifier_profile, insert_mode, now),
+            (task_id, platform, chat_id, thread_id or "", user_id, user_id_alt, insert_chat_type, notifier_profile, insert_mode, now),
         )
         if chat_type:
             # Refresh chat_type on re-subscribe so a legacy 'dm' default is
@@ -8764,6 +8787,19 @@ def add_notify_sub(
                  WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
                 """,
                 (chat_type, task_id, platform, chat_id, thread_id or ""),
+            )
+        if user_id_alt:
+            # Self-heal legacy rows (created before user_id_alt was tracked)
+            # by backfilling only when the existing value is unset — a
+            # resubscribe must not clobber an already-recorded alt id.
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET user_id_alt = ?
+                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                   AND (user_id_alt IS NULL OR user_id_alt = '')
+                """,
+                (user_id_alt, task_id, platform, chat_id, thread_id or ""),
             )
         if notifier_profile:
             # Self-heal legacy rows that predate notifier ownership by

@@ -2108,6 +2108,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
     monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-7")
     monkeypatch.setenv("HERMES_SESSION_USER_ID", "user-9")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID_ALT", "alt-user-9")
     monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "forum")
 
     out = kt._handle_create({
@@ -2126,6 +2127,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["chat_id"] == "chat-42"
     assert s["thread_id"] == "thread-7"
     assert s["user_id"] == "user-9"
+    assert s["user_id_alt"] == "alt-user-9"
     assert s["chat_type"] == "forum"
     assert s["delivery_mode"] == "notify+wake"
 

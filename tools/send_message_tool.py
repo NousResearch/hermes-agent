@@ -538,6 +538,7 @@ async def _trigger_gateway_agent(
     thread_id: str | None = None,
     chat_type: str | None = None,
     user_id: str | None = None,
+    user_id_alt: str | None = None,
     profile: str | None = None,
 ) -> dict:
     """Schedule a synthetic inbound event so a live gateway agent takes a turn.
@@ -547,12 +548,13 @@ async def _trigger_gateway_agent(
     it to the destination adapter's ``handle_message`` on the gateway event
     loop, so the agent reads it, reasons, and replies in its own voice.
 
-    ``chat_type`` and ``user_id`` must mirror the originating source (persisted
-    on the subscription): ``handle_message`` derives the session key from them
-    via ``build_session_key``, so a mismatch routes the woken turn into a
-    separate, context-less session instead of the operator's real channel.
-    ``user_id`` is passed through verbatim (``None`` included), since for
-    group/channel keys an absent user_id is significant.
+    ``chat_type``, ``user_id``, and ``user_id_alt`` must mirror the originating
+    source (persisted on the subscription): ``handle_message`` derives the
+    session key from them via ``build_session_key``, so a mismatch routes the
+    woken turn into a separate, context-less session instead of the operator's
+    real channel. ``user_id`` and ``user_id_alt`` are passed through verbatim
+    (``None`` included), since for group/channel keys an absent identifier is
+    significant.
 
     Not exposed to the model, so an LLM cannot wake itself. Returns
     ``{"triggered_agent": True}`` once the turn is queued, or
@@ -581,12 +583,19 @@ async def _trigger_gateway_agent(
         return {"trigger_error": _sanitize_error_text(f"unknown platform for trigger: {exc}")}
 
     adapter: Any = None
+    profile_name = (profile or "").strip() or None
     authz_adapter = getattr(runner, "_authorization_adapter", None)
     if callable(authz_adapter):
         try:
-            adapter = authz_adapter(platform, profile or None)
+            adapter = authz_adapter(platform, profile_name)
         except Exception:
             adapter = None
+        if adapter is None and profile_name and profile_name != "default":
+            return {
+                "trigger_error": (
+                    f"no live adapter for {platform_name} in profile {profile_name}"
+                )
+            }
     if adapter is None:
         adapter = getattr(runner, "adapters", {}).get(platform)
     if adapter is None:
@@ -603,9 +612,10 @@ async def _trigger_gateway_agent(
         # operator's channel; default to "dm" only when none was recorded.
         chat_type=chat_type or "dm",
         user_id=user_id,
+        user_id_alt=user_id_alt,
         user_name="Hermes internal handoff",
         thread_id=thread_id,
-        profile=profile or None,
+        profile=profile_name,
         is_bot=False,
     )
     event = MessageEvent(

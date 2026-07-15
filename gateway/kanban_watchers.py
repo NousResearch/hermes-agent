@@ -501,6 +501,7 @@ class GatewayKanbanWatchersMixin:
                                     # turn keys to the operator's real channel.
                                     chat_type=sub.get("chat_type") or None,
                                     user_id=sub.get("user_id") or None,
+                                    user_id_alt=sub.get("user_id_alt") or None,
                                     profile=sub_profile or None,
                                 )
                                 if trigger_result.get("triggered_agent"):

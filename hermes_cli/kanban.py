@@ -701,6 +701,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument("--user-id-alt", default=None)
     p_nsub.add_argument(
         "--chat-type",
         choices=("dm", "group", "channel", "thread"),
@@ -2460,6 +2461,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             conn, task_id=args.task_id,
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
+            user_id_alt=getattr(args, "user_id_alt", None),
             chat_type=getattr(args, "chat_type", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
@@ -2486,8 +2488,9 @@ def _cmd_notify_list(args: argparse.Namespace) -> int:
         mode = "" if dmode == "notify" else f"  mode={dmode}"
         ctype = s.get("chat_type") or "dm"
         ct = "" if ctype == "dm" else f"  chat_type={ctype}"
+        uid_alt = f"  user_id_alt={s['user_id_alt']}" if s.get("user_id_alt") else ""
         print(f"  {s['task_id']:10s}  {s['platform']}:{s['chat_id']}{thr}"
-              f"  (since event {s['last_event_id']}){owner}{ct}{mode}")
+              f"  (since event {s['last_event_id']}){owner}{ct}{uid_alt}{mode}")
     return 0
 
 

@@ -12643,7 +12643,30 @@ def _(rid, params: dict) -> dict:
 
     try:
         output = worker.run(cmd)
-        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        # Side-effect mirror only recognises canonical command names, so a
+        # typed alias like /sonnet must be rewritten to /model sonnet before
+        # it reaches _mirror_slash_side_effects — otherwise the live TUI
+        # session stays pinned to the old model while the worker thread
+        # (which already dispatches /<alias> through the canonical /model
+        # path) appears to switch it. The rewrite is lazy-imported because
+        # the slash worker already exercises the alias resolver; this site
+        # only needs to recognise the same set of keys.
+        mirror_cmd = cmd
+        try:
+            from hermes_cli.model_switch import (
+                _ensure_direct_aliases,
+                DIRECT_ALIASES,
+                MODEL_ALIASES,
+            )
+            _ensure_direct_aliases()
+            _parts = cmd.lstrip("/").split(None, 1)
+            _head = _parts[0].lower() if _parts else ""
+            if _head in DIRECT_ALIASES or _head in MODEL_ALIASES:
+                _tail = (" " + _parts[1]) if len(_parts) > 1 else ""
+                mirror_cmd = f"/model {_parts[0]}{_tail}"
+        except ImportError:
+            pass
+        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, mirror_cmd)
         payload = {"output": output or "(no output)"}
         if warning:
             payload["warning"] = warning

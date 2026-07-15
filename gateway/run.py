@@ -9952,16 +9952,106 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _unavail_msg = _check_unavailable_skill(command)
                     if _unavail_msg:
                         return _unavail_msg
-                    # Model-alias shortcut: /<alias> -> /model <alias>
+                    # Model-alias shortcut: /<alias> -> /model <alias>. Rewrites
+                    # the event to the canonical /model command so the same
+                    # per-platform access-control gate and ``command:model``
+                    # hook fire that a typed ``/model <alias>`` would. Done
+                    # AFTER plugins/skill bundles/skills/unavailable-skill
+                    # checks above so model aliases never pre-empt a
+                    # higher-priority command that happens to share a name.
                     try:
                         from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES
                         _ensure_direct_aliases()
-                        _key = command.strip().lower()
-                        if _key in DIRECT_ALIASES or _key in MODEL_ALIASES:
+                        _alias_key = command.strip().lower()
+                        if _alias_key in DIRECT_ALIASES or _alias_key in MODEL_ALIASES:
+                            # Rewrite event.text to the canonical /model
+                            # command. Any args the user typed AFTER the
+                            # alias name (e.g. /sonnet --provider X) ride
+                            # along verbatim.
                             user_args = event.get_command_args().strip()
                             event.text = f"/model {command} {user_args}".strip()
+                            # Now re-read args from the rewritten event so
+                            # the hook ctx matches what a typed /model
+                            # sonnet --provider X would see — the alias
+                            # name becomes the first positional arg, which
+                            # is exactly what _handle_model_command will
+                            # receive via parse_model_flags(raw_args).
+                            _alias_args = event.get_command_args().strip()
+                            _alias_canonical = "model"
+                            # Mirror the auth gate at line ~9406 so the same
+                            # per-platform allow_admin_from / user_allowed_commands
+                            # policy applies to /<alias> as to /model.
+                            _denied = self._check_slash_access(source, _alias_canonical)
+                            if _denied is not None:
+                                return _denied
+                            # Mirror the ``command:<canonical>`` hook at
+                            # line ~9418 so handlers can deny/handle the
+                            # model command the same way whether the user
+                            # typed /model or /<alias>.
+                            _hook_ctx = {
+                                "platform": source.platform.value if source.platform else "",
+                                "user_id": source.user_id,
+                                "command": _alias_canonical,
+                                "raw_command": command,
+                                "args": _alias_args,
+                                "raw_args": _alias_args,
+                            }
+                            try:
+                                _hook_results = await self.hooks.emit_collect(
+                                    f"command:{_alias_canonical}", _hook_ctx
+                                )
+                            except Exception as _hook_err:
+                                logger.debug(
+                                    "command:%s hook dispatch failed (non-fatal): %s",
+                                    _alias_canonical, _hook_err,
+                                )
+                                _hook_results = []
+                            for _hook_result in _hook_results:
+                                if not isinstance(_hook_result, dict):
+                                    continue
+                                _decision = str(_hook_result.get("decision", "")).strip().lower()
+                                if _decision == "deny":
+                                    _msg = _hook_result.get("message")
+                                    if isinstance(_msg, str) and _msg:
+                                        return _msg
+                                    return f"Command `/{command}` was blocked by a hook."
+                                if _decision == "handled":
+                                    _msg = _hook_result.get("message")
+                                    return _msg if isinstance(_msg, str) and _msg else None
+                                if _decision == "rewrite":
+                                    # Mirror the rewrite protocol at line ~9456:
+                                    # hook returns {"command_name": "<new>",
+                                    # "raw_args": "<args>"}; dispatcher rewrites
+                                    # event.text, re-resolves command/canonical,
+                                    # and breaks out of the hook loop without
+                                    # re-firing the hook for the new target
+                                    # (one decision per turn).
+                                    _new_command = str(
+                                        _hook_result.get("command_name", "")
+                                    ).strip().lstrip("/")
+                                    if not _new_command:
+                                        # Empty new command → no-op, same as
+                                        # canonical's `continue`.
+                                        continue
+                                    _new_args = str(
+                                        _hook_result.get("raw_args", "")
+                                    ).strip()
+                                    event.text = f"/{_new_command} {_new_args}".strip()
+                                    command = event.get_command()
+                                    _cmd_def = _resolve_cmd(command) if command else None
+                                    canonical = _cmd_def.name if _cmd_def else command
+                                    # Don't return — fall through to the
+                                    # _handle_model_command dispatch below so a
+                                    # hook rewriting within the model namespace
+                                    # still routes through the canonical /model
+                                    # handler with the rewritten args.
+                                    break
+                                # 'allow' / unrecognised decision: fall through to dispatch
                             return await self._handle_model_command(event)
-                    except Exception:
+                    except ImportError:
+                        # Graceful degradation if hermes_cli.model_switch isn't
+                        # available in this build. Anything else (real bug)
+                        # bubbles up so we don't swallow it.
                         pass
                     # Genuinely unrecognized /command: not a built-in, not a
                     # plugin, not a skill, not a known-inactive skill. Warn

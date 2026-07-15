@@ -8457,18 +8457,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             payload = parts[1].strip() if len(parts) > 1 else ""
             if not payload:
                 _cprint("  Usage: /queue <prompt>")
+            elif not self._agent_running:
+                # Agent is idle — /queue makes no sense. Demoting to a
+                # "next-turn message" silently (the previous behavior) lost
+                # the queue semantics; the user believed they nudged an
+                # already-completed run. Tell them clearly. Fix for #64578.
+                _cprint(
+                    f"  Agent is idle — /queue <prompt> is a no-op. "
+                    f"Send a normal message instead (or /steer while the agent is running)."
+                )
+                return True
             else:
                 self._pending_input.put(payload)
-                if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
-                else:
-                    _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "steer":
             # Inject a message after the next tool call without interrupting.
             # If the agent is actively running, push the text into the agent's
             # pending_steer slot — the drain hook in _execute_tool_calls_*
             # will append it to the next tool result's content. If no agent
-            # is running, fall back to queue semantics (same as /queue).
+            # is running, fall back to a clear notice (no-op) instead of
+            # silently demoting to a next-turn message. Fix for #64578.
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
             if not payload:
@@ -8484,9 +8492,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else:
                         _cprint("  Steer rejected (empty payload).")
             else:
-                # No active run — treat as a normal next-turn message.
-                self._pending_input.put(payload)
-                _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                # No active run — /steer is a no-op. Silent demotion to
+                # a next-turn message (the previous behavior) lost the
+                # steer semantics; the user believed they nudged an
+                # already-completed run. Tell them clearly. Fix for #64578.
+                _cprint(
+                    f"  Agent is idle — /steer <prompt> is a no-op. "
+                    f"Send a normal message instead (or /queue while the agent is running)."
+                )
+                return True
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
         elif canonical == "moa":

@@ -44,7 +44,9 @@ INPUTS                    PROCESSING                    STORAGE
 
 ```bash
 # Source Data (where cronjobs save)
-/home/ubuntu/knowledge-base/
+
+> **Environment variables:** Set `KNOWLEDGE_BASE` (default: `${HOME}/knowledge-base`) and `VAULT_PATH` to match your local paths.
+${KNOWLEDGE_BASE}/
 ├── discord/
 │   └── threads/              # Raw Discord thread JSONs
 ├── youtube/
@@ -75,7 +77,7 @@ INPUTS                    PROCESSING                    STORAGE
 └── README.md                 # Documentation
 
 # Vault (versioned data, synced from sources)
-/home/ubuntu/dev/workspace/Personal-Vault-backup/
+${VAULT_PATH}/
 ├── 02-Literature/
 │   ├── YouTube/
 │   │   ├── data/             # From youtube-learning/data/
@@ -130,10 +132,10 @@ For focused learning on a domain (e.g., entrepreneurship, ML ops, marketing), cr
 
 ```bash
 # Create domain structure
-mkdir -p /home/ubuntu/knowledge-base/<domain>/{mindset,startup,growth,scale,personal-development,hermes-resources,insights}
+mkdir -p ${KNOWLEDGE_BASE}/<domain>/{mindset,startup,growth,scale,personal-development,hermes-resources,insights}
 
 # Create domain README
-write_file path="/home/ubuntu/knowledge-base/<domain>/README.md" content="# <Domain> Learning
+write_file path="${KNOWLEDGE_BASE}/<domain>/README.md" content="# <Domain> Learning
 
 ## Focus Areas
 
@@ -201,7 +203,7 @@ Draft skill name: <domain>-<pattern>
          ↓
 Compile steps from multiple sources
          ↓
-Generate skill draft in /home/ubuntu/.hermes/skills/
+Generate skill draft in ${HOME}/.hermes/skills/
          ↓
 Add to STATUS.md: "Skill suggested: <domain>-<pattern>"
          ↓
@@ -240,7 +242,7 @@ def check_hermes_resources():
             add_to_hermes_resources_note(skill)
 ```
 
-**Output:** `/home/ubuntu/knowledge-base/<domain>/hermes-resources/new-skills.md`
+**Output:** `${KNOWLEDGE_BASE}/<domain>/hermes-resources/new-skills.md`
 
 **Example note:**
 ```yaml
@@ -277,11 +279,11 @@ cronjob(action='create',
 3. Subdomain 3
 
 # Workflow:
-1. Check /home/ubuntu/knowledge-base/<domain>/README.md for channel list
+1. Check ${KNOWLEDGE_BASE}/<domain>/README.md for channel list
 2. Fetch recent videos (via youtube-content skill or manual URL list)
 3. Extract transcripts
 4. Identify patterns, key takeaways, action items
-5. Save to /home/ubuntu/knowledge-base/<domain>/<category>/
+5. Save to ${KNOWLEDGE_BASE}/<domain>/<category>/
 6. Generate Obsidian notes
 7. If 5+ similar patterns found → suggest new skill creation
 
@@ -304,7 +306,7 @@ cronjob(action='create',
 1. List all available skills: `hermes skills list`
 2. Check for new MCP servers in ~/.hermes/config.yaml
 3. Identify new tools or features
-4. Document useful patterns in /home/ubuntu/knowledge-base/<domain>/hermes-resources/
+4. Document useful patterns in ${KNOWLEDGE_BASE}/<domain>/hermes-resources/
 5. Create actionable tips for current work
 
 # Focus Areas:
@@ -335,17 +337,17 @@ def test_obsidian_integration():
 
 def test_knowledge_base():
     """Test knowledge base structure"""
-    kb_path = Path("/home/ubuntu/knowledge-base/<domain>")
+    kb_path = Path("${KNOWLEDGE_BASE}/<domain>")
     required_dirs = ["mindset", "startup", "growth", "scale", "personal-development", "hermes-resources", "insights"]
     return all((kb_path / dir_name).exists() for dir_name in required_dirs)
 
 def test_learning_script():
     """Test learning agent script"""
-    script_path = Path("/home/ubuntu/knowledge-base/scripts/learning-agent.py")
+    script_path = Path("${KNOWLEDGE_BASE}/scripts/learning-agent.py")
     return script_path.exists()
 ```
 
-**Run:** `python3 /home/ubuntu/knowledge-base/scripts/test-learning-system.py`
+**Run:** `python3 ${KNOWLEDGE_BASE}/scripts/test-learning-system.py`
 
 **Note:** Test scripts that use `hermes_tools` module should run via `cronjob` tool with proper skill loading, not direct Python execution in terminal context.
 
@@ -357,24 +359,25 @@ def test_learning_script():
 
 - Standardize log file naming to include cron name and timestamp for easy daily rotation:
   ```
-  /home/ubuntu/knowledge-base/logs/cron-<name>.log
-  /home/ubuntu/knowledge-base/logs/cron-<name>-<YYYYMMDD>.log
+  ${KNOWLEDGE_BASE}/logs/cron-<name>.log
+  ${KNOWLEDGE_BASE}/logs/cron-<name>-<YYYYMMDD>.log
   ```
 - Example in this session:
-  `/home/ubuntu/knowledge-base/logs/cron-gatherer.log`
+  `${KNOWLEDGE_BASE}/logs/cron-gatherer.log`
   ```bash
   crontab entry (every 2 hours pattern):
-  0 8,10,12,14,16,18,20 * * * /usr/bin/python3 /home/ubuntu/knowledge-base/scripts/knowledge-gatherer.py >> /home/ubuntu/knowledge-base/logs/cron-gatherer.log 2>&1
+  0 8,10,12,14,16,18,20 * * * /usr/bin/python3 ${KNOWLEDGE_BASE}/scripts/knowledge-gatherer.py >> ${KNOWLEDGE_BASE}/logs/cron-gatherer.log 2>&1
   ```
-- This pattern reduces log fragmentation and makes `tail -f /home/ubuntu/knowledge-base/logs/cron-*.log` reliable across any number of scheduled scripts.
+- This pattern reduces log fragmentation and makes `tail -f ${KNOWLEDGE_BASE}/logs/cron-*.log` reliable across any number of scheduled scripts.
 
 ---
 
 ### Step 1: Create Base Structure
 
 ```bash
-mkdir -p /home/ubuntu/knowledge-base/{discord/threads,youtube/transcripts,faculdade/materias,obsidian/{00-Inbox,01-YouTube,02-Discord,03-Faculdade,04-Patterns},scripts,logs}
-cd /home/ubuntu/knowledge-base
+KNOWLEDGE_BASE="${HOME}/knowledge-base"
+mkdir -p "$KNOWLEDGE_BASE"/{discord/threads,youtube/transcripts,faculdade/materias,obsidian/{00-Inbox,01-YouTube,02-Discord,03-Faculdade,04-Patterns},scripts,logs}
+cd "$KNOWLEDGE_BASE"
 git init
 ```
 
@@ -409,21 +412,21 @@ git init
 Use the `cronjob` tool directly in the session:
 
 ```
-cronjob action='create' name='knowledge-morning-report' schedule='0 6 * * *' deliver='local' prompt='Execute python3 /home/ubuntu/knowledge-base/scripts/progress-reporter.py morning and send via send_message target=telegram'
+cronjob action='create' name='knowledge-morning-report' schedule='0 6 * * *' deliver='local' prompt='Execute python3 ${KNOWLEDGE_BASE}/scripts/progress-reporter.py morning and send via send_message target=telegram'
 ```
 
 ### Step 5: Configure Data Sources
 
 **YouTube channels** (once provided by user):
 ```bash
-mkdir -p /home/ubuntu/knowledge-base/config
-nano /home/ubuntu/knowledge-base/config/youtube-channels.txt
+mkdir -p ${KNOWLEDGE_BASE}/config
+nano ${KNOWLEDGE_BASE}/config/youtube-channels.txt
 # Format: CHANNEL_ID per line
 ```
 
 **Faculdade materias** (once provided by user):
 ```bash
-nano /home/ubuntu/knowledge-base/config/faculdade-materias.txt
+nano ${KNOWLEDGE_BASE}/config/faculdade-materias.txt
 # Format: MateriaName:/path/to/materials
 ```
 
@@ -435,16 +438,16 @@ nano /home/ubuntu/knowledge-base/config/faculdade-materias.txt
 
 ```bash
 # Test main gatherer
-python3 /home/ubuntu/knowledge-base/scripts/knowledge-gatherer.py
+python3 ${KNOWLEDGE_BASE}/scripts/knowledge-gatherer.py
 
 # Test progress reporter
-python3 /home/ubuntu/knowledge-base/scripts/progress-reporter.py daily
+python3 ${KNOWLEDGE_BASE}/scripts/progress-reporter.py daily
 
 # Verify Obsidian notes created
-ls /home/ubuntu/knowledge-base/obsidian/02-Discord/
+ls ${KNOWLEDGE_BASE}/obsidian/02-Discord/
 
 # Verify Git commits
-cd /home/ubuntu/knowledge-base && git log --oneline
+cd ${KNOWLEDGE_BASE} && git log --oneline
 ```
 
 ---
@@ -483,13 +486,13 @@ tags: [discord, learning]
 
 ```bash
 # Total notes
-find /home/ubuntu/knowledge-base/obsidian -name "*.md" | wc -l
+find ${KNOWLEDGE_BASE}/obsidian -name "*.md" | wc -l
 
 # Discord threads
-find /home/ubuntu/knowledge-base/discord -name "*.json" | wc -l
+find ${KNOWLEDGE_BASE}/discord -name "*.json" | wc -l
 
 # YouTube videos
-find /home/ubuntu/knowledge-base/youtube -name "*.md" | wc -l
+find ${KNOWLEDGE_BASE}/youtube -name "*.md" | wc -l
 
 # Git commits
 git log --oneline | wc -l
@@ -534,9 +537,9 @@ ls ~/.hermes/skills/ | wc -l
 
 ### Obsidian Symlink on Cloud VM
 - **Issue:** Obsidian vault not on VM; needs symlink to user's desktop Obsidian installation
-- **Fix:** Create local vault on VM (`/home/ubuntu/.obsidian/Obsidian/`) for immediate use
+- **Fix:** Create local vault on VM (`${HOME}/.obsidian/Obsidian/`) for immediate use
 - **Desktop sync:** User creates symlink on their desktop, not on VM
-- **Command (desktop, not VM):** `ln -s /home/ubuntu/.obsidian/Obsidian ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/YourVault`
+- **Command (desktop, not VM):** `ln -s ${HOME}/.obsidian/Obsidian ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/YourVault`
 
 ### Auto-Skill Generation False Positives
 - **Issue:** Transient patterns (e.g., same word in different contexts) trigger skill creation
@@ -546,7 +549,7 @@ ls ~/.hermes/skills/ | wc -l
 ### Video Processing Claims Must Be Verified
 - **Issue:** Session summary may claim videos were "moved to video-processed/" or STATUS.md was "created/updated" but the actual file operations never happened. Summaries from previous sessions are NOT reliable proof of execution.
 - **Fix:** After any video processing batch, ALWAYS verify with `ls` and `cat` that files are actually in the right place and STATUS.md exists with expected content. Never trust the previous session's summary as a substitute for filesystem verification.
-- **Check commands:** `ls /home/ubuntu/knowledge-base/<domain>/video-processed/` and `cat /home/ubuntu/knowledge-base/<domain>/STATUS.md`
+- **Check commands:** `ls ${KNOWLEDGE_BASE}/<domain>/video-processed/` and `cat ${KNOWLEDGE_BASE}/<domain>/STATUS.md`
 
 ### No-Agent Cronjob Timeout on Heavy Commands
 - **Issue:** `no_agent: true` cronjobs that run heavy test commands (e.g., `vitest run --coverage`) will timeout or hang. These scripts run in a sandboxed 5-min window with no adaptive retry.
@@ -577,12 +580,12 @@ ls ~/.hermes/skills/ | wc -l
 ### Discord Integration
 - **Prerequisite:** `discord-integration` skill must be configured
 - **Input:** `~/.hermes/memories/discord-learning.json`
-- **Output:** `/home/ubuntu/knowledge-base/discord/threads/*.json`
+- **Output:** `${KNOWLEDGE_BASE}/discord/threads/*.json`
 
 ### Obsidian Integration
 - **Prerequisite:** `obsidian` skill must be loaded
 - **Input:** Processed Discord threads, YouTube transcripts
-- **Output:** Notes in `/home/ubuntu/knowledge-base/obsidian/`
+- **Output:** Notes in `${KNOWLEDGE_BASE}/obsidian/`
 
 ### Telegram Integration
 - **Prerequisite:** Telegram enabled in Hermes config (ensure targets like `telegram` exist in ~/.hermes/config.yaml)

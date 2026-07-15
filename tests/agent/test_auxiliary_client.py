@@ -1101,6 +1101,39 @@ class TestExplicitProviderRouting:
             for record in caplog.records
         )
 
+    def test_try_openrouter_dotenv_key_beats_manual_pool_entry(self, tmp_path, monkeypatch):
+        """A Hermes .env key must win over stale manual OpenRouter credentials."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".env").write_text("OPENROUTER_API_KEY=dotenv-openrouter-key\n")
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [{
+                    "id": "stale-manual-entry",
+                    "label": "stale manual key",
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "source": "manual",
+                    "access_token": "stale-manual-openrouter-key",
+                    "base_url": OPENROUTER_BASE_URL,
+                }],
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "stale-shell-openrouter-key")
+
+        from hermes_cli.config import invalidate_env_cache
+
+        invalidate_env_cache()
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _try_openrouter()
+
+        assert client is mock_openai.return_value
+        assert model == _OPENROUTER_MODEL
+        assert mock_openai.call_args.kwargs["api_key"] == "dotenv-openrouter-key"
+        assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
+
     def test_try_openrouter_pool_exhausted_falls_back_to_env(self, monkeypatch):
         """Pool present but exhausted → fall through to OPENROUTER_API_KEY env var."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-fallback")

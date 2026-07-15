@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -142,17 +143,21 @@ class _FileLock:
             self._fh = None
 
 
-def _read_entries(path: Path) -> list[dict[str, Any]]:
+def _read_entries(path: Path, *, strict: bool = False) -> list[dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return []
-    except Exception:
+    except Exception as exc:
+        if strict:
+            raise RuntimeError("active session registry is unreadable") from exc
         logger.warning("Ignoring corrupt active session registry at %s", path)
         return []
     entries = data.get("entries") if isinstance(data, dict) else data
     if not isinstance(entries, list):
+        if strict:
+            raise RuntimeError("active session registry has an invalid shape")
         return []
     return [entry for entry in entries if isinstance(entry, dict)]
 
@@ -240,19 +245,11 @@ def try_acquire_active_session(
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot.
 
-    Returns ``(lease, None)`` on success.  When the cap is disabled, the lease is
-    a no-op object so callers can unconditionally call ``release()``.
+    Returns ``(lease, None)`` on success. A disabled cap still records ownership
+    so offline maintenance can distinguish live and abandoned sessions.
     """
     max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
-    if max_sessions is None:
-        return ActiveSessionLease(
-            lease_id=lease_id,
-            session_id=session_id,
-            surface=surface,
-            enabled=False,
-        ), None
-
     now = time.time()
     entry = {
         "lease_id": lease_id,
@@ -276,7 +273,7 @@ def try_acquire_active_session(
         if pruned:
             logger.info("Pruned %d stale active session lease(s)", pruned)
         active_count = len(entries)
-        if active_count >= max_sessions:
+        if max_sessions is not None and active_count >= max_sessions:
             _write_entries(state_path, entries)
             logger.info(
                 "Active session limit reached: active=%d max=%d surface=%s",
@@ -355,3 +352,13 @@ def active_session_registry_snapshot() -> list[dict[str, Any]]:
         entries = _prune_dead(_read_entries(state_path))
         _write_entries(state_path, entries)
         return entries
+
+
+@contextmanager
+def locked_active_session_registry():
+    """Hold the registry lock and yield live entries, failing closed on damage."""
+    state_path = _state_path()
+    with _FileLock(_lock_path()):
+        entries = _prune_dead(_read_entries(state_path, strict=True))
+        _write_entries(state_path, entries)
+        yield entries

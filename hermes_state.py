@@ -27,6 +27,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
+from session_policy import SessionPolicy, load_session_policy
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -184,14 +185,19 @@ _last_init_error_lock = threading.Lock()
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
-_FTS_TRIGGERS = (
+_BASE_FTS_TRIGGERS = (
     "messages_fts_insert",
     "messages_fts_delete",
     "messages_fts_update",
+)
+
+_TRIGRAM_FTS_TRIGGERS = (
     "messages_fts_trigram_insert",
     "messages_fts_trigram_delete",
     "messages_fts_trigram_update",
 )
+
+_FTS_TRIGGERS = _BASE_FTS_TRIGGERS + _TRIGRAM_FTS_TRIGGERS
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -1012,6 +1018,8 @@ class SessionDB:
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
         self.read_only = read_only
+        self.session_policy = load_session_policy(self.db_path.parent)
+        self._trigram_enabled = self.session_policy.trigram_enabled
 
         self._lock = threading.Lock()
         self._write_count = 0
@@ -1159,20 +1167,38 @@ class SessionDB:
             return False
 
     @staticmethod
-    def _drop_fts_triggers(cursor: sqlite3.Cursor) -> None:
-        for trigger in _FTS_TRIGGERS:
+    def _drop_fts_triggers(
+        cursor: sqlite3.Cursor,
+        *,
+        include_trigram: bool = True,
+    ) -> None:
+        triggers = _FTS_TRIGGERS if include_trigram else _BASE_FTS_TRIGGERS
+        for trigger in triggers:
             try:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
             except sqlite3.OperationalError:
                 pass
 
     @staticmethod
-    def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
-        placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+    def _drop_trigram_fts_triggers(cursor: sqlite3.Cursor) -> None:
+        for trigger in _TRIGRAM_FTS_TRIGGERS:
+            try:
+                cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+            except sqlite3.OperationalError:
+                pass
+
+    @staticmethod
+    def _fts_trigger_count(
+        cursor: sqlite3.Cursor,
+        *,
+        include_trigram: bool = True,
+    ) -> int:
+        triggers = _FTS_TRIGGERS if include_trigram else _BASE_FTS_TRIGGERS
+        placeholders = ",".join("?" for _ in triggers)
         row = cursor.execute(
             f"SELECT COUNT(*) FROM sqlite_master "
             f"WHERE type = 'trigger' AND name IN ({placeholders})",
-            _FTS_TRIGGERS,
+            triggers,
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
@@ -1533,7 +1559,7 @@ class SessionDB:
             # backfills, index changes tied to a specific version step) stay
             # in a version-gated chain. Column additions are handled by
             # _reconcile_columns() above and no longer need entries here.
-            if current_version < 10 and SCHEMA_VERSION == 10:
+            if current_version < 10 and SCHEMA_VERSION == 10 and self._trigram_enabled:
                 # v10: trigram FTS5 table for CJK/substring search. The
                 # virtual table + triggers are created unconditionally via
                 # FTS_TRIGRAM_SQL below, but existing rows need a one-time
@@ -1570,7 +1596,10 @@ class SessionDB:
                 # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
                 if fts5_available:
                     self._drop_fts_triggers(cursor)
-                    for _tbl in ("messages_fts", "messages_fts_trigram"):
+                    _fts_tables = ["messages_fts"]
+                    if self._trigram_enabled:
+                        _fts_tables.append("messages_fts_trigram")
+                    for _tbl in _fts_tables:
                         try:
                             cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
                         except sqlite3.OperationalError as exc:
@@ -1601,9 +1630,11 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
-                        trigram_ok = self._ensure_fts_schema(
-                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                        )
+                        trigram_ok = False
+                        if self._trigram_enabled:
+                            trigram_ok = self._ensure_fts_schema(
+                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                            )
                         if trigram_ok:
                             cursor.execute(
                                 "INSERT INTO messages_fts_trigram(rowid, content) "
@@ -1723,13 +1754,20 @@ class SessionDB:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
             # an earlier no-FTS5 runtime.
-            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            triggers_need_repair = self._fts_trigger_count(
+                cursor,
+                include_trigram=self._trigram_enabled,
+            ) < (
+                len(_FTS_TRIGGERS)
+                if self._trigram_enabled
+                else len(_BASE_FTS_TRIGGERS)
+            )
             self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
             # Trigram FTS5 for CJK/substring search. This is optional relative
             # to the main FTS table; if it cannot be created, CJK search falls
             # back to LIKE.
-            if self._fts_enabled:
+            if self._fts_enabled and self._trigram_enabled:
                 trigram_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
@@ -1739,6 +1777,11 @@ class SessionDB:
                         cursor,
                         include_trigram=trigram_enabled,
                     )
+            elif not self._trigram_enabled:
+                self._drop_trigram_fts_triggers(cursor)
+                self._trigram_available = False
+                if triggers_need_repair and self._fts_enabled:
+                    self._rebuild_fts_indexes(cursor, include_trigram=False)
 
         self._conn.commit()
 
@@ -6163,6 +6206,7 @@ class SessionDB:
         *,
         started_before: Optional[float] = None,
         started_after: Optional[float] = None,
+        ended_before: Optional[float] = None,
         source: Optional[str] = None,
         title_like: Optional[str] = None,
         end_reason: Optional[str] = None,
@@ -6209,6 +6253,9 @@ class SessionDB:
         if started_after is not None:
             clauses.append("s.started_at >= ?")
             params.append(started_after)
+        if ended_before is not None:
+            clauses.append("s.ended_at < ?")
+            params.append(ended_before)
         if source:
             clauses.append("s.source = ?")
             params.append(source)
@@ -6404,6 +6451,72 @@ class SessionDB:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    def list_stale_open_sessions(
+        self,
+        *,
+        source: str,
+        older_than_days: float,
+        limit: int = 50_000,
+    ) -> List[Dict[str, Any]]:
+        if source != "cli" or older_than_days <= 0:
+            raise ValueError("only stale cli sessions with a positive age are supported")
+        cutoff = time.time() - older_than_days * 86400
+        bounded_limit = max(1, min(int(limit), 50_000))
+        last_active_sql = (
+            "COALESCE((SELECT MAX(m.timestamp) FROM messages m "
+            "WHERE m.session_id = s.id), s.started_at)"
+        )
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT s.id, s.source, s.started_at, s.message_count, "
+                f"{last_active_sql} AS last_active "
+                "FROM sessions s "
+                "WHERE s.source = ? AND s.ended_at IS NULL AND s.archived = 0 "
+                f"AND {last_active_sql} < ? "
+                "ORDER BY last_active ASC LIMIT ?",
+                (source, cutoff, bounded_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def finalize_stale_open_sessions(
+        self,
+        *,
+        session_ids: List[str],
+        older_than_days: float,
+    ) -> int:
+        if older_than_days <= 0:
+            raise ValueError("a positive older_than_days is required")
+        unique_ids = list(dict.fromkeys(session_ids))[:50_000]
+        if not unique_ids:
+            return 0
+        cutoff = time.time() - older_than_days * 86400
+        finalized = {"count": 0}
+
+        def _do(conn):
+            for offset in range(0, len(unique_ids), 500):
+                batch = unique_ids[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    "SELECT s.id, COALESCE((SELECT MAX(m.timestamp) FROM messages m "
+                    "WHERE m.session_id = s.id), s.started_at) AS last_active "
+                    "FROM sessions s "
+                    f"WHERE s.id IN ({placeholders}) AND s.source = 'cli' "
+                    "AND s.ended_at IS NULL AND s.archived = 0 "
+                    "AND COALESCE((SELECT MAX(m.timestamp) FROM messages m "
+                    "WHERE m.session_id = s.id), s.started_at) < ?",
+                    [*batch, cutoff],
+                ).fetchall()
+                for row in rows:
+                    cursor = conn.execute(
+                        "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                        "WHERE id = ? AND ended_at IS NULL",
+                        (row["last_active"], "stale_repair", row["id"]),
+                    )
+                    finalized["count"] += cursor.rowcount
+            return finalized["count"]
+
+        return int(self._execute_write(_do))
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 
@@ -6946,6 +7059,24 @@ class SessionDB:
         except sqlite3.OperationalError:
             return False
 
+    def drop_trigram_index(self) -> bool:
+        removed = {"value": False}
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'messages_fts_trigram'"
+            ).fetchone()
+            self._drop_trigram_fts_triggers(conn.cursor())
+            if row is not None:
+                conn.execute("DROP TABLE messages_fts_trigram")
+                removed["value"] = True
+            return removed["value"]
+
+        self._execute_write(_do)
+        self._trigram_available = False
+        return removed["value"]
+
     def optimize_fts(self) -> int:
         """Merge fragmented FTS5 b-tree segments into one per index.
 
@@ -6961,9 +7092,8 @@ class SessionDB:
         speed. It is complementary to VACUUM: ``optimize`` compacts the FTS
         index internally, then VACUUM returns the freed pages to the OS.
 
-        Skips any FTS table that does not exist (e.g. the trigram index when
-        disabled via ``HERMES_DISABLE_FTS_TRIGRAM`` or not yet created), so
-        it is safe to call unconditionally.
+        Skips any FTS table that does not exist, so it is safe to call
+        unconditionally.
 
         Returns the number of FTS indexes that were optimized.
         """
@@ -7026,6 +7156,7 @@ class SessionDB:
     def maybe_auto_prune_and_vacuum(
         self,
         retention_days: int = 90,
+        retention_days_by_source: Optional[Dict[str, float]] = None,
         min_interval_hours: int = 24,
         vacuum: bool = True,
         sessions_dir: Optional[Path] = None,
@@ -7049,7 +7180,12 @@ class SessionDB:
           - ``"vacuumed"`` (bool) — true if VACUUM ran
           - ``"error"`` (str, optional) — present only on failure
         """
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
+        result: Dict[str, Any] = {
+            "skipped": False,
+            "pruned": 0,
+            "pruned_by_source": {},
+            "vacuumed": False,
+        }
         try:
             # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
@@ -7063,10 +7199,42 @@ class SessionDB:
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
-            pruned = self.prune_sessions(
-                older_than_days=retention_days,
-                sessions_dir=sessions_dir,
-            )
+            source_policy: Dict[str, float] = {}
+            for raw_source, raw_days in (retention_days_by_source or {}).items():
+                source = str(raw_source).strip().lower()
+                try:
+                    days = float(raw_days)
+                except (TypeError, ValueError):
+                    continue
+                if source and days > 0:
+                    source_policy[source] = days
+            if source_policy:
+                with self._lock:
+                    sources = [
+                        row["source"]
+                        for row in self._conn.execute(
+                            "SELECT DISTINCT source FROM sessions WHERE source IS NOT NULL"
+                        ).fetchall()
+                    ]
+                pruned = 0
+                for source in sources:
+                    source_days = source_policy.get(source.lower(), retention_days)
+                    source_pruned = self.prune_sessions(
+                        older_than_days=None,
+                        source=source,
+                        sessions_dir=sessions_dir,
+                        archived=False,
+                        ended_before=now - source_days * 86400,
+                    )
+                    result["pruned_by_source"][source] = source_pruned
+                    pruned += source_pruned
+            else:
+                pruned = self.prune_sessions(
+                    older_than_days=None,
+                    sessions_dir=sessions_dir,
+                    archived=False,
+                    ended_before=now - retention_days * 86400,
+                )
             result["pruned"] = pruned
 
             # Only VACUUM if we actually freed rows — VACUUM on a tight DB
@@ -7084,7 +7252,7 @@ class SessionDB:
 
             if pruned > 0:
                 logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) older than %d days%s",
+                    "state.db auto-maintenance: pruned %d session(s) using retention policy %s%s",
                     pruned,
                     retention_days,
                     " + VACUUM" if result["vacuumed"] else "",
@@ -7095,6 +7263,27 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
+
+    def maybe_auto_maintenance(
+        self,
+        *,
+        sessions_dir: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        policy: SessionPolicy = self.session_policy
+        if not policy.auto_prune:
+            return {
+                "skipped": True,
+                "pruned": 0,
+                "pruned_by_source": {},
+                "vacuumed": False,
+            }
+        return self.maybe_auto_prune_and_vacuum(
+            retention_days=policy.retention_days,
+            retention_days_by_source=dict(policy.retention_days_by_source),
+            min_interval_hours=policy.min_interval_hours,
+            vacuum=policy.vacuum_after_prune,
+            sessions_dir=sessions_dir,
+        )
 
     # ── Handoff (cross-platform session transfer) ──────────────────────────
     #

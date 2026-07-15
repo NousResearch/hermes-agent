@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import plistlib
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -2589,6 +2590,54 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_wraps_full_command(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "gate & reliability"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n")
+        wrapper.chmod(0o755)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"launchd_wrapper": str(wrapper)}},
+        )
+        plist = plistlib.loads(gateway_cli.generate_launchd_plist().encode())
+        arguments = plist["ProgramArguments"]
+        assert arguments[0] == str(wrapper)
+        assert arguments[1:4] == [gateway_cli.get_python_path(), "-m", "hermes_cli.main"]
+        assert arguments[-3:] == ["gateway", "run", "--replace"]
+
+    def test_launchd_plist_wrapper_preserves_named_profile(self, tmp_path, monkeypatch):
+        wrapper = tmp_path / "gate"
+        wrapper.write_text("#!/bin/sh\nexec \"$@\"\n")
+        wrapper.chmod(0o755)
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"launchd_wrapper": str(wrapper)}},
+        )
+        arguments = plistlib.loads(
+            gateway_cli.generate_launchd_plist().encode()
+        )["ProgramArguments"]
+        assert arguments[:2] == [str(wrapper), gateway_cli.get_python_path()]
+        assert arguments[4:6] == ["--profile", "mybot"]
+
+    @pytest.mark.parametrize("configured", ("relative", "", None))
+    def test_launchd_plist_invalid_configured_wrapper_fails_closed(
+        self, tmp_path, monkeypatch, configured
+    ):
+        value = str(tmp_path / "missing") if configured is None else configured
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"launchd_wrapper": value}},
+        )
+        with pytest.raises(ValueError, match="launchd_wrapper"):
+            gateway_cli.generate_launchd_plist()
 
     def test_launchd_plist_supports_aqua_and_background_sessions(self):
         # macOS 26+ only loads the agent in non-Aqua sessions when the plist

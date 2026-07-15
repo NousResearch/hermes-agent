@@ -2898,6 +2898,7 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        "launchd_wrapper": None,
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash
@@ -3071,6 +3072,8 @@ DEFAULT_CONFIG = {
         # How many days of ended-session history to keep.  Matches the
         # default of ``hermes sessions prune``.
         "retention_days": 90,
+        "retention_days_by_source": {},
+        "trigram_enabled": True,
         # VACUUM after a prune that actually deleted rows.  SQLite does not
         # reclaim disk space on DELETE — freed pages are just reused on
         # subsequent INSERTs — so without VACUUM the file stays bloated
@@ -3108,6 +3111,7 @@ DEFAULT_CONFIG = {
 
     # ``hermes update`` behaviour.
     "updates": {
+        "branch": "main",
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
         # can be restored with ``hermes import <path>``.  Off by default:

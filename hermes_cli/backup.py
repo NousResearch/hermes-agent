@@ -9,6 +9,7 @@ HERMES_HOME root.
 """
 
 import json
+import hashlib
 import logging
 import os
 import shutil
@@ -790,6 +791,14 @@ def _quick_snapshot_root(hermes_home: Optional[Path] = None) -> Path:
     return home / _QUICK_SNAPSHOTS_DIR
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
@@ -811,7 +820,9 @@ def create_quick_snapshot(
     snap_dir = root / snap_id
     snap_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest: Dict[str, int] = {}  # rel_path -> file size
+    manifest: Dict[str, int] = {}
+    digests: Dict[str, str] = {}
+    capture_errors: List[str] = []
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
@@ -839,12 +850,15 @@ def create_quick_snapshot(
                     # snapshot time) is captured consistently.
                     if sub.suffix == ".db":
                         if not _safe_copy_db(sub, dst):
+                            capture_errors.append(sub_rel)
                             continue
                     else:
                         shutil.copy2(sub, dst)
                     manifest[sub_rel] = dst.stat().st_size
+                    digests[sub_rel] = _sha256_file(dst)
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+                    capture_errors.append(sub_rel)
             continue
 
         if not src.is_file():
@@ -856,12 +870,22 @@ def create_quick_snapshot(
         try:
             if src.suffix == ".db":
                 if not _safe_copy_db(src, dst):
+                    capture_errors.append(rel)
                     continue
             else:
                 shutil.copy2(src, dst)
             manifest[rel] = dst.stat().st_size
+            digests[rel] = _sha256_file(dst)
         except (OSError, PermissionError) as exc:
             logger.warning("Could not snapshot %s: %s", rel, exc)
+            capture_errors.append(rel)
+
+    if capture_errors:
+        logger.error(
+            "State snapshot %s is incomplete; preserving it without a manifest",
+            snap_id,
+        )
+        return None
 
     if not manifest:
         shutil.rmtree(snap_dir, ignore_errors=True)
@@ -869,12 +893,14 @@ def create_quick_snapshot(
 
     # Write manifest
     meta = {
+        "manifest_version": 2,
         "id": snap_id,
         "timestamp": ts,
         "label": label,
         "file_count": len(manifest),
         "total_size": sum(manifest.values()),
         "files": manifest,
+        "sha256": digests,
     }
     with open(snap_dir / "manifest.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
@@ -990,6 +1016,104 @@ def restore_quick_snapshot(
     return restored > 0
 
 
+def verify_quick_snapshot(
+    snapshot_id: str,
+    hermes_home: Optional[Path] = None,
+) -> tuple[bool, str]:
+    """Verify that a quick snapshot is complete, contained, and readable."""
+    home = hermes_home or get_hermes_home()
+    root = _quick_snapshot_root(home)
+
+    if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
+        return False, "invalid snapshot id"
+
+    snap_dir = root / snapshot_id
+    try:
+        if snap_dir.is_symlink() or snap_dir.resolve().parent != root.resolve():
+            return False, "snapshot path escapes snapshot root"
+    except OSError:
+        return False, "snapshot path is unreadable"
+    if not snap_dir.is_dir():
+        return False, "snapshot directory is missing"
+
+    manifest_path = snap_dir / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        return False, "manifest is missing or unsafe"
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False, "manifest is unreadable"
+
+    files = meta.get("files") if isinstance(meta, dict) else None
+    if not isinstance(files, dict) or not files:
+        return False, "manifest has no files"
+    if meta.get("id") != snapshot_id:
+        return False, "manifest id does not match directory"
+    if meta.get("file_count") != len(files):
+        return False, "manifest file count does not match"
+    manifest_version = meta.get("manifest_version", 1)
+    if (
+        isinstance(manifest_version, bool)
+        or not isinstance(manifest_version, int)
+        or manifest_version not in {1, 2}
+    ):
+        return False, "snapshot manifest version is invalid"
+    digests = meta.get("sha256", {})
+    if manifest_version >= 2 and (
+        not isinstance(digests, dict) or set(digests) != set(files)
+    ):
+        return False, "snapshot digest manifest is incomplete"
+
+    total_size = 0
+    for rel, expected_size in files.items():
+        if not isinstance(rel, str) or not rel or not isinstance(expected_size, int) or expected_size < 0:
+            return False, "manifest contains an invalid file entry"
+        rel_path = Path(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            return False, f"manifest path is unsafe: {rel}"
+
+        path = snap_dir / rel_path
+        try:
+            if path.is_symlink() or path.resolve().relative_to(snap_dir.resolve()) != rel_path:
+                return False, f"snapshot file is unsafe: {rel}"
+        except (OSError, ValueError):
+            return False, f"snapshot file escapes snapshot root: {rel}"
+        if not path.is_file():
+            return False, f"snapshot file is missing: {rel}"
+        try:
+            actual_size = path.stat().st_size
+        except OSError:
+            return False, f"snapshot file is unreadable: {rel}"
+        if actual_size != expected_size:
+            return False, f"snapshot file size does not match: {rel}"
+        total_size += actual_size
+        if manifest_version >= 2:
+            expected_digest = digests.get(rel)
+            try:
+                actual_digest = _sha256_file(path)
+            except OSError:
+                return False, f"snapshot file cannot be hashed: {rel}"
+            if not isinstance(expected_digest, str) or actual_digest != expected_digest:
+                return False, f"snapshot file digest does not match: {rel}"
+
+        if path.suffix == ".db":
+            try:
+                conn = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+                result = conn.execute("PRAGMA quick_check").fetchall()
+                conn.close()
+            except sqlite3.Error:
+                return False, f"snapshot database is unreadable: {rel}"
+            if result != [("ok",)]:
+                return False, f"snapshot database failed integrity check: {rel}"
+
+    if meta.get("total_size") != total_size:
+        return False, "manifest total size does not match"
+    if (home / "state.db").is_file() and "state.db" not in files:
+        return False, "snapshot is missing live state.db"
+    return True, "ok"
+
+
 # Relative path of the cron job database inside HERMES_HOME. Kept in sync with
 # the entry in ``_QUICK_STATE_FILES`` and with ``cron/jobs.py``'s ``JOBS_FILE``.
 _CRON_JOBS_REL = "cron/jobs.json"
@@ -1099,9 +1223,11 @@ def restore_cron_jobs_if_emptied(
 
 
 def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
-    """Remove oldest quick snapshots beyond the keep limit. Returns count deleted."""
+    """Remove verified old quick snapshots beyond the keep limit."""
     if not root.exists():
         return 0
+
+    keep = max(1, keep)
 
     dirs = sorted(
         (d for d in root.iterdir() if d.is_dir()),
@@ -1110,7 +1236,18 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
     )
 
     deleted = 0
-    for d in dirs[keep:]:
+    verified_kept = 0
+    for d in dirs:
+        try:
+            verified, reason = verify_quick_snapshot(d.name, hermes_home=root.parent)
+        except Exception as exc:
+            verified, reason = False, f"verification error ({type(exc).__name__})"
+        if not verified:
+            logger.warning("Preserving unverified snapshot %s: %s", d.name, reason)
+            continue
+        if verified_kept < keep:
+            verified_kept += 1
+            continue
         try:
             shutil.rmtree(d)
             deleted += 1

@@ -76,6 +76,37 @@ def test_active_session_lease_blocks_until_release(tmp_path, monkeypatch):
     assert active_sessions.active_session_registry_snapshot() == []
 
 
+def test_unlimited_sessions_still_record_ownership(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="tracked-unlimited",
+        surface="cli",
+        config={},
+    )
+    assert message is None
+    assert lease is not None and lease.enabled is True
+    assert [
+        entry["session_id"]
+        for entry in active_sessions.active_session_registry_snapshot()
+    ] == ["tracked-unlimited"]
+    lease.release()
+    assert active_sessions.active_session_registry_snapshot() == []
+
+
+def test_locked_registry_fails_closed_on_corrupt_state(tmp_path, monkeypatch):
+    import pytest
+
+    home = tmp_path / ".hermes"
+    runtime = home / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "active_sessions.json").write_text("{")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(RuntimeError, match="unreadable"):
+        with active_sessions.locked_active_session_registry():
+            pass
+
+
 def test_active_session_registry_prunes_dead_pids(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(home))

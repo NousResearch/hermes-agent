@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
-from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+import pytest
+
+from hermes_cli.context_switch_guard import (
+    enrich_model_switch_warnings_for_gateway,
+    merge_preflight_compression_warning,
+)
 from hermes_cli.model_switch import ModelSwitchResult
+from hermes_state import AsyncSessionDB
+from gateway.session import AsyncSessionStore
 
 
 def _result(*, model: str = "small-model") -> ModelSwitchResult:
@@ -102,4 +110,56 @@ def test_merge_appends_to_existing_warning(monkeypatch):
     result.warning_message = "expensive"
     merge_preflight_compression_warning(result, agent=agent)
     assert "expensive" in result.warning_message
+    assert "preflight compression" in result.warning_message
+
+
+@pytest.mark.asyncio
+async def test_gateway_enrichment_awaits_async_session_history(monkeypatch):
+    stored_messages = [{"role": "user", "content": "stored"}] * 30
+    observed: dict[str, object] = {}
+
+    def _capture_estimate(agent, messages):
+        observed["messages"] = messages
+        return 90_000
+
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard.resolve_display_context_length",
+        lambda *a, **k: 32_000,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.context_switch_guard._estimate_tokens",
+        _capture_estimate,
+    )
+
+    cc = _compressor(monkeypatch)
+    agent = SimpleNamespace(
+        context_compressor=cc,
+        compression_enabled=True,
+        base_url="",
+        api_key="",
+    )
+    sync_db = SimpleNamespace(
+        get_messages_as_conversation=lambda session_id: stored_messages,
+    )
+    sync_store = SimpleNamespace(
+        get_or_create_session=lambda source: SimpleNamespace(
+            session_id="stored-session"
+        )
+    )
+    runner = SimpleNamespace(
+        _agent_cache_lock=threading.Lock(),
+        _agent_cache={"session": (agent,)},
+        _session_db=AsyncSessionDB(sync_db),
+        async_session_store=AsyncSessionStore(sync_store),
+    )
+    result = _result()
+
+    await enrich_model_switch_warnings_for_gateway(
+        result,
+        runner,
+        session_key="session",
+        source=object(),
+    )
+
+    assert observed["messages"] is stored_messages
     assert "preflight compression" in result.warning_message

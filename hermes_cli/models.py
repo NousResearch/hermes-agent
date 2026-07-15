@@ -3595,6 +3595,22 @@ def _copilot_credential_cache_key(api_key: Optional[str]) -> str:
     return digest[:16]
 
 
+def get_copilot_reasoning_efforts(
+    model_id: Optional[str], api_key: Optional[str] = None
+) -> list[str]:
+    """Return reasoning-effort levels for a Copilot model, catalog-backed.
+
+    ``github_model_reasoning_efforts(model_id)`` with no catalog falls through to
+    the static GPT/o-series table and returns ``[]`` for Claude, even though the
+    live Copilot ``/models`` catalog advertises ``reasoning_effort`` support for
+    opus/sonnet. This wrapper supplies that catalog from a 1-hour in-process
+    cache so Claude (and any future catalog-only model) resolves correctly,
+    without an HTTP fetch on every call.
+
+    The cache is scoped per-credential (see ``_copilot_credential_cache_key``)
+    so multiple Copilot accounts in the same process don't share reasoning
+    capability lists.
+
     Falls back to the bare resolver (static table) when no catalog is available,
     so behaviour degrades gracefully offline instead of raising.
     """

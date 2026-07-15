@@ -791,6 +791,101 @@ class TestBedrockGuardrailRouting:
         assert resolved["api_mode"] == "anthropic_messages"
 
 
+class TestBedrockInvokeModelGuardrailTraceEnum:
+    """``_bedrock_invokemodel_guardrail_headers`` must preserve the configured
+    ``bedrock.guardrail.trace`` enum verbatim (just uppercased), not collapse
+    every truthy value to "ENABLED". "enabled", "disabled", and "enabled_full"
+    are all documented values (website/docs/guides/aws-bedrock.md)."""
+
+    _BASE_CFG = {
+        "guardrail_identifier": "gr-abc123",
+        "guardrail_version": "1",
+    }
+
+    @pytest.mark.parametrize("configured,expected_header", [
+        ("enabled", "ENABLED"),
+        ("disabled", "DISABLED"),
+        ("enabled_full", "ENABLED_FULL"),
+    ])
+    def test_preserves_each_documented_trace_value(self, configured, expected_header):
+        from agent.agent_init import _bedrock_invokemodel_guardrail_headers
+
+        headers = _bedrock_invokemodel_guardrail_headers(
+            {**self._BASE_CFG, "trace": configured}
+        )
+        assert headers["X-Amzn-Bedrock-Trace"] == expected_header
+
+    def test_no_trace_configured_omits_header(self):
+        from agent.agent_init import _bedrock_invokemodel_guardrail_headers
+
+        headers = _bedrock_invokemodel_guardrail_headers(dict(self._BASE_CFG))
+        assert "X-Amzn-Bedrock-Trace" not in headers
+
+    def test_incomplete_config_returns_none(self):
+        from agent.agent_init import _bedrock_invokemodel_guardrail_headers
+
+        assert _bedrock_invokemodel_guardrail_headers(
+            {"guardrail_identifier": "gr-abc123"}
+        ) is None
+        assert _bedrock_invokemodel_guardrail_headers({}) is None
+
+
+class TestBedrockGuardrailConfigToClient:
+    """End-to-end: a real config.yaml under a temp HERMES_HOME, read through
+    the real config-loading pipeline, must produce the correct
+    X-Amzn-Bedrock-Trace value in the kwargs handed to the AnthropicBedrock
+    SDK call. Hermes routes both streaming and non-streaming Claude/Bedrock
+    turns through the same ``build_api_kwargs`` -> ``build_anthropic_kwargs``
+    -> single ``messages.stream(**api_kwargs)`` call site (see
+    agent/chat_completion_helpers.py), so one kwargs dict covers both."""
+
+    @pytest.fixture
+    def isolated_home(self, monkeypatch, tmp_path):
+        import os
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for k in list(os.environ.keys()):
+            if k.endswith("_API_KEY") or k.endswith("_TOKEN"):
+                monkeypatch.delenv(k, raising=False)
+        return hermes_home
+
+    def _write_config(self, home, trace_value: str) -> None:
+        (home / "config.yaml").write_text(f"""
+bedrock:
+  guardrail:
+    guardrail_identifier: gr-abc123
+    guardrail_version: "1"
+    trace: "{trace_value}"
+""")
+
+    @pytest.mark.parametrize("configured,expected_header", [
+        ("enabled", "ENABLED"),
+        ("disabled", "DISABLED"),
+        ("enabled_full", "ENABLED_FULL"),
+    ])
+    def test_config_file_trace_value_reaches_invocation_kwargs(
+        self, isolated_home, configured, expected_header
+    ):
+        from hermes_cli.config import load_config
+        from agent.agent_init import _bedrock_invokemodel_guardrail_headers
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        self._write_config(isolated_home, configured)
+        gr = load_config().get("bedrock", {}).get("guardrail", {})
+        headers = _bedrock_invokemodel_guardrail_headers(gr)
+
+        kwargs = build_anthropic_kwargs(
+            model="anthropic.claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            bedrock_guardrail_headers=headers,
+        )
+        assert kwargs["extra_headers"]["X-Amzn-Bedrock-Trace"] == expected_header
+
+
 class TestBedrockGuardrailHeaderInjection:
     """Verify guardrail headers are injected correctly into build_anthropic_kwargs.
 

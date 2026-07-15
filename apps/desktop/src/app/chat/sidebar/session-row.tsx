@@ -291,10 +291,11 @@ type DotVariant = {
 // Shared base for every active dot; idle is smaller and uses its own class.
 const DOT_BASE = 'relative size-1.5 rounded-full'
 
-// Pseudo-element ping ring: a copy of the dot's color that scales outward
-// and fades. Used by "working" (accent) and "background" (muted-foreground).
-const PING = (color: string) =>
-  `before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-${color} before:opacity-50 before:content-['']`
+// Pseudo-element ping ring that scales outward and fades — shared scaffold for
+// the two pulsing dots. The `before:bg-*` color is written inline per variant
+// (NOT interpolated here): Tailwind only generates utilities it can see as
+// complete static strings, so a `before:bg-${color}` template never emits.
+const PING = "before:absolute before:inset-0 before:animate-ping before:rounded-full before:content-['']"
 
 const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Amber steady — a clarify/approval is blocking the turn. Steady (not
@@ -308,14 +309,14 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // Accent pulse — the LLM turn is actively running.
   working: {
     ariaLabel: r => r.sessionRunning,
-    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING('(--ui-accent)')} before:opacity-70`,
+    className: `${DOT_BASE} bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] ${PING} before:bg-(--ui-accent) before:opacity-70`,
     role: 'status'
   },
   // Pulsing gray — a terminal(background=true) process is alive while the LLM
   // is idle. Gray (not accent) reads as "something chugging along".
   background: {
     ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} bg-muted-foreground/50 ${PING('muted-foreground/50')}`,
+    className: `${DOT_BASE} bg-muted-foreground/50 ${PING} before:bg-muted-foreground/50 before:opacity-50`,
     role: 'status',
     title: r => r.backgroundRunning
   },

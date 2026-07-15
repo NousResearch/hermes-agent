@@ -163,3 +163,26 @@ def test_script_heartbeat_uses_captured_claim_owner(tmp_path, monkeypatch):
             "at": replacement_timestamp,
             "by": "replacement-owner",
         }
+
+
+def test_recurring_job_passes_its_script_timeout_override(monkeypatch):
+    import cron.scheduler as scheduler
+
+    observed = []
+
+    def _script(path, **kwargs):
+        observed.append((path, kwargs))
+        return True, "done"
+
+    monkeypatch.setattr(scheduler, "_run_job_script", _script)
+    job = {
+        "id": "weekly-verify",
+        "schedule": {"kind": "cron", "expr": "30 7 * * 0"},
+        "script_timeout_seconds": 7200,
+    }
+
+    assert scheduler._run_job_script_with_claim_heartbeat(job, "verify.sh") == (
+        True,
+        "done",
+    )
+    assert observed == [("verify.sh", {"timeout_seconds": 7200})]

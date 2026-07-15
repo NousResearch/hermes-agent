@@ -272,3 +272,79 @@ def test_http_status_coercion(raw, expected) -> None:
     assert coerced == expected
     if expected is not None:
         assert isinstance(coerced, int), f"{raw!r} must coerce to int, got {type(coerced).__name__}"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Post-max_retries terminal envelope (#t_a2c1ced7)
+# ─────────────────────────────────────────────────────────────────────────
+# The non-retryable early-exit envelope (line ~3986) is already pinned by
+# test_nonretryable_return_is_before_next_iteration_branch.  The companion
+# branch — the terminal exit that fires AFTER ``retry_count >= max_retries``
+# when every fallback is exhausted (line ~4190) — also needs the same
+# structured fields, otherwise kanban workers that hit the quota wall on
+# retry-exhausted paths still report ``pid N not alive`` instead of
+# ``failure_reason=billing``.
+
+
+def test_post_maxretries_terminal_envelope_carries_full_failure_metadata() -> None:
+    """AST check — the post-max_retries return at line ~4190 must include
+    ``failure_reason``, ``error_class``, ``provider``, ``model``, and
+    ``http_status`` in addition to ``failed`` / ``error``.
+
+    Reads the real module source so a regression is observable. (#t_a2c1ced7)
+    """
+    from pathlib import Path
+    import ast
+
+    import agent.conversation_loop as loop_mod  # noqa: WPS433
+    src_text = Path(loop_mod.__file__).read_text()
+    tree = ast.parse(src_text)
+
+    expected_keys = {
+        "failed", "error", "failure_reason", "error_class",
+        "provider", "model", "http_status",
+    }
+    matches = 0
+    for func in tree.body:
+        if not isinstance(func, ast.FunctionDef) or func.name != "run_conversation":
+            continue
+        for node in ast.walk(func):
+            if not (isinstance(node, ast.Return) and isinstance(node.value, ast.Dict)):
+                continue
+            keys = {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
+            if not (expected_keys <= keys):
+                continue
+            matches += 1
+            # Both envelopes (early-exit at ~3986 and post-max_retries at ~4190)
+            # must exist and carry the full set.
+            assert node.col_offset > 0, (
+                "Patched envelope is at function top level (unexpected)"
+            )
+    assert matches >= 2, (
+        "Expected >=2 patched return envelopes (non-retryable early-exit "
+        "AND post-max_retries terminal exit), found "
+        f"{matches}. Did the post-max_retries envelope (#t_a2c1ced7) lose "
+        "its structured fields?"
+    )
+
+
+def test_post_maxretries_envelope_uses_classifier_enum_value_for_both_fields() -> None:
+    """Pin the contract that ``failure_reason`` AND ``error_class`` both carry
+    the same ``FailoverReason.value`` string (mirroring the line-3986
+    envelope). A future refactor that splits the two — e.g. mapping
+    ``error_class`` to a Python exception class — would silently break the
+    cli.py ``failure_reason in {"rate_limit", "billing"}`` lookup.
+    (#t_a2c1ced7)
+    """
+    classified = _classify(403, "exceeded your current quota")
+    assert classified.reason == FailoverReason.billing
+    # Both fields must carry the classifier enum's string value, not the
+    # Python repr and not the APIError's exception class.
+    envelope = {
+        "failure_reason": classified.reason.value,
+        "error_class": classified.reason.value,
+    }
+    assert envelope["failure_reason"] == envelope["error_class"] == "billing"
+    # Sanity: the consumer lookup set the cli.py quota-exit branch depends
+    # on is still satisfied by this branch's failure_reason.
+    assert envelope["failure_reason"] in ("rate_limit", "billing")

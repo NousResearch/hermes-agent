@@ -4194,12 +4194,31 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
-                        # Surface the classified reason so callers (notably the
-                        # kanban worker path in cli.py) can distinguish a
-                        # transient throttle from a real failure and choose a
-                        # different exit code. ``rate_limit`` / ``billing`` here
-                        # mean "quota wall, not a task error".
+                        # Surface the classified reason AND full envelope so
+                        # callers (notably the kanban worker path in cli.py)
+                        # can distinguish a transient throttle from a real
+                        # failure and choose a different exit code.
+                        # ``rate_limit`` / ``billing`` here mean "quota wall,
+                        # not a task error". Mirrors the non-retryable
+                        # clean-exit envelope at line ~3986 — without these
+                        # structured fields the dispatcher falls back to
+                        # ``pid N not alive`` as the heartbeat-derived error
+                        # and the quota-exit sentinel never fires.
+                        # (#t_8acdc493, #t_a2c1ced7)
                         "failure_reason": classified.reason.value,
+                        "error_class": classified.reason.value,
+                        "provider": _provider,
+                        "model": _model,
+                        # Coerce numeric-string status codes (some SDKs return
+                        # "429" rather than 429) so downstream JSON columns
+                        # get a stable int. Kanban postmortem queries filter
+                        # on ``http_status = 403``, which a string "403" would
+                        # silently miss.
+                        "http_status": (
+                            status_code if isinstance(status_code, int)
+                            else int(status_code) if isinstance(status_code, str) and status_code.isdigit()
+                            else None
+                        ),
                     }
 
                 # For rate limits, respect the Retry-After header if present

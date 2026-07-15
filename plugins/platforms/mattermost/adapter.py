@@ -10,6 +10,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import mimetypes
@@ -79,6 +80,20 @@ def _url_and_token(config) -> Tuple[str, str]:
             getattr(config, "token", None) or _get_scoped_secret("MATTERMOST_TOKEN", ""))
 
 
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter runtime dependency is available."""
     try:
@@ -101,6 +116,29 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
     return True
 
 
+_HTML_DETAILS_RE = re.compile(
+    r"<details>\s*<summary>(?P<summary>.*?)</summary>\s*(?P<body>.*?)\s*</details>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _format_mattermost_rich_markdown(content: str) -> str:
+    """Normalize generic rich content into documented Mattermost Markdown."""
+
+    def _replace_details(match: re.Match[str]) -> str:
+        summary = html.unescape(match.group("summary"))
+        summary = re.sub(r"\s+", " ", summary).strip() or "Details"
+        body = html.unescape(match.group("body")).strip()
+        if not body:
+            return f"**{summary}**"
+        quoted_body = "\n".join(
+            f"> {line}" if line else ">" for line in body.splitlines()
+        )
+        return f"**{summary}**\n{quoted_body}"
+
+    return _HTML_DETAILS_RE.sub(_replace_details, content)
+
+
 class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
@@ -119,6 +157,7 @@ class MattermostAdapter(BasePlatformAdapter):
         # Reply mode: "thread" to nest replies, "off" for flat messages.
         self._reply_mode: str = (
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
+        self._rich_markdown: bool = _as_bool(config.extra.get("rich_markdown"))
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
@@ -319,8 +358,16 @@ class MattermostAdapter(BasePlatformAdapter):
         return await self._send_local_file(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     def format_message(self, content: str) -> str:
-        """Mattermost renders standard Markdown; reduce ![alt](url) to the bare URL (inline preview)."""
-        return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
+        """Mattermost renders standard Markdown; reduce ![alt](url) to the bare URL (inline preview).
+
+        With ``rich_markdown`` enabled, generic rich HTML is additionally normalized into
+        documented Mattermost Markdown. Mattermost-native mentions, task lists, emoji,
+        math, and plugin code fences already work without the option and remain untouched.
+        """
+        content = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"\2", content)
+        if self._rich_markdown:
+            content = _format_mattermost_rich_markdown(content)
+        return content
 
     # --- File helpers ---
 
@@ -706,8 +753,15 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_cha
 
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24836 / #25443): ``config.yaml`` ``mattermost:`` keys → env vars (env wins;
-    skipped under a multiplexed secondary profile) + ``PlatformConfig.extra`` (extra-first readers)."""
-    return _apply_yaml_bridge(mattermost_cfg, _YAML_BRIDGE)
+    skipped under a multiplexed secondary profile) + ``PlatformConfig.extra`` (extra-first readers).
+
+    ``rich_markdown`` is seeded to ``PlatformConfig.extra`` only — it is adapter-local
+    formatting behavior rather than an env-driven gate.
+    """
+    seeded = _apply_yaml_bridge(mattermost_cfg, _YAML_BRIDGE) or {}
+    if "rich_markdown" in mattermost_cfg:
+        seeded["rich_markdown"] = _as_bool(mattermost_cfg.get("rich_markdown"))
+    return seeded or None
 
 
 

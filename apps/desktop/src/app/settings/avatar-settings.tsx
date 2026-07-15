@@ -12,26 +12,6 @@ import { $avatarDataUrl, resetAvatar, setAvatar } from '@/store/avatar'
 
 import { SectionHeading } from './primitives'
 
-const COPY_FALLBACK = {
-  heading: 'Avatar',
-  description: 'Set a profile picture for the AI agent that appears next to responses in the chat.',
-  upload: 'Choose Image',
-  change: 'Change Image',
-  remove: 'Remove Avatar',
-  saving: 'Saving…',
-  removeConfirm: 'Remove avatar picture?',
-  removeDescription: 'The avatar will be removed from chat displays. This can be undone by uploading a new image.',
-  unsupported: 'Unsupported image format. Please use PNG, JPEG, WebP, or GIF.',
-  tooLarge: 'Image is too large. Please choose one under 5 MB.',
-  saveFailed: 'Failed to save avatar.',
-  urlLabel: 'Import from URL',
-  urlPlaceholder: 'https://example.com/avatar.png',
-  urlImport: 'Import',
-  urlInvalid: 'Please enter a valid image URL.',
-  dragHere: 'Drop an image here',
-  or: 'or'
-}
-
 /** Convert a File or image URL to a 256×256 center-cropped PNG data URL. */
 async function imageToPngDataUrl(source: File | string, maxSize = 256): Promise<string> {
   let rawDataUrl: string
@@ -70,7 +50,7 @@ async function imageToPngDataUrl(source: File | string, maxSize = 256): Promise<
 
 export function AvatarSettings() {
   const { t } = useI18n()
-  const copy = (t as any).settings?.appearance?.avatar ?? COPY_FALLBACK
+  const a = t.settings.avatar
   const avatarDataUrl = useStore($avatarDataUrl)
   const [saving, setSaving] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
@@ -83,12 +63,12 @@ export function AvatarSettings() {
 
   const processFile = useCallback(async (file: File) => {
     if (!file.type.startsWith('image/')) {
-      alert(copy.unsupported)
+      alert(a.unsupported)
       return
     }
 
     if (file.size > 5 * 1024 * 1024) {
-      alert(copy.tooLarge)
+      alert(a.tooLarge)
       return
     }
 
@@ -100,7 +80,7 @@ export function AvatarSettings() {
       triggerHaptic('success')
     } catch (error) {
       console.error('[avatar] Failed to save:', error)
-      alert(copy.saveFailed)
+      alert(a.saveFailed)
     } finally {
       setSaving(false)
 
@@ -149,7 +129,7 @@ export function AvatarSettings() {
     const url = urlInput.trim()
 
     if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
-      alert(copy.urlInvalid)
+      alert(a.urlInvalid)
       return
     }
 
@@ -167,12 +147,12 @@ export function AvatarSettings() {
       const blob = await response.blob()
 
       if (!blob.type.startsWith('image/')) {
-        alert(copy.unsupported)
+        alert(a.unsupported)
         return
       }
 
       if (blob.size > 5 * 1024 * 1024) {
-        alert(copy.tooLarge)
+        alert(a.tooLarge)
         return
       }
 
@@ -190,7 +170,7 @@ export function AvatarSettings() {
       triggerHaptic('success')
     } catch (error) {
       console.error('[avatar] URL import failed:', error)
-      alert(copy.saveFailed)
+      alert(a.saveFailed)
     } finally {
       setUrlImporting(false)
     }
@@ -214,7 +194,7 @@ export function AvatarSettings() {
 
   return (
     <div className="flex flex-col gap-6">
-      <SectionHeading description={copy.description} title={copy.heading} />
+      <SectionHeading description={a.description} title={a.heading} />
 
       {/* ── Current avatar + upload buttons ────────────────────────── */}
       <div className="flex items-center gap-6">
@@ -254,7 +234,7 @@ export function AvatarSettings() {
             ) : (
               <Upload className="size-4" />
             )}
-            {avatarDataUrl ? copy.change : copy.upload}
+            {avatarDataUrl ? a.change : a.upload}
           </Button>
 
           {avatarDataUrl && (
@@ -264,7 +244,7 @@ export function AvatarSettings() {
               variant="ghost"
             >
               <Trash2 className="size-4" />
-              {copy.remove}
+              {a.remove}
             </Button>
           )}
         </div>
@@ -285,14 +265,14 @@ export function AvatarSettings() {
       >
         <Upload className="size-6 text-(--ui-text-tertiary)" />
         <p className="text-xs text-(--ui-text-secondary)">
-          {dragOver ? '\u2B07 Drop it here' : copy.dragHere}
+          {dragOver ? '\u2B07 Drop it here' : a.dragHere}
         </p>
       </div>
 
       {/* ── URL import ─────────────────────────────────────────────── */}
       <div className="flex flex-col gap-2">
         <label className="text-xs font-medium text-(--ui-text-secondary)">
-          {copy.urlLabel}
+          {a.urlLabel}
         </label>
         <div className="flex gap-2">
           <Input
@@ -300,7 +280,7 @@ export function AvatarSettings() {
             disabled={urlImporting}
             onChange={e => setUrlInput(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && handleUrlImport()}
-            placeholder={copy.urlPlaceholder}
+            placeholder={a.urlPlaceholder}
             type="url"
             value={urlInput}
           />
@@ -314,7 +294,7 @@ export function AvatarSettings() {
             ) : (
               <LinkIcon className="size-4" />
             )}
-            {copy.urlImport}
+            {a.urlImport}
           </Button>
         </div>
       </div>
@@ -343,10 +323,10 @@ export function AvatarSettings() {
             onClick={e => e.stopPropagation()}
           >
             <h3 className="mb-2 text-sm font-semibold">
-              {copy.removeConfirm}
+              {a.removeConfirm}
             </h3>
             <p className="mb-4 text-xs text-(--ui-text-secondary)">
-              {copy.removeDescription}
+              {a.removeDescription}
             </p>
             <div className="flex justify-end gap-2">
               <Button
@@ -359,7 +339,7 @@ export function AvatarSettings() {
                 onClick={handleRemove}
                 variant="destructive"
               >
-                {copy.remove}
+                {a.remove}
               </Button>
             </div>
           </div>

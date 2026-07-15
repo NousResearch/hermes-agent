@@ -131,7 +131,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       active: activeView === 'avatar',
       icon: ImageIcon,
       id: 'avatar',
-      label: 'Avatar',
+      label: t.settings.nav.avatar ?? 'Avatar',
       onSelect: () => setActiveView('avatar')
     },
     {

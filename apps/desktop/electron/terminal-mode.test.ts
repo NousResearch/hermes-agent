@@ -55,6 +55,17 @@ describe('terminal mode', () => {
     ).toEqual({ distribution: 'Ubuntu', mode: 'wsl2' })
   })
 
+  it('returns wsl2 with null distribution when configured as wsl2 but no distributions are installed', () => {
+    expect(
+      resolveWindowsTerminalMode({
+        configuredMode: 'wsl2',
+        cwd: 'C:\\Users\\shay\\project',
+        isWindows: true,
+        wslDistributions: []
+      })
+    ).toEqual({ distribution: null, mode: 'wsl2' })
+  })
+
   it('maps Windows and WSL UNC paths', () => {
     expect(toWslPath('C:\\Users\\shay\\project', 'Ubuntu')).toBe('/mnt/c/Users/shay/project')
     expect(toWslPath('\\\\wsl$\\Ubuntu\\home\\shay\\project', 'Ubuntu')).toBe('/home/shay/project')

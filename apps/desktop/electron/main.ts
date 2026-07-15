@@ -106,6 +106,7 @@ import {
 } from './session-windows'
 import {
   detectWslDistributions,
+  detectWslDistributionsAsync,
   readTerminalMode,
   resolveWindowsTerminalMode,
   toWslPath,
@@ -8230,9 +8231,9 @@ function windowsShellSpec() {
 
 // Resolve the interactive shell for the embedded terminal: an explicit user
 // override wins, otherwise auto-detect the best one installed for the platform.
-function desktopTerminalModeInfo(cwd = '') {
+async function desktopTerminalModeInfo(cwd = '') {
   const configuredMode = readTerminalMode(HERMES_HOME)
-  const wslDistributions = IS_WINDOWS ? detectWslDistributions() : []
+  const wslDistributions = IS_WINDOWS ? await detectWslDistributionsAsync() : []
 
   const resolution = resolveWindowsTerminalMode({
     configuredMode,
@@ -8250,8 +8251,8 @@ function desktopTerminalModeInfo(cwd = '') {
   }
 }
 
-function terminalShellCommand(cwd) {
-  const modeInfo = desktopTerminalModeInfo(cwd)
+async function terminalShellCommand(cwd) {
+  const modeInfo = await desktopTerminalModeInfo(cwd)
   const withMode = spec => ({ ...spec, ...modeInfo })
 
   if (IS_WINDOWS && modeInfo.resolvedMode === 'wsl2') {
@@ -8572,17 +8573,17 @@ ipcMain.handle('hermes:git:scanRepos', async (_event, roots, options) => {
   }
 })
 
-ipcMain.handle('hermes:terminal-mode:get', (_event, cwd) => desktopTerminalModeInfo(safeTerminalCwd(cwd)))
-ipcMain.handle('hermes:terminal-mode:set', (_event, mode, cwd) => {
+ipcMain.handle('hermes:terminal-mode:get', async (_event, cwd) => await desktopTerminalModeInfo(safeTerminalCwd(cwd)))
+ipcMain.handle('hermes:terminal-mode:set', async (_event, mode, cwd) => {
   writeTerminalMode(HERMES_HOME, mode)
 
-  return desktopTerminalModeInfo(safeTerminalCwd(cwd))
+  return await desktopTerminalModeInfo(safeTerminalCwd(cwd))
 })
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   const id = crypto.randomUUID()
   const cwd = safeTerminalCwd(payload?.cwd)
-  const { args, command, configuredMode, distribution, name, resolvedMode } = terminalShellCommand(cwd)
+  const { args, command, configuredMode, distribution, name, resolvedMode } = await terminalShellCommand(cwd)
   // wsl.exe receives the real Linux cwd through --cd. Keep CreateProcess/node-pty
   // on a native host directory so WSL UNC projects do not fail before wsl.exe starts.
   const ptyCwd = resolvedMode === 'wsl2' ? app.getPath('home') : cwd

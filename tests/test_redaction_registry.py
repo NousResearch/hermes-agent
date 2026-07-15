@@ -12,7 +12,6 @@ never leaks between tests.
 """
 
 import importlib.util
-from pathlib import Path
 
 import pytest
 
@@ -143,26 +142,55 @@ def test_plugin_context_method_never_raises(monkeypatch):
     assert ctx.register_redaction_patterns([NVAPI_PATTERN]) == 0
 
 
-# ── Bundled reference plugin ────────────────────────────────────────────
+# ── Top-level alternation guard ─────────────────────────────────────────
 
 
-def _load_demo_plugin():
-    plugin_init = (
-        Path(__file__).resolve().parent.parent
-        / "plugins" / "nvapi-redaction" / "__init__.py"
-    )
-    spec = importlib.util.spec_from_file_location("nvapi_redaction_demo", plugin_init)
+def test_top_level_alternation_rejected():
+    # 'ab|.*' compiles and has the accepted 'ab' literal prefix, but the
+    # '.*' branch is unprefixed — accepting it would redact everything.
+    assert register_redaction_patterns([r"ab|.*"], source="test") == 0
+    assert register_redaction_patterns([r"ab|cd"], source="test") == 0
+    clean = "nothing here resembles a credential"
+    assert redact_sensitive_text(clean, force=True) == clean
+
+
+def test_grouped_alternation_and_literal_pipe_accepted():
+    # Alternation inside a group after the prefix keeps the guarantee.
+    assert register_redaction_patterns(
+        [r"zq(?:tok|key)-[A-Za-z0-9]{20,}"], source="test"
+    ) == 1
+    # Escaped pipes and character-class pipes are literals, not branches.
+    assert register_redaction_patterns([r"xy\|[A-Za-z0-9]{20,}"], source="test") == 1
+    assert register_redaction_patterns([r"wv[|][A-Za-z0-9]{20,}"], source="test") == 1
+
+
+# ── Plugin register() end-to-end (synthetic, written at test time) ──────
+
+
+_SYNTHETIC_PLUGIN = f'''
+NVAPI_PATTERN = r"{NVAPI_PATTERN}"
+
+
+def register(ctx):
+    ctx.register_redaction_patterns([NVAPI_PATTERN])
+'''
+
+
+def _load_synthetic_plugin(tmp_path):
+    plugin_init = tmp_path / "synthetic_redactor.py"
+    plugin_init.write_text(_SYNTHETIC_PLUGIN, encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("synthetic_redactor", plugin_init)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_demo_plugin_end_to_end():
+def test_plugin_register_end_to_end(tmp_path):
     import hermes_cli.plugins as plugins_mod
 
-    demo = _load_demo_plugin()
+    demo = _load_synthetic_plugin(tmp_path)
     manager = plugins_mod.PluginManager()
-    manifest = plugins_mod.PluginManifest(name="nvapi-redaction")
+    manifest = plugins_mod.PluginManifest(name="synthetic-redactor")
     demo.register(plugins_mod.PluginContext(manifest, manager))
 
     out = redact_sensitive_text(
@@ -172,8 +200,8 @@ def test_demo_plugin_end_to_end():
     assert "nvapi-" in out  # label survives for debuggability
 
 
-def test_demo_plugin_no_prose_false_positive():
-    demo = _load_demo_plugin()
+def test_registered_pattern_no_prose_false_positive(tmp_path):
+    demo = _load_synthetic_plugin(tmp_path)
     register_redaction_patterns([demo.NVAPI_PATTERN], source="test")
     prose = "the nvapi-endpoint docs describe rate limits"
     assert redact_sensitive_text(prose, force=True) == prose

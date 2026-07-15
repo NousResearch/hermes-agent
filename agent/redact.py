@@ -830,6 +830,40 @@ def _extract_literal_prefix(pattern: str) -> str:
     return pattern
 
 
+def _has_top_level_alternation(pattern: str) -> bool:
+    """True if ``pattern`` contains a ``|`` outside any group or class.
+
+    A top-level alternation defeats the literal-prefix guarantee:
+    ``_extract_literal_prefix`` stops at ``|``, so for ``ab|.*`` it
+    returns ``ab`` even though the ``.*`` branch is not bound by that
+    prefix and matches anything. Grouped alternation after the prefix
+    (``ab(?:x|y)``) keeps the guarantee and stays allowed.
+    """
+    depth = 0
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(pattern) and pattern[i] == "]":
+                i += 1
+            while i < len(pattern) and pattern[i] != "]":
+                if pattern[i] == "\\":
+                    i += 1
+                i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
@@ -887,6 +921,9 @@ def register_redaction_patterns(patterns, source: str = "plugin") -> int:
     raised — a broken plugin must not break startup):
 
     * must be a non-empty string that compiles as a regex;
+    * must not contain a top-level alternation (``ab|.*`` would escape
+      the literal-prefix guarantee below through its unprefixed branch;
+      grouped alternation after the prefix, ``ab(?:x|y)``, is allowed);
     * must start with at least 2 literal characters (the pre-screen
       substring gate in ``_has_known_prefix_substring`` needs a literal
       anchor; it also structurally rules out redact-everything patterns
@@ -912,6 +949,15 @@ def register_redaction_patterns(patterns, source: str = "plugin") -> int:
             logger.warning(
                 "%s: skipping invalid redaction pattern %r (%s)",
                 source, pattern, exc,
+            )
+            continue
+        if _has_top_level_alternation(pattern):
+            logger.warning(
+                "%s: skipping redaction pattern %r — top-level alternation "
+                "escapes the literal-prefix guarantee (in 'ab|.*' the "
+                "prefix binds only the first branch); wrap alternation in "
+                "a group after the prefix, e.g. 'ab(?:x|y)'",
+                source, pattern,
             )
             continue
         if len(_extract_literal_prefix(pattern)) < 2:

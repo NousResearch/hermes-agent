@@ -20,13 +20,14 @@ entitlement granted to the main app is also granted to the inherited helpers.
 
 from __future__ import annotations
 
+import json
 import plistlib
 from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
+DESKTOP_PKG = REPO_ROOT / "apps" / "desktop" / "package.json"
 ELECTRON_DIR = REPO_ROOT / "apps" / "desktop" / "electron"
 MAIN_PLIST = ELECTRON_DIR / "entitlements.mac.plist"
 INHERIT_PLIST = ELECTRON_DIR / "entitlements.mac.inherit.plist"
@@ -38,6 +39,11 @@ def _load(plist: Path) -> dict:
     assert plist.is_file(), f"missing entitlements file: {plist}"
     with plist.open("rb") as fh:
         return plistlib.load(fh)
+
+
+def _desktop_pkg() -> dict:
+    assert DESKTOP_PKG.is_file(), f"missing desktop package: {DESKTOP_PKG}"
+    return json.loads(DESKTOP_PKG.read_text(encoding="utf-8"))
 
 
 def test_inherit_plist_grants_microphone() -> None:
@@ -66,6 +72,32 @@ def test_device_entitlements_are_inherited() -> None:
         f"entitlements.mac.inherit.plist: {missing}. Helper/Setup processes inherit "
         "the latter under hardenedRuntime, so any device access the app needs must "
         "be listed in both (#37718)."
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "service"),
+    [
+        ("NSContactsUsageDescription", "Contacts"),
+        ("NSAppleEventsUsageDescription", "Apple Events"),
+    ],
+)
+def test_mac_info_plist_declares_contacts_privacy_usage_strings(
+    key: str,
+    service: str,
+) -> None:
+    """Desktop builds must include TCC usage strings for Contacts workflows."""
+    extend_info = (
+        _desktop_pkg()
+        .get("build", {})
+        .get("mac", {})
+        .get("extendInfo", {})
+    )
+
+    value = extend_info.get(key)
+    assert isinstance(value, str) and value.strip(), (
+        f"apps/desktop/package.json build.mac.extendInfo must declare {key}; "
+        f"without it macOS denies {service} access without showing a TCC prompt (#59482)."
     )
 
 

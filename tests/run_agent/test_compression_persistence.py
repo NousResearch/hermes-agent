@@ -387,6 +387,47 @@ class TestStoredPromptCwdDrift:
             "Expected True when stored platform matches the current platform"
         )
 
+    def test_stored_prompt_fresh_when_terminal_cwd_matches(self):
+        """Gateway: stored cwd equals TERMINAL_CWD -> reuse via resolve_agent_cwd.
+
+        The gateway sets TERMINAL_CWD to the configured project dir, which differs
+        from the process launch dir (os.getcwd()). Reuse must key off
+        resolve_agent_cwd(), not os.getcwd(), or every gateway turn would falsely
+        rebuild the system prompt.
+        """
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        with tempfile.TemporaryDirectory() as term_cwd:
+            stored_prompt = (
+                f"Current working directory: {term_cwd}\n"
+                "Model: test/model\n"
+                "Provider: openrouter\n"
+            )
+            with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
+                assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+                    "Expected True when stored cwd equals TERMINAL_CWD "
+                    "(gateway launch dir differs from configured cwd)"
+                )
+
+    def test_stored_prompt_stale_when_terminal_cwd_differs(self):
+        """Gateway: stored cwd differs from TERMINAL_CWD -> rebuild."""
+        from unittest.mock import patch
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        with tempfile.TemporaryDirectory() as term_cwd, tempfile.TemporaryDirectory() as other_cwd:
+            stored_prompt = (
+                f"Current working directory: {other_cwd}\n"
+                "Model: test/model\n"
+                "Provider: openrouter\n"
+            )
+            with patch.dict(os.environ, {"TERMINAL_CWD": term_cwd}):
+                assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+                    "Expected False when stored cwd differs from TERMINAL_CWD"
+                )
+
     def test_built_prompt_contains_platform_line(self):
         """The built system prompt must carry a Platform: line so drift detection works."""
         import tempfile

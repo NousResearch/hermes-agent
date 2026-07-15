@@ -505,20 +505,21 @@ def interruptible_api_call(agent, api_kwargs: dict):
             _stale_timeout = max(_stale_timeout, _codex_floor)
 
     # ── Codex absolute hard ceiling (#64507) ──────────────────────────
-    # For large Codex requests the no-byte TTFB watchdog is intentionally
-    # disabled (so legitimate backend admission / prefill isn't killed), and
     # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
     # 1200s at >100k tokens) so healthy gateway-scale payloads aren't aborted.
-    # That combination means a request that is genuinely stalled at the
-    # backend — no first byte AND no events, exactly the issue-64507 symptom —
-    # is only reclaimed at the (high) stale floor, so a session can hang for
-    # many minutes with an idle worker and no ended_at. Add a flat, finite
-    # hard ceiling on total request time that ALWAYS applies to openai-codex
-    # requests regardless of the TTFB/stale interaction, so a stalled large
-    # request is recovered (retry loop / visible failure) instead of hanging
-    # indefinitely. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
+    # The scaled no-byte TTFB watchdog catches dead streams that never emit a
+    # first byte, but a request that emits SOME bytes and then wedges (the
+    # issue-64507 symptom: vision-inflated request, worker idle, no ended_at)
+    # is only reclaimed at the (high) stale floor. Add a flat, finite hard
+    # ceiling on total request time that ALWAYS applies to openai-codex
+    # requests regardless of the TTFB/stale interaction, so a stalled request
+    # is recovered (retry loop / visible failure) instead of hanging
+    # indefinitely. The default sits ABOVE the maximum stale floor (1200s) so
+    # it never clamps an intentionally-raised timeout for healthy large
+    # requests — it is a backstop against unbounded growth, not a tighter
+    # limit. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
     # disable the ceiling entirely; that restores the pre-fix behavior).
-    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 600.0)
+    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
     if (
         _codex_watchdog_enabled
         and _openai_codex_backend

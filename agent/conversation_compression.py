@@ -820,6 +820,12 @@ def compress_context(
         _is_boundary = bool(_old_sid) or in_place
         _boundary_parent = _old_sid or agent.session_id or ""
 
+        # Notify the context engine that a compaction boundary occurred. Plugin
+        # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
+        # DAG lineage / checkpoint per-session state across the boundary instead of
+        # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
+        # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
+        # passes the SAME id (the boundary is real even though the id didn't move).
         try:
             if _is_boundary and hasattr(agent.context_compressor, "on_session_start"):
                 agent.context_compressor.on_session_start(

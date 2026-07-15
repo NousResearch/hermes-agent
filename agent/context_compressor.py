@@ -613,10 +613,29 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         [terminal] ran `npm test` -> exit 0, 47 lines output
         [read_file] read config.py from line 1 (1,200 chars)
         [search_files] content search for 'compress' in agent/ -> 12 matches
+
+    Never raises: models sometimes emit non-string argument values (bool,
+    int, None) and the args here come from persisted session history, so a
+    single malformed historical call must not crash compression — which
+    retries on the same history and would crash-loop. Individual branches
+    coerce the values they slice/measure (keeping summaries informative);
+    this wrapper is the backstop for anything they miss.
     """
+    try:
+        return _summarize_tool_result_unguarded(tool_name, tool_args, tool_content)
+    except Exception as exc:  # noqa: BLE001 — a summary must never crash compression
+        logger.debug("Tool-result summary failed for %s: %s", tool_name, exc)
+        _len = len(tool_content) if isinstance(tool_content, str) else 0
+        return f"[{tool_name}] ({_len:,} chars result)"
+
+
+def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
+    """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     try:
         args = json.loads(tool_args) if tool_args else {}
     except (json.JSONDecodeError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
         args = {}
 
     content = tool_content or ""

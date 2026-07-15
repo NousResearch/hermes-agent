@@ -453,6 +453,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_stream_delta` | Observer | Dispatched per normalized streaming text delta via the bounded observer queue; a stalled callback drops only its own oldest events; return ignored. | `delta`, `kind` (`text` or `reasoning`), `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Delta text is raw model output; reasoning deltas require the `plugins.stream_reasoning_deltas` opt-in. |
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
+| `classify_api_error` | Directive/control | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first). Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown or expiry may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
@@ -843,6 +844,54 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `classify_api_error`
+
+Fires **once per failed API call**, at the top of `agent/error_classifier.classify_api_error()` — BEFORE the built-in classification pipeline. Provider plugins use it to own their provider's error quirks (a vendor-specific 404 that should fast-fallback, a misleading status code) without core patches.
+
+This hook is **behavior-changing**: the returned classification drives retry, compression, credential-rotation, and fallback routing for the failed call.
+
+**Callback signature:**
+
+```python
+def my_callback(provider: str, model: str, status_code, error_type: str,
+                error_code, error_message: str, error_body, error,
+                approx_tokens, context_length, num_messages, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `provider` | `str` | The provider whose call failed — **self-scope on this** |
+| `model` | `str` | The model identifier for the failed call |
+| `status_code` | `int \| None` | HTTP status, when the error carried one |
+| `error_type` | `str` | The exception class name |
+| `error_code` | `str \| None` | Provider error code, when present |
+| `error_message` | `str` | Lower-cased error message text |
+| `error_body` | `dict` | Parsed provider error body, when present |
+| `error` | `Exception` | The original exception object |
+| `approx_tokens` | `int \| None` | Approximate prompt tokens of the failed request |
+| `context_length` | `int \| None` | Model context length, when known |
+| `num_messages` | `int \| None` | Message count of the failed request |
+
+**Return value — claim the error:**
+
+```python
+return {
+    "reason": "model_not_found",        # required: a FailoverReason name
+    "retryable": False,                  # optional recovery-hint overrides
+    "should_fallback": True,
+    "should_compress": False,
+    "should_rotate_credential": False,
+    "message": "...",                    # optional user-facing guidance
+    "error_context": {...},              # optional extra context
+}
+```
+
+Return `None` (or nothing) to pass the error to the built-in pipeline. The first valid result in registration order wins; invalid dicts and unknown reasons are skipped; exceptions are isolated so a broken plugin can never break error classification.
+
+**Python plugins only.** Shell hooks cannot register for this event: the shell response parser has no channel for the classification directive, so a shell registration is refused at config parse with a warning rather than being silently ignored.
 
 ---
 

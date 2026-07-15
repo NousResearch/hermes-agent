@@ -1,6 +1,0 @@
-name: openrouter-tool-use-404
-version: 1.0.0
-description: "Classify OpenRouter's 'No endpoints found that support tool use' 404 as model_not_found so the agent fails over to a configured fallback model instead of retrying a deterministic rejection. Reference implementation for the classify_api_error plugin hook."
-author: "NousResearch (hook demo; classification from PR #58451 by @webtecnica)"
-provides_hooks:
-  - classify_api_error

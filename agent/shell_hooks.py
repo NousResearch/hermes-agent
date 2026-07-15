@@ -369,7 +369,7 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     Malformed entries warn-and-skip — we never raise from config parsing
     because a broken hook must not crash the agent.
     """
-    from hermes_cli.plugins import VALID_HOOKS
+    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
 
     if not isinstance(hooks_cfg, dict):
         return []
@@ -382,6 +382,17 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
         # functionality (e.g. output-spill budgets, outbound webhooks —
         # the latter parsed by agent/outbound_webhooks.py).
         if event_name in ("output_spill", "outbound"):
+            continue
+        if event_name in SHELL_UNSUPPORTED_HOOKS:
+            # Registering would "succeed" while the hook's return value is
+            # silently dropped (_parse_response has no channel for these
+            # events' directives) — refuse loudly instead.
+            logger.warning(
+                "hook event %r is Python-plugin-only: shell hooks cannot "
+                "return its directive, so this registration is refused "
+                "rather than silently ignored",
+                event_name,
+            )
             continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(

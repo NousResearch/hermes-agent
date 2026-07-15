@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
@@ -7,12 +7,14 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $unreadFinishedSessionIds,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
+  setSelectedStoredSessionId,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -295,5 +297,50 @@ describe('getRecentlySettledSessionIds', () => {
     // settled set so it's tracked as working, not recently-finished.
     setSessionWorking('s2', true)
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('unread finished sessions', () => {
+  beforeEach(() => {
+    $unreadFinishedSessionIds.set([])
+    $workingSessionIds.set([])
+    setSelectedStoredSessionId(() => null)
+  })
+
+  afterEach(() => {
+    $workingSessionIds.set([])
+    $unreadFinishedSessionIds.set([])
+    setSelectedStoredSessionId(() => null)
+  })
+
+  it('marks a session unread when its turn finishes in the background', () => {
+    setSelectedStoredSessionId(() => 'other-session')
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+  })
+
+  it('does NOT mark unread when the finishing session is the active one', () => {
+    setSelectedStoredSessionId(() => 's1')
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
+    setSelectedStoredSessionId(() => 'other-session')
+    setSessionWorking('s1', false)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('clears unread when the user opens the session', () => {
+    setSelectedStoredSessionId(() => 'other')
+    setSessionWorking('s1', true)
+    setSessionWorking('s1', false)
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    setSelectedStoredSessionId(() => 's1')
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

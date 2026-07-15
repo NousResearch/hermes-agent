@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and [`classify_api_error`](#classify_api_error) can **override API-error classification** (retry/fallback routing). All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -383,6 +383,7 @@ def register(ctx):
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
+| [`classify_api_error`](#classify_api_error) | An API call failed, before the built-in error classifier | `{"reason": "<FailoverReason>", ...}` to override classification (Python plugins only) |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
@@ -715,6 +716,54 @@ def register(ctx):
 ```
 
 For standing guidance that should shape the built-in missing-evidence nudge, use `agent.verify_guidance`. For broader coding posture rules that don't need to *gate* verification, prefer `agent.coding_instructions` in `config.yaml` — it rides the coding brief and costs no extra turn.
+
+---
+
+### `classify_api_error`
+
+Fires **once per failed API call**, at the top of `agent/error_classifier.classify_api_error()` — BEFORE the built-in classification pipeline. Provider plugins use it to own their provider's error quirks (a vendor-specific 404 that should fast-fallback, a misleading status code) without core patches.
+
+This hook is **behavior-changing**: the returned classification drives retry, compression, credential-rotation, and fallback routing for the failed call.
+
+**Callback signature:**
+
+```python
+def my_callback(provider: str, model: str, status_code, error_type: str,
+                error_code, error_message: str, error_body, error,
+                approx_tokens, context_length, num_messages, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `provider` | `str` | The provider whose call failed — **self-scope on this** |
+| `model` | `str` | The model identifier for the failed call |
+| `status_code` | `int \| None` | HTTP status, when the error carried one |
+| `error_type` | `str` | The exception class name |
+| `error_code` | `str \| None` | Provider error code, when present |
+| `error_message` | `str` | Lower-cased error message text |
+| `error_body` | `dict` | Parsed provider error body, when present |
+| `error` | `Exception` | The original exception object |
+| `approx_tokens` | `int \| None` | Approximate prompt tokens of the failed request |
+| `context_length` | `int \| None` | Model context length, when known |
+| `num_messages` | `int \| None` | Message count of the failed request |
+
+**Return value — claim the error:**
+
+```python
+return {
+    "reason": "model_not_found",        # required: a FailoverReason name
+    "retryable": False,                  # optional recovery-hint overrides
+    "should_fallback": True,
+    "should_compress": False,
+    "should_rotate_credential": False,
+    "message": "...",                    # optional user-facing guidance
+    "error_context": {...},              # optional extra context
+}
+```
+
+Return `None` (or nothing) to pass the error to the built-in pipeline. The first valid result in registration order wins; invalid dicts and unknown reasons are skipped; exceptions are isolated so a broken plugin can never break error classification.
+
+**Python plugins only.** Shell hooks cannot register for this event: the shell response parser has no channel for the classification directive, so a shell registration is refused at config parse with a warning rather than being silently ignored.
 
 ---
 

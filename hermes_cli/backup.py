@@ -249,6 +249,90 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
         return False
 
 
+# Per-file size cap. A backup ships portable config/state, not bulk data
+# (VM images, model weights, datasets) that accumulates inside profile working
+# dirs. Without a cap, a single multi-GB blob -- e.g. a Docker.raw under a
+# profile -- makes the backup hang and can fill the disk.
+#
+# The cap is a user-facing behavioral setting, so its source of truth is
+# ``updates.backup_max_file_mb`` in config.yaml (set to 0 to disable the cap) --
+# NOT a HERMES_* env var, since .env is for secrets only (see AGENTS.md).
+# ``HERMES_BACKUP_MAX_FILE_MB`` is retained ONLY as an internal override for
+# tests/tooling and is intentionally undocumented for users.
+_DEFAULT_MAX_FILE_MB = 2048
+
+# State databases are always backed up regardless of size: they are the whole
+# point of a backup (kanban.db, sessions, memory) and go through the SQLite
+# safe-copy path. A large one must never be silently dropped by the size cap,
+# so these suffixes are exempt.
+_STATE_DB_SUFFIXES = (".db", ".sqlite", ".sqlite3")
+
+
+def _config_max_file_mb() -> float:
+    """Read ``updates.backup_max_file_mb`` (MB) from config.yaml.
+
+    Falls back to :data:`_DEFAULT_MAX_FILE_MB` when the key is missing, the
+    value is non-numeric, or config can't be read -- a backup must never fail
+    or silently drop the cap because of a config typo.
+    """
+    # read_raw_config() reads config.yaml as-is with NO side effects. Using
+    # load_config() here would trigger ensure_hermes_home(), materializing a
+    # default config.yaml inside the very HERMES_HOME being backed up.
+    try:
+        from hermes_cli.config import read_raw_config
+
+        updates_cfg = (read_raw_config() or {}).get("updates", {}) or {}
+        return float(updates_cfg.get("backup_max_file_mb", _DEFAULT_MAX_FILE_MB))
+    except (TypeError, ValueError):
+        return float(_DEFAULT_MAX_FILE_MB)
+    except Exception as exc:  # config read must never break a backup
+        logger.debug("Could not read updates.backup_max_file_mb: %s", exc)
+        return float(_DEFAULT_MAX_FILE_MB)
+
+
+def _max_backup_file_bytes() -> int:
+    """Return the per-file size cap in bytes (0 means no cap).
+
+    Source of truth is ``updates.backup_max_file_mb`` in config.yaml. The
+    internal ``HERMES_BACKUP_MAX_FILE_MB`` env var overrides it for tests and
+    tooling only. Invalid values fall back to the default so a typo never
+    silently disables the cap.
+    """
+    raw = os.getenv("HERMES_BACKUP_MAX_FILE_MB", "").strip()
+    if raw:
+        try:
+            mb = float(raw)
+        except ValueError:
+            mb = float(_DEFAULT_MAX_FILE_MB)
+    else:
+        mb = _config_max_file_mb()
+    if mb <= 0:
+        return 0
+    return int(mb * 1024 * 1024)
+
+
+def _is_state_db(abs_path: Path) -> bool:
+    """State databases are exempt from the size cap (always safe-copied)."""
+    return abs_path.suffix.lower() in _STATE_DB_SUFFIXES
+
+
+def _oversized_backup_bytes(abs_path: Path, max_file_bytes: int) -> Optional[int]:
+    """Return the file's size if it is over the cap and should be skipped.
+
+    Returns ``None`` (keep the file) when the cap is disabled, the file is a
+    state database (always backed up), or its size can't be read. Shared by
+    every backup walker -- the direct walk, the external-provider walk, and the
+    pre-update full-zip path -- so all of them cap identically.
+    """
+    if not max_file_bytes or _is_state_db(abs_path):
+        return None
+    try:
+        size = abs_path.stat().st_size
+    except OSError:
+        return None
+    return size if size > max_file_bytes else None
+
+
 # ---------------------------------------------------------------------------
 # SQLite safe copy
 # ---------------------------------------------------------------------------
@@ -319,6 +403,8 @@ def run_backup(args) -> None:
     print(f"Scanning {display_hermes_home()} ...")
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
+    skipped_large: list[tuple[Path, int]] = []  # (relative/arcname, size) over the cap
+    max_file_bytes = _max_backup_file_bytes()
 
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         dp = Path(dirpath)
@@ -343,6 +429,14 @@ def run_backup(args) -> None:
             if _should_skip_backup_file(fpath, rel, out_path):
                 continue
 
+            # Skip oversized files (see _oversized_backup_bytes): a multi-GB
+            # blob under a profile would otherwise hang the backup / fill the
+            # disk. State DBs are exempt and always backed up.
+            oversized = _oversized_backup_bytes(fpath, max_file_bytes)
+            if oversized is not None:
+                skipped_large.append((rel, oversized))
+                continue
+
             files_to_add.append((fpath, rel))
 
     # External memory-provider state (e.g. ~/.honcho, ~/.hindsight) lives
@@ -365,6 +459,12 @@ def run_backup(args) -> None:
             try:
                 rel_to_home = fpath.resolve().relative_to(home_dir)
             except (ValueError, OSError):
+                continue
+            # Same per-file cap as the HERMES_HOME walk: a declared external
+            # provider dir can hold bulk data too. State DBs stay exempt.
+            oversized = _oversized_backup_bytes(fpath, max_file_bytes)
+            if oversized is not None:
+                skipped_large.append((Path(_EXTERNAL_PREFIX + rel_to_home.as_posix()), oversized))
                 continue
             arcname = _EXTERNAL_PREFIX + rel_to_home.as_posix()
             external_to_add.append((fpath, arcname))
@@ -448,6 +548,18 @@ def run_backup(args) -> None:
         )
         for p in sorted(skipped_external)[:10]:
             print(f"    {p}")
+
+    if skipped_large:
+        total_skipped = sum(sz for _, sz in skipped_large)
+        print(
+            f"\n  Skipped {len(skipped_large)} large file(s) over "
+            f"{_format_size(max_file_bytes)} ({_format_size(total_skipped)} total; "
+            f"set updates.backup_max_file_mb in config.yaml to change, 0 to disable):"
+        )
+        for rel, sz in sorted(skipped_large, key=lambda x: -x[1])[:10]:
+            print(f"    {rel} ({_format_size(sz)})")
+        if len(skipped_large) > 10:
+            print(f"    ... and {len(skipped_large) - 10} more")
 
     if skipped_dirs:
         print("\n  Excluded directories:")
@@ -1153,6 +1265,12 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     or write error — caller should surface the outcome but not raise).
     """
     files_to_add: list[tuple[Path, Path]] = []
+    # Same per-file size cap as run_backup so ``hermes update --backup`` (which
+    # routes here via create_pre_update_backup) can't hang or fill the disk on a
+    # multi-GB blob. State DBs are exempt. Reported via the logger since this
+    # path has no interactive summary.
+    max_file_bytes = _max_backup_file_bytes()
+    skipped_large = 0
     try:
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
@@ -1169,10 +1287,25 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                 if _should_skip_backup_file(fpath, rel, out_path):
                     continue
 
+                oversized = _oversized_backup_bytes(fpath, max_file_bytes)
+                if oversized is not None:
+                    logger.info(
+                        "Full-zip backup: skipping %s (%s over the %s cap; "
+                        "set updates.backup_max_file_mb to change)",
+                        rel, _format_size(oversized), _format_size(max_file_bytes),
+                    )
+                    skipped_large += 1
+                    continue
+
                 files_to_add.append((fpath, rel))
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
+
+    if skipped_large:
+        logger.info(
+            "Full-zip backup: skipped %d file(s) over the size cap", skipped_large
+        )
 
     if not files_to_add:
         return None

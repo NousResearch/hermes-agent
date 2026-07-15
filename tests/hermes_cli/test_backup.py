@@ -2530,3 +2530,185 @@ class TestMemoryProviderExternalPaths:
 
         paths = HindsightMemoryProvider().backup_paths()
         assert str(tmp_path / ".hindsight") in paths
+
+
+class TestBackupSizeCap:
+    """Per-file size cap keeps bulk data (VM images, model weights, datasets)
+    out of the portable config/state backup.
+
+    Regression guard: a multi-GB ``Docker.raw`` under a profile working dir once
+    made ``hermes update --backup`` hang and nearly fill the disk because the
+    backup walker had only name/suffix/dir exclusions and no size limit. The cap
+    now applies to every backup path -- the direct ``hermes backup`` walk, the
+    external memory-provider walk, and the pre-update full-zip -- while state
+    databases stay exempt so a large kanban.db is never dropped.
+    """
+
+    def _tree_with_big_file(self, home: Path, big_bytes: int) -> None:
+        (home / "config.yaml").write_text("model:\n  default: x\n")
+        prof = home / "profiles" / "p"
+        prof.mkdir(parents=True)
+        (prof / "small.txt").write_text("ok")
+        with open(prof / "blob.bin", "wb") as fh:
+            fh.write(b"\0" * big_bytes)
+
+    def test_skips_file_over_cap(self, tmp_path, monkeypatch):
+        from hermes_cli.backup import run_backup
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._tree_with_big_file(home, big_bytes=200 * 1024)  # 200 KB
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BACKUP_MAX_FILE_MB", "0.05")  # ~50 KB cap
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = zf.namelist()
+        assert "config.yaml" in names
+        assert "profiles/p/small.txt" in names
+        assert "profiles/p/blob.bin" not in names  # over the cap -> skipped
+
+    def test_cap_disabled_includes_large(self, tmp_path, monkeypatch):
+        from hermes_cli.backup import run_backup
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        self._tree_with_big_file(home, big_bytes=200 * 1024)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BACKUP_MAX_FILE_MB", "0")  # disabled
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            assert "profiles/p/blob.bin" in zf.namelist()
+
+    def test_oversized_state_db_is_retained(self, tmp_path, monkeypatch):
+        """State DBs are exempt from the cap. An over-cap ``kanban.db`` must
+        still be backed up -- dropping it would silently lose state on restore,
+        contradicting the "state / DBs are untouched" guarantee."""
+        from hermes_cli.backup import run_backup
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("model:\n  default: x\n")
+        with open(home / "kanban.db", "wb") as fh:
+            fh.write(b"\0" * (200 * 1024))
+        with open(home / "blob.bin", "wb") as fh:
+            fh.write(b"\0" * (200 * 1024))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BACKUP_MAX_FILE_MB", "0.05")  # ~50 KB cap
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = zf.namelist()
+        assert "kanban.db" in names  # state DB exempt -> always backed up
+        assert "blob.bin" not in names  # plain blob over cap -> skipped
+
+    def test_external_provider_file_over_cap_is_skipped(self, tmp_path, monkeypatch):
+        """The external memory-provider walk caps oversized files too, and keeps
+        its exemption for state DBs (bot review point #4)."""
+        import hermes_cli.backup as backup_mod
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("model:\n  default: x\n")
+        # External provider dir (e.g. ~/.honcho) under home, with a bulk blob,
+        # a small file, and a state DB -- all well over the cap.
+        honcho = tmp_path / ".honcho"
+        honcho.mkdir()
+        (honcho / "small.json").write_text('{"a":1}')
+        with open(honcho / "blob.bin", "wb") as fh:
+            fh.write(b"\0" * (200 * 1024))
+        with open(honcho / "store.db", "wb") as fh:
+            fh.write(b"\0" * (200 * 1024))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BACKUP_MAX_FILE_MB", "0.05")  # ~50 KB cap
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            backup_mod, "_collect_memory_provider_external_paths", lambda: [honcho]
+        )
+
+        out_zip = tmp_path / "backup.zip"
+        backup_mod.run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as zf:
+            names = set(zf.namelist())
+        assert "_external/.honcho/small.json" in names
+        assert "_external/.honcho/store.db" in names  # state DB exempt
+        assert "_external/.honcho/blob.bin" not in names  # over cap -> skipped
+
+    def test_pre_update_backup_applies_cap(self, tmp_path, monkeypatch):
+        """The pre-update path (``hermes update --backup`` ->
+        ``_write_full_zip_backup``) caps oversized files too, not just the
+        direct ``hermes backup`` walker -- that was the reported hang."""
+        from hermes_cli.backup import create_pre_update_backup
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("model:\n  default: x\n")
+        with open(home / "big.bin", "wb") as fh:
+            fh.write(b"\0" * (200 * 1024))
+        with open(home / "state.db", "wb") as fh:
+            fh.write(b"\0" * (200 * 1024))
+        monkeypatch.setenv("HERMES_BACKUP_MAX_FILE_MB", "0.05")  # ~50 KB cap
+
+        out = create_pre_update_backup(hermes_home=home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = zf.namelist()
+        assert "config.yaml" in names
+        assert "big.bin" not in names  # over cap -> skipped on the update path
+        assert "state.db" in names  # state DB exempt
+
+    def test_default_cap_value(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        import hermes_cli.config as config_mod
+
+        monkeypatch.delenv("HERMES_BACKUP_MAX_FILE_MB", raising=False)
+        # No env and no configured value -> fall back to the default.
+        monkeypatch.setattr(config_mod, "read_raw_config", lambda: {})
+        assert (
+            backup_mod._max_backup_file_bytes()
+            == backup_mod._DEFAULT_MAX_FILE_MB * 1024 * 1024
+        )
+
+    def test_invalid_env_falls_back_to_default(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+
+        monkeypatch.setenv("HERMES_BACKUP_MAX_FILE_MB", "not-a-number")
+        assert (
+            backup_mod._max_backup_file_bytes()
+            == backup_mod._DEFAULT_MAX_FILE_MB * 1024 * 1024
+        )
+
+    def test_config_value_sets_cap(self, monkeypatch):
+        """Source of truth is ``updates.backup_max_file_mb`` in config.yaml,
+        not a HERMES_* env var (AGENTS.md: .env is for secrets only)."""
+        import hermes_cli.backup as backup_mod
+        import hermes_cli.config as config_mod
+
+        monkeypatch.delenv("HERMES_BACKUP_MAX_FILE_MB", raising=False)
+        monkeypatch.setattr(
+            config_mod, "read_raw_config",
+            lambda: {"updates": {"backup_max_file_mb": 0.05}},
+        )
+        assert backup_mod._max_backup_file_bytes() == int(0.05 * 1024 * 1024)
+
+    def test_config_zero_disables_cap(self, monkeypatch):
+        import hermes_cli.backup as backup_mod
+        import hermes_cli.config as config_mod
+
+        monkeypatch.delenv("HERMES_BACKUP_MAX_FILE_MB", raising=False)
+        monkeypatch.setattr(
+            config_mod, "read_raw_config",
+            lambda: {"updates": {"backup_max_file_mb": 0}},
+        )
+        assert backup_mod._max_backup_file_bytes() == 0

@@ -3124,6 +3124,14 @@ DEFAULT_CONFIG = {
         # disable backups entirely, set ``pre_update_backup: false`` above
         # rather than ``backup_keep: 0``.
         "backup_keep": 5,
+        # Per-file size cap (in MB) for backups. A backup ships portable
+        # config/state, not bulk data (VM images, model weights, datasets) that
+        # piles up inside profile working dirs -- without a cap a single
+        # multi-GB blob (e.g. a Docker.raw) makes ``hermes backup`` and the
+        # pre-update backup hang and can fill the disk. Files over this size are
+        # skipped; state databases (``.db``/``.sqlite``) are always backed up
+        # regardless. Set to 0 to disable the cap entirely.
+        "backup_max_file_mb": 2048,
         # What `hermes update` does with uncommitted local changes to the
         # source tree when it runs NON-interactively — i.e. triggered from
         # the desktop/chat app or the gateway, where there's no TTY to answer

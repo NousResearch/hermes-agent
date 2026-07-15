@@ -41,7 +41,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes model` | Interactively choose the default provider and model. |
 | `hermes moa` | Configure named Mixture of Agents presets selectable from the model picker. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
-| `hermes providers` | Tier-0 provider compatibility smoke. |
+| `hermes providers` | Tier-0 validation and local paired candidate evaluation. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
 | `hermes lsp` | Manage Language Server Protocol integration (semantic diagnostics for write_file/patch). |
@@ -216,6 +216,9 @@ Provider and base URL changes are persisted to `config.yaml` automatically. When
 
 ```bash
 hermes providers validate [options]
+hermes providers evaluate [options]
+hermes providers score [options]
+hermes providers suites list
 ```
 
 Run the explicitly labeled tier-0 compatibility smoke for a provider/model inside the real Hermes agent loop. This is different from a raw `/v1/chat/completions` smoke test: Hermes runs actual `hermes chat -Q` turns, persists SessionDB receipts, and checks tool-call behavior from those receipts. It is not Hermes qualification, replacement evidence, a benchmark, or a routing decision.
@@ -242,6 +245,51 @@ hermes providers validate \
 ```
 
 The built-in `agent-readiness` suite checks compatibility failures: missing tool calls, fabricated tool execution, recovery after a failed read with expected paths and order, abstention from side-effecting tools plus forbidden-artifact absence, and reasoning markers such as `<think>` leaking into user-visible output. A valid SessionDB receipt is mandatory; printed output cannot pass a case. It is a compatibility smoke, not an exhaustive evaluation suite or candidate-replacement claim. Workflow-specific validation is still required before relying on a provider for sensitive or high-stakes tasks.
+
+### `hermes providers evaluate`
+
+Runs or dry-runs the pinned local `cli-full-v1` lane. The default is dry-run;
+`--execute` must be explicit. It requires complete candidate and incumbent
+manifests, the standalone evaluation config, and a hash-linked rollback
+readiness artifact.
+
+| Option | Description |
+|--------|-------------|
+| `--candidate-manifest <path>` | Required pinned candidate stack manifest. |
+| `--incumbent-manifest <path>` | Required pinned incumbent stack manifest. |
+| `--evaluation-config <path>` | Required read-only evaluation specification. |
+| `--lane cli-full-v1` / `--suite full-hermes-cli-v1` | PR-1 lane and suite; both are fixed. |
+| `--out <dir>` | Required self-contained run directory. |
+| `--repetitions 3` / `--seed <int>` | Frozen three repetitions and schedule seed. |
+| `--timeout <seconds>` | Per-turn subprocess timeout; defaults to `120`. |
+| `--dry-run` / `--execute` | Select planning or explicitly approved local execution. |
+| `--archive-index <path>` | Optional immutable local archive index; informational only. |
+
+The schedule contains 81 paired case/repetition entries, with candidate/incumbent
+arm order balanced and seeded. Execution writes `run.json`, normalized config,
+both manifests, `schedule.jsonl`, `receipts.jsonl`, `pair-results.jsonl`, raw
+per-arm artifacts, `summary.json`, `summary.md`, and `checksums.sha256`.
+Receipts and SessionDB exports are the source of truth. The lane uses the
+resolved production `hermes-cli` schema and preserves loaded rules, skills,
+memory, and context; it never adds `--ignore-rules` or uses the tier-0 `file`
+default. It does not cover gateways/platforms, delegation, external network,
+automatic routing, automatic promotion, or a global Hermes qualification.
+
+### `hermes providers score`
+
+```bash
+hermes providers score --run-dir RUN_DIR [--archive-index INDEX]
+```
+
+Recomputes all deterministic checks from saved receipts without contacting a
+provider. It detects altered receipt/raw hashes, duplicate or missing attempts,
+invalid SessionDB message invariants, incomplete pairs, and scorer disagreement.
+The only screening statuses are `GATE-FAILED`, `REJECT`, `HOLD`, and
+`SCREEN-PASS`. `PROMOTE-CANDIDATE` is not available in this lane.
+
+### `hermes providers suites list`
+
+Lists the frozen 27-case `full-hermes-cli-v1@1` suite and scorer identity.
 
 ## `hermes gateway`
 

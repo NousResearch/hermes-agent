@@ -117,6 +117,43 @@ Internal reasoning fields in the session receipt are allowed for diagnostics. Th
 
 The command writes `results.jsonl`, `summary.json`, `summary.md`, raw stdout/stderr, and loaded session receipts under `--out`. A printed session id or final answer cannot substitute for a loaded receipt; timeout and invalid-session evidence remains captured and fails honestly. Treat it as a tier-0 compatibility smoke only; workflow-specific validation is still required for sensitive or high-stakes use.
 
+### Run a local paired candidate evaluation
+
+The first evaluation lane is `cli-full-v1`, a screening-grade comparison of a
+candidate and incumbent through the classic non-interactive CLI. It is pinned
+to `full-hermes-cli-v1@1`: 27 executable cases, three repetitions, and a
+seeded interleaved schedule. The candidate and incumbent each receive a fresh
+Hermes-home snapshot and their own SessionDB. The full lane captures the
+resolved production `hermes-cli` tool schema and does not add
+`--ignore-rules`; the tier-0 `file` toolset is not an equivalent substitute.
+
+Supply complete, clean stack manifests and the standalone evaluation config
+shown in [`candidate-evaluation-cli-full-v1.yaml`](../examples/candidate-evaluation-cli-full-v1.yaml):
+
+```bash
+hermes providers evaluate \
+  --candidate-manifest candidate-manifest.json \
+  --incumbent-manifest incumbent-manifest.json \
+  --evaluation-config evaluation.yaml \
+  --out /tmp/hermes-candidate-run
+```
+
+This is a dry-run unless `--execute` is explicit. The evaluator checks the
+rollback artifact and readiness but never applies rollback, changes the active
+model, edits `config.yaml` or `.env`, changes fallback/routing, or promotes a
+candidate. An approved execution runs the incumbent A/A pilot first; a pilot
+failure is `GATE-FAILED` and is not repaired by an unrecorded retry.
+
+`hermes providers score --run-dir RUN_DIR` is offline. It recalculates the
+deterministic oracles from `receipts.jsonl`, SessionDB exports, raw hashes, and
+the fixed scorer; editing `summary.json` cannot make missing, tampered, or
+incomplete receipts eligible. The result reports seven primary dimensions,
+Hermes Fitness Score, paired delta and descriptive 95% intervals, wins/losses/
+ties, hard gates, A/A outcome, and optional local archive rank/percentile.
+Archive position is informational only. PR-1 statuses are only
+`GATE-FAILED`, `REJECT`, `HOLD`, and `SCREEN-PASS`; no result is global Hermes
+qualification or `PROMOTE-CANDIDATE` evidence.
+
 ### Two Commands for Model Management
 
 Hermes has **two** model commands that serve different purposes:

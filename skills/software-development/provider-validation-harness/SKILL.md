@@ -1,207 +1,126 @@
 ---
 name: provider-validation-harness
-description: Use when running the tier-0 provider compatibility smoke through real Hermes agent-loop turns and persisted SessionDB receipts. It is a narrow compatibility check, never Hermes qualification, replacement evidence, or routing authority.
-version: 1.1.0
-author: Hermes Agent
+description: Use the Hermes provider candidate evaluator.
+version: 2.0.0
+author: Drew Schuyler (github.com/drewschuyler); Hermes Agent
 license: MIT
+platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [providers, validation, hermes, tool-calling, local-models, compatibility]
-    related_skills: [hermes-agent, github-pr-workflow, requesting-code-review]
+    tags: [providers, evaluation, validation, receipts]
+    related_skills: [hermes-agent]
 ---
 
-# Tier-0 Provider Compatibility Smoke
+# Provider Validation Harness Skill
 
-## Purpose and ownership
+Use this workflow to produce local, receipt-backed evidence for a configured
+provider path. It does not call a provider by itself, change routing, install a
+model, edit user configuration, or grant a promotion decision.
 
-Use this skill when a user needs a narrow answer to: “Does this configured
-provider/model execute these representative Hermes turns and leave valid
-receipts?” The command runs real `hermes chat -Q` subprocesses and checks the
-persisted SessionDB lineage. A raw `/v1/chat/completions` response is not a
-Hermes receipt and cannot answer this question.
+## When to Use
 
-The initial harness was authored by Drew Schuyler. Preserve Drew-first credit
-and authorship in follow-up changes; adaptations and receipt repairs belong in
-separate commits.
+Use `validate` for a fast six-case tier-0 compatibility smoke. Use `evaluate`
+for a pinned candidate-versus-incumbent `cli-full-v1` screening run. Use
+`score` when a run already has saved receipts and must be rescored offline.
 
-This is a tier-0 compatibility smoke only. It is not full qualification, a
-benchmark, replacement evidence, a leaderboard, or permission to route user
-traffic. Candidate-vs-incumbent evaluation is a
-separate planned lane and is not implemented by this command.
+## Prerequisites
 
-## When to use
+- A read-only evaluation config from
+  `docs/examples/candidate-evaluation-cli-full-v1.yaml`.
+- Complete, clean candidate and incumbent stack manifests. They must identify
+  weights, runtime, template/parser, decoding, context, Hermes revision/config,
+  hardware, resolved `hermes-cli` tool schemas, and rollback readiness.
+- A rollback artifact with a current route, tested recipe, and human owner.
+- For implementation or CI, use a deterministic local fake boundary; do not
+  call a live or paid provider.
 
-Use it for:
+## How to Run
 
-- a configured provider/model or OpenAI-compatible local endpoint;
-- a focused check that the real Hermes CLI, tool schemas, and session store work
-  together;
-- diagnosing a provider path before a separately approved evaluation.
-
-Do not use it to claim that all Hermes tools, loaded context, skills, memory,
-multi-turn continuity, compression, safety, performance, or production tasks
-have passed. Do not put private workflows or secrets in prompts or receipts.
-
-## Current command
-
-The only supported command in this milestone is `validate`:
+Tier-0 smoke:
 
 ```bash
-hermes providers validate \
-  --provider PROVIDER \
-  --model MODEL \
-  --toolsets file \
-  --suite agent-readiness \
-  --out /tmp/hermes-provider-validation \
-  --timeout 120
+hermes providers validate --provider PROVIDER --model MODEL \
+  --suite agent-readiness --toolsets file --out /tmp/hermes-tier0
 ```
 
-`--toolsets file` is intentional for this compatibility smoke. Do not present
-it as full-harness coverage or expand it to other toolsets through this command.
-There is no `evaluate`, `score`, `archive`, promotion, or automatic routing
-command in this milestone.
-
-Arguments:
-
-- `--provider`: provider to exercise; omit to use the configured provider.
-- `--model`: model to exercise; omit to use the configured model.
-- `--toolsets`: toolsets for these turns; the compatibility mode defaults to
-  `file`.
-- `--suite`: currently `agent-readiness`, the frozen six-case compatibility
-  smoke.
-- `--out`: output directory for deterministic local receipts; omitted means a
-  temporary directory.
-- `--timeout`: per-case timeout in seconds; default `120`.
-
-## Receipt contract
-
-Every case must retain raw stdout and stderr, including partial output from a
-timeout. A printed `session_id` or a plausible final answer is insufficient.
-The case passes the receipt gate only when the harness successfully resolves
-and loads that session from SessionDB, then writes the loaded messages to
-`raw/<case>.session.json`. Missing or invalid session ids, load errors, and
-timeouts fail honestly and write `raw/<case>.session-error.txt` when applicable.
-
-Tool receipts are ordered records, not a list of names. Each record includes the
-tool name, parsed arguments, result content, and normalized status. The recovery
-case must prove, in order, a failed `read_file` for the expected missing path
-followed by a successful `read_file` for the expected fixture path. The
-abstention case must also prove that its forbidden output artifact does not
-exist after the turn.
-
-The final answer is read from the loaded session messages. Stdout never acts as
-a fallback for a missing receipt.
-
-## Frozen tier-0 cases
-
-The compatibility smoke uses a temporary fixture directory and six real
-`hermes chat -Q` turns:
-
-- no-tool abstention;
-- real `read_file` marker read;
-- real `search_files` marker search;
-- failed-read recovery with expected paths and order;
-- side-effect abstention plus forbidden-artifact absence;
-- visible-reasoning-marker hygiene.
-
-The checks cover subprocess success, session-id discovery, successful SessionDB
-loading, expected final text, required/forbidden tools, ordered tool receipts,
-no-tool abstention, artifact absence, and visible output hygiene. Internal
-reasoning fields in a receipt are diagnostic; markers in the final visible text
-fail the case.
-
-## Result policy
-
-The summary reports only screening outcomes from the allowed set:
-
-- `SCREEN-PASS`: all six compatibility cases and receipt gates passed;
-- `REJECT`: a behavioral case failed after the receipt path was valid;
-- `GATE-FAILED`: receipt integrity, timeout, missing session, or another
-  non-negotiable execution gate failed;
-- `HOLD`: reserved for an approved screening workflow that is incomplete or
-  intentionally awaiting review.
-
-`PROMOTE-CANDIDATE` is not a tier-0 status. Promotion-grade claims require a
-later preregistered lane with at least 100 cases, paired candidate/incumbent
-evidence, and human-only review.
-
-## Standard workflow
-
-1. Confirm the exact configured provider/model path and use synthetic fixtures.
-2. Run only the compatibility command above; do not mutate config or
-   credentials as part of the smoke.
-3. Save receipts with `--out` when the result matters.
-4. Read `summary.json` and `summary.md`, then inspect failed-case JSONL and raw
-   stdout/stderr/session files.
-5. Confirm every purported pass has a loaded SessionDB receipt and complete
-   tool records, not merely printed text.
-6. Report the exact provider, model, suite, toolset, status, failures, and
-   receipt directory. Do not translate `SCREEN-PASS` into qualification,
-   replacement, promotion, or routing.
-
-Example:
+Dry-run candidate evaluation (the default):
 
 ```bash
-OUT=/tmp/hermes-provider-validation-$(date +%Y%m%d-%H%M%S)
-hermes providers validate \
-  --provider custom:local-qwen \
-  --model qwen3-coder \
-  --toolsets file \
-  --suite agent-readiness \
-  --out "$OUT" \
-  --timeout 120
-
-sed -n '1,200p' "$OUT/summary.md"
+hermes providers evaluate \
+  --candidate-manifest candidate-manifest.json \
+  --incumbent-manifest incumbent-manifest.json \
+  --evaluation-config evaluation.yaml \
+  --out /tmp/hermes-candidate-run
 ```
 
-For a local endpoint, configure it through normal Hermes provider setup first.
-Keep credentials in the supported secret store. A direct curl check is useful
-diagnosis but is not evidence for this smoke.
+An operator may explicitly use `--execute` for an approved local run. The
+command always uses separate Hermes-home snapshots, the same fixture, real
+SessionDB persistence, the declared `hermes-cli` schema, and no
+`--ignore-rules`.
 
-## Output files
+Offline score:
 
-The output directory contains:
+```bash
+hermes providers score --run-dir /tmp/hermes-candidate-run
+hermes providers suites list
+```
 
-- `summary.md`: human-readable status and receipt overview;
-- `summary.json`: machine-readable status and per-case results;
-- `results.jsonl`: one serialized result per case;
-- `fixtures/`: synthetic files used by the smoke;
-- `raw/<case>.stdout` and `raw/<case>.stderr`: complete captured streams;
-- `raw/<case>.session.json`: loaded SessionDB messages when valid;
-- `raw/<case>.session-error.txt`: missing-id or load-error evidence.
+## Quick Reference
 
-## Failure taxonomy
+| Surface | Meaning |
+| --- | --- |
+| `validate` | Six-case tier-0 compatibility smoke; never qualification. |
+| `evaluate` | Frozen 27-case, three-repetition interleaved CLI comparison. |
+| `score` | Receipt-only deterministic re-score; no provider client. |
+| `suites list` | Lists the pinned suite/scorer identity. |
 
-- **Provider unreachable:** subprocess failed before model behavior was
-  evaluated.
-- **Session receipt failure:** no session id, invalid session, or SessionDB load
-  failure; printed output cannot repair this.
-- **Tool receipt failure:** missing/forbidden tool, malformed arguments, absent
-  result, or incorrect status/order/path.
-- **Recovery failure:** the expected failed read and successful read did not
-  occur in the required order and locations.
-- **Side-effect boundary failure:** a forbidden tool was called or the forbidden
-  artifact exists.
-- **Visible reasoning leak:** the final visible text contains `<think>`,
-  `<reasoning>`, or equivalent markers.
-- **Timeout/incomplete:** preserve partial stdout/stderr and classify as a
-  failed gate, not as a pass.
-- **Harness failure:** command, installation, or fixture setup prevented the
-  smoke from running.
+The evaluator reports only `GATE-FAILED`, `REJECT`, `HOLD`, or `SCREEN-PASS`.
+`PROMOTE-CANDIDATE` is reserved for a later preregistered policy with at least
+100 cases. Screening intervals are descriptive/non-confirmatory.
 
-## Verification checklist
+## Procedure
 
-Before reporting a result:
+1. Freeze both manifests, the standalone evaluation config, suite digest, and
+   seed. Do not use the active user config as an implicit evaluation spec.
+2. Confirm that the full lane selects `hermes-cli`, not the tier-0 `file`
+   toolset, and that both manifests contain the same suite/scorer/weights and
+   local-only policy.
+3. Run the dry-run and inspect missing prerequisites. It must not create a
+   provider client or modify `config.yaml`, `.env`, sessions, routing, or
+   credentials.
+4. For an approved execution, let the incumbent A/A pilot complete first.
+   The pilot requires 81 paired observations, exact receipt integrity, zero
+   online/offline scorer disagreement, bounded false non-ties, a zero-including
+   mean delta interval, and a bounded order effect.
+5. Inspect `receipts.jsonl` as the source of truth. Each of the 27 cases has
+   three repetitions per arm; repetitions aggregate within case before HFS.
+6. Review hard gates, seven dimension means, HFS, paired deltas/intervals,
+   win/loss/tie counts, and optional archive rank. Archive rank is informational
+   and never overrides a gate or screening status.
+7. Run offline `score` and compare `offline-summary.json` with `summary.json`.
+   Editing a summary cannot make a tampered or incomplete receipt set eligible.
 
-- [ ] `hermes providers validate --help` labels this as a tier-0 compatibility
-      smoke and disclaims qualification/replacement evidence.
-- [ ] Exact provider, model, `file` toolset, and suite are recorded.
-- [ ] Status is one of `SCREEN-PASS`, `REJECT`, `GATE-FAILED`, or `HOLD`.
-- [ ] Each passed case has a successfully loaded SessionDB receipt on disk.
-- [ ] Tool receipts include ordered arguments, results, and status.
-- [ ] Recovery paths/order and forbidden-artifact absence were checked.
-- [ ] Timeout/invalid-session stdout, stderr, and partial evidence were retained.
-- [ ] Failures are classified, not hand-waved.
-- [ ] No secrets or private user data appear in prompts, paths, docs, or receipts.
-- [ ] No qualification, replacement, promotion, leaderboard, or routing claim
-      is made from this smoke.
+## Pitfalls
+
+- The tier-0 `file` toolset is not the full lane and must not be described as
+  production coverage.
+- Do not add `--ignore-rules`: it removes context, memory, and skills that the
+  lane is explicitly measuring.
+- A timeout, missing session, malformed role sequence, unsafe side effect,
+  fabricated artifact, or incomplete pair is evidence of a gate failure, not a
+  missing observation to discard.
+- A different hardware/runtime path is not a same-policy speed comparison.
+- External network, browser, gateway/platform, delegation, auto-routing, and
+  automatic promotion are outside PR-1.
+
+## Verification
+
+- Confirm the result directory contains `run.json`, normalized config, both
+  manifests, `schedule.jsonl`, `receipts.jsonl`, pair results, summaries, raw
+  artifacts, and `checksums.sha256`.
+- Confirm all receipt hashes and raw-file hashes validate.
+- Confirm every summary carries `lane_id`, `suite_version`, `scorer_version`,
+  `weights_version`, A/A outcome, rollback readiness, and
+  `promotion_applied: false`.
+- State the exact lane and screening status. Never call it global Hermes
+  qualification or authorize routing from this skill.

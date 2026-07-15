@@ -58,9 +58,39 @@ def test_provider_help_labels_compatibility_and_not_qualification(capsys):
     assert "SessionDB" in output
 
 
-def test_provider_parser_does_not_expose_future_evaluation_commands():
-    with pytest.raises(SystemExit):
-        _build_parser().parse_args(["providers", "evaluate"])
+def test_provider_parser_exposes_paired_evaluation_surface():
+    namespace = _build_parser().parse_args(
+        [
+            "providers",
+            "evaluate",
+            "--candidate-manifest",
+            "candidate.json",
+            "--incumbent-manifest",
+            "incumbent.json",
+            "--evaluation-config",
+            "evaluation.yaml",
+            "--out",
+            "/tmp/run",
+            "--execute",
+            "--seed",
+            "7",
+        ]
+    )
+    assert namespace.providers_command == "evaluate"
+    assert namespace.candidate_manifest == "candidate.json"
+    assert namespace.incumbent_manifest == "incumbent.json"
+    assert namespace.evaluation_config == "evaluation.yaml"
+    assert namespace.execute is True
+    assert namespace.seed == 7
+
+
+def test_provider_parser_exposes_offline_score_and_suite_listing():
+    score = _build_parser().parse_args(["providers", "score", "--run-dir", "/tmp/run"])
+    assert score.providers_command == "score"
+    assert score.run_dir == "/tmp/run"
+    suites = _build_parser().parse_args(["providers", "suites", "list"])
+    assert suites.providers_command == "suites"
+    assert suites.suites_command == "list"
 
 
 def test_provider_parser_restricts_tier0_to_file_toolset():

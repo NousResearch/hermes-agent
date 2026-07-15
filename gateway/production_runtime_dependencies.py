@@ -400,6 +400,21 @@ def _remove_bounded_npm_cache(release: Path, cache: Path) -> None:
 def _install_python(release: Path, requirements: str) -> None:
     interpreter = _release_interpreter(release)
     _read_regular(interpreter.resolve(strict=True), maximum=64 * 1024 * 1024)
+    # ``uv sync`` deliberately removes installers that are not part of the
+    # application lock.  Re-seed the pinned managed Python's bundled pip
+    # before using the hash-locked, binary-only runtime dependency contract.
+    _run(
+        (
+            str(interpreter),
+            "-I",
+            "-m",
+            "ensurepip",
+            "--upgrade",
+            "--default-pip",
+        ),
+        cwd=release,
+        timeout=120,
+    )
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".muncho-ddgs-", suffix=".txt", dir=release
     )

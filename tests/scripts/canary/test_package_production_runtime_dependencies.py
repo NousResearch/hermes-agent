@@ -133,10 +133,10 @@ def test_python_install_disables_cache_and_removes_hash_requirements_file(
     interpreter = release / "venv/bin/python"
     interpreter.parent.mkdir(parents=True)
     interpreter.write_bytes(b"python")
-    observed: dict[str, object] = {}
+    observed: list[dict[str, object]] = []
 
     def run(arguments, *, cwd, timeout, extra_environment=None):
-        observed.update({
+        observed.append({
             "arguments": tuple(arguments),
             "cwd": cwd,
             "timeout": timeout,
@@ -148,7 +148,20 @@ def test_python_install_disables_cache_and_removes_hash_requirements_file(
     monkeypatch.setattr(package, "_run", run)
     package._install_python(release, "ddgs==9.14.4 --hash=sha256:" + "a" * 64 + "\n")
 
-    arguments = observed["arguments"]
+    assert observed[0] == {
+        "arguments": (
+            str(interpreter),
+            "-I",
+            "-m",
+            "ensurepip",
+            "--upgrade",
+            "--default-pip",
+        ),
+        "cwd": release,
+        "timeout": 120,
+        "environment": None,
+    }
+    arguments = observed[1]["arguments"]
     assert "--no-cache-dir" in arguments
     requirement = Path(arguments[arguments.index("--requirement") + 1])
     assert not requirement.exists()

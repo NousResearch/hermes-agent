@@ -328,6 +328,13 @@ class SlackAdapter(BasePlatformAdapter):
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
+        # Optional user-token client for posting to channels as a real user.
+        # When SLACK_USER_TOKEN (xoxp-...) is set, channel messages are posted
+        # via this client instead of the bot client.  This allows other bots
+        # (e.g. OpenClaw agents) to receive the messages as human messages,
+        # since Slack Socket Mode does not deliver bot-originated messages as
+        # channel events to other bots by default.
+        self._user_client: Optional[Any] = None
         self._MENTIONED_THREADS_MAX = 5000
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
@@ -569,6 +576,24 @@ class SlackAdapter(BasePlatformAdapter):
             self._app = AsyncApp(token=primary_token)
             _apply_slack_proxy(self._app.client, proxy_url)
 
+            # Optional user token for posting channel messages as a real user.
+            # When set, other Slack bots (e.g. OpenClaw agents) will receive
+            # these messages via Socket Mode, since Slack does not deliver
+            # bot-originated messages as channel events to other bots.
+            user_token = os.getenv("SLACK_USER_TOKEN", "").strip()
+            if user_token:
+                self._user_client = AsyncWebClient(token=user_token)
+                _apply_slack_proxy(self._user_client, proxy_url)
+                try:
+                    user_auth = await self._user_client.auth_test()
+                    logger.info(
+                        "[Slack] User token loaded — posting channel messages as @%s",
+                        user_auth.get("user", "unknown"),
+                    )
+                except Exception as exc:
+                    logger.warning("[Slack] SLACK_USER_TOKEN auth_test failed: %s — falling back to bot token", exc)
+                    self._user_client = None
+
             # Register each bot token and map team_id → client
             for token in bot_tokens:
                 client = AsyncWebClient(token=token)
@@ -803,7 +828,17 @@ class SlackAdapter(BasePlatformAdapter):
                     if broadcast and i == 0:
                         kwargs["reply_broadcast"] = True
 
-                last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+                # Use user token for channel posts when available — this makes
+                # the message appear as a human user, allowing other Slack bots
+                # (e.g. OpenClaw agents) to receive it via Socket Mode.  Fall
+                # back to the bot client for DMs and thread replies (where the
+                # user-token approach adds no value and may lose threading context).
+                post_client = (
+                    self._user_client
+                    if self._user_client and not thread_ts and not chat_id.startswith("D")
+                    else self._get_client(chat_id)
+                )
+                last_result = await post_client.chat_postMessage(**kwargs)
 
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:

@@ -766,6 +766,137 @@ class TestRuntimeProviderResolution:
             "target_model='claude-sonnet-4.6' with /v1/messages in catalog "
             "should resolve anthropic_messages, not chat_completions"
         )
+
+    def test_runtime_copilot_stale_persisted_mode_recomputed_on_switch(self, monkeypatch):
+        """Persisted api_mode from the default must NOT win when target differs.
+
+        Regression: _copilot_runtime_api_mode short-circuited on persisted
+        api_mode (line 322-324) before consulting target_model, so a mid-session
+        switch kept the default's transport and 400'd.
+        """
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "gpt-5.5", "api_mode": "codex_responses"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {"id": "claude-sonnet-4.6", "supported_endpoints": ["/chat/completions", "/v1/messages"]}
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot", target_model="claude-sonnet-4.6")
+
+        assert result["api_mode"] == "anthropic_messages", (
+            "Stale persisted codex_responses must NOT win when target is Claude with /v1/messages"
+        )
+
+    def test_runtime_copilot_stale_persisted_mode_reverse(self, monkeypatch):
+        """Reverse: Claude default + stale anthropic_messages, switch to GPT."""
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "claude-opus-4.6", "api_mode": "anthropic_messages"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {"id": "gpt-5.5", "supported_endpoints": ["/responses"], "capabilities": {"type": "chat"}}
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot", target_model="gpt-5.5")
+
+        assert result["api_mode"] == "codex_responses", (
+            "Stale persisted anthropic_messages must NOT win when target is GPT-5"
+        )
+
+    def test_runtime_copilot_same_as_default_honours_persisted(self, monkeypatch):
+        """target == default -> persisted mode retained (offline cache preserved).
+
+        Catalog is deliberately NOT stubbed: if the code recomputed it would
+        fail or call the network. Honouring persisted proves the offline-cache
+        branch works.
+        """
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "claude-opus-4.6", "api_mode": "anthropic_messages"},
+        )
+        # Stub catalog fetch to raise - proves the persisted path is taken
+        # without touching the network.
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: (_ for _ in ()).throw(
+                RuntimeError("catalog should not be fetched when target==default")
+            ),
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot", target_model="claude-opus-4.6")
+
+        assert result["api_mode"] == "anthropic_messages"
+
+    def test_runtime_copilot_normalisation_equivalence_honours_persisted(self, monkeypatch):
+        """Equivalent model spellings (copilot/ prefix) must honour persisted mode.
+
+        Without normalisation, raw != would force a spurious recompute that
+        degrades Claude offline (catalog-dependent resolution).
+        """
+        monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_cli_secret")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "claude-opus-4.6", "api_mode": "anthropic_messages"},
+        )
+        # Catalog raises - proves no recompute happens
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: (_ for _ in ()).throw(
+                RuntimeError("catalog should not be fetched for equivalent spelling")
+            ),
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        # copilot/ prefix is a known equivalent spelling
+        result = resolve_runtime_provider(requested="copilot", target_model="copilot/claude-opus-4.6")
+
+        assert result["api_mode"] == "anthropic_messages", (
+            "Equivalent model spelling must honour persisted mode, not force recompute"
+        )
+
+    def test_runtime_copilot_explicit_credentials_no_nameerror(self, monkeypatch):
+        """Regression: explicit-credential path must not raise NameError (line 1489).
+
+        The PR introduced target_model=target_model inside _resolve_explicit_runtime
+        where target_model was not in scope. This test exercises that path with
+        _copilot_runtime_api_mode UNMOCKED so control actually flows through
+        _resolve_explicit_runtime.
+        """
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "copilot", "default": "gpt-5.5", "api_mode": "codex_responses"},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.fetch_github_model_catalog",
+            lambda api_key=None, timeout=5.0: [
+                {"id": "claude-sonnet-4.6", "supported_endpoints": ["/chat/completions", "/v1/messages"]}
+            ],
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        # explicit_api_key routes through _resolve_explicit_runtime
+        result = resolve_runtime_provider(
+            requested="copilot",
+            explicit_api_key="gho_explicit_secret",
+            target_model="claude-sonnet-4.6",
+        )
+
+        assert result["api_mode"] == "anthropic_messages", (
+            "Explicit-credential copilot path must resolve correct transport and not crash"
+        )
     
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")

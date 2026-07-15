@@ -39,6 +39,10 @@ class _FakeSource:
     def search(self, query, limit=10):
         return [_meta(f"{self._src}-{i}", self._src) for i in range(self._n)]
 
+    def enrich_owners(self, skills, max_workers=30):
+        # No-op: fake source doesn't need owner enrichment.
+        return 0
+
 
 def _install_fake_sources(monkeypatch, *, github_count, claude_count=40,
                           well_known_count=10, github_rate_limited=False):

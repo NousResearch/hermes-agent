@@ -75,19 +75,29 @@ function buildDesktopBackendPath({
   return appendUniquePathEntries([hermesNodeBin, venvBin, currentPath, saneEntries], { delimiter })
 }
 
-function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
+function splitHermesHomeRootAndProfile(
+  hermesHome,
+  { pathModule = pathModuleForPlatform(process.platform) }: any = {}
+) {
   if (!hermesHome) {
-    return hermesHome
+    return { profileHint: null, root: hermesHome }
   }
 
   const resolved = pathModule.resolve(String(hermesHome))
   const parent = pathModule.dirname(resolved)
 
   if (pathModule.basename(parent).toLowerCase() === 'profiles') {
-    return pathModule.dirname(parent)
+    return {
+      profileHint: pathModule.basename(resolved) || null,
+      root: pathModule.dirname(parent)
+    }
   }
 
-  return resolved
+  return { profileHint: null, root: resolved }
+}
+
+function normalizeHermesHomeRoot(hermesHome, { pathModule = pathModuleForPlatform(process.platform) }: any = {}) {
+  return splitHermesHomeRootAndProfile(hermesHome, { pathModule }).root
 }
 
 function buildDesktopBackendEnv({
@@ -121,5 +131,6 @@ export {
   delimiterForPlatform,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  splitHermesHomeRootAndProfile
 }

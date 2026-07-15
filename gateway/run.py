@@ -2438,6 +2438,26 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _context_id_for_source(source) -> Optional[str]:
+    """Derive the per-context memory id for a ``SessionSource``, or None.
+
+    Scopes EVERY chat type (DMs included) and platform-qualifies the id so the
+    same chat_id can't leak memory across platforms or between a DM and a
+    group. Returns None when there is no chat_id (routes to unscoped/global
+    memory). Delegates to the single-sourced ``derive_context_id`` so the
+    gateway and ``agent_init`` compute identical ids.
+    """
+    from tools.memory_tool import derive_context_id
+
+    platform = getattr(source, "platform", None)
+    platform_str = getattr(platform, "value", None) or (str(platform) if platform else None)
+    return derive_context_id(
+        platform_str,
+        getattr(source, "chat_type", None),
+        getattr(source, "chat_id", None),
+    )
+
+
 def _channel_override_lookup_keys(
     chat_id: str,
     *,

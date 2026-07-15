@@ -80,6 +80,28 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
+def derive_context_id(platform: Optional[str], chat_type: Optional[str],
+                      chat_id: Optional[str]) -> Optional[str]:
+    """Build a memory context id from a messaging source, or None if unscopable.
+
+    Scopes EVERY chat type (including DMs) and qualifies by platform so the
+    same raw chat_id on two platforms — or the same id used for a DM and a
+    group — never collide:
+
+        f"{platform}:{chat_type}:{chat_id}"
+
+    Returns None when ``chat_id`` is empty/None, which routes memory to the
+    unscoped global store (the interactive-CLI and no-chat case). The
+    ``MemoryStore`` sanitizer maps any residual path-unsafe characters to ``_``
+    so the derived id always stays under contexts/.
+    """
+    if not chat_id:
+        return None
+    plat = platform if platform else "unknown"
+    ctype = chat_type if chat_type else "chat"
+    return f"{plat}:{ctype}:{chat_id}"
+
+
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     """Build the error dict returned when external drift is detected.
 
@@ -127,11 +149,37 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 context_id: Optional[str] = None, include_global: bool = False):
+        # ``memory_entries`` / ``user_entries`` are the DERIVED read view (what
+        # the system prompt, ``read``, and success responses show). They are
+        # never persisted as one blob. The two partitions below are the source
+        # of truth and are written to their own files independently.
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Partition state (per target). Global is the shared, backward-compatible
+        # layer; scoped is per-context and isolated. Keeping them separate is
+        # what guarantees a scoped file only ever holds scoped entries.
+        self._global_entries: Dict[str, List[str]] = {"memory": [], "user": []}
+        self._scoped_entries: Dict[str, List[str]] = {"memory": [], "user": []}
+        # Sanitize context_id: treat empty/falsy as None; replace path
+        # separators and parent-ref sequences so chat IDs from any platform
+        # can't escape the contexts/ directory via path traversal. The gateway
+        # emits ``{platform}:{chat_type}:{chat_id}`` — ``:`` is kept verbatim
+        # (safe on every supported filesystem and used only as a within-name
+        # separator, not a directory boundary).
+        if context_id:
+            safe_id = str(context_id).replace("/", "_").replace("\\", "_").replace("..", "_")
+            self.context_id: Optional[str] = safe_id or None
+        else:
+            self.context_id = None
+        # Opt-in, read-only global layer for scoped stores. Default OFF: a
+        # scoped store's read view is scoped-only unless the operator turns
+        # this on. Ignored (no effect) for unscoped stores, which are always
+        # global-only.
+        self.include_global = bool(include_global)
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -185,12 +233,11 @@ class MemoryStore:
         mem_dir = get_memory_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
-        self.user_entries = self._read_file(mem_dir / "USER.md")
-
-        # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        # Load each target's partitions from disk and derive the read view.
+        for target in ("memory", "user"):
+            self._load_partitions(target)
+        self.memory_entries = self._derive_view("memory")
+        self.user_entries = self._derive_view("user")
 
         # Sanitize entries for the system-prompt snapshot only.  Live state
         # (memory_entries / user_entries) keeps the raw text so the user
@@ -278,38 +325,146 @@ class MemoryStore:
             fd.close()
 
     @staticmethod
-    def _path_for(target: str) -> Path:
+    def _global_path_for(target: str) -> Path:
+        """Return the global (unscoped) file for a target — always at the
+        memories-dir root, backward compatible."""
         mem_dir = get_memory_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
+    def _scoped_path_for(self, target: str) -> Path:
+        """Return the scoped file for a target under contexts/{context_id}/.
+
+        Only meaningful when ``context_id`` is set.
+        """
+        mem_dir = get_memory_dir()
+        base = mem_dir / "contexts" / str(self.context_id)
+        if target == "user":
+            return base / "USER.md"
+        return base / "MEMORY.md"
+
+    def _path_for(self, target: str) -> Path:
+        """Return the file this store MUTATES for a target.
+
+        Unscoped (context_id=None) → the global file (backward compatible).
+        Scoped → the scoped file. Global files are never mutated from a scoped
+        store, so a scoped store's write path is always the scoped file.
+        """
+        if self.context_id is None:
+            return self._global_path_for(target)
+        return self._scoped_path_for(target)
+
+    # -- Partition load / derive --
+
+    def _load_partitions(self, target: str) -> None:
+        """Load the global and scoped partitions for ``target`` from disk into
+        ``_global_entries`` / ``_scoped_entries`` (deduplicated within each).
+
+        Migration / self-healing: when a scoped file wrongly contains an entry
+        that also exists in the global partition (from the old buggy write-back
+        that copied the merged list into the scoped file), that entry is
+        dropped from the scoped partition here. The scoped partition holds ONLY
+        genuinely-scoped entries; global stays the single source of truth for
+        shared facts.
+        """
+        global_entries = list(dict.fromkeys(self._read_file(self._global_path_for(target))))
+        self._global_entries[target] = global_entries
+
+        if self.context_id is None:
+            self._scoped_entries[target] = []
+            return
+
+        scoped_raw = list(dict.fromkeys(self._read_file(self._scoped_path_for(target))))
+        global_set = set(global_entries)
+        # Heal old data: never keep a global entry inside the scoped partition.
+        self._scoped_entries[target] = [e for e in scoped_raw if e not in global_set]
+
+    def _derive_view(self, target: str) -> List[str]:
+        """Return the merged READ view for ``target`` from the partitions.
+
+        - Unscoped store: global only (today's behavior).
+        - Scoped, include_global=False (default): scoped only.
+        - Scoped, include_global=True: global first, then scoped, deduped.
+        """
+        scoped = self._scoped_entries.get(target, [])
+        if self.context_id is None:
+            return list(self._global_entries.get(target, []))
+        if not self.include_global:
+            return list(scoped)
+        merged = list(self._global_entries.get(target, [])) + list(scoped)
+        return list(dict.fromkeys(merged))
+
+    def _project_view(self, target: str, writable: List[str]) -> List[str]:
+        """Derive the read view that WOULD result from a candidate writable
+        partition, without committing it. Used for budget checks.
+
+        Mirrors ``_derive_view`` but substitutes ``writable`` for the stored
+        partition this store mutates.
+        """
+        if self.context_id is None:
+            return list(writable)
+        if not self.include_global:
+            return list(writable)
+        merged = list(self._global_entries.get(target, [])) + list(writable)
+        return list(dict.fromkeys(merged))
+
+    def _is_global_entry(self, target: str, entry: str) -> bool:
+        """True if ``entry`` belongs to the global partition for ``target``.
+
+        Set-membership against the global partition — per-target and
+        index-free, so a scoped mutation is judged only against that target's
+        own global entries (no cross-target guarding).
+        """
+        return entry in set(self._global_entries.get(target, []))
+
+    _GLOBAL_READONLY_MSG = (
+        "Cannot modify a global entry from a scoped context — global memory is "
+        "read-only here. Edit it from an unscoped (global) session instead."
+    )
+
+    def _reject_global_mutation(self, target: str, entry: str) -> Optional[Dict[str, Any]]:
+        """Return a refusal dict if ``entry`` is a global entry and this store
+        is scoped; otherwise None (mutation may proceed).
+        """
+        if self.context_id is not None and self._is_global_entry(target, entry):
+            return {"success": False, "error": self._GLOBAL_READONLY_MSG}
+        return None
+
     def _reload_target(self, target: str, *, skip_drift: bool = False) -> Optional[str]:
-        """Re-read entries from disk into in-memory state.
+        """Re-read the target's partitions from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
-        Returns the backup path if external drift was detected (the on-disk
-        file contains content that wouldn't round-trip through our
-        parser/serializer, OR an entry larger than the store's char limit).
-        When drift is detected the caller must abort the mutation —
-        flushing would discard the un-roundtrippable content.
-        Returns None on clean reload.
+        Returns the backup path if external drift was detected on the SCOPED
+        file (the file this store writes), or None on clean reload. The global
+        file is read-only from every store, so drift detection only applies to
+        the write path.
 
         When *skip_drift* is True the round-trip / entry-size check is
         bypassed.  Used by the ``add`` action which appends without
         rewriting, so existing content is never clobbered.
+
+        Rebuilds both partitions and the derived read view so the mutation
+        methods below see a fresh, healed picture.
         """
-        path = self._path_for(target)
         bak = None if skip_drift else self._detect_external_drift(target)
-        fresh = self._read_file(path)
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
-        self._set_entries(target, fresh)
+        self._load_partitions(target)
+        self._set_entries(target, self._derive_view(target))
         return bak
 
     def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        """Persist the mutated partition to its own file.
+
+        Scoped store → writes ONLY the scoped file, and ONLY the scoped
+        partition (never the merged read view — that would leak global entries
+        into the scoped file). Unscoped store → writes the global file.
+        """
+        path = self._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if self.context_id is None:
+            self._write_file(path, self._global_entries[target])
+        else:
+            self._write_file(path, self._scoped_entries[target])
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -321,6 +476,26 @@ class MemoryStore:
             self.user_entries = entries
         else:
             self.memory_entries = entries
+
+    def _writable_entries(self, target: str) -> List[str]:
+        """Return a COPY of the partition this store may mutate for ``target``.
+
+        Scoped store → the scoped partition; unscoped store → the global
+        partition. Mutations operate on this copy and commit via
+        ``_commit_writable`` so the merged read view is never written back to
+        a partition file.
+        """
+        if self.context_id is None:
+            return list(self._global_entries[target])
+        return list(self._scoped_entries[target])
+
+    def _commit_writable(self, target: str, entries: List[str]) -> None:
+        """Store the mutated partition and re-derive the read view."""
+        if self.context_id is None:
+            self._global_entries[target] = entries
+        else:
+            self._scoped_entries[target] = entries
+        self._set_entries(target, self._derive_view(target))
 
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
@@ -353,16 +528,25 @@ class MemoryStore:
             # would discard un-roundtrippable content (issue #26045).
             self._reload_target(target, skip_drift=True)
 
-            entries = self._entries_for(target)
+            # Duplicate check is against the READ view AND the global partition.
+            # Consulting the global partition even when include_global is False
+            # keeps a scoped store from shadowing a global fact with a
+            # redundant scoped copy — such a copy would be silently stripped by
+            # the load-time healing (_load_partitions), so the "add" would not
+            # survive a reload. Treating it as an existing entry is correct and
+            # never copies a global entry into the scoped file.
+            view = self._entries_for(target)
             limit = self._char_limit(target)
-
-            # Reject exact duplicates
-            if content in entries:
+            if content in view or self._is_global_entry(target, content):
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+            # Append to the WRITABLE partition (scoped for a scoped store).
+            writable = self._writable_entries(target)
+            new_writable = writable + [content]
+
+            # Budget is measured against the resulting READ view.
+            projected = self._project_view(target, new_writable)
+            new_total = len(ENTRY_DELIMITER.join(projected))
 
             if new_total > limit:
                 current = self._char_count(target)
@@ -375,12 +559,11 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
-                    "current_entries": entries,
+                    "current_entries": view,
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries.append(content)
-            self._set_entries(target, entries)
+            self._commit_writable(target, new_writable)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
@@ -426,13 +609,26 @@ class MemoryStore:
                     }
                 # All identical -- safe to replace just the first
 
-            idx = matches[0][0]
+            matched_text = matches[0][1]
+
+            # Guard: a global entry is read-only from a scoped context. The
+            # scoped store only writes the scoped file, so mutating a global
+            # entry here would silently be lost on the next reload — refuse.
+            guard = self._reject_global_mutation(target, matched_text)
+            if guard is not None:
+                return guard
+
             limit = self._char_limit(target)
 
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
+            # Locate the entry in the WRITABLE partition (it is scoped, since
+            # the guard above ruled out a global match for a scoped store).
+            writable = self._writable_entries(target)
+            w_idx = writable.index(matched_text)
+            writable[w_idx] = new_content
+
+            # Budget against the resulting READ view.
+            projected = self._project_view(target, writable)
+            new_total = len(ENTRY_DELIMITER.join(projected))
 
             if new_total > limit:
                 current = self._char_count(target)
@@ -448,8 +644,7 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            entries[idx] = new_content
-            self._set_entries(target, entries)
+            self._commit_writable(target, writable)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
@@ -487,9 +682,16 @@ class MemoryStore:
                     }
                 # All identical -- safe to remove just the first
 
-            idx = matches[0][0]
-            entries.pop(idx)
-            self._set_entries(target, entries)
+            matched_text = matches[0][1]
+
+            # Guard: refuse to remove a global entry from a scoped context.
+            guard = self._reject_global_mutation(target, matched_text)
+            if guard is not None:
+                return guard
+
+            writable = self._writable_entries(target)
+            writable.pop(writable.index(matched_text))
+            self._commit_writable(target, writable)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry removed.")
@@ -525,8 +727,15 @@ class MemoryStore:
             if bak:
                 return _drift_error(self._path_for(target), bak)
 
-            # Work on a copy; only commit if the whole batch validates.
-            working: List[str] = list(self._entries_for(target))
+            # Work on a copy of the WRITABLE partition (scoped for a scoped
+            # store); only commit if the whole batch validates. Global entries
+            # are read-only here, so ``working`` never contains them and
+            # replace/remove that resolve to a global entry are refused before
+            # any change is applied.
+            working: List[str] = self._writable_entries(target)
+            # The set the model "sees" for match/idempotency, including the
+            # read-only global layer when opted in.
+            view = self._entries_for(target)
             limit = self._char_limit(target)
 
             for i, op in enumerate(operations):
@@ -539,8 +748,12 @@ class MemoryStore:
                 if act == "add":
                     if not content:
                         return self._batch_error(target, f"{pos}: content is required.")
-                    if content in working:
-                        continue  # idempotent -- skip duplicate, don't fail the batch
+                    # Idempotent against the working set, the read view, AND the
+                    # global partition (even when include_global is off) — a
+                    # scoped store never shadows a global fact with a redundant
+                    # scoped copy that load-time healing would later strip.
+                    if content in working or content in view or self._is_global_entry(target, content):
+                        continue
                     working.append(content)
 
                 elif act == "replace":
@@ -551,6 +764,14 @@ class MemoryStore:
                             target,
                             f"{pos}: content is required (use action='remove' to delete).",
                         )
+                    # Refuse a batch that targets a global entry from a scope,
+                    # even if that entry isn't in the writable partition — the
+                    # guard is against the read view (issue: apply_batch arrived
+                    # unguarded from upstream).
+                    if self.context_id is not None and any(
+                        self._is_global_entry(target, e) for e in view if old_text in e
+                    ):
+                        return self._batch_error(target, f"{pos}: {self._GLOBAL_READONLY_MSG}")
                     matches = [j for j, e in enumerate(working) if old_text in e]
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
@@ -564,6 +785,10 @@ class MemoryStore:
                 elif act == "remove":
                     if not old_text:
                         return self._batch_error(target, f"{pos}: old_text is required.")
+                    if self.context_id is not None and any(
+                        self._is_global_entry(target, e) for e in view if old_text in e
+                    ):
+                        return self._batch_error(target, f"{pos}: {self._GLOBAL_READONLY_MSG}")
                     matches = [j for j, e in enumerate(working) if old_text in e]
                     if not matches:
                         return self._batch_error(target, f"{pos}: no entry matched '{old_text}'.")
@@ -580,8 +805,9 @@ class MemoryStore:
                         f"{pos}: unknown action. Use add, replace, or remove.",
                     )
 
-            # Budget check against the FINAL state only.
-            new_total = len(ENTRY_DELIMITER.join(working)) if working else 0
+            # Budget check against the FINAL read view only.
+            projected = self._project_view(target, working)
+            new_total = len(ENTRY_DELIMITER.join(projected)) if projected else 0
             if new_total > limit:
                 current = self._char_count(target)
                 return self._consolidation_failure({
@@ -595,8 +821,8 @@ class MemoryStore:
                     "usage": f"{current:,}/{limit:,}",
                 })
 
-            # Commit.
-            self._set_entries(target, working)
+            # Commit the scoped partition only.
+            self._commit_writable(target, working)
             self.save_to_disk(target)
 
         return self._success_response(target, f"Applied {len(operations)} operation(s).")

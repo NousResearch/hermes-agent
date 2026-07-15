@@ -2225,6 +2225,17 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Per-context memory scoping (gateway only). When True, memory in a
+        # messaging chat is partitioned to contexts/{platform:chat_type:chat_id}/
+        # so a fact learned in one DM or group is not readable in another.
+        # Default False = today's behavior (single shared memory). No effect on
+        # the interactive CLI, which is always unscoped.
+        "context_scoping_enabled": False,
+        # When scoping is on, whether a scoped context ALSO reads the shared
+        # global MEMORY.md/USER.md as a read-only layer. Default False keeps
+        # scoped contexts fully isolated; True lets them see (but never edit)
+        # global facts.
+        "include_global_in_scoped": False,
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

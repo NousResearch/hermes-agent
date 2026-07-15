@@ -1381,10 +1381,26 @@ def init_agent(
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
-                from tools.memory_tool import MemoryStore
+                from tools.memory_tool import MemoryStore, derive_context_id
+                # Per-context scoping (gateway/messaging only). Off by default;
+                # when enabled we partition memory by platform:chat_type:chat_id
+                # so a fact learned in one DM/group is isolated from others. The
+                # interactive CLI has no chat_id, so derive_context_id → None
+                # and the store stays unscoped regardless of the flag.
+                _context_id = None
+                _include_global = False
+                if mem_config.get("context_scoping_enabled", False):
+                    _context_id = derive_context_id(
+                        getattr(agent, "platform", None),
+                        getattr(agent, "_chat_type", None),
+                        getattr(agent, "_chat_id", None),
+                    )
+                    _include_global = bool(mem_config.get("include_global_in_scoped", False))
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    context_id=_context_id,
+                    include_global=_include_global,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

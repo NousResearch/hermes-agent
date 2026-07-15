@@ -1600,6 +1600,19 @@ class TelegramAdapter(BasePlatformAdapter):
         s = str(exc).lower()
         return "unsupported" in s or "not implemented" in s
 
+    def _chat_migrated_new_chat_id(self, exc: Exception) -> Optional[str]:
+        """Return Telegram's replacement chat id for ChatMigrated errors."""
+        new_chat_id = getattr(exc, "new_chat_id", None)
+        try:
+            from telegram.error import ChatMigrated as _ChatMigrated
+        except (ImportError, AttributeError):
+            _ChatMigrated = None  # type: ignore[assignment,misc]
+        if new_chat_id is None and _ChatMigrated and isinstance(exc, _ChatMigrated):
+            new_chat_id = getattr(exc, "new_chat_id", None)
+        if new_chat_id is None:
+            return None
+        return str(new_chat_id)
+
     def _compute_single_send_routing(
         self,
         chat_id: str,
@@ -1683,55 +1696,68 @@ class TelegramAdapter(BasePlatformAdapter):
             # quietly drop the reply anchor instead of erroring.
             payload["reply_parameters"] = {"message_id": reply_to_id}
 
-        try:
-            # Take the raw Bot API result (dict under real PTB). Passing
-            # return_type=Message would make PTB deserialize a Bot API 10.1
-            # response shape it does not fully model yet; a post-delivery parse
-            # error must not be mistaken for a sendable failure.
-            msg = await self._bot.do_api_request(
-                "sendRichMessage", api_kwargs=payload
-            )
-        except Exception as exc:
-            if self._is_rich_fallback_error(exc):
-                if self._is_rich_capability_error(exc):
-                    # Endpoint missing (old PTB/server) — latch rich off so
-                    # every later send doesn't pay a doomed extra roundtrip.
-                    self._rich_send_disabled = True
-                logger.debug(
-                    "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
-                    self.name, exc,
-                )
-                return None
-            # Transient / network / unknown: the request may have reached
-            # Telegram. Do NOT legacy-resend (duplicate risk); surface a
-            # failure with retry semantics mirroring the legacy send() except.
-            err_str = str(exc).lower()
+        for _send_attempt in range(2):
             try:
-                from telegram.error import TimedOut as _TimedOut
-            except (ImportError, AttributeError):
-                _TimedOut = None
-            is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
-            is_connect_timeout = self._looks_like_connect_timeout(exc)
-            # Extract server-requested retry_after for flood control so the
-            # base retry layer honors Telegram's backoff instead of its own
-            # short exponential schedule.
-            _retry_after = getattr(exc, "retry_after", None)
-            if _retry_after is None:
-                import re as _re
-                _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
-                if _m:
-                    _retry_after = float(_m.group(1))
-            safe_error = _redact_telegram_error_text(exc)
-            logger.warning(
-                "[%s] sendRichMessage transient failure (no legacy resend): %s",
-                self.name, safe_error,
-            )
-            return SendResult(
-                success=False,
-                error=safe_error,
-                retryable=(is_connect_timeout or not is_timeout),
-                retry_after=_retry_after,
-            )
+                # Take the raw Bot API result (dict under real PTB). Passing
+                # return_type=Message would make PTB deserialize a Bot API 10.1
+                # response shape it does not fully model yet; a post-delivery parse
+                # error must not be mistaken for a sendable failure.
+                payload["chat_id"] = normalize_telegram_chat_id(chat_id)
+                msg = await self._bot.do_api_request(
+                    "sendRichMessage", api_kwargs=payload
+                )
+                break
+            except Exception as exc:
+                migrated_chat_id = self._chat_migrated_new_chat_id(exc)
+                if migrated_chat_id is not None and _send_attempt == 0:
+                    logger.info(
+                        "[%s] Telegram chat migrated from %s to %s; retrying rich send",
+                        self.name,
+                        chat_id,
+                        migrated_chat_id,
+                    )
+                    chat_id = migrated_chat_id
+                    continue
+                if self._is_rich_fallback_error(exc):
+                    if self._is_rich_capability_error(exc):
+                        # Endpoint missing (old PTB/server) — latch rich off so
+                        # every later send doesn't pay a doomed extra roundtrip.
+                        self._rich_send_disabled = True
+                    logger.debug(
+                        "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
+                        self.name, exc,
+                    )
+                    return None
+                # Transient / network / unknown: the request may have reached
+                # Telegram. Do NOT legacy-resend (duplicate risk); surface a
+                # failure with retry semantics mirroring the legacy send() except.
+                err_str = str(exc).lower()
+                try:
+                    from telegram.error import TimedOut as _TimedOut
+                except (ImportError, AttributeError):
+                    _TimedOut = None
+                is_timeout = (_TimedOut and isinstance(exc, _TimedOut)) or "timed out" in err_str
+                is_connect_timeout = self._looks_like_connect_timeout(exc)
+                # Extract server-requested retry_after for flood control so the
+                # base retry layer honors Telegram's backoff instead of its own
+                # short exponential schedule.
+                _retry_after = getattr(exc, "retry_after", None)
+                if _retry_after is None:
+                    import re as _re
+                    _m = _re.search(r"retry\s+(?:in\s+)?(\d+)", err_str, _re.IGNORECASE)
+                    if _m:
+                        _retry_after = float(_m.group(1))
+                safe_error = _redact_telegram_error_text(exc)
+                logger.warning(
+                    "[%s] sendRichMessage transient failure (no legacy resend): %s",
+                    self.name, safe_error,
+                )
+                return SendResult(
+                    success=False,
+                    error=safe_error,
+                    retryable=(is_connect_timeout or not is_timeout),
+                    retry_after=_retry_after,
+                )
 
         message_id = None
         if isinstance(msg, dict):
@@ -4016,6 +4042,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 raise
                         break  # success
                     except _NetErr as send_err:
+                        migrated_chat_id = self._chat_migrated_new_chat_id(send_err)
+                        if migrated_chat_id is not None and _send_attempt == 0:
+                            logger.info(
+                                "[%s] Telegram chat migrated from %s to %s; retrying send",
+                                self.name,
+                                chat_id,
+                                migrated_chat_id,
+                            )
+                            chat_id = migrated_chat_id
+                            continue
                         # BadRequest is a subclass of NetworkError in
                         # python-telegram-bot but represents permanent errors
                         # (not transient network issues). Detect and handle
@@ -4118,6 +4154,16 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             raise
                     except Exception as send_err:
+                        migrated_chat_id = self._chat_migrated_new_chat_id(send_err)
+                        if migrated_chat_id is not None and _send_attempt == 0:
+                            logger.info(
+                                "[%s] Telegram chat migrated from %s to %s; retrying send",
+                                self.name,
+                                chat_id,
+                                migrated_chat_id,
+                            )
+                            chat_id = migrated_chat_id
+                            continue
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
                             if _send_attempt < 2:

@@ -43,6 +43,12 @@ class FakeTimedOut(FakeNetworkError):
     pass
 
 
+class FakeChatMigrated(FakeBadRequest):
+    def __init__(self, new_chat_id):
+        super().__init__(f"Group migrated to supergroup chat {new_chat_id}")
+        self.new_chat_id = new_chat_id
+
+
 class FakeRetryAfter(Exception):
     def __init__(self, seconds):
         super().__init__(f"Retry after {seconds}")
@@ -79,6 +85,7 @@ _fake_telegram.InputMediaPhoto = _FakeInputMediaPhoto
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
 _fake_telegram_error.BadRequest = FakeBadRequest
+_fake_telegram_error.ChatMigrated = FakeChatMigrated
 _fake_telegram_error.TimedOut = FakeTimedOut
 _fake_telegram.error = _fake_telegram_error
 _fake_telegram_constants = types.ModuleType("telegram.constants")
@@ -433,6 +440,51 @@ async def test_send_retries_transient_thread_not_found_before_fallback():
     assert len(call_log) == 2
     assert call_log[0]["message_thread_id"] == 99999
     assert call_log[1]["message_thread_id"] == 99999
+
+
+@pytest.mark.asyncio
+async def test_send_retries_with_new_chat_id_on_chat_migrated():
+    """Telegram ChatMigrated should retry once with the replacement chat id."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        if len(call_log) == 1:
+            raise FakeChatMigrated(-100456)
+        return SimpleNamespace(message_id=44)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="-123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "44"
+    assert [call["chat_id"] for call in call_log] == [-123, -100456]
+
+
+@pytest.mark.asyncio
+async def test_rich_send_retries_with_new_chat_id_on_chat_migrated(monkeypatch):
+    """Rich send should not fall back or fail when Telegram returns ChatMigrated."""
+    adapter = _make_adapter()
+    adapter._rich_messages_enabled = True
+    call_log = []
+
+    async def mock_do_api_request(method, api_kwargs):
+        call_log.append((method, dict(api_kwargs)))
+        if len(call_log) == 1:
+            raise FakeChatMigrated(-100456)
+        return {"message_id": 45}
+
+    monkeypatch.setattr(adapter, "_should_attempt_rich", lambda content, metadata=None: True)
+    monkeypatch.setattr(adapter, "_bot_supports_rich", lambda: True)
+    adapter._bot = SimpleNamespace(do_api_request=mock_do_api_request)
+
+    result = await adapter.send(chat_id="-123", content="| a | b |\n| - | - |")
+
+    assert result.success is True
+    assert result.message_id == "45"
+    assert [payload["chat_id"] for _, payload in call_log] == [-123, -100456]
 
 
 @pytest.mark.asyncio

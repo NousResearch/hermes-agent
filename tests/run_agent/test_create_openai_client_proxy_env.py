@@ -1,22 +1,14 @@
 """Regression guard: _create_openai_client must honor HTTP(S)_PROXY env vars.
 
-When #11277 re-landed TCP keepalives, ``_create_openai_client`` began passing
-a custom ``transport=httpx.HTTPTransport(...)`` to ``httpx.Client``. httpx only
-auto-reads ``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``ALL_PROXY`` when
-``transport is None`` (see ``Client.__init__``:
-``allow_env_proxies = trust_env and transport is None``). As a result, proxy
-env vars were silently ignored for the primary chat client, causing requests
-to bypass local proxies (Clash, corporate egress, etc.) and hit upstream
-directly from the raw interface.
+The keepalive client now uses ``httpx.Limits(keepalive_expiry=20.0)``
+instead of a custom ``httpx.HTTPTransport(socket_options=...)`` to
+prevent CLOSE-WAIT accumulation.  This avoids breaking streaming for
+providers behind reverse proxies (#54049, #12952) while still reaping
+idle connections before a proxy's timeout drops them.
 
-For users on WSL2 + Clash TUN this surfaced as Cloudflare ``cf-mitigated:
-challenge`` 403s against ``chatgpt.com/backend-api/codex`` once they upgraded
-past #11277. The fix forwards the proxy URL explicitly to ``httpx.Client``
-while keeping the keepalive-enabled transport in place.
-
-This test pins that the constructed ``httpx.Client`` mounts an ``HTTPProxy``
-pool when a proxy env var is set, AND that the socket-level keepalive
-transport is still installed on the no-proxy default path.
+This test pins that the constructed ``httpx.Client`` mounts an
+``HTTPProxy`` pool when a proxy env var is set, and that no
+custom socket-options transport is used (default httpx transport).
 """
 from unittest.mock import patch
 
@@ -117,8 +109,8 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
 
 @patch("run_agent.OpenAI")
 def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
-    """Without proxy env vars, the keepalive transport must still be installed
-    and no HTTPProxy mount should exist."""
+    """Without proxy env vars, no HTTPProxy mount should exist and
+    no custom socket-options transport should be installed."""
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
@@ -147,7 +139,8 @@ def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
 
 @patch("run_agent.OpenAI")
 def test_create_openai_client_uses_plain_httpx_client_for_copilot(mock_openai, monkeypatch):
-    """Copilot Claude chat-completions rejects the custom socket-options transport."""
+    """All providers now use a standard httpx.Client (no custom socket-options
+    transport) so Copilot Claude chat-completions works without a host bypass."""
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)

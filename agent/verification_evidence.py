@@ -27,6 +27,7 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
+_AD_HOC_INTERPRETERS = {"python", "python3", "node", "bash", "sh", "ruby", "perl"}
 _VERIFY_SCHEMA_VERSION = 1
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
@@ -279,6 +280,13 @@ def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
     )
 
 
+def _is_ad_hoc_interpreter(command: str) -> bool:
+    name = re.split(r"[/\\]", command)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name in _AD_HOC_INTERPRETERS
+
+
 def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:
     candidate_tokens = _strip_command_prefix(tokens)
     if not candidate_tokens:
@@ -286,7 +294,7 @@ def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[
     command = candidate_tokens[0]
     if _is_temp_script_path(command, root):
         return candidate_tokens[1:]
-    if command in {"python", "python3", "node", "bash", "sh", "ruby", "perl"}:
+    if _is_ad_hoc_interpreter(command):
         for idx, token in enumerate(candidate_tokens[1:], start=1):
             if token == "--":
                 continue

@@ -163,6 +163,76 @@ describe('createGatewayEventHandler', () => {
     expect(getUiState().busy).toBe(false)
   })
 
+  it('keeps other sessions from replacing the current turn fence', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchUiState({ sid: 'session-b' })
+    turnController.reconcileTurn('notification', 1, true, 1)
+
+    onEvent({
+      payload: sessionInfo({
+        running: false,
+        turn_generation: 50,
+        turn_origin: null,
+        turn_state_revision: 99
+      }),
+      session_id: 'session-a',
+      type: 'session.info'
+    })
+    onEvent({
+      payload: {
+        text: 'wrong session',
+        turn_generation: 50,
+        turn_origin: 'notification',
+        turn_state_revision: 100
+      },
+      session_id: 'session-a',
+      type: 'message.complete'
+    })
+
+    expect(getTurnState()).toMatchObject({
+      turnGeneration: 1,
+      turnOrigin: 'notification',
+      turnStateRevision: 1
+    })
+    expect(getUiState().busy).toBe(true)
+    expect(appended).not.toContainEqual(expect.objectContaining({ text: 'wrong session' }))
+
+    onEvent({
+      payload: {
+        text: 'initial turn settled',
+        turn_generation: 1,
+        turn_origin: 'notification',
+        turn_state_revision: 2
+      },
+      session_id: 'session-b',
+      type: 'message.complete'
+    })
+    onEvent({
+      payload: { turn_generation: 2, turn_origin: 'user', turn_state_revision: 3 },
+      session_id: 'session-b',
+      type: 'message.start'
+    })
+    onEvent({
+      payload: { text: 'next turn settled', turn_generation: 2, turn_origin: 'user', turn_state_revision: 4 },
+      session_id: 'session-b',
+      type: 'message.complete'
+    })
+    onEvent({
+      payload: sessionInfo({ running: false, turn_generation: 2, turn_origin: null, turn_state_revision: 4 }),
+      session_id: 'session-b',
+      type: 'session.info'
+    })
+
+    expect(appended).toEqual([
+      expect.objectContaining({ text: 'initial turn settled' }),
+      expect.objectContaining({ text: 'next turn settled' })
+    ])
+    expect(getTurnState()).toMatchObject({ turnGeneration: 2, turnOrigin: null, turnStateRevision: 4 })
+    expect(getUiState().busy).toBe(false)
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

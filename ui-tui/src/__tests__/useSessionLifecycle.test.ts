@@ -5,9 +5,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { turnController } from '../app/turnController.js'
-import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getTurnState, patchTurnState, resetTurnState } from '../app/turnStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
+  captureSessionResponseTurnFence,
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
   reconcileSessionResponseTurn,
@@ -85,39 +86,72 @@ describe.each(['resume', 'activate'] as const)('%s response turn fence', kind =>
     turnController.fullReset()
   })
 
-  it('rejects a stale active response released after the same generation settles', () => {
-    turnController.reconcileTurn('notification', 6, true, 50)
+  const activeResponse = (sessionId: string, revision: number) => ({
+    info: {
+      model: 'test-model',
+      running: true,
+      skills: {},
+      tools: {},
+      turn_generation: 1,
+      turn_origin: 'notification' as const,
+      turn_state_revision: revision
+    },
+    messages: [],
+    running: true,
+    session_id: sessionId,
+    status: 'working' as const,
+    turn_generation: 1,
+    turn_origin: 'notification' as const,
+    turn_state_revision: revision,
+    ...(kind === 'resume' ? { resumed: sessionId } : {})
+  })
 
-    const requestFence = {
-      busy: true,
-      turnGeneration: 6,
-      turnOrigin: 'notification' as const,
-      turnStateRevision: 50
-    }
+  it('adopts the target revision sequence after the source starts and settles', () => {
+    patchUiState({ sid: 'session-a' })
+    turnController.reconcileTurn(null, 40, false, 50)
+    const requestFence = captureSessionResponseTurnFence()
+
+    // Session A keeps running while the request for B is in flight.
+    turnController.reconcileTurn('notification', 41, true, 51)
+    turnController.reconcileTurn('notification', 41, false, 52)
+
+    const reconciled = reconcileSessionResponseTurn(activeResponse('session-b', 1), requestFence)
+
+    expect(reconciled.running).toBe(true)
+    expect(reconciled.turn).toEqual({
+      turnGeneration: 1,
+      turnOrigin: 'notification',
+      turnStateRevision: 1
+    })
+    expect(reconciled.info).toMatchObject({
+      running: true,
+      turn_generation: 1,
+      turn_origin: 'notification',
+      turn_state_revision: 1
+    })
+
+    // Match resetSession() + patchTurnState() in the lifecycle callbacks.
+    turnController.fullReset()
+    patchTurnState(reconciled.turn)
+    patchUiState({ busy: reconciled.running, info: reconciled.info, sid: 'session-b' })
+
+    expect(getUiState()).toMatchObject({ busy: true, sid: 'session-b' })
+    expect(turnController.reconcileTurn('notification', 1, false, 2)).toBe(true)
+    expect(turnController.reconcileTurn('user', 2, true, 3)).toBe(true)
+    expect(turnController.reconcileTurn('user', 2, false, 4)).toBe(true)
+    expect(turnController.reconcileTurn(null, 2, false, 4)).toBe(true)
+    expect(getTurnState()).toMatchObject({ turnGeneration: 2, turnOrigin: null, turnStateRevision: 4 })
+    expect(getUiState().busy).toBe(false)
+  })
+
+  it('keeps same-session state that settles ahead of a stale response', () => {
+    patchUiState({ sid: 'session-a' })
+    turnController.reconcileTurn('notification', 6, true, 50)
+    const requestFence = captureSessionResponseTurnFence()
 
     turnController.reconcileTurn(null, 6, false, 51)
 
-    const response = {
-      info: {
-        model: 'test-model',
-        running: true,
-        skills: {},
-        tools: {},
-        turn_generation: 6,
-        turn_origin: 'notification' as const,
-        turn_state_revision: 50
-      },
-      messages: [],
-      running: true,
-      session_id: 'sid',
-      status: 'working' as const,
-      turn_generation: 6,
-      turn_origin: 'notification' as const,
-      turn_state_revision: 50,
-      ...(kind === 'resume' ? { resumed: 'stored' } : {})
-    }
-
-    const reconciled = reconcileSessionResponseTurn(response, requestFence)
+    const reconciled = reconcileSessionResponseTurn(activeResponse('session-a', 50), requestFence)
 
     expect(reconciled.running).toBe(false)
     expect(reconciled.turn).toEqual({

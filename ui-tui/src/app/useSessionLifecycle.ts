@@ -42,9 +42,23 @@ const statusFromLiveSession = (status?: string, running = false) => {
 
 export interface SessionResponseTurnFence {
   busy: boolean
+  sessionId: null | string
   turnGeneration: number
   turnOrigin: SessionInfo['turn_origin']
   turnStateRevision: number
+}
+
+export const captureSessionResponseTurnFence = (): SessionResponseTurnFence => {
+  const turn = getTurnState()
+  const ui = getUiState()
+
+  return {
+    busy: ui.busy,
+    sessionId: ui.sid,
+    turnGeneration: turn.turnGeneration,
+    turnOrigin: turn.turnOrigin,
+    turnStateRevision: turn.turnStateRevision
+  }
 }
 
 export function reconcileSessionResponseTurn(
@@ -52,18 +66,20 @@ export function reconcileSessionResponseTurn(
   requestFence: SessionResponseTurnFence
 ) {
   const current = getTurnState()
+  const currentUi = getUiState()
+  const sameSession = requestFence.sessionId === response.session_id && currentUi.sid === requestFence.sessionId
 
   const changedDuringRequest =
-    current.turnGeneration !== requestFence.turnGeneration ||
-    current.turnOrigin !== requestFence.turnOrigin ||
-    current.turnStateRevision !== requestFence.turnStateRevision ||
-    getUiState().busy !== requestFence.busy
+    sameSession &&
+    (current.turnGeneration !== requestFence.turnGeneration ||
+      current.turnOrigin !== requestFence.turnOrigin ||
+      current.turnStateRevision !== requestFence.turnStateRevision ||
+      currentUi.busy !== requestFence.busy)
 
   if (!changedDuringRequest) {
-    // The current fence still belongs to the previously viewed session. Reset
-    // it before adopting another session's independent revision sequence. If a
-    // target-session event landed while the RPC was in flight, the changed
-    // fence is retained and orders the response through the same reducer.
+    // Turn revisions are independent per session. Only a changed fence that is
+    // still owned by this response's session can order the response; otherwise
+    // reset before adopting the target session's sequence.
     turnController.fullReset()
     patchUiState({ busy: false })
   }
@@ -376,14 +392,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     (id: string) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
-      const turnAtRequest = getTurnState()
-
-      const requestFence: SessionResponseTurnFence = {
-        busy: getUiState().busy,
-        turnGeneration: turnAtRequest.turnGeneration,
-        turnOrigin: turnAtRequest.turnOrigin,
-        turnStateRevision: turnAtRequest.turnStateRevision
-      }
+      const requestFence = captureSessionResponseTurnFence()
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
@@ -437,14 +446,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         }
 
         const previousSid = getUiState().sid
-        const turnAtRequest = getTurnState()
-
-        const requestFence: SessionResponseTurnFence = {
-          busy: getUiState().busy,
-          turnGeneration: turnAtRequest.turnGeneration,
-          turnOrigin: turnAtRequest.turnOrigin,
-          turnStateRevision: turnAtRequest.turnStateRevision
-        }
+        const requestFence = captureSessionResponseTurnFence()
 
         gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {

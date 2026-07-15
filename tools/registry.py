@@ -214,6 +214,25 @@ def invalidate_check_fn_cache() -> None:
         _check_fn_last_good.clear()
 
 
+def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:
+    """Return the current cached verdict for *fn* if its TTL is still valid.
+
+    Unlike :func:`_check_fn_cached`, this NEVER executes the probe. It is for
+    read-only surfaces (e.g. dashboard status panels) that need the last-known
+    availability without triggering network / auth / SDK work inside a request
+    path. Returns ``None`` when there is no fresh cached verdict.
+    """
+    now = time.monotonic()
+    with _check_fn_cache_lock:
+        cached = _check_fn_cache.get(fn)
+        if cached is None:
+            return None
+        ts, value = cached
+        if now - ts < _CHECK_FN_TTL_SECONDS:
+            return value
+        return None
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 

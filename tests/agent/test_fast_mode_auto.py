@@ -6,7 +6,9 @@ from agent.fast_mode import (
     DEFAULT_FAST_AUTO_ON_SECONDS,
     begin_fast_mode_turn,
     effective_request_overrides,
+    invalidate_fast_mode_turn,
     normalize_fast_auto_on_seconds,
+    revalidate_fast_mode_request,
 )
 
 
@@ -62,6 +64,20 @@ def test_cold_fast_only_opens_on_first_logical_session_turn():
     }
 
 
+def test_cold_fast_explicit_empty_history_starts_new_logical_session():
+    agent = _agent(
+        service_tier="cold",
+        _session_messages=[
+            {"role": "user", "content": "previous session"},
+            {"role": "assistant", "content": "previous reply"},
+        ],
+    )
+
+    begin_fast_mode_turn(agent, [], now=100.0)
+
+    assert effective_request_overrides(agent, now=100.0)["service_tier"] == "priority"
+
+
 def test_cold_fast_stays_off_when_fresh_process_resumes_persisted_history():
     agent = _agent(service_tier="cold", _session_messages=[])
     persisted_history = [
@@ -107,6 +123,123 @@ def test_cold_fast_does_not_lazy_start_without_a_turn_boundary():
     assert effective_request_overrides(agent, now=100.0) == {
         "unrelated": "preserved"
     }
+
+
+def test_live_dynamic_mode_change_cannot_reuse_prior_turn_clock():
+    agent = _agent(service_tier="auto", _session_messages=[])
+    begin_fast_mode_turn(agent, [], now=100.0)
+
+    agent.service_tier = "cold"
+
+    assert effective_request_overrides(agent, now=110.0) == {
+        "unrelated": "preserved"
+    }
+
+
+def test_invalidated_dynamic_mode_waits_for_next_turn_boundary():
+    agent = _agent(service_tier="auto", _session_messages=[])
+    begin_fast_mode_turn(agent, [], now=100.0)
+    invalidate_fast_mode_turn(agent)
+
+    assert effective_request_overrides(agent, now=110.0) == {
+        "unrelated": "preserved"
+    }
+
+
+def test_dispatch_revalidation_strips_openai_fast_after_cutoff(monkeypatch):
+    agent = _agent(
+        service_tier="auto",
+        api_mode="chat_completions",
+        _session_messages=[],
+    )
+    begin_fast_mode_turn(agent, [], now=100.0)
+    built_kwargs = {"model": "gpt-5.4", "service_tier": "priority"}
+    monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 160.001)
+
+    dispatched = revalidate_fast_mode_request(agent, built_kwargs)
+
+    assert "service_tier" not in dispatched
+
+
+def test_dispatch_revalidation_preserves_middleware_override(monkeypatch):
+    agent = _agent(
+        service_tier="auto",
+        api_mode="chat_completions",
+        request_overrides={"timeout": 999, "service_tier": "priority"},
+        _session_messages=[],
+    )
+    begin_fast_mode_turn(agent, [], now=100.0)
+    middleware_kwargs = {
+        "model": "gpt-5.4",
+        "timeout": 5,
+        "service_tier": "priority",
+    }
+    monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 110.0)
+
+    dispatched = revalidate_fast_mode_request(agent, middleware_kwargs)
+
+    assert dispatched["timeout"] == 5
+    assert dispatched["service_tier"] == "priority"
+
+
+def test_dispatch_revalidation_strips_anthropic_fast_metadata_after_cutoff(
+    monkeypatch,
+):
+    agent = _agent(
+        model="anthropic/claude-opus-4.6",
+        service_tier="auto",
+        api_mode="anthropic_messages",
+        _anthropic_base_url="https://api.anthropic.com",
+        _is_anthropic_oauth=False,
+        _oauth_1m_beta_disabled=False,
+        _session_messages=[],
+    )
+    begin_fast_mode_turn(agent, [], now=100.0)
+    built_kwargs = {
+        "model": "claude-opus-4-6",
+        "extra_body": {"speed": "fast", "unrelated": 1},
+        "extra_headers": {
+            "anthropic-beta": "interleaved-thinking-2025-05-14,fast-mode-2026-02-01",
+            "x-extra": "preserved",
+        },
+    }
+    monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 160.001)
+
+    dispatched = revalidate_fast_mode_request(agent, built_kwargs)
+
+    assert dispatched["extra_body"] == {"unrelated": 1}
+    assert dispatched["extra_headers"] == {
+        "anthropic-beta": "interleaved-thinking-2025-05-14",
+        "x-extra": "preserved",
+    }
+
+
+def test_dispatch_revalidation_preserves_middleware_anthropic_beta(monkeypatch):
+    agent = _agent(
+        model="anthropic/claude-opus-4.6",
+        service_tier="auto",
+        api_mode="anthropic_messages",
+        _anthropic_base_url="https://api.anthropic.com",
+        _is_anthropic_oauth=False,
+        _oauth_1m_beta_disabled=False,
+        _session_messages=[],
+    )
+    begin_fast_mode_turn(agent, [], now=100.0)
+    middleware_kwargs = {
+        "model": "claude-opus-4-6",
+        "extra_headers": {
+            "anthropic-beta": "plugin-feature-2099-01-01",
+            "x-plugin": "preserved",
+        },
+    }
+    monkeypatch.setattr("agent.fast_mode.time.monotonic", lambda: 110.0)
+
+    dispatched = revalidate_fast_mode_request(agent, middleware_kwargs)
+
+    betas = dispatched["extra_headers"]["anthropic-beta"].split(",")
+    assert "plugin-feature-2099-01-01" in betas
+    assert "fast-mode-2026-02-01" in betas
+    assert dispatched["extra_headers"]["x-plugin"] == "preserved"
 
 
 def test_auto_fast_uses_anthropic_speed_override():

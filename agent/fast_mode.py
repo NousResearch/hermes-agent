@@ -62,10 +62,11 @@ def begin_fast_mode_turn(
     The live message list is a fallback for callers that omit explicit history.
     """
     mode = getattr(agent, "service_tier", None)
+    agent._fast_mode_turn_mode = mode
     eligible = mode == "auto"
     if mode == "cold":
         history = conversation_history
-        if not history:
+        if history is None:
             history = getattr(agent, "_session_messages", None)
         eligible = not _has_prior_session_activity(history)
 
@@ -73,6 +74,13 @@ def begin_fast_mode_turn(
     agent._fast_mode_turn_started_at = (
         (time.monotonic() if now is None else now) if eligible else None
     )
+
+
+def invalidate_fast_mode_turn(agent: Any) -> None:
+    """Prevent a live policy change from reusing another mode's turn clock."""
+    agent._fast_mode_turn_mode = None
+    agent._fast_mode_turn_eligible = False
+    agent._fast_mode_turn_started_at = None
 
 
 def effective_request_overrides(
@@ -92,6 +100,10 @@ def effective_request_overrides(
 
     overrides.pop("service_tier", None)
     overrides.pop("speed", None)
+
+    turn_mode = getattr(agent, "_fast_mode_turn_mode", None)
+    if turn_mode is not None and turn_mode != mode:
+        return overrides
 
     current = time.monotonic() if now is None else now
     started_at = getattr(agent, "_fast_mode_turn_started_at", None)
@@ -113,3 +125,44 @@ def effective_request_overrides(
         if fast_overrides:
             overrides.update(fast_overrides)
     return overrides
+
+
+def effective_fast_mode_overrides(
+    agent: Any, *, now: float | None = None
+) -> dict[str, Any]:
+    """Return only provider fast-tier keys from the effective request policy."""
+    effective = effective_request_overrides(agent, now=now)
+    return {
+        key: effective[key]
+        for key in ("service_tier", "speed")
+        if key in effective
+    }
+
+
+def revalidate_fast_mode_request(agent: Any, api_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Re-resolve a dynamic fast policy immediately before provider dispatch."""
+    mode = getattr(agent, "service_tier", None)
+    if mode not in {"auto", "cold"}:
+        return api_kwargs
+
+    kwargs = dict(api_kwargs)
+    kwargs.pop("service_tier", None)
+    kwargs.pop("speed", None)
+    overrides = effective_fast_mode_overrides(agent)
+
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        from agent.anthropic_adapter import _apply_fast_mode_to_kwargs
+
+        return _apply_fast_mode_to_kwargs(
+            kwargs,
+            enabled=overrides.get("speed") == "fast",
+            model=getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "_anthropic_base_url", None),
+            is_oauth=bool(getattr(agent, "_is_anthropic_oauth", False)),
+            drop_context_1m_beta=bool(
+                getattr(agent, "_oauth_1m_beta_disabled", False)
+            ),
+        )
+
+    kwargs.update(overrides)
+    return kwargs

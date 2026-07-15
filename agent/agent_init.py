@@ -322,7 +322,6 @@ def init_agent(
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
-    fast_auto_on_seconds: float = 60.0,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
@@ -347,6 +346,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    fast_auto_on_seconds: float = 60.0,
 ):
     """
     Initialize the AI Agent.
@@ -634,6 +634,7 @@ def init_agent(
     agent.fast_auto_on_seconds = normalize_fast_auto_on_seconds(fast_auto_on_seconds)
     agent._fast_mode_turn_started_at = None
     agent._fast_mode_turn_eligible = False
+    agent._fast_mode_turn_mode = None
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

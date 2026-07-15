@@ -1341,6 +1341,11 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    from agent.fast_mode import revalidate_fast_mode_request
+
+                    next_api_kwargs = revalidate_fast_mode_request(
+                        agent, next_api_kwargs
+                    )
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,

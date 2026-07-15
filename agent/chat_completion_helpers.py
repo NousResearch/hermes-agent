@@ -1709,6 +1709,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     messages.append({"role": "user", "content": summary_request})
 
     try:
+        from agent.fast_mode import effective_fast_mode_overrides
+
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
         _needs_sanitize = agent._should_sanitize_tool_calls()
@@ -1867,14 +1869,20 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
             if agent.api_mode == "anthropic_messages":
                 _tsum = agent._get_transport()
+                _summary_overrides = effective_fast_mode_overrides(agent)
                 _ant_kw = _tsum.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
-                               preserve_dots=agent._anthropic_preserve_dots())
+                               preserve_dots=agent._anthropic_preserve_dots(),
+                               context_length=getattr(agent.context_compressor, "context_length", None),
+                               base_url=getattr(agent, "_anthropic_base_url", None),
+                               fast_mode=_summary_overrides.get("speed") == "fast",
+                               drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
                 summary_response = agent._anthropic_messages_create(_ant_kw)
                 _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_summary_result.content or "").strip()
             else:
+                summary_kwargs.update(effective_fast_mode_overrides(agent))
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
                 _summary_result = agent._get_transport().normalize_response(summary_response)
                 final_response = (_summary_result.content or "").strip()
@@ -1897,10 +1905,15 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = (_cnr_retry.content or "").strip()
             elif agent.api_mode == "anthropic_messages":
                 _tretry = agent._get_transport()
+                _retry_overrides = effective_fast_mode_overrides(agent)
                 _ant_kw2 = _tretry.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                 is_oauth=agent._is_anthropic_oauth,
                                 max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
-                                preserve_dots=agent._anthropic_preserve_dots())
+                                preserve_dots=agent._anthropic_preserve_dots(),
+                                context_length=getattr(agent.context_compressor, "context_length", None),
+                                base_url=getattr(agent, "_anthropic_base_url", None),
+                                fast_mode=_retry_overrides.get("speed") == "fast",
+                                drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
                 final_response = (_retry_result.content or "").strip()
@@ -1917,6 +1930,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     summary_kwargs["reasoning_effort"] = _lm_reasoning_effort
                 if summary_extra_body:
                     summary_kwargs["extra_body"] = summary_extra_body
+
+                summary_kwargs.update(effective_fast_mode_overrides(agent))
 
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
                 _retry_result = agent._get_transport().normalize_response(summary_response)

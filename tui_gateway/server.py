@@ -4203,6 +4203,11 @@ def _agent_fallback_model(agent):
 
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
+    from agent.fast_mode import normalize_fast_auto_on_seconds
+
+    parent_fast_cutoff = getattr(agent, "fast_auto_on_seconds", None)
+    if parent_fast_cutoff is None:
+        parent_fast_cutoff = _load_fast_auto_on_seconds()
 
     return {
         "base_url": getattr(agent, "base_url", None) or None,
@@ -4232,6 +4237,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
+        "fast_auto_on_seconds": normalize_fast_auto_on_seconds(parent_fast_cutoff),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
         "session_db": _get_db(),
@@ -10424,6 +10430,9 @@ def _(rid, params: dict) -> dict:
 
         _write_config_key("agent.service_tier", nv)
         if agent is not None:
+            from agent.fast_mode import invalidate_fast_mode_turn
+
+            invalidate_fast_mode_turn(agent)
             agent.service_tier = (
                 "priority" if nv == "fast" else nv if nv in {"auto", "cold"} else None
             )
@@ -13228,13 +13237,20 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:
-                agent.service_tier = "priority"
+                new_tier = "priority"
             elif mode == "auto":
-                agent.service_tier = "auto"
+                new_tier = "auto"
             elif mode == "cold":
-                agent.service_tier = "cold"
+                new_tier = "cold"
             elif mode in {"normal", "off"}:
-                agent.service_tier = None
+                new_tier = None
+            else:
+                new_tier = getattr(agent, "service_tier", None)
+            if mode in {"fast", "on", "auto", "cold", "normal", "off"}:
+                from agent.fast_mode import invalidate_fast_mode_turn
+
+                invalidate_fast_mode_turn(agent)
+                agent.service_tier = new_tier
             _emit("session.info", sid, _session_info(agent, session))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()

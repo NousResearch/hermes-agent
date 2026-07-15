@@ -1776,6 +1776,23 @@ def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
     assert kwargs["fallback_model"] == chain
 
 
+def test_background_and_preview_agents_inherit_fast_cutoff(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai",
+        fast_auto_on_seconds=7.5,
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    background = server._background_agent_kwargs(agent, "background-id")
+    preview = server._ephemeral_preview_agent_kwargs(agent, "preview-id")
+
+    assert background["fast_auto_on_seconds"] == 7.5
+    assert preview["fast_auto_on_seconds"] == 7.5
+
+
 def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     agent = types.SimpleNamespace(
         model="gpt-5.5",
@@ -2980,6 +2997,9 @@ def test_config_set_fast_auto_updates_live_agent_without_static_override(monkeyp
         model="openai/gpt-5.4",
         request_overrides={"foo": "bar", "service_tier": "priority"},
         service_tier="priority",
+        _fast_mode_turn_mode="auto",
+        _fast_mode_turn_eligible=True,
+        _fast_mode_turn_started_at=100.0,
     )
     server._sessions["sid"] = _session(agent=agent)
 
@@ -3019,7 +3039,10 @@ def test_config_set_fast_cold_updates_live_agent_without_static_override(monkeyp
     agent = types.SimpleNamespace(
         model="openai/gpt-5.4",
         request_overrides={"foo": "bar", "service_tier": "priority"},
-        service_tier="priority",
+        service_tier="auto",
+        _fast_mode_turn_mode="auto",
+        _fast_mode_turn_eligible=True,
+        _fast_mode_turn_started_at=100.0,
     )
     server._sessions["sid"] = _session(agent=agent)
 
@@ -3040,6 +3063,9 @@ def test_config_set_fast_cold_updates_live_agent_without_static_override(monkeyp
         assert resp["result"]["value"] == "cold"
         assert agent.service_tier == "cold"
         assert agent.request_overrides == {"foo": "bar"}
+        assert agent._fast_mode_turn_mode is None
+        assert agent._fast_mode_turn_eligible is False
+        assert agent._fast_mode_turn_started_at is None
         assert ("agent.service_tier", "cold") in writes
 
         status = server.handle_request(

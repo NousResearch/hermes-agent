@@ -3821,6 +3821,57 @@ class TestHandleMaxIterations:
         assert len(result) > 0
         assert "summary" in result.lower()
 
+    def test_openai_summary_uses_active_dynamic_fast_policy(self, agent):
+        from agent.fast_mode import begin_fast_mode_turn
+
+        agent.model = "gpt-5.4"
+        agent.service_tier = "auto"
+        agent.fast_auto_on_seconds = 60
+        begin_fast_mode_turn(agent, [], now=100.0)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Summary"
+        )
+
+        with patch("agent.fast_mode.time.monotonic", return_value=110.0):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 1
+            )
+
+        assert result == "Summary"
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert kwargs["service_tier"] == "priority"
+
+    def test_anthropic_summary_uses_active_dynamic_fast_policy(self, agent):
+        from agent.fast_mode import begin_fast_mode_turn
+
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent.model = "claude-opus-4-6"
+        agent.service_tier = "cold"
+        agent.fast_auto_on_seconds = 60
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._is_anthropic_oauth = False
+        begin_fast_mode_turn(agent, [], now=100.0)
+
+        transport = MagicMock()
+        transport.build_kwargs.return_value = {
+            "model": agent.model,
+            "extra_body": {"speed": "fast"},
+        }
+        transport.normalize_response.return_value = SimpleNamespace(content="Summary")
+
+        with (
+            patch.object(agent, "_get_transport", return_value=transport),
+            patch.object(agent, "_anthropic_messages_create", return_value=object()),
+            patch("agent.fast_mode.time.monotonic", return_value=110.0),
+        ):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 1
+            )
+
+        assert result == "Summary"
+        assert transport.build_kwargs.call_args.kwargs["fast_mode"] is True
+
     def test_api_failure_returns_error(self, agent):
         agent.client.chat.completions.create.side_effect = Exception("API down")
         agent._cached_system_prompt = "You are helpful."

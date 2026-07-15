@@ -332,6 +332,69 @@ _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
 _FAST_MODE_BETA = "fast-mode-2026-02-01"
 
+
+def _apply_fast_mode_to_kwargs(
+    kwargs: Dict[str, Any],
+    *,
+    enabled: bool,
+    model: str,
+    base_url: str | None,
+    is_oauth: bool,
+    drop_context_1m_beta: bool = False,
+) -> Dict[str, Any]:
+    """Return kwargs with Anthropic fast-mode metadata applied or removed.
+
+    This is safe to call again immediately before dispatch. It preserves
+    unrelated ``extra_body`` fields and headers while ensuring an expired
+    dynamic fast window cannot retain either ``speed=fast`` or the matching
+    beta header assembled earlier in the request pipeline.
+    """
+    kwargs = dict(kwargs)
+    extra_body = dict(kwargs.get("extra_body") or {})
+    extra_body.pop("speed", None)
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    else:
+        kwargs.pop("extra_body", None)
+
+    extra_headers = dict(kwargs.get("extra_headers") or {})
+    existing_betas = [
+        beta.strip()
+        for beta in str(extra_headers.get("anthropic-beta") or "").split(",")
+        if beta.strip() and beta.strip() != _FAST_MODE_BETA
+    ]
+    if existing_betas:
+        extra_headers["anthropic-beta"] = ",".join(existing_betas)
+    else:
+        extra_headers.pop("anthropic-beta", None)
+    if extra_headers:
+        kwargs["extra_headers"] = extra_headers
+    else:
+        kwargs.pop("extra_headers", None)
+
+    if not (
+        enabled
+        and not _is_third_party_anthropic_endpoint(base_url)
+        and _supports_fast_mode(model)
+    ):
+        return kwargs
+
+    kwargs.setdefault("extra_body", {})["speed"] = "fast"
+    betas = [
+        *existing_betas,
+        *_common_betas_for_base_url(
+            base_url,
+            drop_context_1m_beta=drop_context_1m_beta,
+        ),
+    ]
+    if is_oauth:
+        betas.extend(_OAUTH_ONLY_BETAS)
+    betas.append(_FAST_MODE_BETA)
+    kwargs.setdefault("extra_headers", {})["anthropic-beta"] = ",".join(
+        dict.fromkeys(betas)
+    )
+    return kwargs
+
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
 _OAUTH_ONLY_BETAS = [
@@ -2677,24 +2740,14 @@ def build_anthropic_kwargs(
     # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
     # Only for native Anthropic endpoints — third-party providers would
     # reject the unknown beta header and speed parameter.
-    if (
-        fast_mode
-        and not _is_third_party_anthropic_endpoint(base_url)
-        and _supports_fast_mode(model)
-    ):
-        kwargs.setdefault("extra_body", {})["speed"] = "fast"
-        # Build extra_headers with ALL applicable betas (the per-request
-        # extra_headers override the client-level anthropic-beta header).
-        betas = list(_common_betas_for_base_url(
-            base_url,
-            drop_context_1m_beta=drop_context_1m_beta,
-        ))
-        if is_oauth:
-            betas.extend(_OAUTH_ONLY_BETAS)
-        betas.append(_FAST_MODE_BETA)
-        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
-
-    return kwargs
+    return _apply_fast_mode_to_kwargs(
+        kwargs,
+        enabled=fast_mode,
+        model=model,
+        base_url=base_url,
+        is_oauth=is_oauth,
+        drop_context_1m_beta=drop_context_1m_beta,
+    )
 
 
 # Keys that belong exclusively to the OpenAI Responses / Codex API shape.

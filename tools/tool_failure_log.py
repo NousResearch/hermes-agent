@@ -29,8 +29,8 @@ from tools._failure_log_store import (
     _MAX_ARGS_LEN,
     _MAX_ERROR_LEN,
     append_record,
+    mutate_records,
     read_all,
-    write_records,
 )
 from tools.registry import registry, tool_error  # noqa: F401
 
@@ -83,7 +83,15 @@ def _action_log(args: dict, session_id: str = "") -> str:
     if not error:
         return json.dumps({"e": "error is required"}, ensure_ascii=False)
 
-    args_summary = (args.get("args") or "")[:_MAX_ARGS_LEN]
+    raw_args = args.get("args")
+    if isinstance(raw_args, dict):
+        try:
+            args_summary = json.dumps(raw_args, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args_summary = str(raw_args)
+    else:
+        args_summary = str(raw_args or "")
+    args_summary = args_summary[:_MAX_ARGS_LEN]
     fix = (args.get("fix") or "")[:_MAX_FIX_LEN]
 
     prev_count = len(read_all())
@@ -91,14 +99,15 @@ def _action_log(args: dict, session_id: str = "") -> str:
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "t": tool,
-        "e": error[:_MAX_ERROR_LEN],
+        "e": error,
         "a": args_summary,
         "s": session_id or "",
         "f": fix,
         "l": [],
         "r": "pending",
     }
-    # id is assigned atomically by append_record under lock
+    # id is assigned atomically by append_record under lock; args/error are
+    # redacted inside append_record before the line is written.
     saved = append_record(rec)
     return json.dumps({"ok": True, "id": saved["id"], "c": prev_count + 1}, ensure_ascii=False)
 
@@ -218,25 +227,23 @@ def _action_resolve(args: dict) -> str:
     status_filter = (args.get("status") or "").strip()
     tool_filter = (args.get("tool") or "").strip()
 
-    records = read_all()
-    updated = 0
-    records.reverse()  # oldest first for rewrite
-
-    for r in records:
+    def _match(r):
         rid = r.get("id")
         if target_ids is not None and rid not in target_ids:
-            continue
+            return False
         if status_filter and r.get("r") != status_filter:
-            continue
+            return False
         if tool_filter and r.get("t") != tool_filter:
-            continue
-        r["r"] = resolution
-        updated += 1
+            return False
+        return True
 
+    def _mutate(r):
+        r["r"] = resolution
+
+    updated = mutate_records(_match, _mutate)
     if updated == 0:
         return json.dumps({"ok": True, "updated": 0, "hint": "no matching records"}, ensure_ascii=False)
 
-    write_records(records)
     return json.dumps({"ok": True, "updated": updated, "resolution": resolution}, ensure_ascii=False)
 
 
@@ -268,27 +275,22 @@ def _action_update(args: dict) -> str:
     if not fix and not new_links:
         return json.dumps({"e": "provide fix and/or link_ids to update"}, ensure_ascii=False)
 
-    records = read_all()
-    updated = 0
-    records.reverse()
+    def _match(r):
+        return r.get("id") in target_ids
 
-    for r in records:
-        rid = r.get("id")
-        if rid not in target_ids:
-            continue
+    def _mutate(r):
         if fix:
             r["f"] = (r.get("f", "") + ("; " if r.get("f") else "") + fix)[:_MAX_FIX_LEN]
         if new_links:
             existing = set(r.get("l", []))
             existing.update(new_links)
-            existing.discard(rid)  # don't link to self
+            existing.discard(r.get("id"))  # don't link to self
             r["l"] = sorted(existing)
-        updated += 1
 
+    updated = mutate_records(_match, _mutate)
     if updated == 0:
         return json.dumps({"ok": True, "updated": 0, "hint": "no matching records"}, ensure_ascii=False)
 
-    write_records(records)
     return json.dumps({"ok": True, "updated": updated}, ensure_ascii=False)
 
 
@@ -308,25 +310,20 @@ def _action_link(args: dict) -> str:
     if len(target_ids) < 2:
         return json.dumps({"e": "need at least 2 valid ids"}, ensure_ascii=False)
 
-    records = read_all()
-    records.reverse()
-    updated = 0
+    def _match(r):
+        return r.get("id") in target_ids
 
-    for r in records:
+    def _mutate(r):
         rid = r.get("id")
-        if rid not in target_ids:
-            continue
         existing = set(r.get("l", []))
         # Link to all other targets
-        others = target_ids - {rid}
-        existing.update(others)
+        existing.update(target_ids - {rid})
         r["l"] = sorted(existing)
-        updated += 1
 
+    updated = mutate_records(_match, _mutate)
     if updated < 2:
         return json.dumps({"ok": True, "updated": updated, "hint": "fewer than 2 records matched"}, ensure_ascii=False)
 
-    write_records(records)
     return json.dumps({"ok": True, "updated": updated, "linked": sorted(target_ids)}, ensure_ascii=False)
 
 
@@ -419,7 +416,7 @@ registry.register(
                 },
                 "args": {
                     "type": "string",
-                    "description": "Key arguments summary (for log). Truncated to 200 chars.",
+                    "description": "Key arguments summary (for log). Truncated to 200 chars. Passed through with no semantic interpretation; structure is up to the caller.",
                 },
                 "fix": {
                     "type": "string",

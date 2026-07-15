@@ -64,8 +64,6 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Tool failure logging — records failures + fixes for later review
-    "tool_failure_log",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -184,9 +182,22 @@ TOOLSETS = {
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
         "tools": ["cronjob"],
-        "includes": []
+        "includes": [],
     },
-    
+
+    # Tool failure logging lives in its OWN opt-in toolset rather than the
+    # shared core bundle.  AGENTS.md requires a new core tool to be the last
+    # resort (footprint ladder), and this is an observability/debugging aid,
+    # not a capability most sessions need on every turn.  Enabling it is a
+    # one-line, profile-local change (`tools.<platform>.enabled` lists or
+    # `hermes tools`) — zero core-schema footprint for the 99% of sessions
+    # that never review the failure journal.
+    "tool_failure_log": {
+        "description": "Persistent, reviewable tool-failure journal — auto-captured by the agent loop, with log/update/link/list/stats/resolve review workflow. Opt-in: enable per session to keep it off the default core schema.",
+        "tools": ["tool_failure_log"],
+        "includes": [],
+    },
+
 
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",

@@ -13,6 +13,7 @@ from tools._failure_log_store import (
     _next_id,
     append_record,
     auto_log,
+    mutate_records,
     read_all,
     write_records,
 )
@@ -163,6 +164,87 @@ class TestAutoLog:
         monkeypatch.setattr("tools._failure_log_store._data_dir", lambda: Path("/nonexistent/xyz"))
         result = auto_log("t", "e")
         assert result is None
+
+
+class TestRedaction:
+    """Persisted records must never retain raw credentials (sweeper review)."""
+
+    def test_auto_log_redacts_api_key_in_args(self):
+        _clean()
+        auto_log("web_search", "boom", {"api_key": "sk-abcdefghijklmnopqrstuvwxyz123"}, "s1")
+        r = read_all()[0]
+        # The credential value must be redacted; the key name may remain.
+        assert "sk-abcdefghijklmnopqrstuvwxyz123" not in r["a"]
+
+    def test_auto_log_redacts_secret_in_error(self):
+        _clean()
+        auto_log("terminal", "Authorization: Bearer eyJsecretsecrettokenvalue123456", None, "s1")
+        r = read_all()[0]
+        assert "eyJsecretsecrettokenvalue123456" not in r["e"]
+
+    def test_manual_log_redacts_args(self):
+        _clean()
+        tool_failure_log(
+            action="log",
+            tool="web_search",
+            error="fail",
+            args=json.dumps({"password": "hunter2supersecret"}),
+        )
+        r = read_all()[0]
+        assert "hunter2supersecret" not in r["a"]
+
+
+class TestTransactionalMutation:
+    """resolve/update/link must run as one transaction under the shared lock
+    so an intervening append_record() can never be lost (sweeper review)."""
+
+    def test_mutate_records_is_atomic_with_concurrent_append(self):
+        _clean()
+        nid = auto_log("t", "e1")
+        nid2 = auto_log("t", "e2")
+
+        # A real concurrent writer (separate thread) appends continuously
+        # while the main thread performs a transactional read-modify-write.
+        # mutate_records holds the RW lock for the whole transaction, so the
+        # concurrent appends are serialized around it and none are lost.
+        import threading
+
+        stop = threading.Event()
+        concurrent_ids = []
+
+        def _writer():
+            while not stop.is_set():
+                cid = auto_log("t", "e_concurrent")
+                if cid is not None:
+                    concurrent_ids.append(cid)
+
+        w = threading.Thread(target=_writer, daemon=True)
+        w.start()
+        try:
+            updated = mutate_records(
+                lambda r: r["id"] in (nid, nid2),
+                lambda r: r.__setitem__("r", "fixed"),
+            )
+        finally:
+            stop.set()
+            w.join(timeout=5)
+
+        assert updated == 2
+
+        # Every concurrently-appended record must survive (not clobbered).
+        records = read_all()
+        present = {r["id"] for r in records}
+        assert set(concurrent_ids).issubset(present)
+        # The two resolved records kept their mutation.
+        resolved = [r for r in records if r["r"] == "fixed"]
+        assert len(resolved) == 2
+
+    def test_resolve_uses_mutate_records(self):
+        _clean()
+        nid = json.loads(tool_failure_log(action="log", tool="t", error="e"))["id"]
+        r = json.loads(tool_failure_log(action="resolve", ids=nid, resolution="fixed"))
+        assert r["updated"] == 1
+        assert read_all()[0]["r"] == "fixed"
 
 
 # =========================================================================
@@ -490,3 +572,56 @@ class TestEdgeCases:
         assert r["updated"] == 1
         rec = read_all()[0]
         assert rec["r"] == "blocked"
+
+
+# =========================================================================
+# Regression — result-level failure capture (sweeper review: exception-only
+# hooks missed tools that return {"error":...} without raising).
+# =========================================================================
+
+
+class TestResultLevelAutoLog:
+    def test_handle_function_call_captures_error_result(self):
+        """A tool returning {"error":...} (no exception) must be auto-logged."""
+        _clean()
+        from tools.registry import registry
+
+        def _boom(args, **kw):
+            return json.dumps({"error": "simulated semantic failure", "success": False})
+
+        registry.register(
+            name="_result_fail_tool",
+            toolset="_result_fail_test",
+            schema={"name": "_result_fail_tool", "description": "x",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=_boom,
+            check_fn=lambda: True,
+        )
+        from model_tools import handle_function_call
+
+        out = handle_function_call("_result_fail_tool", {})
+        assert '"error"' in out
+        recs = read_all()
+        assert any(r["t"] == "_result_fail_tool" for r in recs), \
+            "result-level failure was not auto-logged"
+
+    def test_handle_function_call_does_not_log_success(self):
+        """A successful tool result must NOT be auto-logged."""
+        _clean()
+        from tools.registry import registry
+
+        def _ok(args, **kw):
+            return json.dumps({"ok": True, "value": 42})
+
+        registry.register(
+            name="_result_ok_tool",
+            toolset="_result_ok_test",
+            schema={"name": "_result_ok_tool", "description": "x",
+                    "parameters": {"type": "object", "properties": {}}},
+            handler=_ok,
+            check_fn=lambda: True,
+        )
+        from model_tools import handle_function_call
+
+        handle_function_call("_result_ok_tool", {})
+        assert read_all() == [], "successful result must not be auto-logged"

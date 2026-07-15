@@ -47,6 +47,32 @@ def test_launcher_exists_and_is_executable() -> None:
     assert launcher.stat().st_mode & stat.S_IXUSR
 
 
+def test_launcher_scopes_credentials_to_hermes_home() -> None:
+    # Credentials must resolve under the active HERMES_HOME so named profiles and
+    # remote terminals read the same location the framework mounts credential files.
+    bash = (SKILL_DIR / "scripts" / "atomicmail").read_text()
+    assert "${HERMES_HOME:-$HOME/.hermes}/atomicmail" in bash
+    win = (SKILL_DIR / "scripts" / "atomicmail.cmd").read_text()
+    assert "HERMES_HOME" in win
+
+
+def test_env_vars_limited_to_bearer_secret(frontmatter) -> None:
+    # Only the bearer secret belongs in required_environment_variables; non-secret
+    # settings must live under metadata.hermes.config (not allowlisted into sandboxes).
+    env_names = {
+        v["name"] for v in frontmatter.get("required_environment_variables", [])
+    }
+    assert env_names == {"ATOMIC_MAIL_API_KEY"}, env_names
+    config_keys = {
+        c["key"] for c in frontmatter["metadata"]["hermes"]["config"]
+    }
+    assert {
+        "atomicmail.auth_url",
+        "atomicmail.api_url",
+        "atomicmail.scrypt_salt",
+    } <= config_keys, config_keys
+
+
 def test_required_bundle_paths_exist() -> None:
     for rel in (
         "lib/esm/skill/cli.js",

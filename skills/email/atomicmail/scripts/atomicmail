@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve credentials under the active HERMES_HOME so named profiles and remote
+# terminals read the same location the framework mounts required_credential_files.
 if [ -z "${ATOMIC_MAIL_CREDENTIALS_DIR:-}" ]; then
-  export ATOMIC_MAIL_CREDENTIALS_DIR="${HOME}/.hermes/atomicmail"
+  export ATOMIC_MAIL_CREDENTIALS_DIR="${HERMES_HOME:-$HOME/.hermes}/atomicmail"
 fi
 exec node "$ROOT/lib/esm/skill/cli.js" "$@"

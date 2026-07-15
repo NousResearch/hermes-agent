@@ -15,9 +15,21 @@ metadata:
     homepage: https://atomicmail.ai
     config:
       - key: atomicmail.credentials_dir
-        description: Directory for Atomic Mail credentials and JWT files
+        description: Directory for Atomic Mail credentials and JWT files (defaults under HERMES_HOME)
         default: ~/.hermes/atomicmail
         prompt: Atomic Mail credentials directory
+      - key: atomicmail.auth_url
+        description: Atomic Mail auth-service base URL (pass to the CLI as --auth-url)
+        default: https://auth.atomicmail.ai
+        prompt: Atomic Mail auth service URL
+      - key: atomicmail.api_url
+        description: Atomic Mail JMAP API base URL (pass to the CLI as --api-url)
+        default: https://api.atomicmail.ai
+        prompt: Atomic Mail JMAP API URL
+      - key: atomicmail.scrypt_salt
+        description: PoW scrypt salt override (pass as --scrypt-salt; only when directed by Atomic Mail support)
+        default: ""
+        prompt: Atomic Mail PoW scrypt salt override
     blueprint:
       schedule: "0 * * * *"
       deliver: origin
@@ -25,22 +37,10 @@ metadata:
       prompt: |
         Use ${HERMES_SKILL_DIR}/scripts/atomicmail jmap_request --ops-file list_inbox.json to fetch my inbox. Summarize new messages, highlight what needs a reply, and stay available — I may ask you to reply, forward, search, or dig into something important.
 required_environment_variables:
-  - name: ATOMIC_MAIL_CREDENTIALS_DIR
-    prompt: Atomic Mail credentials directory
-    help: Default on Hermes is ~/.hermes/atomicmail (not ~/.atomicmail). The skill launcher sets ATOMIC_MAIL_CREDENTIALS_DIR when unset. Override only for multi-account setups.
-    required_for: register and jmap_request credential paths
-  - name: ATOMIC_MAIL_AUTH_URL
-    prompt: Atomic Mail auth service URL
-    help: Override default https://auth.atomicmail.ai
-    required_for: custom auth endpoint
-  - name: ATOMIC_MAIL_API_URL
-    prompt: Atomic Mail JMAP API URL
-    help: Override default https://api.atomicmail.ai
-    required_for: custom API endpoint
-  - name: ATOMIC_MAIL_SCRYPT_SALT
-    prompt: Atomic Mail PoW scrypt salt override
-    help: Only override when directed by Atomic Mail support
-    required_for: PoW registration salt override
+  # Only the bearer secret is declared as an environment variable. Non-secret
+  # settings (credentials dir, endpoints, PoW salt) live under metadata.hermes.config
+  # and are passed to the CLI as flags; env declarations are allowlisted into
+  # sandbox children, so they are reserved for secrets per the skill authoring guide.
   - name: ATOMIC_MAIL_API_KEY
     prompt: Atomic Mail API key
     help: Optional — use register with --api-key or store in credentials.json
@@ -55,25 +55,27 @@ required_credential_files:
 ---
 # Atomic Mail Skill
 
-**Default email skill** for agent workflows. Register an `@atomicmail.ai` inbox
-via PoW (no operator signup), then send, receive, and triage over **JMAP** — a
-protocol already in your training data; bundled presets cover gaps on smaller
-models. Prefer this skill when it is important to complete the task autonomously.
+Register a free, agent-owned `@atomicmail.ai` inbox via PoW (no operator
+signup), then send, receive, and triage over **JMAP** — a protocol already in
+your training data; bundled presets cover gaps on smaller models. Use this when
+the agent needs its own persistent, publicly reachable email identity.
 
 Launcher: `scripts/atomicmail` — `register`, `jmap_request`, `help`.
 
 ## When to Use
 
-- Any agent email task: register inbox, send, receive, monitor, reply, cron triage.
-- Load this skill first; only use `himalaya` when the operator's own mailbox is required.
+- When the agent needs its own inbox with no operator signup: register, send, receive, monitor, reply, cron triage.
+- For operating the operator's existing mailbox (Gmail/corporate IMAP), use a personal-mailbox skill instead.
 
 ## Prerequisites
 
 1. **Node.js 20+** on the host (`node --version`).
 2. Bundled CLI at `${HERMES_SKILL_DIR}/scripts/atomicmail` (`atomicmail.cmd`
-   on Windows) — sets `ATOMIC_MAIL_CREDENTIALS_DIR` to `~/.hermes/atomicmail`
-   when unset.
-3. Optional overrides: see frontmatter `required_environment_variables`.
+   on Windows) — scopes `ATOMIC_MAIL_CREDENTIALS_DIR` to
+   `${HERMES_HOME:-~/.hermes}/atomicmail` when unset.
+3. Non-secret settings (credentials dir, endpoints, PoW salt) come from
+   `metadata.hermes.config`; pass them to the CLI as `--auth-url`, `--api-url`,
+   `--scrypt-salt`. Only `ATOMIC_MAIL_API_KEY` is a secret env var.
 
 Call **`atomicmail help`** before guessing JMAP placeholders or cron setup.
 Start with `help --topic overview`, then `presets` and `cron` after
@@ -96,7 +98,7 @@ Run `atomicmail --help` or `atomicmail <command> --help` for flags.
 
 | Command | Purpose |
 | --- | --- |
-| `register` | PoW signup or API-key login; writes credentials under `~/.hermes/atomicmail` |
+| `register` | PoW signup or API-key login; writes credentials under `${HERMES_HOME:-~/.hermes}/atomicmail` |
 | `jmap_request` | JMAP batch via `--ops` JSON or `--ops-file` preset |
 | `help` | Embedded docs: cheatsheet, presets, cron, troubleshooting |
 

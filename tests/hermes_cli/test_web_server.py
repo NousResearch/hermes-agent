@@ -1403,6 +1403,31 @@ class TestWebServerEndpoints:
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
 
+    def test_profiles_sessions_reads_inactive_profile_with_older_schema(self):
+        """Read-only aggregation must tolerate optional columns added since an
+        inactive profile last opened its state database."""
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="legacy-worker", source="cli")
+            worker_db.append_message("legacy-worker", role="user", content="still list me")
+            worker_db._conn.execute(
+                "ALTER TABLE sessions DROP COLUMN compression_fallback_streak"
+            )
+        finally:
+            worker_db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&min_messages=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        row = next(s for s in data["sessions"] if s["id"] == "legacy-worker")
+        assert row["profile"] == "worker"
+        assert data["errors"] == []
+
     def test_profiles_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/profiles/sessions?archived=bogus")
         assert resp.status_code == 400

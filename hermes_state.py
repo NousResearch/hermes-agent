@@ -1018,6 +1018,7 @@ class SessionDB:
         self._trigram_available = False
         self._fts_unavailable_warned = False
         self._conn = None
+        self._read_only_session_compact_cols_sql: Optional[str] = None
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -3300,20 +3301,51 @@ class SessionDB:
     # declarative reconciliation are included automatically instead of
     # silently dropping out of list rows.
     _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
+    _session_compact_col_names: Optional[Tuple[str, ...]] = None
     _session_compact_cols_sql: Optional[str] = None
 
     @classmethod
-    def _compact_session_cols(cls) -> str:
-        """SELECT list for compact_rows: every ``sessions`` column declared in
-        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
-        prefix used by list_sessions_rich/_get_session_rich_row queries."""
-        if cls._session_compact_cols_sql is None:
+    def _compact_session_col_names(cls) -> Tuple[str, ...]:
+        if cls._session_compact_col_names is None:
             declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]
-            cls._session_compact_cols_sql = ", ".join(
-                f"s.{name}" for name in declared
+            cls._session_compact_col_names = tuple(
+                name for name in declared
                 if name not in cls._SESSION_COMPACT_EXCLUDED
             )
-        return cls._session_compact_cols_sql
+        return cls._session_compact_col_names
+
+    def _compact_session_cols(self) -> str:
+        """SELECT list for compact_rows: every ``sessions`` column declared in
+        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        prefix used by list_sessions_rich/_get_session_rich_row queries.
+
+        Read-only connections deliberately skip schema reconciliation so polling
+        another profile never takes a write lock. An inactive profile can
+        therefore be one additive migration behind the running binary. Preserve
+        the current compact-row shape with NULL aliases for those not-yet-added
+        columns instead of dropping the profile from cross-profile lists.
+        """
+        cls = type(self)
+        column_names = cls._compact_session_col_names()
+        if not self.read_only:
+            if cls._session_compact_cols_sql is None:
+                cls._session_compact_cols_sql = ", ".join(
+                    f"s.{name}" for name in column_names
+                )
+            return cls._session_compact_cols_sql
+
+        if self._read_only_session_compact_cols_sql is None:
+            with self._lock:
+                rows = self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+            live_columns = {
+                row["name"] if isinstance(row, sqlite3.Row) else row[1]
+                for row in rows
+            }
+            self._read_only_session_compact_cols_sql = ", ".join(
+                f's."{name}"' if name in live_columns else f'NULL AS "{name}"'
+                for name in column_names
+            )
+        return self._read_only_session_compact_cols_sql
 
     def distinct_session_cwds(self, include_archived: bool = False) -> List[Dict[str, Any]]:
         """Distinct non-empty session cwds with usage stats, for repo discovery.

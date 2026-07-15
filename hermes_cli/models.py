@@ -1301,16 +1301,39 @@ _PROVIDER_ALIASES = {
 }
 
 
+# The model Hermes silently lands on when the user never picked one and the
+# provider's catalog carries it (GUI onboarding confirm card, empty
+# ``model.default``, provider-set-but-model-missing resolution). Deliberately a
+# capable low-cost model rather than the curated lists' entry [0]: aggregator
+# lists are ordered most-capable-first, so [0] is the priciest Anthropic
+# flagship (claude-fable-5 / opus) — silently billing the most expensive model
+# for traffic the user never opted into.
+PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.2"
+
+
+def pick_silent_default_model(model_ids: list[str]) -> str:
+    """Pick the silent default from an available-models list.
+
+    Returns :data:`PREFERRED_SILENT_DEFAULT_MODEL` when the list carries it,
+    else the first entry, else "". Used by every surface that must choose a
+    model on the user's behalf without an interactive picker (GUI onboarding
+    recommended-default, empty-model runtime fallback).
+    """
+    if PREFERRED_SILENT_DEFAULT_MODEL in model_ids:
+        return PREFERRED_SILENT_DEFAULT_MODEL
+    return model_ids[0] if model_ids else ""
+
+
 # Cost-safe overrides for the *silent* auto-default
 # (``get_default_model_for_provider``). Most providers' curated lists lead with a
-# sensible default, but Nous Portal is a per-token *metered aggregator* whose
-# list is ordered best-/most-capable-first — entry [0] is the priciest flagship
-# (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the
-# non-interactive fallback when a profile sets ``provider: nous`` with no model
-# silently bills the most expensive model for traffic the user never opted into
-# (a missing default escalated to Opus and billed 863 requests before the user
-# noticed). Pin the silent default to a low-cost curated model instead so a
-# missing model can never escalate to the flagship.
+# sensible default, but metered aggregators (Nous Portal, OpenRouter) order
+# their lists best-/most-capable-first — entry [0] is the priciest flagship
+# (``anthropic/claude-fable-5``). Using that as the non-interactive fallback
+# when a profile sets a provider with no model silently bills the most
+# expensive model for traffic the user never opted into (a missing default
+# escalated to Opus and billed 863 requests before the user noticed). Pin the
+# silent default to ``PREFERRED_SILENT_DEFAULT_MODEL`` instead so a missing
+# model can never escalate to the flagship.
 #
 # This is deliberately a fixed, side-effect-free default for the hot resolution
 # path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
@@ -1318,7 +1341,12 @@ _PROVIDER_ALIASES = {
 # in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
 # hit the Portal; this fallback must stay cheap and network-free.
 _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
-    "nous": "deepseek/deepseek-v4-flash",
+    "nous": PREFERRED_SILENT_DEFAULT_MODEL,
+    # OpenRouter has no static ``_PROVIDER_MODELS`` entry (its picker list is
+    # fetched live), but the curated snapshot (``OPENROUTER_MODELS``) carries
+    # the preferred default — trust the override so provider-set-but-model-
+    # missing setups land on it instead of resolving to "".
+    "openrouter": PREFERRED_SILENT_DEFAULT_MODEL,
 }
 
 
@@ -1333,13 +1361,15 @@ def get_default_model_for_provider(provider: str) -> str:
     same model the ``hermes model`` picker offers first. For metered aggregators
     whose curated list is ordered most-capable-first, that entry is also the
     most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
-    providers carry an explicit low-cost override in
+    providers carry an explicit override in
     ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
     auto-escalate to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
     override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
-    if override and override in models:
+    # Trust the override when the provider has no static catalog (OpenRouter's
+    # picker list is fetched live; its curated snapshot carries the override).
+    if override and (override in models or not models):
         return override
     return models[0] if models else ""
 

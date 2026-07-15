@@ -3331,6 +3331,28 @@ class TestAuxiliaryTaskExtraBody:
         with patch("hermes_cli.config.load_config", return_value=config):
             assert _get_task_extra_body("session_search") == {}
 
+    @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
+    def test_moa_tasks_reject_task_level_reasoning_effort(self, moa_task, caplog):
+        """MoA reasoning is per-slot in the preset — the auxiliary-task
+        shorthand is ignored with a warning pointing at the preset config."""
+        from agent.auxiliary_client import _get_task_extra_body
+
+        config = {"auxiliary": {moa_task: {"reasoning_effort": "xhigh"}}}
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            result = _get_task_extra_body(moa_task)
+
+        assert "reasoning" not in result
+        assert any("per-slot" in rec.message for rec in caplog.records)
+
+    @pytest.mark.parametrize("moa_task", ["moa_reference", "moa_aggregator"])
+    def test_moa_default_config_has_no_reasoning_effort(self, moa_task):
+        """Invariant: the shipped MoA auxiliary blocks must not grow a
+        reasoning_effort key — per-slot preset config is the only surface."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert "reasoning_effort" not in DEFAULT_CONFIG["auxiliary"][moa_task]
+
     def test_anthropic_aux_client_forwards_extra_body_reasoning(self):
         """_AnthropicCompletionsAdapter passes extra_body.reasoning into
         build_anthropic_kwargs as reasoning_config."""
@@ -3895,6 +3917,157 @@ class TestAuxiliaryPoolRotationRetry:
         assert len(pool.rotate_calls) == 1
         assert pool.rotate_calls[0]["status_code"] == 429
         mock_fallback.assert_not_called()
+
+
+class TestAnthropicAuxiliaryReasoningTranslation:
+    """Native Anthropic aux adapters must receive normalized Hermes reasoning.
+
+    MoA slot reasoning is carried through call_llm as a Hermes
+    ``reasoning_config``. The native Anthropic Messages path cannot consume the
+    generic OpenAI-style ``extra_body.reasoning`` fallback, so assert the final
+    ``messages.create`` kwargs contain Anthropic's provider-aware wire shape.
+    """
+
+    @staticmethod
+    def _build_adapter(model="claude-fable-5"):
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        captured = {}
+
+        class _Messages:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    content=[SimpleNamespace(type="text", text="ok")],
+                    stop_reason="end_turn",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                )
+
+        real_client = SimpleNamespace(messages=_Messages())
+        return _AnthropicCompletionsAdapter(real_client, model), captured
+
+    def test_reasoning_config_reaches_native_anthropic_wire_kwargs(self):
+        adapter, captured = self._build_adapter()
+
+        adapter.create(
+            model="claude-fable-5",
+            messages=[{"role": "user", "content": "hi"}],
+            _reasoning_config={"enabled": True, "effort": "medium"},
+        )
+
+        assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert captured["output_config"] == {"effort": "medium"}
+        assert "extra_body" not in captured
+
+    def test_build_call_kwargs_private_reasoning_only_for_anthropic_messages(self):
+        anthropic_kwargs = _build_call_kwargs(
+            "anthropic",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.anthropic.com/v1",
+        )
+        assert anthropic_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+        proxy_kwargs = _build_call_kwargs(
+            "custom",
+            "claude-fable-5",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/anthropic/v1",
+        )
+        assert proxy_kwargs["_reasoning_config"] == {"enabled": True, "effort": "medium"}
+
+        openai_wire_kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-compatible",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://example.test/v1",
+        )
+        assert "_reasoning_config" not in openai_wire_kwargs
+
+
+class TestAuxiliaryProviderProfileReasoning:
+    """Auxiliary calls must reuse provider-profile reasoning wire shapes."""
+
+    def test_kimi_reasoning_uses_top_level_effort(self):
+        kwargs = _build_call_kwargs(
+            "kimi-coding",
+            "kimi-k2-turbo-preview",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "medium"},
+            base_url="https://api.moonshot.ai/v1",
+        )
+
+        assert kwargs["reasoning_effort"] == "medium"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+        assert "thinking" not in kwargs.get("extra_body", {})
+
+    def test_gemini_reasoning_uses_thinking_config(self):
+        kwargs = _build_call_kwargs(
+            "gemini",
+            "gemini-3.5-flash",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+
+        assert kwargs["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "high",
+        }
+        assert "reasoning" not in kwargs["extra_body"]
+
+    def test_custom_openai_compatible_reasoning_uses_top_level_effort(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "glm-5.2",
+            [{"role": "user", "content": "hi"}],
+            reasoning_config={"enabled": True, "effort": "max"},
+            base_url="https://example.test/v1",
+        )
+
+        assert kwargs["reasoning_effort"] == "max"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_preserves_profile_reasoning_kwargs(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))]
+        )
+        create = AsyncMock(return_value=response)
+        client = SimpleNamespace(
+            base_url="https://api.moonshot.ai/v1",
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=create),
+            ),
+        )
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "kimi-coding",
+                "kimi-k2-turbo-preview",
+                "https://api.moonshot.ai/v1",
+                "test-key",
+                None,
+            ),
+        ), patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-k2-turbo-preview"),
+        ):
+            result = await async_call_llm(
+                provider="kimi-coding",
+                model="kimi-k2-turbo-preview",
+                messages=[{"role": "user", "content": "hi"}],
+                reasoning_config={"enabled": True, "effort": "high"},
+            )
+
+        assert result is response
+        final_kwargs = create.call_args.kwargs
+        assert final_kwargs["reasoning_effort"] == "high"
+        assert "reasoning" not in final_kwargs.get("extra_body", {})
 
 
 class TestCodexAdapterReasoningTranslation:

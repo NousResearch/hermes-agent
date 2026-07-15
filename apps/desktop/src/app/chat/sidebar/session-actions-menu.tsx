@@ -2,7 +2,12 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
-import { closeAllTreeTabs, closeOtherTreeTabs, closeTreeTabsToRight, treeTabCloseTargets } from '@/components/pane-shell/tree/store'
+import {
+  closeAllTreeTabs,
+  closeOtherTreeTabs,
+  closeTreeTabsToRight,
+  treeTabCloseTargets
+} from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {

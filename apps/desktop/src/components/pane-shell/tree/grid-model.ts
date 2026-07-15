@@ -142,7 +142,10 @@ export function modelToZones(model: GridLayout): GridZone[] | null {
     }
 
     // Each zone must occupy a full rectangle of cells.
-    if (indexCount[index] !== (indexRowHigh[index] - indexRowLow[index] + 1) * (indexColHigh[index] - indexColLow[index] + 1)) {
+    if (
+      indexCount[index] !==
+      (indexRowHigh[index] - indexRowLow[index] + 1) * (indexColHigh[index] - indexColLow[index] + 1)
+    ) {
       return null
     }
   }

@@ -100,7 +100,11 @@ export function unloadRuntimePlugin(id: string): void {
 }
 
 /** Evaluate + register one runtime plugin. Returns its id, or null on failure. */
-export async function loadRuntimePlugin(source: string, origin: string, options: LoadOptions = {}): Promise<null | string> {
+export async function loadRuntimePlugin(
+  source: string,
+  origin: string,
+  options: LoadOptions = {}
+): Promise<null | string> {
   installPluginSdk()
 
   try {

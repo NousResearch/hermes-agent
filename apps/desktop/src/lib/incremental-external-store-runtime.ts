@@ -153,11 +153,9 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       const optimisticId = generateId()
       this.repository.addOrUpdateMessage(
         messages.at(-1)?.id ?? null,
-        fromThreadMessageLike(
-          { role: 'assistant', content: [], metadata: { isOptimistic: true } },
-          optimisticId,
-          { type: 'running' }
-        )
+        fromThreadMessageLike({ role: 'assistant', content: [], metadata: { isOptimistic: true } }, optimisticId, {
+          type: 'running'
+        })
       )
       self._assistantOptimisticId = optimisticId
     }

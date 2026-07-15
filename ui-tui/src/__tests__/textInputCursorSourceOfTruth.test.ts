@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { cursorLayout } from '../lib/inputMetrics.js'
 import { fastAppendEffect, fastBackspaceEffect, resolveCursorLayout } from '../components/textInput.js'
+import { cursorLayout } from '../lib/inputMetrics.js'
 
 // Closes Copilot follow-up on PR #26717: the original cursor-drift
 // fix bumped Ink's displayCursor / cursorDeclaration on fast-echo, but

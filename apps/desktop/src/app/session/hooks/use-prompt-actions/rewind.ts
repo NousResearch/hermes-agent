@@ -15,7 +15,13 @@ import type { ClientSessionState } from '@/app/types'
 import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 
-import { appendText, isSessionBusyError, visibleUserIndexAtOrdinal, visibleUserOrdinal, withSessionBusyRetry } from './utils'
+import {
+  appendText,
+  isSessionBusyError,
+  visibleUserIndexAtOrdinal,
+  visibleUserOrdinal,
+  withSessionBusyRetry
+} from './utils'
 
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
@@ -44,7 +50,11 @@ export async function runRewindSubmit(
   const submit = () =>
     requestGateway(
       'prompt.submit',
-      { session_id: sessionId, text, ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal }) },
+      {
+        session_id: sessionId,
+        text,
+        ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
+      },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )
 

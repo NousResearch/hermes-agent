@@ -44,26 +44,23 @@ export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem
 // $backgroundStatusBySession is keyed by RUNTIME session id (gateway events
 // and process.list both speak that); the sidebar row knows only the STORED id.
 // $sessionStates bridges the two: runtime id → state.storedSessionId.
-export const $backgroundRunningSessionIds = computed(
-  [$backgroundStatusBySession, $sessionStates],
-  (bg, states) => {
-    const ids = new Set<string>()
+export const $backgroundRunningSessionIds = computed([$backgroundStatusBySession, $sessionStates], (bg, states) => {
+  const ids = new Set<string>()
 
-    for (const [runtimeId, items] of Object.entries(bg)) {
-      if (!items.some(i => i.state === 'running')) {
-        continue
-      }
-
-      const storedId = states[runtimeId]?.storedSessionId
-
-      if (storedId) {
-        ids.add(storedId)
-      }
+  for (const [runtimeId, items] of Object.entries(bg)) {
+    if (!items.some(i => i.state === 'running')) {
+      continue
     }
 
-    return [...ids]
+    const storedId = states[runtimeId]?.storedSessionId
+
+    if (storedId) {
+      ids.add(storedId)
+    }
   }
-)
+
+  return [...ids]
+})
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.

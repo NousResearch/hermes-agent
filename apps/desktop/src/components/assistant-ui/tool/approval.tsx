@@ -197,37 +197,41 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
             {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
           </Button>
           {hasMoreOptions && <span aria-hidden className="w-px self-stretch bg-primary/20" />}
-          {hasMoreOptions && <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                aria-label={copy.moreOptions}
-                className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
-                disabled={busy}
-                size="xs"
-                variant="ghost"
-              >
-                <ChevronDown className="size-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="min-w-44">
-              {allowSession && <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>}
-              {allowAlways && (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    // Defer one tick so the menu fully unmounts before the dialog
-                    // mounts — otherwise Radix's focus-return races the dialog and
-                    // dismisses it via onInteractOutside.
-                    setTimeout(() => setConfirmAlways(true), 0)
-                  }}
+          {hasMoreOptions && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label={copy.moreOptions}
+                  className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
+                  disabled={busy}
+                  size="xs"
+                  variant="ghost"
                 >
-                  {copy.alwaysAllowMenu}
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-44">
+                {allowSession && (
+                  <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+                )}
+                {allowAlways && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      // Defer one tick so the menu fully unmounts before the dialog
+                      // mounts — otherwise Radix's focus-return races the dialog and
+                      // dismisses it via onInteractOutside.
+                      setTimeout(() => setConfirmAlways(true), 0)
+                    }}
+                  >
+                    {copy.alwaysAllowMenu}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+                  {copy.reject}
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-                {copy.reject}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
 
         <Button

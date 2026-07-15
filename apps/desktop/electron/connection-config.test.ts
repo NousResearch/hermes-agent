@@ -110,6 +110,7 @@ test('profileRemoteOverride treats a cloud entry as a remote override', () => {
       coder: { mode: 'cloud', url: 'https://agent-1.agents.nousresearch.com', authMode: 'oauth' }
     }
   }
+
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://agent-1.agents.nousresearch.com',
     authMode: 'oauth',

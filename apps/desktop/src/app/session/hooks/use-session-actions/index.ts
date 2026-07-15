@@ -45,7 +45,14 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { closeSessionTile, dropSessionState, openSessionTile, patchSessionTile, publishSessionState, type TileDock } from '@/store/session-states'
+import {
+  closeSessionTile,
+  dropSessionState,
+  openSessionTile,
+  patchSessionTile,
+  publishSessionState,
+  type TileDock
+} from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -536,6 +543,7 @@ export function useSessionActions({
       setFreshDraftReady(false)
       setActiveSessionId(null)
       activeSessionIdRef.current = null
+
       // A warm-cache hit at entry skipped the cold-path transcript clear, but the
       // warm path can still bail down to here — an empty-transcript drop, or the
       // cache getting purged during the profile-swap await — so the PREVIOUS
@@ -1067,13 +1075,7 @@ export function useSessionActions({
         notifyError(err, copy.archiveFailed)
       }
     },
-    [
-      copy,
-      runtimeIdByStoredSessionIdRef,
-      selectedStoredSessionId,
-      sessionStateByRuntimeIdRef,
-      startFreshSessionDraft
-    ]
+    [copy, runtimeIdByStoredSessionIdRef, selectedStoredSessionId, sessionStateByRuntimeIdRef, startFreshSessionDraft]
   )
 
   return {

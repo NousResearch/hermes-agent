@@ -92,7 +92,14 @@ export const PetPane = memo(function PetPane() {
   }
 
   return (
-    <NoSelect bottom={PET_BOTTOM} flexShrink={0} paddingLeft={PET_PAD_LEFT} paddingTop={1} position="absolute" right={PET_RIGHT}>
+    <NoSelect
+      bottom={PET_BOTTOM}
+      flexShrink={0}
+      paddingLeft={PET_PAD_LEFT}
+      paddingTop={1}
+      position="absolute"
+      right={PET_RIGHT}
+    >
       {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
       {!kitty && grid ? <PetSprite grid={grid} /> : null}
     </NoSelect>

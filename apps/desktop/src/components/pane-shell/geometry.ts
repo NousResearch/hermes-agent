@@ -143,9 +143,13 @@ export function useWindowControlsRect(): Rect | null {
 // ---------------------------------------------------------------------------
 
 function sameRect(a: Rect | null, b: Rect | null) {
-  if (a === b) {return true}
+  if (a === b) {
+    return true
+  }
 
-  if (!a || !b) {return false}
+  if (!a || !b) {
+    return false
+  }
 
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 }

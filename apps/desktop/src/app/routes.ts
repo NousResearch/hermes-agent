@@ -8,7 +8,7 @@ export const ARTIFACTS_ROUTE = '/artifacts'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
-export const STARMAP_ROUTE = '/starmap'
+export const KANBAN_ROUTE = '/kanban'
 
 export type AppView =
   | 'agents'
@@ -16,23 +16,23 @@ export type AppView =
   | 'chat'
   | 'command-center'
   | 'cron'
+  | 'kanban'
   | 'messaging'
   | 'profiles'
   | 'settings'
   | 'skills'
-  | 'starmap'
 
 export type AppRouteId =
   | 'agents'
   | 'artifacts'
   | 'command-center'
   | 'cron'
+  | 'kanban'
   | 'messaging'
   | 'new'
   | 'profiles'
   | 'settings'
   | 'skills'
-  | 'starmap'
 
 export interface AppRoute {
   id: AppRouteId
@@ -50,7 +50,7 @@ export const APP_ROUTES = [
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
-  { id: 'starmap', path: STARMAP_ROUTE, view: 'starmap' }
+  { id: 'kanban', path: KANBAN_ROUTE, view: 'kanban' }
 ] as const satisfies readonly AppRoute[]
 
 const APP_VIEW_BY_PATH = new Map<string, AppView>(APP_ROUTES.map(route => [route.path, route.view]))
@@ -59,14 +59,7 @@ const RESERVED_PATHS: ReadonlySet<string> = new Set(APP_ROUTES.map(route => rout
 // Views that render as a full-screen modal card (OverlayView) over the shell.
 // While one is open the app's titlebar control clusters must hide so they don't
 // bleed over the overlay (they sit at a higher z-index than the overlay card).
-export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set([
-  'agents',
-  'command-center',
-  'cron',
-  'profiles',
-  'settings',
-  'starmap'
-])
+export const OVERLAY_VIEWS: ReadonlySet<AppView> = new Set(['agents', 'command-center', 'cron', 'profiles', 'settings'])
 
 export function isOverlayView(view: AppView): boolean {
   return OVERLAY_VIEWS.has(view)

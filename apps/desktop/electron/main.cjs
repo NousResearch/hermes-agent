@@ -21,10 +21,10 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
+const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
-const { installEmbedReferer } = require('./embed-referer.cjs')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const {
@@ -39,13 +39,10 @@ const { createLinkTitleWindow } = require('./link-title-window.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPortAnnouncement } = require('./backend-ready.cjs')
-const { dashboardFallbackArgs, sourceDeclaresServe } = require('./backend-command.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
 const { readWindowsUserEnvVar } = require('./windows-user-env.cjs')
-const { readWslWindowsClipboardImage } = require('./wsl-clipboard-image.cjs')
-const { nativeOverlayWidth: computeNativeOverlayWidth } = require('./titlebar-overlay-width.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { readLiveUpdateMarker } = require('./update-marker.cjs')
 const {
@@ -189,16 +186,6 @@ if (REMOTE_DISPLAY_REASON) {
   )
 }
 
-// WSLg: Chromium blocklists the Mesa vGPU → software compositing → typing lag.
-// /dev/dxg means a real GPU is available; un-blocklist it. Skipped when a remote
-// display already forced software (SSH'd-into-WSL).
-if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
-  app.commandLine.appendSwitch('ignore-gpu-blocklist')
-  app.commandLine.appendSwitch('enable-gpu-rasterization')
-  app.commandLine.appendSwitch('enable-zero-copy')
-  console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
-}
-
 ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
@@ -331,7 +318,9 @@ function hermesManagedNodePathEntries() {
 }
 
 function pathWithHermesManagedNode(...entries) {
-  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
+  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH]
+    .filter(Boolean)
+    .join(path.delimiter)
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -409,10 +398,14 @@ const WINDOW_BUTTON_POSITION = {
   x: 24,
   y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
 }
-// Right-edge window-control reservation lives in titlebar-overlay-width.cjs
-// (pure + unit-testable); computeNativeOverlayWidth() applies it per platform.
-// It's only the pre-layout fallback — the renderer measures the exact overlay
-// width live via the Window Controls Overlay API.
+// Width Electron reserves for the Windows/Linux native min/max/close cluster
+// when `titleBarOverlay` is enabled. The OS paints these buttons in the
+// top-right corner of the renderer; we have to leave that much room on the
+// right edge so our system tools (file browser, haptics, settings) don't sit
+// underneath them. macOS uses left-side traffic lights instead and reports a
+// position via getWindowButtonPosition(), so this width is non-zero only on
+// non-macOS platforms.
+const NATIVE_OVERLAY_BUTTON_WIDTH = 144
 const APP_ICON_PATHS = [
   path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
@@ -526,49 +519,25 @@ function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
 }
 
-// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
-// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
-const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
-
 function getTitleBarOverlayOptions() {
   if (IS_MAC) {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
-  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
-  // GNOME) can use the native overlay — let it through.
-  if (!IS_WINDOWS && IS_WSL) {
-    return false
+  if (rendererTitleBarTheme) {
+    return {
+      color: rendererTitleBarTheme.background,
+      height: TITLEBAR_HEIGHT,
+      symbolColor: rendererTitleBarTheme.foreground
+    }
   }
+
+  const useDarkColors = nativeTheme.shouldUseDarkColors
 
   return {
-    color: TITLEBAR_OVERLAY_COLOR,
+    color: useDarkColors ? '#111111' : '#f7f7f7',
     height: TITLEBAR_HEIGHT,
-    symbolColor:
-      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground)
-        ? rendererTitleBarTheme.foreground
-        : nativeTheme.shouldUseDarkColors
-          ? '#f7f7f7'
-          : '#242424'
-  }
-}
-
-// Push refreshed overlay options to a live window after a theme/appearance
-// change. No-op only on plain (non-WSL) Linux, where getTitleBarOverlayOptions()
-// returns false; the try/catch additionally guards builds where
-// setTitleBarOverlay isn't supported.
-function applyTitleBarOverlay(win) {
-  const options = getTitleBarOverlayOptions()
-  if (!options || typeof options !== 'object') {
-    return
-  }
-
-  try {
-    win?.setTitleBarOverlay?.(options)
-  } catch {
-    // Overlay not supported on this platform/build — leave the frameless
-    // titlebar as-is.
+    symbolColor: useDarkColors ? '#f7f7f7' : '#242424'
   }
 }
 
@@ -792,7 +761,7 @@ let rendererReloadTimes = []
 // the renderer's "Reload and retry" path or by quitting the app.
 let bootstrapFailure = null
 // Latched non-bootstrap backend spawn failure — stops getConnection() from
-// respawning hermes serve backend children in a tight loop while boot is broken.
+// respawning hermes dashboard children in a tight loop while boot is broken.
 let backendStartFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
@@ -1286,14 +1255,8 @@ function findOnPath(command) {
   const pathEntries = String(process.env.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
-  // On Windows, try PATHEXT extensions BEFORE the bare (empty-extension) name.
-  // A real command must resolve via its .exe/.cmd (Windows command-resolution
-  // semantics consult PATHEXT); an extensionless file — e.g. a Git-Bash
-  // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
-  // The empty entry is kept LAST so callers that already include the extension
-  // (py.exe, pwsh.exe, powershell.exe) still resolve.
   const extensions = IS_WINDOWS
-    ? [...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean), '']
+    ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
     : ['']
 
   for (const entry of pathEntries) {
@@ -1310,7 +1273,7 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-function unwrapWindowsVenvHermesCommand(command, backendArgs) {
+function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
   if (!IS_WINDOWS || !command || isCommandScript(command)) return null
 
   const resolved = path.resolve(String(command))
@@ -1320,85 +1283,27 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   if (path.basename(scriptsDir).toLowerCase() !== 'scripts') return null
 
   const venvRoot = path.dirname(scriptsDir)
-  const python = getVenvPython(venvRoot)
+  const python = getNoConsoleVenvPython(venvRoot)
   if (!fileExists(python)) return null
 
   const root = path.dirname(venvRoot)
   return {
-    label: `existing Hermes Python at ${python}`,
+    label: `existing Hermes no-console Python at ${python}`,
     command: python,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
+    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     bootstrap: false,
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
+      pythonPathEntries: [
+        ...(directoryExists(root) ? [root] : []),
+        ...getVenvSitePackagesEntries(venvRoot)
+      ],
       venvRoot
     }),
     kind: 'python',
-    // Surfaced so backendSupportsServe() can read this runtime's source for the
-    // `serve` capability check instead of falling back to a heavyweight probe.
-    root,
+    readyFile: true,
     shell: false
   }
-}
-
-// Does the resolved runtime understand the `serve` subcommand? The desktop
-// spawns `hermes serve`; runtimes older than serve only have `dashboard`. We
-// detect support so getBackendArgsForRuntime() can route old runtimes through
-// the legacy `dashboard --no-open` form instead of crashing on an unknown
-// subcommand (would brick every user mid-upgrade — #54568 follow-up).
-//
-// Fast path: read the runtime's own dashboard.py (instant, covers managed
-// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
-// (covers a bare `hermes` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend.
-const _serveSupportCache = new Map()
-function backendSupportsServe(backend) {
-  if (!backend || !backend.command) return true
-  const key = `${backend.command}::${backend.root || ''}`
-  if (_serveSupportCache.has(key)) return _serveSupportCache.get(key)
-
-  let supported = null
-  if (backend.root) {
-    try {
-      const src = fs.readFileSync(
-        path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
-        'utf8'
-      )
-      supported = sourceDeclaresServe(src)
-    } catch {
-      supported = null // source unreadable — fall through to the probe
-    }
-  }
-
-  if (supported === null) {
-    try {
-      const prefix = backend.args && backend.args[0] === '-m' ? backend.args.slice(0, 2) : []
-      execFileSync(backend.command, [...prefix, 'serve', '--help'], {
-        cwd: backend.root || undefined,
-        env: { ...process.env, HERMES_HOME, ...(backend.env || {}) },
-        timeout: 15000,
-        stdio: 'ignore',
-        windowsHide: true
-      })
-      supported = true
-    } catch {
-      supported = false
-    }
-  }
-
-  _serveSupportCache.set(key, supported)
-  rememberLog(
-    `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
-  )
-  return supported
-}
-
-// Given a resolved backend whose args target `serve`, return the args the
-// runtime actually understands: unchanged when `serve` is supported, or
-// rewritten to `dashboard --no-open` for older runtimes.
-function getBackendArgsForRuntime(backend) {
-  return backendSupportsServe(backend) ? backend.args : dashboardFallbackArgs(backend.args)
 }
 
 function normalizeExecutablePathForCompare(commandPath) {
@@ -1621,26 +1526,66 @@ function getVenvPython(venvRoot) {
   return path.join(venvRoot, IS_WINDOWS ? path.join('Scripts', 'python.exe') : path.join('bin', 'python'))
 }
 
-// Windows console-window flashes are governed by the *parent's* console, not by
-// each child spawn. A GUI-subsystem parent (pythonw.exe) has no console, so every
-// console-subsystem child it spawns (git, gh, cmd, ...) must allocate its own —
-// which flashes a window. A console-subsystem parent (python.exe) instead owns a
-// single console that all of its children inherit, so none of them flash.
-//
-// Note this change adds no new creationflag: the backend spawn is ALREADY wrapped
-// in hiddenWindowsChildOptions() (windowsHide: true), but that setting is INERT
-// against pythonw.exe — a GUI-subsystem process has no console for it to act on.
-// Switching the backend to the venv's console python.exe is what makes the
-// existing wrapper load-bearing: with windowsHide the process comes up owning a
-// *windowless* console (verified at runtime — it has an attachable console whose
-// window handle is NULL), and its children inherit that one windowless console
-// instead of each allocating a visible one.
-//
-// This makes "no flashing windows" a property of the one backend launch rather
-// than a flag that has to be remembered at every descendant spawn site. Restoring
-// console python also restores stdout, so the backend announces its port on the
-// normal HERMES_DASHBOARD_READY stdout line and no ready-file side channel is
-// needed.
+function readVenvHome(venvRoot) {
+  try {
+    const cfg = fs.readFileSync(path.join(venvRoot, 'pyvenv.cfg'), 'utf8')
+    const match = cfg.match(/^home\s*=\s*(.+?)\s*$/im)
+    return match ? match[1].trim() : null
+  } catch {
+    return null
+  }
+}
+
+function getNoConsoleVenvPython(venvRoot) {
+  if (!IS_WINDOWS) return getVenvPython(venvRoot)
+
+  // Prefer the venv's own pythonw shim — it carries pyvenv.cfg / site-packages
+  // wiring. Falling back to the base uv/python.org pythonw.exe skips the venv
+  // and breaks imports (yaml, hermes_cli, …) even when PYTHONPATH is patched.
+  const venvPythonw = path.join(venvRoot, 'Scripts', 'pythonw.exe')
+  if (fileExists(venvPythonw)) return venvPythonw
+
+  const baseHome = readVenvHome(venvRoot)
+  if (baseHome) {
+    const basePythonw = path.join(baseHome, 'pythonw.exe')
+    if (fileExists(basePythonw)) return basePythonw
+  }
+
+  return venvPythonw
+}
+
+function toNoConsolePython(pythonPath) {
+  if (!IS_WINDOWS || !pythonPath) return pythonPath
+
+  const resolved = String(pythonPath)
+  if (/pythonw\.exe$/i.test(resolved)) return resolved
+
+  if (/python\.exe$/i.test(resolved)) {
+    const pythonw = path.join(path.dirname(resolved), 'pythonw.exe')
+    if (fileExists(pythonw)) return pythonw
+  }
+
+  return pythonPath
+}
+
+function applyWindowsNoConsoleSpawnHints(backend) {
+  if (!IS_WINDOWS || !backend?.command) return backend
+
+  const usesHermesModule =
+    backend.kind === 'python' ||
+    (Array.isArray(backend.args) &&
+      backend.args[0] === '-m' &&
+      backend.args[1] === 'hermes_cli.main')
+
+  if (!usesHermesModule) return backend
+
+  backend.command = toNoConsolePython(backend.command)
+  if (/pythonw\.exe$/i.test(path.basename(String(backend.command || '')))) {
+    backend.readyFile = true
+  }
+
+  return backend
+}
 
 function getVenvSitePackagesEntries(venvRoot) {
   const entries = []
@@ -1995,16 +1940,6 @@ async function readCommitLog(cwd, branch) {
 
 let updateInFlight = false
 
-// Set to true when the desktop is about to quit so a detached swap/install/
-// uninstall script can take over. On macOS, app.quit() closes windows but
-// window-all-closed deliberately keeps the process alive (standard Electron
-// macOS convention). Without this flag the process never exits — the detached
-// hand-off script spins its PID-wait for the full timeout, and the user sees a
-// blank app with no window (and an uninstall that appears to do nothing). When
-// set, window-all-closed calls app.quit() on every platform so the process
-// actually dies and the hand-off script can proceed immediately.
-let isQuittingForHandoff = false
-
 // Resolve the staged updater binary. The Tauri installer copies itself to
 // HERMES_HOME/hermes-setup.exe on a successful install (see
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
@@ -2216,8 +2151,7 @@ async function applyUpdates(opts = {}) {
 
     emitUpdateProgress({
       stage: 'restart',
-      message:
-        'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+      message: 'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
       percent: 100
     })
     repairMacUpdaterHelper(updater)
@@ -2260,7 +2194,6 @@ async function applyUpdates(opts = {}) {
     // appears), THEN quit to release the venv shim. The updater rebuilds and
     // relaunches us when it's done. (#50419 — a 600ms quit looked like a crash
     // and lured users into the #50238 relaunch loop.)
-    isQuittingForHandoff = true
     setTimeout(() => {
       app.quit()
     }, UPDATE_HANDOFF_DWELL_MS)
@@ -2284,18 +2217,7 @@ async function handOffWindowsBootstrapRecovery(reason) {
     : configuredBranch || DEFAULT_UPDATE_BRANCH
   const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
-  const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
-  // Choose the gentle in-place --update when ANY real-install signal is present,
-  // not just the `hermes.exe` console-script shim. That shim is generated at the
-  // END of venv setup and is absent in exactly the interrupted/quarantined states
-  // this recovery exists to heal — gating on it alone forced the destructive
-  // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
-  // and the bootstrap-complete marker are present earlier and are better signals.
-  const haveRealInstall =
-    fileExists(venvPython) ||
-    fileExists(venvHermes) ||
-    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
-  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  const updaterArgs = fileExists(venvHermes) ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 
   await releaseBackendLockForUpdate(updateRoot)
 
@@ -2312,13 +2234,10 @@ async function handOffWindowsBootstrapRecovery(reason) {
   })
   child.unref()
 
-  rememberLog(
-    `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
-  )
+  rememberLog(`[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`)
   // Same dwell as the in-app update hand-off (#50419): give the updater's
   // window time to appear before we vanish, so the recovery doesn't look like
   // a crash and provoke a mid-recovery relaunch.
-  isQuittingForHandoff = true
   setTimeout(() => {
     app.quit()
   }, UPDATE_HANDOFF_DWELL_MS)
@@ -2398,14 +2317,14 @@ async function applyUpdatesPosixInApp() {
     PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
   }
 
-  // `hermes update` reaps stale `hermes serve` backends (a code update
+  // `hermes update` reaps stale `hermes dashboard` backends (a code update
   // leaves the running process serving old Python against the freshly-updated
   // JS bundle). But OUR backend is one of those processes, and killing it
   // mid-update produces the boot→kill→crash loop in #37532 — the desktop
   // already restarts its own backend via the rebuild+relaunch below, so the
   // reap must spare it. Hand the live backend's PID to the update process;
   // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
-  // it while still reaping any genuinely-orphaned backends. (#37532)
+  // it while still reaping any genuinely-orphaned dashboards. (#37532)
   // Exclude every desktop-managed backend (primary + all pool profiles) from
   // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
   // list (a single int still parses for back-compat).
@@ -2526,7 +2445,6 @@ async function applyUpdatesPosixInApp() {
           `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
             `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
         )
-        isQuittingForHandoff = true
         setTimeout(() => app.quit(), UPDATE_HANDOFF_DWELL_MS)
         return { ok: true, handedOff: true }
       } catch (err) {
@@ -2632,7 +2550,6 @@ fi
   child.unref()
   rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
 
-  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 600)
   return { ok: true, handedOff: true, rebuiltApp, targetApp }
 }
@@ -2663,24 +2580,6 @@ function readBootstrapMarker() {
   return readJson(BOOTSTRAP_COMPLETE_MARKER)
 }
 
-// Marker-independent: is the canonical install at ACTIVE_HERMES_ROOT actually
-// runnable right now? A complete CLI install (`install.sh --include-desktop`)
-// or a DMG launch over a prior CLI install satisfies this WITHOUT the desktop
-// ever having written the bootstrap marker -- so we must be able to recognise
-// "already installed" off the filesystem alone, not just the marker.
-function isActiveRuntimeUsable() {
-  const venvPython = getVenvPython(VENV_ROOT)
-  return (
-    isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
-    fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
-      env: {
-        PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-      }
-    })
-  )
-}
-
 function isBootstrapComplete() {
   const marker = readBootstrapMarker()
   if (!marker || typeof marker !== 'object') return false
@@ -2693,7 +2592,7 @@ function isBootstrapComplete() {
   // a runnable venv: an interrupted or split-home install can leave the marker
   // + checkout without a venv, and trusting that spawns a dead backend
   // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isActiveRuntimeUsable()
+  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
 }
 
 function writeBootstrapMarker(payload) {
@@ -2856,60 +2755,63 @@ function writeDefaultProjectDir(dir) {
   }
 }
 
-function createPythonBackend(root, label, backendArgs, options = {}) {
+function createPythonBackend(root, label, dashboardArgs, options = {}) {
   const python = findPythonForRoot(root)
   if (!python) return null
 
   const venvRoot = path.join(root, 'venv')
   const venvPython = getVenvPython(venvRoot)
-  const command = IS_WINDOWS && fileExists(venvPython) ? venvPython : python
+  const command =
+    IS_WINDOWS && fileExists(venvPython) ? getNoConsoleVenvPython(venvRoot) : toNoConsolePython(python)
 
-  return {
+  return applyWindowsNoConsoleSpawnHints({
     kind: 'python',
     label,
     command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
+    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [root, ...getVenvSitePackagesEntries(venvRoot)],
+      pythonPathEntries: [root],
       venvRoot
     }),
     root,
     bootstrap: Boolean(options.bootstrap),
     shell: false
-  }
+  })
 }
 
 // createActiveBackend — build a backend pointing at ACTIVE_HERMES_ROOT, the
 // canonical install location shared with the CLI installer. The venv at
 // VENV_ROOT may not exist yet on first run; bootstrap=true tells
 // ensureRuntime() to create / refresh it before launch.
-function createActiveBackend(backendArgs) {
+function createActiveBackend(dashboardArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython) ? venvPython : findSystemPython()
+  const command = fileExists(venvPython)
+    ? getNoConsoleVenvPython(VENV_ROOT)
+    : toNoConsolePython(findSystemPython())
 
-  return {
+  return applyWindowsNoConsoleSpawnHints({
     kind: 'python',
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command,
-    args: ['-m', 'hermes_cli.main', ...backendArgs],
+    args: ['-m', 'hermes_cli.main', ...dashboardArgs],
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [ACTIVE_HERMES_ROOT, ...getVenvSitePackagesEntries(VENV_ROOT)],
+      pythonPathEntries: [ACTIVE_HERMES_ROOT],
       venvRoot: VENV_ROOT
     }),
     root: ACTIVE_HERMES_ROOT,
     bootstrap: true,
     shell: false
-  }
+  })
 }
 
-function resolveHermesBackend(backendArgs) {
+function resolveHermesBackend(dashboardArgs) {
   // 1. Explicit override -- HERMES_DESKTOP_HERMES_ROOT points at a developer
   //    checkout. Honour it as-is (no bootstrap; the user is driving).
   const overrideRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
-    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
+    const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, dashboardArgs)
     if (backend) return backend
   }
 
@@ -2918,7 +2820,7 @@ function resolveHermesBackend(backendArgs) {
   //    installed `hermes` on PATH so local Python edits are actually exercised.
   //    (In dev with no checkout, SOURCE_REPO_ROOT won't pass isHermesSourceRoot.)
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
-    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
+    const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, dashboardArgs)
     if (backend) return backend
   }
 
@@ -2929,7 +2831,7 @@ function resolveHermesBackend(backendArgs) {
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
   if (isBootstrapComplete()) {
-    return createActiveBackend(backendArgs)
+    return createActiveBackend(dashboardArgs)
   }
 
   // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
@@ -2962,7 +2864,7 @@ function resolveHermesBackend(backendArgs) {
     }
 
     if (hermesCommand) {
-      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs)
+      const unwrapped = unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs)
       if (unwrapped) {
         return unwrapped
       }
@@ -2976,17 +2878,15 @@ function resolveHermesBackend(backendArgs) {
       // and lets the resolver fall through to step 6 / bootstrap.
       const shellForProbe = isCommandScript(hermesCommand)
       if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        return (
-          unwrapWindowsVenvHermesCommand(hermesCommand, backendArgs) || {
-            label: `existing Hermes CLI at ${hermesCommand}`,
-            command: hermesCommand,
-            args: backendArgs,
-            bootstrap: false,
-            env: {},
-            kind: 'command',
-            shell: shellForProbe
-          }
-        )
+        return unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs) || {
+          label: `existing Hermes CLI at ${hermesCommand}`,
+          command: hermesCommand,
+          args: dashboardArgs,
+          bootstrap: false,
+          env: {},
+          kind: 'command',
+          shell: shellForProbe
+        }
       }
       rememberLog(
         `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
@@ -3008,15 +2908,15 @@ function resolveHermesBackend(backendArgs) {
     // failure, fall through to step 6 so the bootstrap runner pulls
     // a uv-managed 3.11 into %LOCALAPPDATA%\hermes\hermes-agent\venv.
     if (canImportHermesCli(python)) {
-      return {
+      return applyWindowsNoConsoleSpawnHints({
         kind: 'python',
         label: `installed hermes_cli module via ${python}`,
-        command: python,
-        args: ['-m', 'hermes_cli.main', ...backendArgs],
+        command: toNoConsolePython(python),
+        args: ['-m', 'hermes_cli.main', ...dashboardArgs],
         bootstrap: false,
         env: {},
         shell: false
-      }
+      })
     }
     rememberLog(`Ignoring system Python ${python}: hermes_cli is not importable; falling through to bootstrap.`)
   }
@@ -3035,7 +2935,7 @@ function resolveHermesBackend(backendArgs) {
     kind: 'bootstrap-needed',
     label: 'Hermes Agent not installed yet; bootstrap required',
     command: null,
-    args: backendArgs,
+    args: dashboardArgs,
     bootstrap: true,
     env: {},
     shell: false,
@@ -3050,7 +2950,7 @@ function resolveHermesBackend(backendArgs) {
 async function ensureRuntime(backend) {
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
-    return backend
+    return applyWindowsNoConsoleSpawnHints(backend)
   }
 
   // backend.kind === 'bootstrap-needed' means resolveHermesBackend couldn't
@@ -3066,9 +2966,7 @@ async function ensureRuntime(backend) {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
-      const handoffError = new Error(
-        'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
-      )
+      const handoffError = new Error('Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.')
       handoffError.isBootstrapFailure = true
       handoffError.bootstrapHandedOff = true
       bootstrapFailure = handoffError
@@ -3192,7 +3090,7 @@ async function ensureRuntime(backend) {
     )
   }
 
-  backend.command = getVenvPython(VENV_ROOT)
+  backend.command = getNoConsoleVenvPython(VENV_ROOT)
   backend.label = `Hermes at ${ACTIVE_HERMES_ROOT} (venv: ${VENV_ROOT})`
   updateBootProgress({
     phase: 'runtime.ready',
@@ -3201,7 +3099,7 @@ async function ensureRuntime(backend) {
     running: true,
     error: null
   })
-  return backend
+  return applyWindowsNoConsoleSpawnHints(backend)
 }
 
 function fetchJson(url, token, options = {}) {
@@ -3862,7 +3760,11 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
+  // macOS reports traffic-light coords via windowButtonPosition; the
+  // titlebarOverlay there doesn't reserve right-edge space. Windows/Linux
+  // render the native window-controls overlay on the right, so the renderer
+  // needs to inset its right cluster by this much to clear them.
+  return IS_MAC ? 0 : NATIVE_OVERLAY_BUTTON_WIDTH
 }
 
 function getWindowState() {
@@ -5108,24 +5010,13 @@ function resetBootProgressForReconnect() {
   )
 }
 
-function stopBackendChild(child) {
-  if (!child || child.killed) return
-  try {
-    if (IS_WINDOWS && Number.isInteger(child.pid)) {
-      forceKillProcessTree(child.pid)
-    } else {
-      child.kill('SIGTERM')
-    }
-  } catch {
-    // Already gone.
-  }
-}
-
 function resetHermesConnection() {
   connectionPromise = null
   backendStartFailure = null
 
-  stopBackendChild(hermesProcess)
+  if (hermesProcess && !hermesProcess.killed) {
+    hermesProcess.kill('SIGTERM')
+  }
 
   hermesProcess = null
   resetBootProgressForReconnect()
@@ -5279,10 +5170,8 @@ async function spawnPoolBackend(profile, entry) {
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.
   // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-  const backendArgs = ['--profile', profile, 'serve', '--host', '127.0.0.1', '--port', '0']
-  const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
-  // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-  backend.args = getBackendArgsForRuntime(backend)
+  const dashboardArgs = ['--profile', profile, 'dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0']
+  const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
   const hermesCwd = resolveHermesCwd()
   const webDist = resolveWebDist()
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -5373,7 +5262,13 @@ function stopPoolBackend(profile) {
   const entry = backendPool.get(profile)
   if (!entry) return
   backendPool.delete(profile)
-  stopBackendChild(entry.process)
+  if (entry.process && !entry.process.killed) {
+    try {
+      entry.process.kill('SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 async function teardownPoolBackendAndWait(profile) {
@@ -5381,7 +5276,13 @@ async function teardownPoolBackendAndWait(profile) {
   if (!entry) return
   backendPool.delete(profile)
 
-  stopBackendChild(entry.process)
+  if (entry.process && !entry.process.killed) {
+    try {
+      entry.process.kill('SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
 
   await waitForBackendExit(entry.process)
 }
@@ -5486,7 +5387,7 @@ async function startHermes() {
 
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
-    const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+    const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', '0']
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -5494,12 +5395,10 @@ async function startHermes() {
     // unaffected.
     const activeProfile = readActiveDesktopProfile()
     if (activeProfile) {
-      backendArgs.unshift('--profile', activeProfile)
+      dashboardArgs.unshift('--profile', activeProfile)
     }
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
-    const backend = await ensureRuntime(resolveHermesBackend(backendArgs))
-    // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
-    backend.args = getBackendArgsForRuntime(backend)
+    const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
     const hermesCwd = resolveHermesCwd()
     const webDist = resolveWebDist()
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
@@ -5586,10 +5485,7 @@ async function startHermes() {
 
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
     // Discover the ephemeral port the child bound to
-    const port = await Promise.race([
-      waitForDashboardPortAnnouncement(hermesProcess, { readyFile }),
-      backendStartFailed
-    ])
+    const port = await Promise.race([waitForDashboardPortAnnouncement(hermesProcess, { readyFile }), backendStartFailed])
     if (readyFile) {
       fs.unlink(readyFile, () => {})
     }
@@ -5924,7 +5820,7 @@ function createWindow() {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
-        applyTitleBarOverlay(mainWindow)
+        mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
       })
     }
   }
@@ -6108,32 +6004,19 @@ ipcMain.handle('hermes:pet-overlay:close', async () => {
 
   return { ok: true }
 })
-// Drag/resize: the overlay reports new absolute screen bounds (it already knows
-// the pointer's screen coords). Drag keeps the size constant; the wheel-to-scale
-// gesture grows/shrinks it so the sprite is never cropped by the window edge.
-// The window is created non-resizable (no stray edge-drag on the transparent
-// frameless panel), which on Windows/Linux also blocks programmatic setBounds
-// sizing — so briefly flip resizable on whenever the size actually changes.
+// Drag: the overlay reports a new absolute screen position (it already knows the
+// pointer's screen coords), we just move the window.
 ipcMain.on('hermes:pet-overlay:set-bounds', (_event, bounds) => {
   if (!petOverlayWindow || petOverlayWindow.isDestroyed() || !bounds) {
     return
   }
 
-  const win = petOverlayWindow
-  const width = Math.max(80, Math.round(bounds.width))
-  const height = Math.max(80, Math.round(bounds.height))
-  const [curW, curH] = win.getSize()
-  const resizing = width !== curW || height !== curH
-
-  if (resizing && !win.isResizable()) {
-    win.setResizable(true)
-  }
-
-  win.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width, height })
-
-  if (resizing) {
-    win.setResizable(false)
-  }
+  petOverlayWindow.setBounds({
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.max(80, Math.round(bounds.width)),
+    height: Math.max(80, Math.round(bounds.height))
+  })
 })
 // Click-through: the overlay window is a full rectangle but only the pet pixels
 // should be interactive. The renderer toggles this as the cursor enters/leaves
@@ -6599,21 +6482,11 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
   const image = clipboard.readImage()
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
+  if (!image || image.isEmpty()) {
+    return ''
   }
 
-  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
-  // Linux clipboard Electron reads, so a host screenshot looks empty above.
-  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
-  if (IS_WSL) {
-    const png = readWslWindowsClipboardImage()
-    if (png) {
-      return writeComposerImage(png, '.png')
-    }
-  }
-
-  return ''
+  return writeComposerImage(image.toPNG(), '.png')
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
@@ -6633,7 +6506,7 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     background: payload.background,
     foreground: payload.foreground
   }
-  applyTitleBarOverlay(mainWindow)
+  mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
 })
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
@@ -7009,7 +6882,9 @@ ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {
 
 // Git-driven worktree management ("Start work" flow). Errors surface to the
 // renderer as rejected promises so it can toast a friendly message.
-ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) => listWorktrees(repoPath, resolveGitBinary()))
+ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) =>
+  listWorktrees(repoPath, resolveGitBinary())
+)
 
 ipcMain.handle('hermes:git:worktreeAdd', async (_event, repoPath, options) =>
   addWorktree(repoPath, options || {}, resolveGitBinary())
@@ -7023,7 +6898,9 @@ ipcMain.handle('hermes:git:branchSwitch', async (_event, repoPath, branch) =>
   switchBranch(repoPath, branch, resolveGitBinary())
 )
 
-ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches(repoPath, resolveGitBinary()))
+ipcMain.handle('hermes:git:branchList', async (_event, repoPath) =>
+  listBranches(repoPath, resolveGitBinary())
+)
 
 // Compact repo status (branch, ahead/behind, change counts + files) for the
 // composer coding rail. Returns null on a non-repo / remote backend so the rail
@@ -7400,7 +7277,6 @@ async function runDesktopUninstall(mode) {
 
   // Give the renderer a beat to show its "uninstalling…" state, then quit so
   // the venv python shim + app bundle unlock and the cleanup script can run.
-  isQuittingForHandoff = true
   setTimeout(() => app.quit(), 800)
   return { ok: true, mode, willRemoveAppBundle: Boolean(removeBundle), scriptPath }
 }
@@ -7526,7 +7402,6 @@ app.whenReady().then(() => {
   }
   installMediaPermissions()
   registerMediaProtocol()
-  installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()
@@ -7599,16 +7474,546 @@ app.on('before-quit', () => {
     disposeTerminalSession(id)
   }
 
-  stopBackendChild(hermesProcess)
+  if (hermesProcess && !hermesProcess.killed) {
+    hermesProcess.kill('SIGTERM')
+  }
   stopAllPoolBackends()
 })
 
 app.on('window-all-closed', () => {
-  // macOS convention: keep the process alive in the Dock when the user closes
-  // the last window. But when we're handing off to a detached updater / swap /
-  // uninstall script, the process MUST exit so the script can replace or remove
-  // the bundle and relaunch — without this the script's PID-wait spins to its
-  // full timeout and the user is left with an invisible app (or an uninstall
-  // that appears to do nothing).
-  if (process.platform !== 'darwin' || isQuittingForHandoff) app.quit()
+  if (process.platform !== 'darwin') app.quit()
+})
+// ===========================================================================
+// Kanban — SQLite-backed kanban board data, sharing DB with Hermes CLI.
+// ===========================================================================
+const KANBAN_DB_PATH = path.join(HERMES_HOME, 'kanban.db')
+
+function newId() {
+  const ts = Date.now().toString(36)
+  const rnd = crypto.randomBytes(8).toString('hex')
+  return `${ts}-${rnd}`
+}
+
+// Priority mapping: UI uses strings (high/medium/low), DB uses INTEGER.
+const PRIORITY_STR_TO_INT = { low: 0, medium: 1, high: 2 }
+const PRIORITY_INT_TO_STR = ['low', 'medium', 'high']
+
+/** @returns {import('node:sqlite').DatabaseSync} */
+let _kanbanDb = null
+function getKanbanDb() {
+  // Reconnect if prior connection was closed
+  if (_kanbanDb) {
+    try { _kanbanDb.prepare('SELECT 1').all(); return _kanbanDb }
+    catch { _kanbanDb = null }
+  }
+  const { DatabaseSync } = require('node:sqlite')
+  _kanbanDb = new DatabaseSync(KANBAN_DB_PATH)
+  _kanbanDb.exec('PRAGMA journal_mode=WAL')
+  _kanbanDb.exec('PRAGMA foreign_keys=ON')
+  ensureKanbanSchema(_kanbanDb)
+  return _kanbanDb
+}
+
+function ensureKanbanSchema(db) {
+  // kanban_boards — shared board table for the desktop kanban UI
+  db.exec(`CREATE TABLE IF NOT EXISTS kanban_boards (
+    id TEXT PRIMARY KEY,
+    slug TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at INTEGER NOT NULL
+  )`)
+
+  // Ensure a default board always exists
+  const existing = db.prepare("SELECT id FROM kanban_boards WHERE slug = ?").get('default')
+  if (!existing) {
+    db.prepare("INSERT INTO kanban_boards (id, slug, title, description, created_at) VALUES (?, ?, ?, ?, ?)").run(
+      newId(), 'default', 'Default Board', '', Date.now()
+    )
+  }
+
+  // Add columns to the CLI's tasks table that the kanban UI needs.
+  // ALTER TABLE ADD COLUMN is idempotent in SQLite (throws if column exists).
+  for (const stmt of [
+    "ALTER TABLE tasks ADD COLUMN board_id TEXT DEFAULT 'default'",
+    "ALTER TABLE tasks ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN updated_at INTEGER",
+    "ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE tasks ADD COLUMN source TEXT DEFAULT 'manual'",
+    "ALTER TABLE tasks ADD COLUMN session_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN profile_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN message_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN assignee_type TEXT DEFAULT 'unassigned'",
+    "ALTER TABLE tasks ADD COLUMN assignee_label TEXT",
+    "ALTER TABLE tasks ADD COLUMN sync_mode TEXT DEFAULT 'manual'",
+    "ALTER TABLE tasks ADD COLUMN external_task_id TEXT",
+    "ALTER TABLE tasks ADD COLUMN external_task_kind TEXT",
+    "ALTER TABLE tasks ADD COLUMN last_synced_at INTEGER"
+  ]) {
+    try { db.exec(stmt) } catch { /* column already exists */ }
+  }
+
+  // Migrate historical task board_ids from random IDs to slugs.
+  // Desktop earlier returned kanban_boards.id (random) to the renderer,
+  // while CLI/Agent tasks use board_id = 'default' (slug). This migration
+  // aligns all existing task board_ids with their board's slug so tasks
+  // are not filtered out by the renderer's boardId === activeBoardId check.
+  const boardsToMigrate = db.prepare("SELECT id, slug FROM kanban_boards WHERE id != slug").all()
+  for (const board of boardsToMigrate) {
+    db.prepare("UPDATE tasks SET board_id = ? WHERE board_id = ?").run(board.slug, board.id)
+  }
+}
+
+/** Convert a DB row to the UI-friendly KanbanTask shape. */
+function rowToKanbanTask(row) {
+  return {
+    id: row.id,
+    boardId: row.board_id || 'default',
+    title: row.title,
+    description: row.body || '',
+    status: row.status || 'todo',
+    priority: PRIORITY_INT_TO_STR[row.priority] || 'medium',
+    assignee: row.assignee || '',
+    createdBy: row.created_by || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || row.created_at,
+    archived: Boolean(row.archived),
+    order: row.sort_order || 0,
+    source: row.source || 'manual',
+    sessionId: row.session_id || undefined,
+    profileId: row.profile_id || undefined,
+    messageId: row.message_id || undefined,
+    assigneeType: row.assignee_type || 'unassigned',
+    assigneeLabel: row.assignee_label || undefined,
+    syncMode: row.sync_mode || 'manual',
+    externalTaskId: row.external_task_id || undefined,
+    externalTaskKind: row.external_task_kind || undefined,
+    lastSyncedAt: row.last_synced_at || undefined
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Input sanitization
+// ---------------------------------------------------------------------------
+
+const VALID_STATUSES = new Set(['todo', 'ready', 'running', 'review', 'done', 'blocked'])
+const VALID_PRIORITIES = new Set(['low', 'medium', 'high'])
+
+function sanitizeString(value, maxLength) {
+  return String(value || '').trim().slice(0, maxLength)
+}
+
+function sanitizeStatus(value) {
+  return VALID_STATUSES.has(value) ? value : 'todo'
+}
+
+function sanitizePriority(value) {
+  return VALID_PRIORITIES.has(value) ? value : 'medium'
+}
+
+function sanitizeTaskInput(input) {
+  const validSources = new Set(['manual', 'chat', 'agent', 'cron'])
+  const validAssigneeTypes = new Set(['user', 'agent', 'unassigned'])
+  const validSyncModes = new Set(['manual', 'linked', 'mirrored'])
+  return {
+    title: sanitizeString(input.title, 200) || 'Untitled',
+    description: String(input.description || '').slice(0, 5000),
+    status: sanitizeStatus(input.status),
+    priority: sanitizePriority(input.priority),
+    assignee: sanitizeString(input.assignee, 120),
+    labels: Array.isArray(input.labels)
+      ? input.labels.map(label => sanitizeString(label, 40)).filter(Boolean).slice(0, 20)
+      : []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// IPC handlers
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('hermes:kanban:boards', () => {
+  const db = getKanbanDb()
+  return db.prepare('SELECT id, slug, title, description, created_at FROM kanban_boards ORDER BY created_at ASC').all().map(r => ({
+    id: r.slug,
+    title: r.title,
+    description: r.description,
+    createdAt: r.created_at
+  }))
+})
+
+ipcMain.handle('hermes:kanban:createBoard', (_event, { title, description }) => {
+  const db = getKanbanDb()
+  const safeTitle = sanitizeString(title, 200) || 'Untitled Board'
+  const safeDesc = sanitizeString(description, 1000)
+  const slug = safeTitle
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '') || 'board'
+  const id = newId()
+  const now = Date.now()
+  db.prepare('INSERT INTO kanban_boards (id, slug, title, description, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    id, slug, safeTitle, safeDesc, now
+  )
+  return { id: slug, title: safeTitle, description: safeDesc, createdAt: now }
+})
+
+ipcMain.handle('hermes:kanban:deleteBoard', (_event, slug) => {
+  const db = getKanbanDb()
+  db.exec('BEGIN')
+  try {
+    db.prepare("UPDATE tasks SET board_id = 'default' WHERE board_id = ?").run(slug)
+    db.prepare('DELETE FROM kanban_boards WHERE slug = ?').run(slug)
+    db.exec('COMMIT')
+    return { ok: true }
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+})
+
+ipcMain.handle('hermes:kanban:tasks', (_event, boardId) => {
+  const db = getKanbanDb()
+  const rows = db.prepare('SELECT * FROM tasks WHERE board_id = ? AND archived = 0 ORDER BY created_at DESC').all(boardId)
+  return rows.map(rowToKanbanTask)
+})
+
+ipcMain.handle('hermes:kanban:allTasks', () => {
+  const db = getKanbanDb()
+  const rows = db.prepare('SELECT * FROM tasks WHERE archived = 0 ORDER BY created_at DESC').all()
+  return rows.map(rowToKanbanTask)
+})
+
+ipcMain.handle('hermes:kanban:createTask', (_event, taskData) => {
+  const db = getKanbanDb()
+  const safe = sanitizeTaskInput(taskData)
+  const id = newId()
+  const now = Date.now()
+  const priority = PRIORITY_STR_TO_INT[safe.priority] !== undefined ? PRIORITY_STR_TO_INT[safe.priority] : 1
+  const assignee = safe.assignee
+  const lastSyncedAt = taskData.lastSyncedAt ||
+    (taskData.syncMode === 'linked' || taskData.syncMode === 'mirrored' ? now : null)
+
+  db.prepare(`INSERT INTO tasks
+    (id, title, body, status, priority, assignee, created_by, board_id, created_at, updated_at, archived, workspace_kind, sort_order,
+     source, session_id, profile_id, message_id, assignee_type, assignee_label, sync_mode,
+     external_task_id, external_task_kind, last_synced_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'scratch', 0,
+     ?, ?, ?, ?, ?, ?, ?,
+     ?, ?, ?)`).run(
+    id,
+    safe.title,
+    safe.description,
+    safe.status,
+    priority,
+    assignee,
+    assignee,
+    taskData.boardId || 'default',
+    now,
+    now,
+    taskData.source || 'manual',
+    taskData.sessionId || null,
+    taskData.profileId || null,
+    taskData.messageId || null,
+    taskData.assigneeType || 'unassigned',
+    taskData.assigneeLabel || null,
+    taskData.syncMode || 'manual',
+    taskData.externalTaskId || null,
+    taskData.externalTaskKind || null,
+    lastSyncedAt
+  )
+
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  return rowToKanbanTask(row)
+})
+
+ipcMain.handle('hermes:kanban:updateTask', (_event, id, updates) => {
+  const db = getKanbanDb()
+  const existing = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  if (!existing) throw new Error(`Task ${id} not found`)
+
+  const assignments = []
+  const params = []
+
+  if (updates.title !== undefined) { assignments.push('title = ?'); params.push(sanitizeString(updates.title, 200)) }
+  if (updates.description !== undefined) { assignments.push('body = ?'); params.push(String(updates.description).slice(0, 5000)) }
+  if (updates.status !== undefined) { assignments.push('status = ?'); params.push(sanitizeStatus(updates.status)) }
+  if (updates.assignee !== undefined) { assignments.push('assignee = ?'); params.push(sanitizeString(updates.assignee, 120)) }
+  if (updates.priority !== undefined) {
+    const p = PRIORITY_STR_TO_INT[sanitizePriority(updates.priority)]
+    if (p !== undefined) { assignments.push('priority = ?'); params.push(p) }
+  }
+  if (updates.archived !== undefined) { assignments.push('archived = ?'); params.push(updates.archived ? 1 : 0) }
+  if (updates.order !== undefined) { assignments.push('sort_order = ?'); params.push(Number(updates.order) || 0) }
+  if (updates.syncMode !== undefined) { assignments.push('sync_mode = ?'); params.push(updates.syncMode) }
+  if (updates.lastSyncedAt !== undefined) { assignments.push('last_synced_at = ?'); params.push(updates.lastSyncedAt) }
+  if (updates.externalTaskId !== undefined) { assignments.push('external_task_id = ?'); params.push(updates.externalTaskId) }
+  if (updates.externalTaskKind !== undefined) { assignments.push('external_task_kind = ?'); params.push(updates.externalTaskKind) }
+  if (updates.assigneeType !== undefined) { assignments.push('assignee_type = ?'); params.push(updates.assigneeType) }
+  if (updates.assigneeLabel !== undefined) { assignments.push('assignee_label = ?'); params.push(updates.assigneeLabel) }
+
+  if (assignments.length > 0) {
+    assignments.push('updated_at = ?')
+    params.push(Date.now())
+    params.push(id)
+    db.prepare(`UPDATE tasks SET ${assignments.join(', ')} WHERE id = ?`).run(...params)
+  }
+
+  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+  return rowToKanbanTask(row)
+})
+
+ipcMain.handle('hermes:kanban:deleteTask', (_event, id) => {
+  const db = getKanbanDb()
+  db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+  db.prepare('DELETE FROM task_comments WHERE task_id = ?').run(id)
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:kanban:reorderTasks', (_event, boardId, updates) => {
+  const db = getKanbanDb()
+  if (!Array.isArray(updates)) throw new Error('updates must be an array')
+
+  const stmt = db.prepare(
+    'UPDATE tasks SET status = ?, sort_order = ?, updated_at = ? WHERE id = ?'
+  )
+  const now = Date.now()
+
+  db.exec('BEGIN')
+  try {
+    for (const { id, status, order } of updates) {
+      const safeStatus = sanitizeStatus(status)
+      stmt.run(safeStatus, Number(order) || 0, now, id)
+    }
+    db.exec('COMMIT')
+  } catch (e) {
+    db.exec('ROLLBACK')
+    throw e
+  }
+
+  // Return updated tasks for this board, sorted by order
+  const rows = db.prepare(
+    'SELECT * FROM tasks WHERE board_id = ? AND archived = 0 ORDER BY sort_order ASC, created_at ASC'
+  ).all(boardId)
+  return rows.map(rowToKanbanTask)
+})
+
+ipcMain.handle('hermes:kanban:comments', (_event, taskId) => {
+  const db = getKanbanDb()
+  const rows = db.prepare('SELECT id, task_id, author, body, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC').all(taskId)
+  return rows.map(r => ({
+    id: String(r.id),
+    taskId: r.task_id,
+    author: r.author || '',
+    body: r.body || '',
+    createdAt: r.created_at
+  }))
+})
+
+ipcMain.handle('hermes:kanban:addComment', (_event, { taskId, author, body }) => {
+  const db = getKanbanDb()
+  const now = Date.now()
+  const safeAuthor = sanitizeString(author, 120)
+  const safeBody = String(body || '').slice(0, 5000)
+  const result = db.prepare('INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)').run(
+    taskId, safeAuthor, safeBody, now
+  )
+  return {
+    id: result.lastInsertRowid.toString(),
+    taskId,
+    author: safeAuthor,
+    body: safeBody,
+    createdAt: now
+  }
+})
+
+ipcMain.handle('hermes:kanban:deleteComment', (_event, id) => {
+  const db = getKanbanDb()
+  db.prepare('DELETE FROM task_comments WHERE id = ?').run(Number(id))
+  return { ok: true }
+})
+
+// ---------------------------------------------------------------------------
+// hermes:// deep links (e.g. hermes://blueprint/morning-brief?time=08:00).
+// A docs/dashboard "Send to App" button opens this URL; we route it into the
+// running app's chat composer. Three delivery paths: macOS 'open-url',
+// Win/Linux running-app 'second-instance' (argv), Win/Linux cold-start argv.
+// ---------------------------------------------------------------------------
+const HERMES_PROTOCOL = 'hermes'
+let _pendingDeepLink = null
+let _rendererReadyForDeepLink = false
+
+function _extractDeepLink(argv) {
+  if (!Array.isArray(argv)) return null
+  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+}
+
+function handleDeepLink(url) {
+  if (!url || typeof url !== 'string') return
+  let parsed
+  try {
+    parsed = new URL(url)
+  } catch {
+    rememberLog(`[deeplink] ignoring malformed url: ${url}`)
+    return
+  }
+  // hermes://blueprint/<key>?slot=val  -> host="blueprint", path="/<key>"
+  const kind = parsed.hostname || ''
+  const name = decodeURIComponent((parsed.pathname || '').replace(/^\//, ''))
+  const params = {}
+  parsed.searchParams.forEach((v, k) => {
+    params[k] = v
+  })
+  const payload = { kind, name, params }
+
+  if (!_rendererReadyForDeepLink || !mainWindow || mainWindow.isDestroyed()) {
+    _pendingDeepLink = payload
+    return
+  }
+  try {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+    mainWindow.webContents.send('hermes:deep-link', payload)
+    rememberLog(`[deeplink] delivered ${kind}/${name}`)
+  } catch (err) {
+    rememberLog(`[deeplink] delivery failed: ${err.message}`)
+  }
+}
+
+// Renderer calls this (via IPC) once it has mounted its deep-link listener, so
+// a link that arrived during boot/install is flushed exactly once.
+ipcMain.handle('hermes:deep-link-ready', () => {
+  _rendererReadyForDeepLink = true
+  if (_pendingDeepLink) {
+    const queued = _pendingDeepLink
+    _pendingDeepLink = null
+    handleDeepLink(
+      `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
+        (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
+    )
+  }
+  return { ok: true }
+})
+
+function registerDeepLinkProtocol() {
+  try {
+    if (process.defaultApp && process.argv.length >= 2) {
+      // Dev: register with the electron exec path + entry script so the OS can
+      // relaunch us with the URL.
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
+    } else {
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
+    }
+  } catch (err) {
+    rememberLog(`[deeplink] protocol registration failed: ${err.message}`)
+  }
+}
+
+// Single-instance lock: deep links on a running app (Win/Linux) arrive as a
+// second-instance argv. Without the lock a second `hermes://` launch spawns a
+// whole new app instead of routing into the running one.
+const _gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!_gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const url = _extractDeepLink(argv)
+    if (url) handleDeepLink(url)
+    else if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.focus()
+    }
+  })
+}
+
+// macOS delivers deep links via 'open-url' — register early (can fire before
+// whenReady; handleDeepLink queues until the renderer is ready).
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleDeepLink(url)
+})
+
+app.whenReady().then(() => {
+  if (IS_MAC) {
+    Menu.setApplicationMenu(buildApplicationMenu())
+  } else {
+    Menu.setApplicationMenu(null)
+  }
+  installMediaPermissions()
+  registerMediaProtocol()
+  registerDeepLinkProtocol()
+  ensureWslWindowsFonts()
+  configureSpellChecker()
+  registerPowerResumeListeners()
+  createWindow()
+
+  // Win/Linux cold start: the launching hermes:// URL is in our own argv.
+  const _coldStartLink = _extractDeepLink(process.argv)
+  if (_coldStartLink) handleDeepLink(_coldStartLink)
+
+  app.on('activate', () => {
+    // Recreate the primary window if it's gone. Guard on mainWindow directly
+    // (not just total window count) so a dock click still restores the main
+    // window when only secondary session windows remain open.
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      createWindow()
+    } else {
+      focusWindow(mainWindow)
+    }
+  })
+})
+
+// Seed Chromium's spellchecker with the system locale (falling back to en-US).
+// On macOS Electron uses the native spellchecker which ignores this list, but
+// on Windows/Linux Chromium downloads Hunspell dictionaries on demand and
+// won't enable any without an explicit language.
+function configureSpellChecker() {
+  try {
+    const defaultSession = session.defaultSession
+
+    if (!defaultSession || typeof defaultSession.setSpellCheckerLanguages !== 'function') {
+      return
+    }
+
+    const available = defaultSession.availableSpellCheckerLanguages || []
+    const locale = (app.getLocale && app.getLocale()) || 'en-US'
+    const candidates = [locale, locale.split('-')[0], 'en-US', 'en']
+    const chosen = candidates.find(lang => available.includes(lang)) || 'en-US'
+
+    defaultSession.setSpellCheckerLanguages([chosen])
+  } catch (error) {
+    rememberLog(`Spellchecker setup failed: ${error.message}`)
+  }
+}
+
+app.on('before-quit', () => {
+  // Quitting mid-install should stop the installer, not orphan it.
+  if (bootstrapAbortController) {
+    try {
+      bootstrapAbortController.abort()
+    } catch {
+      void 0
+    }
+  }
+
+  if (desktopLogFlushTimer) {
+    clearTimeout(desktopLogFlushTimer)
+    desktopLogFlushTimer = null
+  }
+  flushDesktopLogBufferSync()
+  closePreviewWatchers()
+
+  // Kill open PTYs before environment teardown to avoid the node-pty#904
+  // ThreadSafeFunction SIGABRT race.
+  for (const id of [...terminalSessions.keys()]) {
+    disposeTerminalSession(id)
+  }
+
+  if (hermesProcess && !hermesProcess.killed) {
+    hermesProcess.kill('SIGTERM')
+  }
+  stopAllPoolBackends()
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
 })

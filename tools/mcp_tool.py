@@ -4095,16 +4095,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
 
+        # Compute injected source in outer scope so _call can close over it
+        # without shadowing the `args` closure variable.
+        from gateway.session_context import get_session_env
+        _injected_source = (
+            get_session_env("HERMES_SESSION_SOURCE", "")
+            if tool_name == "hermes_studio_use_chat_run" and "source" not in args
+            else None
+        )
+
         async def _call():
             _mark_server_call_started(server)
-            # Propagate HERMES_SESSION_SOURCE to MCP tools that create
-            # child sessions (e.g. hermes_studio_use_chat_run). The MCP
-            # server is an independent process that does not inherit the
-            # parent cron agent's env vars, so we inject the source here.
-            if (tool_name == "hermes_studio_use_chat_run"
-                    and "source" not in args
-                    and os.environ.get("HERMES_SESSION_SOURCE")):
-                args = {**args, "source": os.environ["HERMES_SESSION_SOURCE"]}
+            if _injected_source:
+                args["source"] = _injected_source
             async with server._rpc_lock:
                 # Snapshot the agent's context so an elicitation callback
                 # triggered during this call (fired on the MCP recv loop

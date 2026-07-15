@@ -34,7 +34,13 @@ def is_readonly_diagnostic_argv(argv: list[str] | tuple[str, ...] | None = None)
     normalized = [str(arg).strip().lower() for arg in args[1:]]
     if "doctor" in normalized:
         return "--fix" not in normalized and "--ack" not in normalized
+    if "prompt-size" in normalized:
+        return True
+    if normalized[:1] == ["status"]:
+        return True
     for index, arg in enumerate(normalized[:-1]):
+        if arg == "gateway" and normalized[index + 1] == "status":
+            return True
         if arg == "security" and normalized[index + 1] == "audit":
             return True
     if "model" in normalized and "--preflight" in normalized:

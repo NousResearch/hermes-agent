@@ -1253,7 +1253,10 @@ def init_agent(
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"
-    agent.logs_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import is_readonly_diagnostic
+
+    if not is_readonly_diagnostic():
+        agent.logs_dir.mkdir(parents=True, exist_ok=True)
     # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
     # is opt-in via sessions.write_json_snapshots (default False).  state.db
     # is canonical — the snapshot is only useful for external tooling that

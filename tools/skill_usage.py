@@ -89,6 +89,11 @@ def _usage_file() -> Path:
 @contextmanager
 def _usage_file_lock():
     """Serialize .usage.json read-modify-write cycles across processes."""
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        yield
+        return
     lock_path = _usage_file().with_suffix(".json.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -519,6 +524,10 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
 
 def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
     """Write the usage map atomically. Best-effort — errors are logged, not raised."""
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     path = _usage_file()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

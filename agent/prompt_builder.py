@@ -1323,6 +1323,10 @@ def _write_skills_snapshot(
     category_descriptions: dict[str, str],
 ) -> None:
     """Persist skill metadata to disk for fast cold-start reuse."""
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     payload = {
         "version": _SKILLS_SNAPSHOT_VERSION,
         "manifest": manifest,

@@ -230,6 +230,10 @@ def _disk_cache_age_seconds() -> Optional[float]:
 
 def _save_disk_cache(data: Dict[str, Any]) -> None:
     """Save models.dev data to disk cache atomically."""
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     try:
         cache_path = _get_cache_path()
         atomic_json_write(cache_path, data, indent=None, separators=(",", ":"))

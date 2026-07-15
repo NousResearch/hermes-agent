@@ -162,6 +162,10 @@ def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
 
 def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
     """Save processed OpenRouter metadata cache to disk atomically."""
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     try:
         atomic_json_write(
             _get_model_metadata_cache_path(),

@@ -768,6 +768,10 @@ def _sync_bundled_skills_for_startup() -> bool:
     storage. The git/ref stamp keeps post-update correctness: a changed
     checkout revision forces one real sync, then later starts skip it.
     """
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return False
     if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
         return False
 
@@ -2200,6 +2204,10 @@ def _sync_bundled_skills_quietly() -> None:
     dependency. Hermes still functions without them; the user just sees an
     empty skills library.
     """
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     try:
         from tools.skills_sync import sync_skills
 

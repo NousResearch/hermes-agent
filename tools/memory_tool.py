@@ -183,7 +183,10 @@ class MemoryStore:
         stable for the entire session (prefix-cache invariant holds).
         """
         mem_dir = get_memory_dir()
-        mem_dir.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import is_readonly_diagnostic
+
+        if not is_readonly_diagnostic():
+            mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")

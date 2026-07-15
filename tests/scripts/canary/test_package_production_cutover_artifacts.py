@@ -1529,6 +1529,7 @@ def test_generated_runtime_rejects_cross_artifact_action_and_plan_extensions(tmp
     assert validated_plan["plan_sha256"] == plan["plan_sha256"]
     assert receipt is None
 
+
     wrong_action = dict(request_unsigned)
     wrong_action["action"] = "host_apply_stopped"
     with pytest.raises(runtime.ArtifactError, match="request_invalid"):
@@ -1545,6 +1546,60 @@ def test_generated_runtime_rejects_cross_artifact_action_and_plan_extensions(tmp
         runtime._validate_request(
             {**extended_request, "request_sha256": _sha_json(extended_request)}
         )
+
+
+def test_generated_runtime_accepts_only_exact_pidless_worker_socket_shape(
+    tmp_path,
+    monkeypatch,
+):
+    release = _release(tmp_path)
+    manifest = package.build_release_artifacts(
+        release, REVISION, unit_inputs=_unit_inputs()
+    )
+    item = manifest["artifacts"]["production-host-rollback"]
+    runtime = _load_artifact(
+        Path(item["path"]),
+        "production_host_rollback_pidless_socket",
+    )
+
+    def observation(unit, *, include_main_pid):
+        values = {
+            "Names": unit,
+            "FragmentPath": "",
+            "LoadState": "not-found",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "UnitFileState": "",
+            "MainPID": "0",
+            "DropInPaths": "",
+            "NeedDaemonReload": "no",
+            "TriggeredBy": "",
+            "Triggers": "",
+        }
+        if not include_main_pid:
+            values.pop("MainPID")
+        return "".join(
+            f"{name}={value}\n" for name, value in values.items()
+        ).encode()
+
+    socket = runtime.ISOLATED_WORKER_SOCKET_UNIT
+    monkeypatch.setattr(
+        runtime,
+        "_systemctl",
+        lambda *_args, **_kwargs: observation(socket, include_main_pid=False),
+    )
+    assert runtime._service(socket)["main_pid"] == 0
+
+    monkeypatch.setattr(
+        runtime,
+        "_systemctl",
+        lambda *_args, **_kwargs: observation(
+            runtime.ISOLATED_WORKER_SERVICE_UNIT,
+            include_main_pid=False,
+        ),
+    )
+    with pytest.raises(runtime.ArtifactError, match="service_observation_invalid"):
+        runtime._service(runtime.ISOLATED_WORKER_SERVICE_UNIT)
 
 
 def test_host_rollback_recovers_every_missing_pre_mutation_backup_and_fails_closed_after_mutation(

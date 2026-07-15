@@ -743,6 +743,14 @@ _SERVICE_PROPERTIES = (
     "NotifyAccess",
     "StatusText",
 )
+_PROCESSLESS_UNIT_PROPERTY_DEFAULTS = {
+    DEFAULT_WORKER_SOCKET_UNIT_NAME: {
+        "MainPID": "0",
+        "Type": "",
+        "NotifyAccess": "",
+        "StatusText": "",
+    },
+}
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -4439,6 +4447,13 @@ def collect_capability_service_state(
         if name in values:
             raise RuntimeError("capability service state is ambiguous")
         values[name] = item
+    missing = set(_SERVICE_PROPERTIES) - set(values)
+    unexpected = set(values) - set(_SERVICE_PROPERTIES)
+    defaults = _PROCESSLESS_UNIT_PROPERTY_DEFAULTS.get(unit, {})
+    if unexpected or not missing <= set(defaults):
+        raise RuntimeError("capability service state fields are not exact")
+    for name in missing:
+        values[name] = defaults[name]
     if set(values) != set(_SERVICE_PROPERTIES):
         raise RuntimeError("capability service state fields are not exact")
     try:

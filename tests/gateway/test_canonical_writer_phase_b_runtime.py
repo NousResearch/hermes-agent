@@ -17,7 +17,11 @@ from gateway import canonical_writer_phase_b_runtime as runtime
 REVISION = "a" * 40
 
 
-def _systemd_result(*, active: bool = False) -> subprocess.CompletedProcess[str]:
+def _systemd_result(
+    *,
+    active: bool = False,
+    unit: str = "muncho-canonical-writer.service",
+) -> subprocess.CompletedProcess[str]:
     values = {
         "LoadState": "loaded",
         "ActiveState": "active" if active else "inactive",
@@ -30,6 +34,8 @@ def _systemd_result(*, active: bool = False) -> subprocess.CompletedProcess[str]
         "Triggers": "",
         "NextElapseUSecRealtime": "",
     }
+    if unit in runtime._PIDLESS_SERVICE_UNITS:
+        values.pop("MainPID")
     stdout = "".join(f"{name}={value}\n" for name, value in values.items())
     return subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
@@ -69,7 +75,7 @@ def test_fixed_six_service_collection_is_stopped_and_secret_free(
 
     def run(command, **_kwargs):
         calls.append(tuple(command))
-        return _systemd_result()
+        return _systemd_result(unit=command[-1])
 
     monkeypatch.setattr(runtime.subprocess, "run", run)
     observed = runtime._collect_services(REVISION, 1_700_000_000)
@@ -80,7 +86,29 @@ def test_fixed_six_service_collection_is_stopped_and_secret_free(
     assert all(command[0] == "/usr/bin/systemctl" for command in calls)
     assert all(command[-2] == "--" for command in calls)
     assert [command[-1] for command in calls] == list(phase_b.SERVICE_UNITS)
+    timer = next(
+        item
+        for item in observed["services"]
+        if item["name"] == "muncho-canonical-writer-export.timer"
+    )
+    assert timer["main_pid"] == 0
     assert "password" not in json.dumps(observed).casefold()
+
+
+def test_missing_main_pid_remains_invalid_for_service_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = _systemd_result()
+    result = subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        result.stdout.replace("MainPID=0\n", ""),
+        result.stderr,
+    )
+    monkeypatch.setattr(runtime.subprocess, "run", lambda *_args, **_kwargs: result)
+
+    with pytest.raises(runtime.PhaseBRuntimeError, match="systemd_invalid"):
+        runtime._collect_one_service("muncho-canonical-writer.service")
 
 
 def test_active_service_blocks_readiness_before_authority(

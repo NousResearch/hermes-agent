@@ -185,6 +185,10 @@ _STOPPED_SERVICE_UNITS = (
     "muncho-canonical-writer-export.timer",
     "hermes-cloud-gateway.service",
 )
+_PIDLESS_SERVICE_UNITS = frozenset({
+    "muncho-canonical-writer-export.timer",
+    "muncho-isolated-worker.socket",
+})
 _SERVICE_PROPERTIES = (
     "LoadState",
     "ActiveState",
@@ -2207,7 +2211,14 @@ def _parse_service_observation(unit: str, raw: str) -> dict[str, Any]:
         if _CONTROL_RE.search(item) is not None:
             raise RuntimeError("stopped-release service value is invalid")
         values[name] = item
-    if set(values) != set(_SERVICE_PROPERTIES):
+    missing = set(_SERVICE_PROPERTIES) - set(values)
+    if missing == {"MainPID"} and unit in _PIDLESS_SERVICE_UNITS:
+        # systemd timer/socket units have no service process and therefore
+        # omit MainPID from `systemctl show`, including while safely inactive.
+        # Normalize that exact, allow-listed omission to the stopped value so
+        # the receipt schema stays uniform across service and timer units.
+        values["MainPID"] = "0"
+    elif missing:
         raise RuntimeError("stopped-release service output is incomplete")
     if not re.fullmatch(r"0|[1-9][0-9]*", values["MainPID"]):
         raise RuntimeError("stopped-release service PID is invalid")

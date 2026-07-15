@@ -73,7 +73,12 @@ def _service_properties(unit: str, *, loaded: bool = False) -> dict[str, str]:
 def _service_stdout(unit: str, *, loaded: bool = False) -> str:
     values = _service_properties(unit, loaded=loaded)
     return "".join(
-        f"{name}={values[name]}\n" for name in writer_release._SERVICE_PROPERTIES
+        f"{name}={values[name]}\n"
+        for name in writer_release._SERVICE_PROPERTIES
+        if not (
+            unit in writer_release._PIDLESS_SERVICE_UNITS
+            and name == "MainPID"
+        )
     )
 
 
@@ -311,6 +316,32 @@ def test_service_parser_accepts_only_exact_absent_or_disabled_state():
             unit,
             "LoadState=not-found\n",
         )
+
+
+def test_timer_parser_normalizes_only_the_exact_pidless_systemd_shape():
+    timer = "muncho-canonical-writer-export.timer"
+    socket = "muncho-isolated-worker.socket"
+    assert writer_release._PIDLESS_SERVICE_UNITS == frozenset({timer, socket})
+
+    parsed = writer_release._parse_service_observation(
+        timer,
+        _service_stdout(timer),
+    )
+
+    assert parsed["state"] == "absent"
+    assert parsed["properties"]["MainPID"] == "0"
+
+    socket_parsed = writer_release._parse_service_observation(
+        socket,
+        _service_stdout(socket),
+    )
+    assert socket_parsed["state"] == "absent"
+    assert socket_parsed["properties"]["MainPID"] == "0"
+
+    service = writer_release._STOPPED_SERVICE_UNITS[0]
+    service_without_pid = _service_stdout(service).replace("MainPID=0\n", "")
+    with pytest.raises(RuntimeError, match="incomplete"):
+        writer_release._parse_service_observation(service, service_without_pid)
 
 
 def test_host_observation_requires_exact_vm_fields_and_digests():

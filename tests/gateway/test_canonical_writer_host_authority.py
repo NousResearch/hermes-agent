@@ -512,6 +512,56 @@ def test_systemd_aliases_dedupe_only_after_provenance(monkeypatch):
     assert observed == [("sshd.service", "ssh.service")]
 
 
+def test_systemd_inventory_normalizes_only_process_fields_for_nonservices(
+    monkeypatch,
+):
+    names = (
+        "apt-daily.timer",
+        "data.mount",
+        "systemd-journald.socket",
+        "writer.service",
+    )
+    monkeypatch.setattr(authority, "_systemd_unit_names", lambda: names)
+
+    def block(unit):
+        values = {name: "" for name in authority._INVENTORY_SYSTEMD_PROPERTIES}
+        values.update({
+            "Id": unit,
+            "LoadState": "loaded",
+            "FragmentPath": f"/usr/lib/systemd/system/{unit}",
+            "Transient": "no",
+            "ExecStart": "{}",
+        })
+        if not unit.endswith(".service"):
+            values.pop("User")
+            values.pop("ExecStart")
+        return "\n".join(f"{name}={value}" for name, value in values.items())
+
+    stdout = "\n\n".join(block(unit) for unit in names) + "\n"
+    monkeypatch.setattr(
+        authority,
+        "_run_fixed",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, stdout, ""),
+    )
+
+    inventory = authority._systemd_inventory(999, 993)
+    processless = [item for item in inventory if not item["Id"].endswith(".service")]
+    assert {item["Id"] for item in processless} == set(names[:-1])
+    assert all(item["User"] == "" and item["ExecStart"] == "" for item in processless)
+
+    service_missing = block("writer.service").replace("User=\n", "")
+    monkeypatch.setattr(authority, "_systemd_unit_names", lambda: ("writer.service",))
+    monkeypatch.setattr(
+        authority,
+        "_run_fixed",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 0, service_missing + "\n", ""
+        ),
+    )
+    with pytest.raises(RuntimeError, match="incomplete"):
+        authority._systemd_inventory(999, 993)
+
+
 def test_reverse_activation_evidence_catches_direct_and_scanned_sources():
     def item(name, **relations):
         value = {

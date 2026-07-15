@@ -757,6 +757,57 @@ def _watchdog_stopped_services():
     }
 
 
+def test_processless_socket_observation_normalizes_only_fixed_empty_properties():
+    def result_for(unit, *, drop=()):
+        values = {
+            "LoadState": "not-found",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "UnitFileState": "",
+            "MainPID": "0",
+            "FragmentPath": "",
+            "DropInPaths": "",
+            "Type": "",
+            "NotifyAccess": "none",
+            "StatusText": "",
+        }
+        for name in drop:
+            values.pop(name)
+        stdout = "".join(f"{name}={value}\n" for name, value in values.items())
+        return runtime.subprocess.CompletedProcess([], 0, stdout.encode(), b"")
+
+    socket = runtime.DEFAULT_WORKER_SOCKET_UNIT_NAME
+    socket_missing = tuple(runtime._PROCESSLESS_UNIT_PROPERTY_DEFAULTS[socket])
+    state = runtime.collect_capability_service_state(
+        socket,
+        runner=lambda _command: result_for(socket, drop=socket_missing),
+    )
+    assert state["MainPID"] == 0
+    assert state["Type"] == ""
+    assert state["NotifyAccess"] == ""
+    assert state["StatusText"] == ""
+
+    service = runtime.DEFAULT_WORKER_SERVICE_UNIT_NAME
+    with pytest.raises(RuntimeError, match="fields are not exact"):
+        runtime.collect_capability_service_state(
+            service,
+            runner=lambda _command: result_for(service, drop=("MainPID",)),
+        )
+
+    unexpected = result_for(socket)
+    unexpected = runtime.subprocess.CompletedProcess(
+        unexpected.args,
+        unexpected.returncode,
+        unexpected.stdout + b"Unexpected=x\n",
+        unexpected.stderr,
+    )
+    with pytest.raises(RuntimeError, match="fields are not exact"):
+        runtime.collect_capability_service_state(
+            socket,
+            runner=lambda _command: unexpected,
+        )
+
+
 def test_expiry_watchdog_is_absolute_persistent_and_idempotent(tmp_path):
     calls = []
 

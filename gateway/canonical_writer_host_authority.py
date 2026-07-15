@@ -1885,11 +1885,23 @@ def _systemd_inventory(
             if separator != "=" or name not in _INVENTORY_SYSTEMD_PROPERTIES or name in fields:
                 raise RuntimeError("systemd unit inventory fields are invalid")
             fields[name] = value
-        if set(fields) != set(_INVENTORY_SYSTEMD_PROPERTIES):
+        if "Id" not in fields:
             raise RuntimeError("systemd unit inventory is incomplete")
         identifier = fields["Id"]
         if _UNIT_RE.fullmatch(identifier) is None:
             raise RuntimeError("systemd unit inventory identity is ambiguous")
+        missing = set(_INVENTORY_SYSTEMD_PROPERTIES) - set(fields)
+        process_only = {"User", "ExecStart"}
+        if identifier.endswith(".service"):
+            allowed_missing: set[str] = set()
+        else:
+            allowed_missing = process_only
+        if not missing <= allowed_missing:
+            raise RuntimeError("systemd unit inventory is incomplete")
+        for name in missing:
+            fields[name] = ""
+        if set(fields) != set(_INVENTORY_SYSTEMD_PROPERTIES):
+            raise RuntimeError("systemd unit inventory is incomplete")
         if requested_name != identifier:
             _verify_systemd_alias(
                 requested_name,

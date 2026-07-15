@@ -332,6 +332,13 @@ def historical_backup_candidates(cfg):
 
 def backup_retention_plan(cfg):
     candidates = historical_backup_candidates(cfg)
+    # Snapshots are owned by clean_snapshots(), which always preserves the most
+    # recent one. Exclude them here so the cross-class "keep 1" rule can never
+    # reclaim a snapshot — this is the bug that deleted the 13 GB pre-update
+    # rollback snapshot on 2026-07-12 (backup_retention kept a newer
+    # transactions.db copy and rm -rf'd the snapshot because it was not the
+    # single newest of all backup-class files).
+    candidates = [c for c in candidates if c.get("kind") != "state-snapshot"]
     # Local full state.db copies are not valid retained backups by default: they
     # duplicate live data and are the primary disk-balloon failure mode. They are
     # removed unless explicitly allowed via skills.config.genie.allow_local_state_db_backup.

@@ -61,8 +61,8 @@ duration metadata.
 The plugin never emits raw user messages, conversation history, API request or
 response bodies, tool arguments or results, command text, goals, summaries,
 error messages, API keys, or headers. It exports only stable IDs, safe labels,
-counts, lengths, durations, token usage, status fields, and short one-way
-digests for command/goal correlation.
+counts, lengths, durations, token usage, status fields, and non-content
+length summaries for commands and delegated goals.
 
 ## Verify
 

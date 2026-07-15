@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import threading
 import time
@@ -22,10 +21,6 @@ def _safe_label(value: Any, default: str = "unknown") -> str:
     text = _text(value).strip()
     return text if _SAFE_LABEL.fullmatch(text) else default
 
-
-def _stable_digest(value: Any) -> str:
-    text = _text(value)
-    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16] if text else ""
 
 
 def _int(value: Any) -> int | None:
@@ -87,6 +82,7 @@ class SpanBuilder:
         self.tracer = tracer
         self._lock = threading.RLock()
         self._sessions: dict[str, _SpanEntry] = {}
+        self._known_sessions: set[str] = set()
         self._turns: dict[str, _SpanEntry] = {}
         self._requests: dict[str, _SpanEntry] = {}
         self._tools: dict[str, _SpanEntry] = {}
@@ -159,6 +155,7 @@ class SpanBuilder:
         if not session_id:
             return
         with self._lock:
+            self._known_sessions.add(session_id)
             if session_id in self._sessions:
                 return
             attributes = _ids(kwargs)
@@ -185,11 +182,13 @@ class SpanBuilder:
                     attributes[f"hermes.session.{key}"] = value
             self._end(entry, attributes, error=bool(kwargs.get("interrupted")))
 
-    def finalize_session(self, kwargs: dict[str, Any]) -> None:
+    def finalize_session(self, kwargs: dict[str, Any]) -> int:
         session_id = _text(kwargs.get("session_id") or kwargs.get("old_session_id"))
         with self._lock:
+            self._known_sessions.discard(session_id)
             self._end(self._sessions.pop(session_id, None), {"hermes.session.finalized": True})
             self._finish_session_children(session_id)
+            return len(self._known_sessions)
 
     def _finish_session_children(self, session_id: str) -> None:
         for mapping in (self._turns, self._requests, self._tools, self._subagents):
@@ -334,7 +333,7 @@ class SpanBuilder:
                 {
                     "hermes.subagent.role": _safe_label(kwargs.get("child_role"), "custom"),
                     "hermes.subagent.goal_length": len(goal),
-                    "hermes.subagent.goal_id": _stable_digest(goal),
+                    "hermes.subagent.goal_summary": f"length:{len(goal)}",
                 }
             )
             parent = self._turn(_text(kwargs.get("parent_turn_id"))) or self._session(
@@ -371,7 +370,7 @@ class SpanBuilder:
                 {
                     "hermes.approval.surface": _safe_label(kwargs.get("surface")),
                     "hermes.approval.command_length": len(command),
-                    "hermes.approval.command_id": _stable_digest(command),
+                    "hermes.approval.command_summary": f"length:{len(command)}",
                     "hermes.approval.description_length": len(_text(kwargs.get("description"))),
                     "hermes.approval.pattern_count": len(kwargs.get("pattern_keys") or []),
                 }

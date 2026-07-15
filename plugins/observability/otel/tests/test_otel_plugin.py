@@ -11,7 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.observability.otel.config import load_config
+from plugins.observability.otel.config import OTelConfig, load_config
+from plugins.observability.otel.exporter import _create_otlp_exporter
 
 
 HOOKS = {
@@ -271,10 +272,10 @@ def test_subagent_and_approval_spans_use_safe_summaries(monkeypatch):
     approval = spans["hermes.approval"]
     assert subagent.attributes["hermes.subagent.role"] == "researcher"
     assert subagent.attributes["hermes.subagent.goal_length"] == 24
-    assert len(subagent.attributes["hermes.subagent.goal_id"]) == 16
+    assert subagent.attributes["hermes.subagent.goal_summary"] == "length:24"
     assert approval.attributes["hermes.approval.decision"] == "deny"
     assert approval.attributes["hermes.approval.command_length"] > 0
-    assert len(approval.attributes["hermes.approval.command_id"]) == 16
+    assert approval.attributes["hermes.approval.command_summary"].startswith("length:")
     assert subagent.parent.span_id == spans["hermes.turn"].context.span_id
     child_session = next(
         span
@@ -295,7 +296,9 @@ def test_finalize_shuts_down_provider(monkeypatch):
         tracer=SimpleNamespace(),
         provider=SimpleNamespace(shutdown=lambda: calls.append("shutdown")),
     )
-    builder = SimpleNamespace(finalize_session=lambda kwargs: calls.append(kwargs["session_id"]))
+    builder = SimpleNamespace(
+        finalize_session=lambda kwargs: (calls.append(kwargs["session_id"]), 0)[1]
+    )
     monkeypatch.setattr(plugin, "_RUNTIME", runtime)
     monkeypatch.setattr(plugin, "_BUILDER", builder)
 
@@ -304,6 +307,57 @@ def test_finalize_shuts_down_provider(monkeypatch):
     assert calls == ["session-1", "shutdown"]
     assert plugin._RUNTIME is None
     assert plugin._BUILDER is None
+
+
+def test_finalize_keeps_provider_for_other_sessions(monkeypatch):
+    plugin = _fresh_plugin()
+    calls = []
+    runtime = SimpleNamespace(
+        tracer=SimpleNamespace(),
+        provider=SimpleNamespace(shutdown=lambda: calls.append("shutdown")),
+    )
+    builder = SimpleNamespace(finalize_session=lambda kwargs: 1)
+    monkeypatch.setattr(plugin, "_RUNTIME", runtime)
+    monkeypatch.setattr(plugin, "_BUILDER", builder)
+
+    plugin.on_session_finalize(session_id="session-1")
+
+    assert calls == []
+    assert plugin._RUNTIME is runtime
+    assert plugin._BUILDER is builder
+
+
+def test_otlp_exporter_selects_protocol_and_forwards_config(monkeypatch):
+    calls = []
+
+    class FakeExporter:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+        SimpleNamespace(OTLPSpanExporter=FakeExporter),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "opentelemetry.exporter.otlp.proto.grpc.trace_exporter",
+        SimpleNamespace(OTLPSpanExporter=FakeExporter),
+    )
+
+    http = _create_otlp_exporter(
+        OTelConfig(enabled=True, endpoint="http://collector/v1/traces", headers={"x": "y"})
+    )
+    grpc = _create_otlp_exporter(
+        OTelConfig(enabled=True, endpoint="http://collector:4317", protocol="grpc")
+    )
+
+    assert isinstance(http, FakeExporter)
+    assert isinstance(grpc, FakeExporter)
+    assert calls == [
+        {"endpoint": "http://collector/v1/traces", "headers": {"x": "y"}},
+        {"endpoint": "http://collector:4317"},
+    ]
 
 
 def test_hook_errors_fail_open(monkeypatch):

@@ -85,12 +85,16 @@ def on_session_finalize(**kwargs: Any) -> None:
     with _LOCK:
         runtime = _RUNTIME
         builder = _BUILDER
+        remaining_sessions = 0
         if builder is not None:
-            _safe(lambda: builder.finalize_session(kwargs))
-        if runtime not in (None, _INIT_FAILED):
+            try:
+                remaining_sessions = builder.finalize_session(kwargs)
+            except Exception:
+                logger.debug("OpenTelemetry session finalization failed", exc_info=True)
+        if runtime not in (None, _INIT_FAILED) and remaining_sessions == 0:
             _safe(runtime.provider.shutdown)
-        _RUNTIME = None
-        _BUILDER = None
+            _RUNTIME = None
+            _BUILDER = None
 
 
 def on_session_reset(**kwargs: Any) -> None:

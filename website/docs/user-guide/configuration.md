@@ -2066,10 +2066,14 @@ Connectivity workarounds for outbound HTTP:
 
 ```yaml
 network:
-  force_ipv4: false   # Force IPv4 for outbound connections (default: false)
+  force_ipv4: false   # Explicitly force IPv4 for outbound connections (default: false)
 ```
 
-`force_ipv4` — on servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4. Set this to `true` to skip IPv6 entirely and connect over IPv4 directly.
+On servers with broken or unreachable IPv6, Python resolves AAAA records first and can hang for the full TCP timeout before falling back to IPv4 — this affects httpx, requests, urllib, the OpenAI SDK, and anything else that uses `socket.getaddrinfo`.
+
+**Automatic fallback (default).** Hermes probes the host's IPv6 route at startup. If IPv6 is configured but dead, it automatically enables IPv4-preferred DNS resolution and logs a one-time warning; a healthy IPv6 stack is left untouched. You don't need to set anything for this to work.
+
+`force_ipv4` — set this to `true` to enable IPv4-preferred resolution unconditionally, skipping the route probe. Use it when the automatic detection is wrong for your environment (for example, an IPv6 route that probes as "alive" but can't actually carry traffic), or when you simply want to pin the behavior on and avoid the probe cost. Leaving it `false` keeps the automatic-on-dead-IPv6 default.
 
 ## Onboarding
 

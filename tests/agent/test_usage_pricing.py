@@ -5,7 +5,30 @@ from agent.usage_pricing import (
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
+    resolve_billing_route,
 )
+
+
+def test_resolve_billing_route_recognises_local_endpoints():
+    """Self-hosted model servers route to the local branch regardless of how
+    they're addressed — loopback IP, LAN/Tailscale IP, or a local provider id —
+    not just the literal 'localhost' / 'custom'. (LM Studio defaults to
+    http://127.0.0.1:1234, which previously fell through to the generic route.)"""
+    local_cases = [
+        ("lmstudio", "http://127.0.0.1:1234/v1"),
+        ("lmstudio", "http://localhost:1234/v1"),
+        ("", "http://127.0.0.1:1234/v1"),
+        ("ollama", "http://192.168.1.50:11434/v1"),
+        ("vllm", "http://[::1]:8000/v1"),
+        ("custom", ""),
+    ]
+    for provider, base_url in local_cases:
+        route = resolve_billing_route("some-model", provider, base_url)
+        assert route.provider in {"custom", provider}, (provider, base_url, route)
+
+    # Cloud providers must NOT be misclassified as local.
+    assert resolve_billing_route("gpt-4o", "openai", "https://api.openai.com/v1").billing_mode == "official_docs_snapshot"
+    assert resolve_billing_route("hermes-4", "nous", "").billing_mode == "official_models_api"
 
 
 def test_normalize_usage_anthropic_keeps_cache_buckets_separate():

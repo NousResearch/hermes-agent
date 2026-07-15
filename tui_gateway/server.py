@@ -425,15 +425,28 @@ def _claim_active_session_slot(
     *,
     live_session_id: str,
     surface: str = "tui",
+    profile_home: str | Path | None = None,
 ) -> tuple[Any, str | None]:
     try:
+        home_token = (
+            set_hermes_home_override(str(profile_home))
+            if profile_home is not None
+            else None
+        )
+        try:
+            config = _load_cfg()
+        finally:
+            if home_token is not None:
+                reset_hermes_home_override(home_token)
         from hermes_cli.active_sessions import try_acquire_active_session
 
         return try_acquire_active_session(
             session_id=session_key,
             surface=surface,
-            config=_load_cfg(),
+            config=config,
             metadata={"live_session_id": live_session_id},
+            registry_home=profile_home,
+            track_liveness=str(surface or "").strip().lower() == "desktop",
         )
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -450,6 +463,36 @@ def _release_active_session_slot(session: dict | None) -> None:
         lease.release()
     except Exception:
         logger.debug("Failed to release active session slot", exc_info=True)
+
+
+@contextlib.contextmanager
+def _other_runtime_lease_guard(session_id: str, session: dict):
+    """Hold the owning profile's lease lock while checking sibling runtimes."""
+    stack = contextlib.ExitStack()
+    try:
+        from hermes_cli.active_sessions import active_session_liveness_guard
+
+        active = stack.enter_context(
+            active_session_liveness_guard(
+                session_id,
+                registry_home=session.get("profile_home"),
+            )
+        )
+    except Exception:
+        stack.close()
+        logger.warning(
+            "Failed to inspect active session leases; preserving session %s",
+            session_id,
+            exc_info=True,
+        )
+        # An automatic disconnect reap must prefer a ghost row over ending a
+        # session that may still be owned by another backend.
+        yield True
+        return
+    try:
+        yield active
+    finally:
+        stack.close()
 
 
 def _transfer_active_session_slot(
@@ -484,6 +527,7 @@ def _transfer_active_session_slot(
         new_session_id,
         live_session_id=sid,
         surface=_session_source(session),
+        profile_home=session.get("profile_home"),
     )
     if new_lease is not None:
         old_lease = session.pop("active_session_lease", None)
@@ -622,25 +666,42 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Use session_id (from agent.session_id) not session_key — after compression,
     # session_key may be stale (the ended parent) while session_id is the live
     # continuation. Fix for #20001.
-    _tui_owns_lifecycle = True
-    if session_id:
-        try:
-            db = _get_db()
-            if db is not None:
-                # Don't end gateway-originated sessions — the gateway owns
-                # their lifecycle.  The TUI is a viewer, not the owner.
-                # Ending a gateway session in state.db triggers a Groundhog
-                # Day routing loop: the gateway's #54878 self-heal detects
-                # the stale entry, recovers to the parent session, context
-                # compression splits back to the reaped child, and the cycle
-                # repeats on every inbound message.  (#60609)
-                row = db.get_session(session_id)
-                source = (row or {}).get("source", "")
-                _tui_owns_lifecycle = not _is_gateway_owned_source(source)
-                if _tui_owns_lifecycle:
-                    db.end_session(session_id, end_reason)
-        except Exception:
-            pass
+    _desktop_orphan_reap = bool(
+        session_id
+        and end_reason == "ws_orphan_reap"
+        and _session_source(session).strip().lower() == "desktop"
+    )
+    _lifecycle_guard = (
+        _other_runtime_lease_guard(session_id, session)
+        if _desktop_orphan_reap and session_id
+        else contextlib.nullcontext(False)
+    )
+    with _lifecycle_guard as _other_runtime_owns_lifecycle:
+        _tui_owns_lifecycle = not _other_runtime_owns_lifecycle
+        if _other_runtime_owns_lifecycle:
+            logger.info(
+                "Preserving session %s during ws_orphan_reap: another backend owns an active lease",
+                session_id,
+            )
+        if session_id:
+            try:
+                with _session_db(session) as db:
+                    if db is not None:
+                        # Don't end gateway-originated sessions — the gateway owns
+                        # their lifecycle.  The TUI is a viewer, not the owner.
+                        # Ending a gateway session in state.db triggers a Groundhog
+                        # Day routing loop: the gateway's #54878 self-heal detects
+                        # the stale entry, recovers to the parent session, context
+                        # compression splits back to the reaped child, and the cycle
+                        # repeats on every inbound message.  (#60609)
+                        row = db.get_session(session_id)
+                        source = (row or {}).get("source", "")
+                        if _is_gateway_owned_source(source):
+                            _tui_owns_lifecycle = False
+                        elif _tui_owns_lifecycle:
+                            db.end_session(session_id, end_reason)
+            except Exception:
+                pass
 
     # A session's in-flight async delegations end WITH the session (#55578):
     # once nobody owns the return address, a still-running background subagent
@@ -5259,7 +5320,10 @@ def _(rid, params: dict) -> dict:
     ready = threading.Event()
     now = time.time()
     lease, limit_message = _claim_active_session_slot(
-        key, live_session_id=sid, surface=source
+        key,
+        live_session_id=sid,
+        surface=source,
+        profile_home=profile_home,
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)
@@ -5688,7 +5752,10 @@ def _(rid, params: dict) -> dict:
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
         lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
+            target,
+            live_session_id=sid,
+            surface=source,
+            profile_home=profile_home,
         )
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
@@ -5752,7 +5819,10 @@ def _(rid, params: dict) -> dict:
         sid = uuid.uuid4().hex[:8]
         source = _resolve_session_source(str(params.get("source") or "").strip() or None)
         lease, limit_message = _claim_active_session_slot(
-            target, live_session_id=sid, surface=source
+            target,
+            live_session_id=sid,
+            surface=source,
+            profile_home=profile_home,
         )
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
@@ -5825,7 +5895,10 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     source = _resolve_session_source(str(params.get("source") or "").strip() or None)
     lease, limit_message = _claim_active_session_slot(
-        target, live_session_id=sid, surface=source
+        target,
+        live_session_id=sid,
+        surface=source,
+        profile_home=profile_home,
     )
     if limit_message is not None:
         return _err(rid, 4090, limit_message)

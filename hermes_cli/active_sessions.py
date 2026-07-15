@@ -12,9 +12,10 @@ import logging
 import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -77,16 +78,20 @@ def active_session_limit_message(active_count: int, max_sessions: int) -> str:
     )
 
 
-def _state_dir() -> Path:
-    return Path(get_hermes_home()) / "runtime"
+def _registry_home(registry_home: str | Path | None = None) -> Path:
+    return Path(registry_home) if registry_home is not None else Path(get_hermes_home())
 
 
-def _state_path() -> Path:
-    return _state_dir() / "active_sessions.json"
+def _state_dir(registry_home: str | Path | None = None) -> Path:
+    return _registry_home(registry_home) / "runtime"
 
 
-def _lock_path() -> Path:
-    return _state_dir() / "active_sessions.lock"
+def _state_path(registry_home: str | Path | None = None) -> Path:
+    return _state_dir(registry_home) / "active_sessions.json"
+
+
+def _lock_path(registry_home: str | Path | None = None) -> Path:
+    return _state_dir(registry_home) / "active_sessions.lock"
 
 
 class _FileLock:
@@ -224,6 +229,7 @@ class ActiveSessionLease:
     surface: str
     enabled: bool = True
     released: bool = False
+    registry_home: Optional[str] = None
 
     def release(self) -> None:
         if self.released or not self.enabled:
@@ -237,15 +243,20 @@ def try_acquire_active_session(
     surface: str,
     config: Any,
     metadata: Optional[dict[str, Any]] = None,
+    registry_home: str | Path | None = None,
+    track_liveness: bool = False,
 ) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
     """Acquire an active-session slot.
 
     Returns ``(lease, None)`` on success.  When the cap is disabled, the lease is
-    a no-op object so callers can unconditionally call ``release()``.
+    a no-op object so callers can unconditionally call ``release()`` unless
+    ``track_liveness`` is true.  Liveness tracking keeps a real lease without
+    imposing a concurrency cap; ``registry_home`` lets profile-scoped backends
+    share the owning profile's registry even when launched from another home.
     """
     max_sessions = resolve_max_concurrent_sessions(config)
     lease_id = uuid.uuid4().hex
-    if max_sessions is None:
+    if max_sessions is None and not track_liveness:
         return ActiveSessionLease(
             lease_id=lease_id,
             session_id=session_id,
@@ -254,7 +265,7 @@ def try_acquire_active_session(
         ), None
 
     now = time.time()
-    entry = {
+    entry: dict[str, Any] = {
         "lease_id": lease_id,
         "session_id": str(session_id),
         "surface": str(surface),
@@ -268,15 +279,16 @@ def try_acquire_active_session(
             str(k): v for k, v in metadata.items() if isinstance(k, str)
         }
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    resolved_home = _registry_home(registry_home)
+    state_path = _state_path(resolved_home)
+    with _FileLock(_lock_path(resolved_home)):
         raw_entries = _read_entries(state_path)
         entries = _prune_dead(raw_entries)
         pruned = len(raw_entries) - len(entries)
         if pruned:
             logger.info("Pruned %d stale active session lease(s)", pruned)
         active_count = len(entries)
-        if active_count >= max_sessions:
+        if max_sessions is not None and active_count >= max_sessions:
             _write_entries(state_path, entries)
             logger.info(
                 "Active session limit reached: active=%d max=%d surface=%s",
@@ -292,13 +304,14 @@ def try_acquire_active_session(
         lease_id=lease_id,
         session_id=str(session_id),
         surface=str(surface),
+        registry_home=str(resolved_home),
     ), None
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:
-    state_path = _state_path()
+    state_path = _state_path(lease.registry_home)
     try:
-        with _FileLock(_lock_path()):
+        with _FileLock(_lock_path(lease.registry_home)):
             entries = _prune_dead(_read_entries(state_path))
             kept = [
                 entry
@@ -327,8 +340,8 @@ def transfer_active_session(
         lease.session_id = new_session_id
         return True
 
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    state_path = _state_path(lease.registry_home)
+    with _FileLock(_lock_path(lease.registry_home)):
         entries = _prune_dead(_read_entries(state_path))
         updated = False
         for entry in entries:
@@ -348,10 +361,34 @@ def transfer_active_session(
         return updated
 
 
-def active_session_registry_snapshot() -> list[dict[str, Any]]:
+def active_session_registry_snapshot(
+    registry_home: str | Path | None = None,
+) -> list[dict[str, Any]]:
     """Return the pruned active-session registry for diagnostics/tests."""
-    state_path = _state_path()
-    with _FileLock(_lock_path()):
+    state_path = _state_path(registry_home)
+    with _FileLock(_lock_path(registry_home)):
         entries = _prune_dead(_read_entries(state_path))
         _write_entries(state_path, entries)
         return entries
+
+
+@contextmanager
+def active_session_liveness_guard(
+    session_id: str,
+    *,
+    registry_home: str | Path | None = None,
+) -> Iterator[bool]:
+    """Hold the registry lock while reporting whether ``session_id`` is leased.
+
+    Keeping the lock across the caller's lifecycle mutation prevents a new
+    backend from acquiring a lease and reopening the row between the liveness
+    check and the corresponding ``end_session`` write.
+    """
+    target = str(session_id or "")
+    state_path = _state_path(registry_home)
+    with _FileLock(_lock_path(registry_home)):
+        entries = _prune_dead(_read_entries(state_path))
+        _write_entries(state_path, entries)
+        yield bool(target) and any(
+            str(entry.get("session_id") or "") == target for entry in entries
+        )

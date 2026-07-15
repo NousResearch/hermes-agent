@@ -8,12 +8,14 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  $unreadFinishedSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessagingSessions,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setSessionUnread
 } from '@/store/session'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
@@ -31,6 +33,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setMessagingSessions([{ id: 'm1', title: 'tg', profile: 'default' } as never])
     setSessionsLoading(false)
     setFreshDraftReady(false)
+    setSessionUnread('unread-old', true)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
   })
 
@@ -39,6 +42,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessions([])
     setCronSessions([])
     setMessagingSessions([])
+    $unreadFinishedSessionIds.set([])
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
   })
@@ -53,5 +57,6 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

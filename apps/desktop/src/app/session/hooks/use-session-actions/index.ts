@@ -45,6 +45,7 @@ import {
   setSessions,
   setSessionStartedAt,
   setSessionsTotal,
+  setSessionUnread,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -58,7 +59,7 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -172,6 +173,24 @@ interface FreshSessionDraftOptions {
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
   return typeof target === 'string' ? target.trim() || null : target
+}
+
+function sessionUnreadAliases(
+  storedSessionId: string,
+  session?: Pick<SessionInfo, '_lineage_root_id' | 'id'>
+): string[] {
+  return [
+    ...new Set([storedSessionId, session?.id, session?._lineage_root_id].filter((id): id is string => Boolean(id)))
+  ]
+}
+
+function clearSessionUnreadAliases(
+  storedSessionId: string,
+  session?: Pick<SessionInfo, '_lineage_root_id' | 'id'>
+): void {
+  const aliases = sessionUnreadAliases(storedSessionId, session)
+
+  aliases.forEach(id => setSessionUnread(id, false))
 }
 
 export function useSessionActions({
@@ -1162,6 +1181,7 @@ export function useSessionActions({
 
         await deleteSession(storedSessionId, removed?.profile)
         clearQueuedPrompts(storedSessionId)
+        clearSessionUnreadAliases(storedSessionId, removed)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
@@ -1249,6 +1269,7 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
+        clearSessionUnreadAliases(storedSessionId, archived)
         // A sidebar refresh can race the optimistic removal while the PATCH is
         // in flight and briefly reinsert the still-unarchived backend row. Win
         // that race after the mutation succeeds so right-click → Archive does

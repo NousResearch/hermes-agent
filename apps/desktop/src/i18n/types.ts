@@ -1104,6 +1104,10 @@ export interface Translations {
     showAllProfiles: string
     switchToProfile: (name: string) => string
     manageProfiles: string
+    profileActivity: (name: string, activity: string) => string
+    activityRunning: string
+    activityNeedsInput: string
+    activityUnread: string
     actionsFor: (name: string) => string
     color: string
     colorFor: (name: string) => string

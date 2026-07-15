@@ -191,6 +191,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   } = useSessionStateCache({
     activeSessionId,
     busyRef,
+    currentView,
     selectedStoredSessionId,
     setAwaitingResponse,
     setBusy,
@@ -339,6 +340,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { handleGatewayEvent } = useMessageStream({
     activeSessionIdRef,
+    currentView,
     hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,

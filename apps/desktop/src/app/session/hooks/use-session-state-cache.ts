@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import type { AppView } from '@/app/routes'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -46,10 +47,22 @@ function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
 interface SessionStateCacheOptions {
   activeSessionId: string | null
   busyRef: MutableRefObject<boolean>
+  currentView: AppView
   selectedStoredSessionId: string | null
   setAwaitingResponse: (awaiting: boolean) => void
   setBusy: (busy: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+}
+
+function transcriptIsVisible(currentView: AppView, threadScrolledUp: boolean): boolean {
+  return (
+    currentView === 'chat' &&
+    !threadScrolledUp &&
+    typeof document !== 'undefined' &&
+    !document.hidden &&
+    typeof document.hasFocus === 'function' &&
+    document.hasFocus()
+  )
 }
 
 function syncRuntimeMetadataToView(state: ClientSessionState) {
@@ -65,12 +78,14 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
 export function useSessionStateCache({
   activeSessionId,
   busyRef,
+  currentView,
   selectedStoredSessionId,
   setAwaitingResponse,
   setBusy,
   setMessages
 }: SessionStateCacheOptions) {
   const busy = useStore($busy)
+  const threadScrolledUp = useStore($threadScrolledUp)
   const activeSessionIdRef = useRef<string | null>(null)
   const selectedStoredSessionIdRef = useRef<string | null>(null)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
@@ -186,7 +201,11 @@ export function useSessionStateCache({
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).
     setTurnStartedAt(pending.state.turnStartedAt)
-  }, [busyRef, setAwaitingResponse, setBusy, setMessages])
+
+    if (transcriptIsVisible(currentView, threadScrolledUp)) {
+      setSessionUnread(pending.state.storedSessionId, false)
+    }
+  }, [busyRef, currentView, setAwaitingResponse, setBusy, setMessages, threadScrolledUp])
 
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
@@ -256,6 +275,34 @@ export function useSessionStateCache({
     },
     []
   )
+
+  // A turn can finish in the selected transcript while the window is hidden.
+  // Its unread marker survives that background flush, then clears when the
+  // person actually returns even if no further gateway event repaints it.
+  useEffect(() => {
+    const clearViewedUnread = () => {
+      if (!transcriptIsVisible(currentView, threadScrolledUp)) {
+        return
+      }
+
+      const runtimeId = activeSessionIdRef.current
+
+      const storedSessionId = runtimeId
+        ? sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
+        : selectedStoredSessionIdRef.current
+
+      setSessionUnread(storedSessionId, false)
+    }
+
+    clearViewedUnread()
+    window.addEventListener('focus', clearViewedUnread)
+    document.addEventListener('visibilitychange', clearViewedUnread)
+
+    return () => {
+      window.removeEventListener('focus', clearViewedUnread)
+      document.removeEventListener('visibilitychange', clearViewedUnread)
+    }
+  }, [activeSessionId, currentView, selectedStoredSessionId, threadScrolledUp])
 
   const updateSessionState = useCallback(
     (

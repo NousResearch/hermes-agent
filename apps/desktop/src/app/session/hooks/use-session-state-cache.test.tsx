@@ -86,6 +86,7 @@ function Harness({ activeSessionId, onReady, selectedStoredSessionId }: HarnessP
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
+    currentView: 'chat',
     selectedStoredSessionId,
     setAwaitingResponse: () => undefined,
     setBusy: () => undefined,
@@ -283,6 +284,7 @@ function ViewHarness({ activeSessionId, onReady }: ViewHarnessProps) {
   const cache = useSessionStateCache({
     activeSessionId,
     busyRef,
+    currentView: 'chat',
     selectedStoredSessionId: null,
     setAwaitingResponse: () => undefined,
     setBusy: () => undefined,

@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import type { AppView } from '@/app/routes'
 import { translateNow } from '@/i18n'
 import {
   appendAssistantTextPart,
@@ -21,8 +22,10 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { setSessionUnread } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
+import { $threadScrolledUp } from '@/store/thread-scroll'
 import { setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
@@ -32,6 +35,7 @@ import { completionErrorText, delegateTaskPayloads, STREAM_DELTA_FLUSH_MS } from
 
 interface MessageStreamOptions {
   activeSessionIdRef: MutableRefObject<string | null>
+  currentView: AppView
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
@@ -55,6 +59,7 @@ interface QueuedStreamDeltas {
 
 export function useMessageStream({
   activeSessionIdRef,
+  currentView,
   hydrateFromStoredSession,
   queryClient,
   refreshHermesConfig,
@@ -506,7 +511,7 @@ export function useMessageStream({
 
   const failAssistantMessage = useCallback(
     (sessionId: string, errorMessage: string) => {
-      updateSessionState(sessionId, state => {
+      const failedState = updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
@@ -546,8 +551,21 @@ export function useMessageStream({
           turnStartedAt: null
         }
       })
+
+      if (!failedState.interrupted) {
+        const viewedNow =
+          activeSessionIdRef.current === sessionId &&
+          typeof window !== 'undefined' &&
+          currentView === 'chat' &&
+          !$threadScrolledUp.get() &&
+          typeof document !== 'undefined' &&
+          typeof document.hasFocus === 'function' &&
+          document.hasFocus()
+
+        setSessionUnread(failedState.storedSessionId, !viewedNow)
+      }
     },
-    [updateSessionState]
+    [activeSessionIdRef, currentView, updateSessionState]
   )
 
   const handleGatewayEvent = useGatewayEventHandler({

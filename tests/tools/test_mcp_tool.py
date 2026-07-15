@@ -3201,6 +3201,39 @@ class TestSessionKwargs:
         # "Unrecognized field 'tools'" errors from Java MCP SDK (#55469)
         assert cap.tools is None
 
+    def test_sampling_capabilities_default_off_serialization(self):
+        """Default: SamplingToolsCapability omitted from serialized JSON."""
+        handler = SamplingHandler("sk3", {})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        # When tools is None, serialized payload should only contain "sampling": {}
+        # with no nested "tools" key.
+        from mcp.types import SamplingCapability as _SC
+
+        # Use the SDK's model_dump (or manual serialization) to verify
+        if hasattr(cap, "model_dump"):
+            dumped = cap.model_dump(exclude_none=True, by_alias=True)
+        else:
+            dumped = {}
+        assert "tools" not in dumped.get("sampling", dumped)
+
+    def test_sampling_capabilities_tools_opt_in(self):
+        """Opt-in: SamplingToolsCapability present when tools_capability=True."""
+        handler = SamplingHandler("sk4", {"tools_capability": True})
+        kwargs = handler.session_kwargs()
+        cap = kwargs["sampling_capabilities"]
+        assert isinstance(cap, SamplingCapability)
+        assert isinstance(cap.tools, SamplingToolsCapability)
+
+    def test_sampling_capabilities_tools_opt_in_serialization(self):
+        """Opt-in serialization includes tools key."""
+        handler = SamplingHandler("sk5", {"tools_capability": True})
+        cap = handler.session_kwargs()["sampling_capabilities"]
+        if hasattr(cap, "model_dump"):
+            dumped = cap.model_dump(exclude_none=True, by_alias=True)
+        else:
+            dumped = {}
+        assert "tools" in dumped.get("sampling", dumped)
+
 
 # ---------------------------------------------------------------------------
 # 14. MCPServerTask integration

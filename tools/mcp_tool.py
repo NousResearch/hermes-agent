@@ -49,6 +49,8 @@ Example config::
           max_rpm: 10                # max requests per minute
           allowed_models: []         # model whitelist (empty = all)
           max_tool_rounds: 5         # tool loop limit (0 = disable)
+          tools_capability: false    # include SamplingToolsCapability in handshake
+                                     # (default false to avoid Java SDK errors #55469)
           log_level: "info"          # audit verbosity
 
 Features:
@@ -230,6 +232,7 @@ try:
             CreateMessageResultWithTools,
             ErrorData,
             SamplingCapability,
+            SamplingToolsCapability,
             TextContent,
             ToolUseContent,
         )
@@ -877,6 +880,11 @@ class SamplingHandler:
         )
         self.model_override = config.get("model")
         self.allowed_models = config.get("allowed_models", [])
+        # Default-off: omit SamplingToolsCapability to avoid
+        # "Unrecognized field 'tools'" errors from strict Java MCP SDKs
+        # (#55469).  Set sampling.tools_capability: true per-server to
+        # re-enable for compatible servers that support tool-use sampling.
+        self.tools_capability = bool(config.get("tools_capability", False))
 
         _log_levels = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING}
         self.audit_level = _log_levels.get(
@@ -1082,9 +1090,12 @@ class SamplingHandler:
 
     def session_kwargs(self) -> dict:
         """Return kwargs to pass to ClientSession for sampling support."""
+        capabilities = SamplingCapability()
+        if self.tools_capability:
+            capabilities = SamplingCapability(tools=SamplingToolsCapability())
         return {
             "sampling_callback": self,
-            "sampling_capabilities": SamplingCapability(),
+            "sampling_capabilities": capabilities,
         }
 
     # -- Main callback -------------------------------------------------------

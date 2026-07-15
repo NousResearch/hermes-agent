@@ -13628,6 +13628,12 @@ def main():
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_list.add_argument(
+        "--exclude-source",
+        action="append",
+        metavar="SOURCE",
+        help="Exclude sessions from this source (repeatable)",
+    )
+    sessions_list.add_argument(
         "--limit", type=int, default=20, help="Max sessions to show"
     )
     sessions_list.add_argument(
@@ -13889,6 +13895,12 @@ def main():
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_browse.add_argument(
+        "--exclude-source",
+        action="append",
+        metavar="SOURCE",
+        help="Exclude sessions from this source (repeatable)",
+    )
+    sessions_browse.add_argument(
         "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
@@ -13958,8 +13970,17 @@ def main():
             return
 
         # Hide third-party tool sessions by default, but honour explicit --source
+        def _combined_excludes(source, user_excludes):
+            """Implicit 'tool' exclusion (skipped when --source is given) plus
+            any --exclude-source values, deduplicated; None when empty."""
+            excludes = [] if source else ["tool"]
+            for src in user_excludes or []:
+                if src not in excludes:
+                    excludes.append(src)
+            return excludes or None
+
         _source = getattr(args, "source", None)
-        _exclude = None if _source else ["tool"]
+        _exclude = _combined_excludes(_source, getattr(args, "exclude_source", None))
 
         if action == "list":
             from hermes_state import workspace_key as _ws_key
@@ -14585,7 +14606,9 @@ def main():
         elif action == "browse":
             limit = getattr(args, "limit", 500) or 500
             source = getattr(args, "source", None)
-            _browse_exclude = None if source else ["tool"]
+            _browse_exclude = _combined_excludes(
+                source, getattr(args, "exclude_source", None)
+            )
             sessions = db.list_sessions_rich(
                 source=source, exclude_sources=_browse_exclude, limit=limit
             )

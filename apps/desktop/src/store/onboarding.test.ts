@@ -46,14 +46,28 @@ function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
   })
 }
 
-function runtimeMismatchGateway(): OnboardingContext['requestGateway'] {
+function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {
   return async method => {
     if (method === 'setup.status') {
       return { provider_configured: true } as never
     }
 
     if (method === 'setup.runtime_check') {
-      return { error: 'Selected runtime is not available.', ok: false } as never
+      return { error: 'No usable credentials found for openrouter.', ok: false, provider: 'openrouter' } as never
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  }
+}
+
+function keylessCustomGateway(): OnboardingContext['requestGateway'] {
+  return async method => {
+    if (method === 'setup.status') {
+      return { provider_configured: true } as never
+    }
+
+    if (method === 'setup.runtime_check') {
+      return { ok: true, provider: 'custom' } as never
     }
 
     throw new Error(`unexpected gateway method: ${method}`)
@@ -99,12 +113,12 @@ describe('refreshOnboarding', () => {
     $desktopOnboarding.set(baseState({ providers: [provider('cached')] }))
     requestDesktopOnboarding('Need provider setup')
 
-    const ready = await refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
+    const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
     expect(ready).toBe(false)
     expect(api).toHaveBeenCalledTimes(1)
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['fresh'])
-    expect($desktopOnboarding.get().reason).toContain('Selected runtime is not available.')
+    expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
     expect($desktopOnboarding.get().reason).toContain('setup.status reports configured credentials')
   })
 
@@ -120,7 +134,7 @@ describe('refreshOnboarding', () => {
     installApiMock(api)
     $desktopOnboarding.set(baseState({ providers: [provider('cached')] }))
 
-    const ready = await refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
+    const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
     expect(ready).toBe(false)
     expect(api).not.toHaveBeenCalled()
@@ -182,20 +196,8 @@ describe('refreshOnboarding', () => {
     expect($desktopOnboarding.get().configured).toBe(true)
   })
 
-  it('does not downgrade configured=true on transient provider outage (checksDisagree)', async () => {
-    // setup.status says provider IS configured, but setup.runtime_check says
-    // it's NOT reachable (e.g. HTTP 502, timeout, rate-limit).  This is a
-    // transient provider outage, not a configuration problem — the onboarding
-    // overlay should NOT appear.
-    const api = vi.fn(async ({ path }: { path: string }) => {
-      if (path === '/api/providers/oauth') {
-        return { providers: [provider('fresh')] }
-      }
-
-      throw new Error(`unexpected api path: ${path}`)
-    })
-
-    installApiMock(api)
+  it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {
+    installApiMock(vi.fn())
     window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
     $desktopOnboarding.set(
       baseState({
@@ -206,38 +208,29 @@ describe('refreshOnboarding', () => {
       })
     )
 
-    const ready = await refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
+    const ready = await refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
     expect(ready).toBe(false)
-    expect(api).not.toHaveBeenCalled()
-    expect($desktopOnboarding.get().configured).toBe(true)
-    expect($desktopOnboarding.get().reason).toBeNull()
-    // The cache must survive the refresh — proving we didn't downgrade.
-    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+    expect($desktopOnboarding.get().configured).toBe(false)
+    expect($desktopOnboarding.get().reason).toContain('No usable credentials found for openrouter.')
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
   })
 
-  it('shows a non-blocking notification when preserving configured on checksDisagree', async () => {
-    const notifySpy = vi.spyOn(notifications, 'notify')
+  it('keeps a keyless custom runtime out of setup', async () => {
+    const api = vi.fn()
 
-    installApiMock(vi.fn())
-    $desktopOnboarding.set(
-      baseState({
-        configured: true,
-        providers: [provider('cached')],
-        reason: null,
-        requested: false
-      })
-    )
+    installApiMock(api)
+    $desktopOnboarding.set(baseState({ configured: false, reason: 'stale setup error', requested: true }))
 
-    await refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
+    const ready = await refreshOnboarding(onboardingContext(keylessCustomGateway()))
 
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'runtime-not-ready',
-        kind: 'error'
-      })
-    )
-    expect($desktopOnboarding.get().configured).toBe(true)
+    expect(ready).toBe(true)
+    expect(api).not.toHaveBeenCalled()
+    expect($desktopOnboarding.get()).toMatchObject({
+      configured: true,
+      reason: null,
+      requested: false
+    })
   })
 
   it('does not preserve configured when onboarding was explicitly requested', async () => {
@@ -307,8 +300,8 @@ describe('refreshOnboarding', () => {
     installApiMock(api)
     $desktopOnboarding.set(baseState({ requested: true }))
 
-    const first = refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
-    const second = refreshOnboarding(onboardingContext(runtimeMismatchGateway()))
+    const first = refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
+    const second = refreshOnboarding(onboardingContext(emptyOpenRouterGateway()))
 
     await vi.waitFor(() => expect(api).toHaveBeenCalledTimes(1))
 

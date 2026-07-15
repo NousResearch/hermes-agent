@@ -19,7 +19,7 @@ import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { requestDesktopOnboarding } from '@/store/onboarding'
+import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -266,14 +266,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
-        if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
-          // Only pop the onboarding overlay when the warning is a genuine
-          // "no provider configured" error — not auxiliary/compression warnings
-          // that happen to mention env var names (e.g. with custom providers).
-          if (isProviderSetupErrorMessage(payload.credential_warning)) {
-            requestDesktopOnboarding(payload.credential_warning)
-          }
-        }
+        requestDesktopOnboardingForCredentialWarning(payload?.credential_warning)
 
         if (apply) {
           reportInstallMethodWarning(payload?.install_warning)

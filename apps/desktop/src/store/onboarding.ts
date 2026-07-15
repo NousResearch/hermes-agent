@@ -12,6 +12,7 @@ import {
   submitOAuthCode,
   validateProviderCredential
 } from '@/hermes'
+import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -190,14 +191,7 @@ function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, sta
   if (runtime.source === 'fallback' && state.configured === true && !state.requested) {
     return true
   }
-  // checksDisagree means setup.status says the provider IS configured but
-  // setup.runtime_check says it's NOT reachable — a transient provider
-  // outage (502, timeout, rate-limit), not a configuration problem.
-  // Don't downgrade to the blocking onboarding overlay; surface a
-  // non-blocking notification instead (the caller handles that).
-  if (runtime.checksDisagree && state.configured === true && !state.requested) {
-    return true
-  }
+
   return false
 }
 
@@ -398,6 +392,16 @@ async function refreshProviders() {
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
+}
+
+export function requestDesktopOnboardingForCredentialWarning(reason: null | string | undefined) {
+  const warning = reason?.trim()
+
+  if (!warning || !isProviderSetupErrorMessage(warning)) {
+    return
+  }
+
+  requestDesktopOnboarding(warning)
 }
 
 // Open the onboarding provider selector on demand from an already-configured

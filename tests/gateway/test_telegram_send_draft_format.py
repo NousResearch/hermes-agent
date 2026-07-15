@@ -94,10 +94,13 @@ async def test_send_draft_falls_back_to_plain_text_on_markdownv2_error():
 
 
 @pytest.mark.asyncio
-async def test_send_draft_non_badrequest_is_suppressed():
-    """A non-BadRequest failure (e.g. expired typing action, unsupported chat)
-    is suppressed with success=True so the caller stays in draft mode and never
-    cascades to rapid editMessageText calls that exhaust the rate-limit quota."""
+async def test_send_draft_non_badrequest_is_a_normal_miss():
+    """A non-BadRequest, non-flood-control failure (e.g. bot blocked, chat
+    gone) is reported as a normal miss (success=False, not retryable) — not
+    masked as success.  Only flood control (retry_after) gets special
+    suppression/cooldown treatment; every other failure must count toward
+    the consumer's consecutive-failure threshold, or a real/permanent
+    problem would silently never trip the fallback to edit-based delivery."""
     adapter = _make_adapter()
     adapter.format_message = lambda c: f"FMT::{c}"
 
@@ -111,6 +114,11 @@ async def test_send_draft_non_badrequest_is_suppressed():
 
     result = await adapter.send_draft("123", 11, "hi")
 
-    assert result.success is True
-    assert result.message_id is None
+    assert result.success is False
+    assert result.retryable is not True
     assert len(calls) == 1  # no plain-text retry on non-BadRequest
+
+# Retry-after-a-flood-wait scenarios (both the "hits flood again" and
+# "hard failure after surviving one retry" cases) are covered in
+# tests/gateway/test_telegram_send_draft_flood_control.py, which already
+# owns flood-control retry coverage for this method.

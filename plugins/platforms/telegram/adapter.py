@@ -4787,15 +4787,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     # so the caller knows the animation frame landed.
                     return SendResult(success=True, message_id=None)
                 # ok=False: Bot API rejected the frame (typing action expired,
-                # unsupported client, etc.).  Suppress silently — returning
-                # success=True keeps the consumer in draft mode so it never
-                # cascades to rapid editMessageText calls that exhaust the quota.
+                # unsupported client, etc.) with no exception detail.  This is
+                # a normal miss, not flood control — it counts toward
+                # _MAX_DRAFT_FAILURES like any other rejection, so a run of
+                # real rejections still trips the consecutive-failure
+                # fallback to edit-based delivery instead of being silently
+                # invisible forever.
                 logger.debug(
-                    "[%s] sendMessageDraft ok=False, frame suppressed "
-                    "(chat=%s draft_id=%s)",
+                    "[%s] sendMessageDraft ok=False (chat=%s draft_id=%s)",
                     self.name, chat_id, draft_id,
                 )
-                return SendResult(success=True, message_id=None)
+                return SendResult(success=False, error="rejected")
             except Exception as e:
                 # Short flood-control wait (≤5s): sleep inline and retry the
                 # same frame so this single hiccup is invisible to the caller.
@@ -4813,11 +4815,37 @@ class TelegramAdapter(BasePlatformAdapter):
                             ok = await self._bot.send_message_draft(**kwargs)
                             if ok:
                                 return SendResult(success=True, message_id=None)
-                        except Exception:
-                            pass
-                        # Retry failed after sleeping — suppress this frame rather
-                        # than counting it as a failure and risking edit cascade.
-                        return SendResult(success=True, message_id=None)
+                            logger.debug(
+                                "[%s] sendMessageDraft ok=False after retry "
+                                "(chat=%s draft_id=%s)",
+                                self.name, chat_id, draft_id,
+                            )
+                            return SendResult(success=False, error="rejected")
+                        except Exception as e2:
+                            retry_after2 = getattr(e2, "retry_after", None)
+                            if retry_after2 is not None:
+                                wait2 = float(retry_after2)
+                                logger.debug(
+                                    "[%s] sendMessageDraft flood control %.1fs on "
+                                    "retry (chat=%s draft_id=%s)",
+                                    self.name, wait2, chat_id, draft_id,
+                                )
+                                return SendResult(
+                                    success=False,
+                                    error=f"flood_control:{wait2:.0f}",
+                                    retryable=True,
+                                    retry_after=wait2,
+                                )
+                            # Retry raised a non-flood error — a normal miss,
+                            # not masked as success, so repeated hard failures
+                            # (capability/permission errors) still trip the
+                            # consecutive-failure fallback.
+                            logger.debug(
+                                "[%s] sendMessageDraft retry failed "
+                                "(chat=%s draft_id=%s): %s",
+                                self.name, chat_id, draft_id, e2,
+                            )
+                            return SendResult(success=False, error=str(e2))
                     # Long wait — signal retryable so the caller doesn't count
                     # this against the permanent-disable threshold.
                     logger.debug(
@@ -4838,15 +4866,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, chat_id, draft_id, e,
                     )
                     continue
-                # Any other failure (expired typing action, unsupported chat,
-                # network hiccup, plain-text retry failure): suppress silently.
-                # Returning success=True keeps the consumer in draft mode and
-                # prevents the editMessageText cascade that exhausts the quota.
+                # Any other failure (unsupported chat, network hiccup,
+                # plain-text retry failure): a normal miss.  Not flood
+                # control, so it counts toward _MAX_DRAFT_FAILURES like any
+                # other rejection — a real/permanent problem (bot blocked,
+                # chat gone, etc.) should still trip the existing
+                # consecutive-failure fallback rather than being silently
+                # invisible forever.
                 logger.debug(
-                    "[%s] sendMessageDraft suppressed (chat=%s draft_id=%s): %s",
+                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
                     self.name, chat_id, draft_id, e,
                 )
-                return SendResult(success=True, message_id=None)
+                return SendResult(success=False, error=str(e))
 
         return SendResult(success=True, message_id=None)
 

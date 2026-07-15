@@ -727,9 +727,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # "all"       — every message triggers a push notification (legacy
         #               behavior; opt-in via display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
-        # send_or_update_status() bookkeeping: {(chat_id, status_key) -> bot message_id}
+        # send_or_update_status() bookkeeping:
+        # {(chat_id, status_key, thread_id, dm_topic_id) -> bot message_id}
         # Tracks status bubbles owned by this adapter so subsequent calls with the
-        # same key edit the same message instead of appending new ones (#30045).
+        # same key and routing context edit the same message instead of appending
+        # new ones (#30045). Include thread routing so status from one Telegram
+        # topic/lane never edits or reuses the bubble from another topic.
         self._status_message_ids: Dict[tuple, str] = {}
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 4096 preview cap,
@@ -739,6 +742,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # penalties, hanging final delivery). Dedup here so a saturated preview
         # goes quiet until finalize. Bounded: entries are dropped on finalize.
         self._last_overflow_preview: Dict[tuple, str] = {}
+        # Per-key locks so concurrent send_or_update_status calls for the same
+        # routing key (e.g. status callback + final provider-error suppression
+        # check) are serialized — preventing a race where two coroutines read
+        # the same cached_id, both fail/succeed on edit, and one overwrites.
+        self._status_locks: Dict[tuple, asyncio.Lock] = {}
         # Background task that runs post-connect housekeeping (command-menu
         # registration + DM-topic setup) off the connect path so a slow Bot
         # API call (e.g. a set_my_commands stall for certain tokens) cannot
@@ -4206,22 +4214,36 @@ class TelegramAdapter(BasePlatformAdapter):
         subsequent calls with the same (chat_id, status_key) edit that same
         message in place. If the edit fails (message deleted, too old, etc.)
         we drop the cached id and send fresh.
+
+        Concurrent calls with the same routing key are serialized via a
+        per-key asyncio.Lock to prevent race conditions where two coroutines
+        read the same cached_id and one overwrites the other's result.
         """
-        key = (str(chat_id), str(status_key))
-        cached_id = self._status_message_ids.get(key)
-        if cached_id is not None:
-            result = await self.edit_message(
-                chat_id, cached_id, content, finalize=True, metadata=metadata,
-            )
-            if result.success:
-                if result.message_id:
-                    self._status_message_ids[key] = str(result.message_id)
-                return result
-            # Edit failed — clear the cached id and fall through to a fresh send.
-            self._status_message_ids.pop(key, None)
-        result = await self.send(chat_id, content, metadata=metadata)
-        if result.success and result.message_id:
-            self._status_message_ids[key] = str(result.message_id)
+        key = (
+            str(chat_id),
+            str(status_key),
+            self._metadata_thread_id(metadata),
+            self._metadata_direct_messages_topic_id(metadata),
+        )
+        lock = self._status_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._status_locks[key] = lock
+        async with lock:
+            cached_id = self._status_message_ids.get(key)
+            if cached_id is not None:
+                result = await self.edit_message(
+                    chat_id, cached_id, content, finalize=True, metadata=metadata,
+                )
+                if result.success:
+                    if result.message_id:
+                        self._status_message_ids[key] = str(result.message_id)
+                    return result
+                # Edit failed — clear the cached id and fall through to a fresh send.
+                self._status_message_ids.pop(key, None)
+            result = await self.send(chat_id, content, metadata=metadata)
+            if result.success and result.message_id:
+                self._status_message_ids[key] = str(result.message_id)
         return result
 
     async def edit_message(

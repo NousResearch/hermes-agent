@@ -656,5 +656,11 @@ def cmd_providers(args: Any) -> None:
         except ProviderValidationError as exc:
             print(f"providers validate: {exc}", file=sys.stderr)
             raise SystemExit(2) from exc
-    print("Usage: hermes providers validate [options]", file=sys.stderr)
+    if getattr(args, "providers_command", None) in {"evaluate", "score", "suites"}:
+        # Keep the authored validation module as the compatibility seam while
+        # loading the larger orchestration module only for its explicit modes.
+        from hermes_cli.provider_evaluation import cmd_evaluation
+
+        return cmd_evaluation(args)
+    print("Usage: hermes providers {validate,evaluate,score,suites}", file=sys.stderr)
     raise SystemExit(2)

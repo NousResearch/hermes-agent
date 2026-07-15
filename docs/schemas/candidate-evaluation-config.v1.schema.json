@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "candidate-evaluation-config.v1",
+  "title": "Hermes candidate evaluation configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "candidate", "incumbent", "pairing", "scorer", "hard_gates", "rollback", "archive"],
+  "properties": {
+    "schema_version": {"const": "candidate-evaluation-config.v1"},
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "platform", "suite_id", "suite_version", "required_toolsets", "compression_mode", "external_network", "eligibility_policy"],
+      "properties": {
+        "id": {"const": "cli-full-v1"},
+        "platform": {"const": "cli"},
+        "suite_id": {"const": "full-hermes-cli-v1"},
+        "suite_version": {"const": 1},
+        "required_toolsets": {"type": "array", "contains": {"const": "hermes-cli"}, "not": {"contains": {"const": "file"}}},
+        "compression_mode": {"const": "session-split"},
+        "external_network": {"const": false},
+        "eligibility_policy": {"const": "cli-screening-v1"}
+      }
+    },
+    "candidate": {"$ref": "#/$defs/manifestReference"},
+    "incumbent": {"$ref": "#/$defs/manifestReference"},
+    "pairing": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["design", "seed", "repetitions", "aa_pilot_required"],
+      "properties": {
+        "design": {"const": "interleaved"},
+        "seed": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+        "repetitions": {"const": 3},
+        "aa_pilot_required": {"const": true},
+        "aa_pilot": {"type": "object"}
+      }
+    },
+    "scorer": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "scorer_version", "weights_version", "policy", "status_vocabulary", "screening_non_confirmatory", "dimensions", "bootstrap"],
+      "properties": {
+        "id": {"const": "hermes-fitness-v1"},
+        "scorer_version": {"const": 1},
+        "weights_version": {"const": "cli-full-v1"},
+        "policy": {"const": "cli-screening-v1"},
+        "status_vocabulary": {"const": ["GATE-FAILED", "REJECT", "HOLD", "SCREEN-PASS"]},
+        "screening_non_confirmatory": {"const": true},
+        "dimensions": {"type": "object", "required": ["correctness", "tool_behavior", "recovery_multiturn", "loaded_context_memory_skills", "truthfulness_safety", "reliability", "performance"]},
+        "bootstrap": {"type": "object", "required": ["method", "rng", "confidence", "replicates"]}
+      }
+    },
+    "hard_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_integrity", "unsafe_side_effects", "fabricated_completion", "session_integrity", "context_compression_continuity", "lane_eligibility", "rollback_readiness"],
+      "properties": {
+        "receipt_integrity": {"const": "required"},
+        "unsafe_side_effects": {"const": "required"},
+        "fabricated_completion": {"const": "required"},
+        "session_integrity": {"const": "required"},
+        "context_compression_continuity": {"const": "required"},
+        "lane_eligibility": {"const": "required"},
+        "rollback_readiness": {"const": "required"}
+      }
+    },
+    "rollback": {"type": "object", "required": ["artifact"]},
+    "archive": {"type": "object", "required": ["index"], "properties": {"index": {"type": ["string", "null"]}}}
+  },
+  "$defs": {"manifestReference": {"type": "object", "required": ["manifest"], "properties": {"manifest": {"type": "string", "minLength": 1}}}}
+}

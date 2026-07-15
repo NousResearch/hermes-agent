@@ -13049,7 +13049,7 @@ def main():
     secrets_parser.set_defaults(func=_dispatch_secrets)
 
     # =========================================================================
-    # providers command — tier-0 compatibility smoke
+    # providers command — tier-0 smoke plus local paired candidate evaluation
     # =========================================================================
     from hermes_cli.provider_validate import cmd_providers
     from hermes_cli.subcommands.providers import build_providers_parser

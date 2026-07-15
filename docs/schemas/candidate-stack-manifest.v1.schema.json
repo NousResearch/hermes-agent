@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "candidate-stack-manifest.v1",
+  "title": "Hermes candidate stack manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "weights", "runtime", "template_and_parser", "decoding", "context", "hermes", "hardware", "lane", "rollback"],
+  "properties": {
+    "schema_version": {"const": "candidate-stack-manifest.v1"},
+    "manifest_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "weights": {"$ref": "#/$defs/weights"},
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "template_and_parser": {"$ref": "#/$defs/template"},
+    "decoding": {"$ref": "#/$defs/decoding"},
+    "context": {"$ref": "#/$defs/context"},
+    "hermes": {"$ref": "#/$defs/hermes"},
+    "hardware": {"$ref": "#/$defs/hardware"},
+    "lane": {"$ref": "#/$defs/lane"},
+    "rollback": {"$ref": "#/$defs/rollback"}
+  },
+  "$defs": {
+    "capture": {"type": "object", "required": ["value", "source", "verified"]},
+    "nonEmpty": {"type": "object", "minProperties": 1},
+    "weights": {"type": "object", "required": ["model_id", "revision", "quantization"]},
+    "runtime": {"type": "object", "required": ["provider_id", "model", "endpoint_class", "runtime_name", "server_version", "protocol"]},
+    "template": {"type": "object", "required": ["chat_template_sha256", "tool_call_template_sha256", "parser_name", "parser_version", "parser_mode"]},
+    "decoding": {"type": "object", "required": ["temperature", "top_p", "max_output_tokens", "seed_policy"]},
+    "context": {"type": "object", "required": ["model_context_length", "hermes_context_setting", "compression_enabled", "system_prompt_sha256", "tool_schema_sha256"]},
+    "hermes": {"type": "object", "required": ["revision", "dirty_tree", "package_lock_sha256", "profile", "config_sha256", "source_tag", "rules", "skills", "memory", "toolsets", "disabled_toolsets", "mcp_catalog_digest"]},
+    "hardware": {"type": "object", "required": ["host_class", "os", "python", "accelerator_family", "device_count", "driver_major"]},
+    "lane": {"type": "object", "required": ["lane_id", "suite_id", "suite_version", "external_network", "filesystem_scope", "approval_policy"]},
+    "rollback": {"type": "object", "required": ["current_route_id", "recipe", "owner", "artifact_sha256"]}
+  }
+}

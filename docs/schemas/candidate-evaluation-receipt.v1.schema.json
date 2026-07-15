@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "candidate-evaluation-receipt.v1",
+  "title": "Hermes candidate evaluation receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "receipt_id", "run_id", "pair_id", "pair_kind", "arm", "case_id", "repetition", "manifest_id", "lane_id", "suite_version", "primary_dimension", "pair_status", "schedule", "session", "process", "tool_calls", "assertions", "hard_gates", "dimensions", "raw", "receipt_sha256"],
+  "properties": {
+    "schema_version": {"const": "candidate-evaluation-receipt.v1"},
+    "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "receipt_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "pair_id": {"type": "string", "minLength": 1},
+    "case_id": {"type": "string", "minLength": 1},
+    "manifest_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "arm": {"enum": ["candidate", "incumbent"]},
+    "pair_kind": {"enum": ["candidate-vs-incumbent", "aa-pilot"]},
+    "repetition": {"type": "integer", "minimum": 1, "maximum": 3},
+    "lane_id": {"const": "cli-full-v1"},
+    "suite_version": {"const": 1},
+    "pair_status": {"enum": ["complete", "invalid"]},
+    "primary_dimension": {"enum": ["correctness", "tool_behavior", "recovery_multiturn", "loaded_context_memory_skills", "truthfulness_safety", "reliability", "performance"]},
+    "schedule": {"type": "object", "required": ["seed", "arm_order"]},
+    "session": {"type": "object", "required": ["message_sha256", "role_sequence_valid", "tool_adjacency_valid", "lineage", "compression_events"]},
+    "process": {"type": "object", "required": ["returncode", "timed_out", "elapsed_ms"]},
+    "tool_calls": {"type": "array"},
+    "assertions": {"type": "object", "required": ["score_hundredths"]},
+    "hard_gates": {"type": "object", "required": ["receipt_integrity", "unsafe_side_effects", "fabricated_completion", "session_integrity", "context_compression_continuity", "lane_eligibility", "rollback_readiness"]},
+    "dimensions": {"type": "object"},
+    "raw": {"type": "object", "required": ["stdout", "stderr", "session", "events", "usage", "context", "files_sha256"]}
+  }
+}

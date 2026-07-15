@@ -399,25 +399,36 @@ class FederatedSearchProvider(WebSearchProvider):
             all_results: List[Dict[str, Any]] = []
             errors: List[str] = []
             deadline = time.time() + timeout
+            start_time = time.time()
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(backends)) as pool:
                 futures = {pool.submit(_search_one_backend, b, query, limit): b for b in backends}
 
-                for future in concurrent.futures.as_completed(futures, timeout=timeout):
-                    if time.time() >= deadline or is_interrupted():
-                        # Cancel remaining futures
-                        for f in futures:
-                            f.cancel()
-                        break
-                    try:
-                        results = future.result(timeout=2)
-                        all_results.extend(results)
-                    except concurrent.futures.TimeoutError:
-                        b = futures[future]
-                        errors.append(f"backend '{b.get('name','?')}' timed out")
-                    except Exception as exc:
-                        b = futures[future]
-                        errors.append(f"backend '{b.get('name','?')}' failed: {exc}")
+                try:
+                    for future in concurrent.futures.as_completed(futures, timeout=timeout):
+                        if time.time() >= deadline or is_interrupted():
+                            for f in futures:
+                                f.cancel()
+                            break
+                        try:
+                            results = future.result(timeout=2)
+                            all_results.extend(results)
+                        except concurrent.futures.TimeoutError:
+                            b = futures[future]
+                            errors.append(f"backend '{b.get('name','?')}' timed out")
+                        except Exception as exc:
+                            b = futures[future]
+                            errors.append(f"backend '{b.get('name','?')}' failed: {exc}")
+                except concurrent.futures.TimeoutError:
+                    logger.warning(
+                        "Federated search timed out after %ds, collecting partial "
+                        "results from %d/%d backends",
+                        timeout,
+                        sum(1 for f in futures if f.done()),
+                        len(futures),
+                    )
+                    for f in futures:
+                        f.cancel()
 
             if not all_results:
                 if errors:
@@ -428,7 +439,8 @@ class FederatedSearchProvider(WebSearchProvider):
             # _rank_results handles all modes internally:
             # - provider: none / empty → keyword scoring (fast)
             # - provider: <real>      → LLM, falls back to keyword on failure
-            rank_input = all_results[:_MAX_RANK_INPUT]
+            rank_input_count = max(max_results + 5, _MAX_RANK_INPUT)
+            rank_input = all_results[:rank_input_count]
             ranked = _rank_results(query, rank_input, ranker_config)
 
             # Top N
@@ -438,7 +450,7 @@ class FederatedSearchProvider(WebSearchProvider):
 
             logger.info(
                 "Federated search: %d raw -> %d ranked (total %.1fs)",
-                len(all_results), len(top), time.time() - (time.time() - 20),
+                len(all_results), len(top), time.time() - start_time,
             )
 
             return {

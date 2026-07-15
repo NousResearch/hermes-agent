@@ -163,6 +163,7 @@ def _frontmatter_routing_terms(frontmatter: Dict[str, Any]) -> tuple[str, ...]:
     values: list[Any] = []
     for raw in (
         frontmatter.get("triggers"),
+        frontmatter.get("tags"),
         hermes.get("triggers"),
         hermes.get("tags"),
     ):

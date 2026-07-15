@@ -60,6 +60,19 @@ def test_query_uses_private_routing_hints_without_leaking_them(tmp_path):
     assert set(result["skills"][0]) == {"name", "description", "category"}
 
 
+def test_query_supports_legacy_top_level_tags(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(
+            tmp_path,
+            "inventory-audit",
+            description="Audit inventory records",
+            extra="tags: [warehouse, stocktake]\n",
+        )
+        result = json.loads(skills_list(query="warehouse stocktake"))
+
+    assert result["skills"][0]["name"] == "inventory-audit"
+
+
 def test_query_matches_unicode_casefolded_metadata(tmp_path):
     with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
         _make_skill(tmp_path, "cafe-tools", description="Gestiona pedidos de CAFÉ")

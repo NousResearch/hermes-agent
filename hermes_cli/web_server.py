@@ -10956,6 +10956,77 @@ class MCPServersReplace(BaseModel):
     profile: Optional[str] = None
 
 
+def _normalize_mcp_server_create(
+    body: MCPServerCreate,
+) -> tuple[str, Dict[str, Any], Optional[str]]:
+    """Validate a Dashboard MCP create request and build its safe config.
+
+    The returned config never contains the submitted Bearer token. Callers
+    persist the token with the shared Bearer helper only after they enter the
+    intended profile scope. Keeping this conversion shared makes the
+    standalone MCP page and the Profile Builder enforce the same
+    transport/auth contract.
+    """
+    from hermes_cli.mcp_config import (
+        _bearer_auth_headers,
+        _strip_bearer_prefix,
+    )
+    from hermes_cli.mcp_security import validate_mcp_server_entry
+
+    name = (body.name or "").strip()
+    if not name:
+        raise ValueError("Server name is required")
+
+    url = (body.url or "").strip()
+    command = (body.command or "").strip()
+    auth = (body.auth or "none").strip().lower()
+    bearer_token = (
+        body.bearer_token.get_secret_value()
+        if body.bearer_token is not None
+        else None
+    )
+
+    if bool(url) == bool(command):
+        raise ValueError("Provide exactly one of URL (HTTP/SSE) or command (stdio)")
+    if auth not in {"none", "header", "oauth"}:
+        raise ValueError(f"Unsupported auth mode: {auth}")
+
+    server_config: Dict[str, Any] = {}
+    if url:
+        if body.args:
+            raise ValueError("Arguments are only supported for stdio MCP servers")
+        if body.env:
+            raise ValueError(
+                "Environment variables are only supported for stdio MCP servers"
+            )
+        if auth == "header":
+            normalized = _strip_bearer_prefix(bearer_token) if bearer_token else ""
+            if not normalized or normalized.lower() == "bearer":
+                raise ValueError("Bearer token is required")
+            server_config["headers"] = _bearer_auth_headers(name)
+        elif body.bearer_token is not None:
+            raise ValueError("Bearer token requires header authentication")
+
+        server_config["url"] = url
+        if auth == "oauth":
+            server_config["auth"] = "oauth"
+    else:
+        if auth != "none" or body.bearer_token is not None:
+            raise ValueError(
+                "HTTP authentication is not supported for stdio MCP servers"
+            )
+        server_config["command"] = command
+        if body.args:
+            server_config["args"] = list(body.args)
+        if body.env:
+            server_config["env"] = dict(body.env)
+
+    issues = validate_mcp_server_entry(name, server_config)
+    if issues:
+        raise ValueError(f"Server '{name}' rejected: {'; '.join(issues)}")
+    return name, server_config, bearer_token
+
+
 def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
     """Mask secret-shaped MCP env values for read responses."""
     out: Dict[str, str] = {}
@@ -11010,71 +11081,19 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         _save_mcp_server,
     )
 
-    name = (body.name or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Server name is required")
-
-    url = (body.url or "").strip()
-    command = (body.command or "").strip()
-    auth = (body.auth or "none").strip().lower()
-    bearer_token = (
-        body.bearer_token.get_secret_value()
-        if body.bearer_token is not None
-        else None
-    )
-
-    if bool(url) == bool(command):
-        raise HTTPException(
-            status_code=400,
-            detail="Provide exactly one of URL (HTTP/SSE) or command (stdio)",
-        )
-    if auth not in {"none", "header", "oauth"}:
-        raise HTTPException(status_code=400, detail=f"Unsupported auth mode: {auth}")
-
-    if url:
-        if body.args:
-            raise HTTPException(
-                status_code=400,
-                detail="Arguments are only supported for stdio MCP servers",
-            )
-        if body.env:
-            raise HTTPException(
-                status_code=400,
-                detail="Environment variables are only supported for stdio MCP servers",
-            )
-        if auth == "header" and bearer_token is None:
-            raise HTTPException(status_code=400, detail="Bearer token is required")
-        if auth != "header" and body.bearer_token is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="Bearer token requires header authentication",
-            )
-    else:
-        if auth != "none" or body.bearer_token is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="HTTP authentication is not supported for stdio MCP servers",
-            )
+    try:
+        name, server_config, bearer_token = _normalize_mcp_server_create(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     with _profile_scope(body.profile or profile):
         existing = _get_mcp_servers()
     if name in existing:
         raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
-    server_config: Dict[str, Any] = {}
-    if url:
-        server_config["url"] = url
-        if auth == "oauth":
-            server_config["auth"] = "oauth"
-    else:
-        server_config["command"] = command
-        if body.args:
-            server_config["args"] = list(body.args)
-        if body.env:
-            server_config["env"] = dict(body.env)
 
     try:
         with _profile_scope(body.profile or profile):
-            if auth == "header" and bearer_token is not None:
+            if bearer_token is not None:
                 server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
             if not _save_mcp_server(name, server_config):
                 raise HTTPException(
@@ -13015,7 +13034,7 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
     Returns the number of servers written.
     """
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from hermes_cli.mcp_security import validate_mcp_server_entry
+    from hermes_cli.mcp_config import _save_bearer_auth_token
 
     written = 0
     token = set_hermes_home_override(str(profile_dir))
@@ -13023,28 +13042,18 @@ def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate
         cfg = load_config()
         mcp = cfg.setdefault("mcp_servers", {})
         for server in servers:
-            name = (server.name or "").strip()
-            if not name:
+            try:
+                name, entry, bearer_token = _normalize_mcp_server_create(server)
+            except ValueError as exc:
+                display_name = (server.name or "").strip() or "<unnamed>"
+                _log.warning(
+                    "Profile-create: skipping MCP server '%s': %s",
+                    display_name,
+                    exc,
+                )
                 continue
-            entry: Dict[str, Any] = {}
-            if server.url:
-                entry["url"] = server.url
-            if server.command:
-                entry["command"] = server.command
-            if server.args:
-                entry["args"] = list(server.args)
-            if server.env:
-                entry["env"] = dict(server.env)
-            if server.auth:
-                entry["auth"] = server.auth
-            if not entry:
-                # Nothing usable to write (neither url nor command) — skip
-                # rather than persist an empty, unusable server stanza.
-                continue
-            issues = validate_mcp_server_entry(name, entry)
-            if issues:
-                _log.warning("Profile-create: skipping MCP server '%s': %s", name, "; ".join(issues))
-                continue
+            if bearer_token is not None:
+                entry["headers"] = _save_bearer_auth_token(name, bearer_token)
             mcp[name] = entry
             written += 1
         if written:

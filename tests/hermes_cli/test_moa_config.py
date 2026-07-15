@@ -304,3 +304,115 @@ def test_reference_max_tokens_in_flattened_view():
     active preset's reference_max_tokens."""
     cfg = normalize_moa_config(_preset(reference_max_tokens=750))
     assert cfg["reference_max_tokens"] == 750
+
+
+# ── validate_moa_payload (write-boundary validation, #64156) ─────────────────
+#
+# normalize_moa_config is deliberately tolerant at READ time (hand-edited
+# configs degrade to defaults). validate_moa_payload is the strict WRITE-time
+# counterpart: it must flag exactly the payloads normalize would silently
+# repair, so API save paths reject them instead of corrupting user config.
+
+
+def _valid_preset_payload():
+    return {
+        "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+        "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+    }
+
+
+def test_validate_moa_payload_accepts_complete_presets():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    assert validate_moa_payload({"presets": {"default": _valid_preset_payload()}}) == []
+
+
+def test_validate_moa_payload_accepts_legacy_flat_payload():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    assert validate_moa_payload(_valid_preset_payload()) == []
+
+
+def test_validate_moa_payload_flags_half_filled_reference_slot():
+    """The #64156 shape: provider picked, model still empty (mid-edit autosave)."""
+    from hermes_cli.moa_config import validate_moa_payload
+
+    preset = _valid_preset_payload()
+    preset["reference_models"].append({"provider": "kilo", "model": ""})
+    problems = validate_moa_payload({"presets": {"default": preset}})
+
+    assert problems
+    assert any("reference 2" in p and "model is required" in p for p in problems)
+
+
+def test_validate_moa_payload_flags_half_filled_aggregator():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    preset = _valid_preset_payload()
+    preset["aggregator"] = {"provider": "openrouter", "model": ""}
+    problems = validate_moa_payload({"presets": {"default": preset}})
+
+    assert any("aggregator" in p and "model is required" in p for p in problems)
+
+
+def test_validate_moa_payload_flags_empty_references():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    preset = _valid_preset_payload()
+    preset["reference_models"] = []
+    problems = validate_moa_payload({"presets": {"default": preset}})
+
+    assert any("at least one complete reference model" in p for p in problems)
+
+
+def test_validate_moa_payload_flags_recursive_moa_slot():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    preset = _valid_preset_payload()
+    preset["aggregator"] = {"provider": "MoA", "model": "default"}
+    problems = validate_moa_payload({"presets": {"default": preset}})
+
+    assert any("recursive MoA" in p for p in problems)
+
+
+def test_validate_moa_payload_names_the_broken_preset():
+    """Multi-preset payloads must say WHICH preset is broken."""
+    from hermes_cli.moa_config import validate_moa_payload
+
+    problems = validate_moa_payload(
+        {
+            "presets": {
+                "good": _valid_preset_payload(),
+                "broken": {
+                    "reference_models": [{"provider": "", "model": ""}],
+                    "aggregator": {"provider": "a", "model": "b"},
+                },
+            }
+        }
+    )
+
+    assert problems
+    assert all("'broken'" in p for p in problems)
+    assert not any("'good'" in p for p in problems)
+
+
+def test_validate_moa_payload_agrees_with_clean_slot():
+    """Contract: a payload validate accepts must survive normalize UNCHANGED in
+    its slots — validate and _clean_slot can never disagree (else a payload
+    could pass validation and still be swapped for defaults)."""
+    from hermes_cli.moa_config import validate_moa_payload
+
+    payload = {"presets": {"p": _valid_preset_payload()}}
+    assert validate_moa_payload(payload) == []
+
+    cfg = normalize_moa_config(payload)
+    assert cfg["presets"]["p"]["reference_models"] == payload["presets"]["p"]["reference_models"]
+    assert cfg["presets"]["p"]["aggregator"] == payload["presets"]["p"]["aggregator"]
+
+
+def test_validate_moa_payload_rejects_non_dict():
+    from hermes_cli.moa_config import validate_moa_payload
+
+    assert validate_moa_payload(None)
+    assert validate_moa_payload([1, 2])
+    assert validate_moa_payload({"presets": {"p": "not-a-dict"}})

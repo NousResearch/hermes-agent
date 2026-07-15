@@ -110,6 +110,77 @@ def _clean_slot(slot: Any) -> dict[str, Any] | None:
     return clean
 
 
+def _slot_problem(slot: Any) -> str | None:
+    """Return a human-readable problem for a slot ``_clean_slot`` would drop.
+
+    None means the slot is complete and valid. Mirrors ``_clean_slot`` exactly
+    so the write-boundary validator (``validate_moa_payload``) and the
+    tolerant runtime normalizer can never disagree about what is acceptable.
+    """
+    if not isinstance(slot, dict):
+        return "must be an object with 'provider' and 'model'"
+    provider = str(slot.get("provider") or "").strip()
+    model = str(slot.get("model") or "").strip()
+    if not provider and not model:
+        return "provider and model are required"
+    if not provider:
+        return "provider is required"
+    if not model:
+        return f"model is required (provider '{provider}' has no model selected)"
+    if provider.lower() == "moa":
+        return "the Mixture of Agents provider cannot be used inside a preset (recursive MoA)"
+    return None
+
+
+def validate_moa_payload(raw: Any) -> list[str]:
+    """Return the problems ``normalize_moa_config`` would silently paper over.
+
+    ``normalize_moa_config`` is deliberately tolerant: at *read* time a
+    hand-edited config must degrade to defaults rather than crash the agent.
+    That same tolerance at *write* time is a corruption engine — a client that
+    sends a half-filled slot gets its whole preset silently replaced with the
+    hardcoded defaults (#64156). API write paths call this first and reject
+    invalid payloads loudly instead of saving something the user never chose.
+
+    Returns a list of human-readable problems; empty means safe to save.
+    """
+    if not isinstance(raw, dict):
+        return ["MoA config must be an object"]
+
+    presets_raw = raw.get("presets")
+    if isinstance(presets_raw, dict) and presets_raw:
+        presets: dict[Any, Any] = presets_raw
+    else:
+        # Legacy flat payload: the top-level object is the default preset.
+        presets = {DEFAULT_MOA_PRESET_NAME: raw}
+
+    problems: list[str] = []
+    for name, preset in presets.items():
+        label = str(name or "").strip() or "(unnamed)"
+        if not isinstance(preset, dict):
+            problems.append(f"preset '{label}': must be an object")
+            continue
+
+        refs = preset.get("reference_models")
+        if not isinstance(refs, list):
+            refs = [refs] if isinstance(refs, dict) else []
+        complete_refs = 0
+        for index, slot in enumerate(refs):
+            issue = _slot_problem(slot)
+            if issue:
+                problems.append(f"preset '{label}' reference {index + 1}: {issue}")
+            else:
+                complete_refs += 1
+        if not complete_refs:
+            problems.append(f"preset '{label}': needs at least one complete reference model")
+
+        agg_issue = _slot_problem(preset.get("aggregator"))
+        if agg_issue:
+            problems.append(f"preset '{label}' aggregator: {agg_issue}")
+
+    return problems
+
+
 def _default_preset() -> dict[str, Any]:
     return {
         "reference_models": deepcopy(DEFAULT_MOA_REFERENCE_MODELS),

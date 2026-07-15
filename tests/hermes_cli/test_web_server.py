@@ -861,6 +861,72 @@ class TestWebServerEndpoints:
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
+    def test_put_moa_models_rejects_half_filled_slot_with_422(self):
+        """#64156: a mid-edit autosave (provider picked, model empty) used to be
+        silently normalized into the hardcoded default preset — the user's
+        config was replaced without any error. The write path must reject it."""
+        from hermes_cli.config import load_config
+
+        original = load_config().get("moa")
+
+        payload = {
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "kilo", "model": ""}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 422
+        assert "model is required" in resp.json()["detail"]
+        # Config untouched — not swapped for defaults.
+        assert load_config().get("moa") == original
+
+    def test_put_moa_models_rejects_half_filled_aggregator_with_422(self):
+        payload = {
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": ""},
+                }
+            }
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 422
+        assert "aggregator" in resp.json()["detail"]
+
+    def test_put_moa_models_round_trips_fanout_and_reference_max_tokens(self):
+        """GET → PUT round-trip must not erase newer per-preset knobs. The old
+        Pydantic payload didn't declare fanout / reference_max_tokens, so any
+        client save silently wiped hand-set values back to defaults."""
+        from hermes_cli.config import load_config
+
+        payload = {
+            "presets": {
+                "default": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                    "fanout": "user_turn",
+                    "reference_max_tokens": 600,
+                }
+            }
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+
+        saved = load_config()["moa"]["presets"]["default"]
+        assert saved["fanout"] == "user_turn"
+        assert saved["reference_max_tokens"] == 600
+
+        # And the GET view carries them back to the client.
+        fetched = self.client.get("/api/model/moa").json()
+        assert fetched["presets"]["default"]["fanout"] == "user_turn"
+        assert fetched["presets"]["default"]["reference_max_tokens"] == 600
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

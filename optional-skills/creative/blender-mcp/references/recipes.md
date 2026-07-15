@@ -216,7 +216,7 @@ result = os.path.exists('/tmp/blender_render.png')
 
 Then from the agent, view the render:
 ```python
-# After blender_exec returns, verify and view
+# After execute_blender_code returns, verify and view
 from hermes_tools import terminal
 terminal("ls -la /tmp/blender_render.png")
 # Use vision_analyze to inspect the render

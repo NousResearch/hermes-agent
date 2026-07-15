@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, and [`on_budget_check`](#on_budget_check) can **inject an advisory budget notice** into the user message. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -381,6 +381,7 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`on_budget_check`](#on_budget_check) | Once per turn, before the tool-calling loop | `{"status": "ok"\|"soft"\|"hard", "message": str}` — a `soft`/`hard` message is injected into the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -586,6 +587,81 @@ def guardrails(**kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
+```
+
+---
+
+### `on_budget_check`
+
+Fires **once per turn**, in the turn prologue alongside [`pre_llm_call`](#pre_llm_call). A budget plugin returns a verdict on the **accumulated** spend for a scope (session, cron job, user, global, …) and the core surfaces the plugin-authored message as an advisory notice.
+
+This is **retrospective**: the plugin sums cost that has already been recorded — there is no pre-call projection. In this release the verdict is **advisory only** (the message is injected into the user message); the real pre-LLM hard-abort is a later change (the deferred hard gate).
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, task_id: str, turn_id: str,
+                platform: str, sender_id: str, model: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session. A plugin resolves its scope from this (e.g. parsing a `cron_{job_id}_{ts}` session id). |
+| `task_id` | `str` | Identifier for the current task, when present |
+| `turn_id` | `str` | Identifier for the current turn |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `sender_id` | `str` | The originating user's id, when present |
+| `model` | `str` | The model identifier for this turn |
+
+Always accept `**kwargs` — new context fields may be added without breaking your plugin.
+
+**Fires:** In `agent/turn_context.py`, inside `build_turn_context()`, right after the `pre_llm_call` dispatch. Fires once per user turn, not once per API call within the tool loop.
+
+**Return value:** A dict describing the verdict. Only `status` is required.
+
+```python
+# Approaching the limit — advisory (soft)
+return {"status": "soft", "message": "[BUDGET] Global spend at 82% of the daily cap.",
+        "scope": "global", "spent": 8.2, "limit": 10.0, "pct": 82}
+
+# Over the limit
+return {"status": "hard", "message": "[BUDGET] Daily cap exceeded — spend is paused."}
+
+# Within budget — nothing surfaced
+return {"status": "ok"}
+
+# No opinion for this scope
+return None
+```
+
+| Key | Required | Meaning |
+|-----|----------|---------|
+| `status` | yes | `"ok"`, `"soft"`, or `"hard"` |
+| `message` | for `soft`/`hard` | Plugin-authored notice the core injects verbatim |
+| everything else | no | Metadata the core does **not** act on (`scope`, `scope_id`, `window`, `spent`, `limit`, `pct`, `based_on_estimates`, `degraded`, …) |
+
+**Aggregation:** When **multiple plugins** register the hook, the **most-severe** verdict wins (`hard` > `soft` > `ok`). Ties at equal severity are broken by **hook registration order** — the first registered verdict is kept. Non-dict results and results without a valid `status` are ignored.
+
+**Where the message is injected:** For a `soft`/`hard` verdict, the `message` is appended to the current turn's **user message** — the same ephemeral channel as [`pre_llm_call`](#pre_llm_call), never the system prompt (so the prompt cache prefix is preserved) and never persisted to the session database.
+
+**Discoverability nudge:** When **no** plugin registers `on_budget_check`, a one-time note is injected on the **first turn** of a session, telling the user that cost enforcement is available but not active. Silence it with `agent.budget_enforcement_hint: false` in the config. The nudge never appears when a budget plugin is installed.
+
+**Use cases:** Cost caps per session / cron job / user / workspace, spend dashboards, degraded-mode warnings.
+
+**Example — soft cap at 80% of a daily limit:**
+
+```python
+def budget_verdict(session_id, **kwargs):
+    spent, limit = my_store.accumulated_cost(session_id), 10.0
+    if spent >= limit:
+        return {"status": "hard", "message": f"[BUDGET] Daily cap of ${limit:.2f} reached."}
+    if spent >= 0.8 * limit:
+        pct = round(100 * spent / limit)
+        return {"status": "soft", "message": f"[BUDGET] Spend at {pct}% of the ${limit:.2f} daily cap."}
+    return {"status": "ok"}
+
+def register(ctx):
+    ctx.register_hook("on_budget_check", budget_verdict)
 ```
 
 ---

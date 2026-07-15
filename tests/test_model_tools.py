@@ -520,6 +520,28 @@ class TestDisabledToolsetsPlatformBundle:
             f"Web tools not removed: {present_web - removed}"
         )
 
+    def test_disabling_browser_keeps_web_search_when_web_enabled(self):
+        """Regression for #64503: disabling the `browser` toolset must NOT
+        strip `web_search`, which belongs to `web`/`search`. Disabling browser
+        (natural in headless/Docker deployments with no Chromium) previously
+        removed web_search from every session because `browser` statically
+        listed it as a member and disabled_toolsets is a strict subtraction.
+
+        Asserted at the toolset-resolution layer, not get_tool_definitions:
+        web_search's check_fn (Tavily key) filters it from the final schema in
+        CI, so membership is the correct layer to pin the fix."""
+        from toolsets import resolve_toolset
+
+        browser_tools = set(resolve_toolset("browser"))
+        assert "web_search" not in browser_tools, (
+            "web_search must not be a member of the `browser` toolset — that "
+            "is what lets `disabled_toolsets: [browser]` strip it (#64503)"
+        )
+        # browser still owns its own tools, and web/search still own web_search.
+        assert "browser_navigate" in browser_tools
+        assert "web_search" in set(resolve_toolset("web"))
+        assert "web_search" in set(resolve_toolset("search"))
+
 
     def test_disabling_bundle_removes_platform_tools_but_keeps_core(self):
         """Disabling hermes-discord (when enabled) removes discord/discord_admin

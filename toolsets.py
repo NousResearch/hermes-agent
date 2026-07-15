@@ -170,13 +170,21 @@ TOOLSETS = {
     },
     
     "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
+        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click)",
+        # web_search is intentionally NOT listed here. It belongs to the `web`
+        # and `search` toolsets; listing it in `browser` too meant that
+        # `disabled_toolsets: [browser]` — a natural choice for headless/Docker
+        # deployments with no Chromium — strips web_search from every session,
+        # even when `web` is enabled, because disabled toolsets are a strict
+        # end-of-pipeline subtraction (#17309). Browser-less deployments already
+        # hide the browser_* tools via their check_fn, so enable `web`/`search`
+        # (or a bundle that includes them) for web_search. (#64503)
         "tools": [
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
+            "browser_dialog"
         ],
         "includes": []
     },

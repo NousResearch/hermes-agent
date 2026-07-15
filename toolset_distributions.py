@@ -178,9 +178,10 @@ DISTRIBUTIONS = {
     
     # Browser-focused tasks distribution (for browser-use-tasks.jsonl)
     "browser_tasks": {
-        "description": "Browser-focused distribution (browser toolset includes web_search for finding URLs since Google blocks direct browser searches)",
+        "description": "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",
         "toolsets": {
-            "browser": 97,   # 97% - browser tools (includes web_search) almost always available
+            "browser": 97,   # 97% - browser tools almost always available
+            "search": 97,    # 97% - web_search for finding URLs (its own toolset since #64503; browser no longer bundles it)
             "vision": 12,    # 12% - vision analysis occasionally
             "terminal": 15   # 15% - terminal occasionally for local operations
         }

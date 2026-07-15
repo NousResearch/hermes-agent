@@ -3251,6 +3251,20 @@ class TelegramAdapter(BasePlatformAdapter):
                         raise
                 except Exception as init_err:
                     if not self._looks_like_network_error(init_err):
+                        # Capture known non-retryable errors with a clear message.
+                        if (
+                            isinstance(init_err, AttributeError)
+                            and "do_request" in str(init_err)
+                            and "read-only" in str(init_err)
+                        ):
+                            raise OSError(
+                                f"Telegram PTB version conflict: {init_err}. "
+                                "This is caused by a CPython / python-telegram-bot "
+                                "incompatibility with __slots__ and abc.abstractmethod "
+                                "on some Python 3.11 builds. Ensure the pinned version "
+                                "is installed: pip install 'python-telegram-bot[webhooks]==22.6'. "
+                                "Upgrading to Python 3.12+ also resolves this."
+                            ) from init_err
                         raise
                     if _attempt < _max_connect - 1:
                         wait = min(2 ** _attempt, 15)

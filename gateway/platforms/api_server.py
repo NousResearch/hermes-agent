@@ -2049,7 +2049,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
-                "audio_api": False,
+                "audio_api": True,
                 "realtime_voice": False,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
@@ -2171,7 +2171,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # POST /api/audio/transcribe — voice dictation
     # ------------------------------------------------------
 
-    _MAX_TRANSCRIPTION_BYTES = 10 * 1024 * 1024  # 10 MB
+    _MAX_TRANSCRIPTION_BYTES = 7 * 1024 * 1024  # 7 MiB raw audio (safe under 10 MiB JSON+base64 limit)
 
     async def _handle_audio_transcribe(self, request: web.Request) -> web.Response:
         """Transcribe an audio recording sent as a base64 data-URL.
@@ -2179,6 +2179,9 @@ class APIServerAdapter(BasePlatformAdapter):
         Accepts JSON with ``data_url`` (required) and optional ``mime_type``.
         Returns ``{ok: bool, transcript: str, provider?: str}``.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
         try:
             body = await request.json()
         except Exception:
@@ -2301,6 +2304,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns ``{ok: bool, data_url: str, mime_type: str, provider?: str}``.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
         try:
             body = await request.json()
         except Exception:

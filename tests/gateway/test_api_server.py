@@ -4496,3 +4496,101 @@ class TestAudioSpeakEndpoint:
                 assert data["data_url"].startswith("data:audio/ogg;base64,")
 
 
+
+    # --- auth tests ---
+
+    @pytest.mark.asyncio
+    async def test_speak_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/speak", json={"text": "hello"})
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_transcribe_requires_auth(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:audio/wav;base64,AAAA",
+                "mime_type": "audio/wav",
+            })
+            assert resp.status == 401
+
+
+# ---------------------------------------------------------------------------
+# /api/audio/transcribe — audio transcription
+# ---------------------------------------------------------------------------
+
+
+class TestAudioTranscribeEndpoint:
+    """Tests for the /api/audio/transcribe endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_transcribe_requires_data_url(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={})
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcribe_rejects_non_base64(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:audio/wav,not-base64",
+                "mime_type": "audio/wav",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcribe_empty_audio(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:audio/wav;base64,",
+                "mime_type": "audio/wav",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_transcribe_returns_transcript(self, adapter, tmp_path):
+        app = _create_app(adapter)
+
+        def fake_transcribe(file_path):
+            return {
+                "success": True,
+                "transcript": "hello world",
+                "provider": "test",
+            }
+
+        with patch("tools.transcription_tools.transcribe_audio", fake_transcribe):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/api/audio/transcribe", json={
+                    "data_url": "data:audio/wav;base64,UklGRg==",
+                    "mime_type": "audio/wav",
+                })
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["ok"] is True
+                assert data["transcript"] == "hello world"
+                assert data["provider"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_transcribe_rejects_non_audio_mime(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/api/audio/transcribe", json={
+                "data_url": "data:image/png;base64,AAAA",
+                "mime_type": "image/png",
+            })
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["ok"] is False
+
+

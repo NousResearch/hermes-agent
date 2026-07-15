@@ -107,6 +107,7 @@ export type GatewayEventPayload = {
   failure_reason?: string
   turn_origin?: TurnOrigin | null
   turn_generation?: number
+  turn_state_revision?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

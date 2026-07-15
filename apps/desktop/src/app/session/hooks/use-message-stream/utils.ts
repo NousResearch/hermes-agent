@@ -6,31 +6,9 @@ import type { ClientSessionState } from '../../../types'
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
-    | 'turnOrigin'
-    | 'turnGeneration'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
-
-export function turnGenerationFromPayload(payload: GatewayEventPayload | undefined): number | null {
-  const generation = payload?.turn_generation
-
-  return typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0 ? generation : null
-}
-
-export function isStaleTurnPayload(state: ClientSessionState, payload: GatewayEventPayload | undefined): boolean {
-  const generation = turnGenerationFromPayload(payload)
-
-  return generation !== null && generation < state.turnGeneration
-}
 
 export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
   const patch: SessionRuntimeStatePatch = {}
@@ -69,19 +47,6 @@ export function sessionInfoStatePatch(payload: GatewayEventPayload | undefined):
 
   if (typeof payload?.yolo === 'boolean') {
     patch.yolo = payload.yolo
-  }
-
-  if (payload && Object.hasOwn(payload, 'turn_origin')) {
-    patch.turnOrigin =
-      payload.turn_origin === 'user' || payload.turn_origin === 'notification' || payload.turn_origin === 'goal'
-        ? payload.turn_origin
-        : null
-  }
-
-  const generation = turnGenerationFromPayload(payload)
-
-  if (generation !== null) {
-    patch.turnGeneration = generation
   }
 
   return patch

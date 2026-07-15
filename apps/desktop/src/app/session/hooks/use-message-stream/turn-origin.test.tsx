@@ -176,6 +176,45 @@ describe('turn-origin event reconciliation', () => {
     expect(sessionStates.get(SID)).toMatchObject({ busy: false, turnGeneration: 12, turnOrigin: null })
   })
 
+  it('rejects a stale active snapshot after the same generation settles', async () => {
+    await mountStream()
+
+    const staleActive = {
+      payload: {
+        running: true,
+        turn_generation: 12,
+        turn_origin: 'notification' as const,
+        turn_state_revision: 20
+      },
+      session_id: SID,
+      type: 'session.info' as const
+    }
+
+    act(() => handleEvent!(staleActive))
+    act(() =>
+      handleEvent!({
+        payload: {
+          status: 'complete',
+          text: 'done',
+          turn_generation: 12,
+          turn_origin: 'notification',
+          turn_state_revision: 21
+        },
+        session_id: SID,
+        type: 'message.complete'
+      })
+    )
+    act(() => handleEvent!(staleActive))
+
+    expect(sessionStates.get(SID)).toMatchObject({
+      awaitingResponse: false,
+      busy: false,
+      turnGeneration: 12,
+      turnOrigin: 'notification'
+    })
+    expect((sessionStates.get(SID) as ClientSessionState & { turnStateRevision?: number }).turnStateRevision).toBe(21)
+  })
+
   it('suppresses every completion feedback surface for an interrupted notification turn', async () => {
     const playSound = vi.spyOn(completionSound, 'playCompletionSound').mockImplementation(() => undefined)
     const celebrate = vi.spyOn(petStore, 'flashPetActivity').mockImplementation(() => undefined)

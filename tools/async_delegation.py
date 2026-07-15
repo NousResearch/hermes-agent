@@ -89,10 +89,10 @@ def _db_path():
     return get_hermes_home() / "state.db"
 
 
-def _connect() -> sqlite3.Connection:
+def _connect(db_path=None) -> sqlite3.Connection:
     from hermes_state import apply_wal_with_fallback
 
-    path = _db_path()
+    path = db_path or _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
     apply_wal_with_fallback(conn, db_label="state.db (async_delegation)")
@@ -134,6 +134,26 @@ def _connect() -> sqlite3.Connection:
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
+    # Second-stage delivery ledger. A terminal async-delegation event is
+    # acknowledged once its payload is safely parked here; the row itself stays
+    # pending until a later explicit user turn adopts it into conversation
+    # history. CREATE IF NOT EXISTS is the migration for existing state.db files.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS deferred_notifications (
+            event_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            event_json TEXT,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            delivered_at REAL
+        )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_deferred_notifications_session
+           ON deferred_notifications(session_id, delivery_state, created_at, event_id)"""
+    )
     return conn
 
 
@@ -178,6 +198,10 @@ def _prune_durable_records() -> None:
     with _DB_LOCK, _connect() as conn:
         conn.execute(
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
+            (cutoff,),
+        )
+        conn.execute(
+            "DELETE FROM deferred_notifications WHERE delivery_state='delivered' AND updated_at < ?",
             (cutoff,),
         )
         terminal_count = conn.execute(
@@ -443,6 +467,85 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
     if not claim_id or evt.get("type") != "async_delegation":
         return True
     return release_completion_delivery(str(evt.get("delegation_id") or ""), claim_id)
+
+
+def persist_deferred_notification(
+    session_id: str,
+    event_id: str,
+    payload: str,
+    event: Dict[str, Any],
+    *,
+    db_path=None,
+) -> bool:
+    """Durably park a completion before acknowledging its terminal event.
+
+    Returns true while the payload still needs a user-turn delivery. Repeated
+    queue publication is idempotent by ``event_id`` and never rewrites the
+    originally accepted payload.
+    """
+    now = time.time()
+    with _DB_LOCK, _connect(db_path) as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO deferred_notifications
+               (event_id, session_id, payload, event_json, delivery_state,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'pending', ?, ?)""",
+            (event_id, session_id, payload, json.dumps(event), now, now),
+        )
+        row = conn.execute(
+            "SELECT delivery_state FROM deferred_notifications WHERE event_id=?",
+            (event_id,),
+        ).fetchone()
+        return row is not None and row[0] == "pending"
+
+
+def load_deferred_notifications(session_id: str, *, db_path=None) -> List[Dict[str, Any]]:
+    """Return this durable session's not-yet-consumed completion payloads."""
+    with _DB_LOCK, _connect(db_path) as conn:
+        rows = conn.execute(
+            """SELECT event_id, payload, event_json
+               FROM deferred_notifications
+               WHERE session_id=? AND delivery_state='pending'
+               ORDER BY created_at, event_id""",
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "event_id": event_id,
+            "payload": payload,
+            "event": json.loads(event_json) if event_json else None,
+        }
+        for event_id, payload, event_json in rows
+    ]
+
+
+def complete_deferred_notifications(
+    session_id: str,
+    event_ids,
+    *,
+    db_path=None,
+) -> bool:
+    """Mark a batch delivered after its explicit user turn reaches history."""
+    ids = sorted({str(event_id) for event_id in event_ids if event_id})
+    if not ids:
+        return True
+    now = time.time()
+    placeholders = ",".join("?" for _ in ids)
+    with _DB_LOCK, _connect(db_path) as conn:
+        conn.execute(
+            f"""UPDATE deferred_notifications
+                   SET delivery_state='delivered', delivered_at=?, updated_at=?
+                   WHERE session_id=? AND delivery_state='pending'
+                     AND event_id IN ({placeholders})""",
+            (now, now, session_id, *ids),
+        )
+        remaining = conn.execute(
+            f"""SELECT COUNT(*) FROM deferred_notifications
+                   WHERE session_id=? AND delivery_state!='delivered'
+                     AND event_id IN ({placeholders})""",
+            (session_id, *ids),
+        ).fetchone()[0]
+    return remaining == 0
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:

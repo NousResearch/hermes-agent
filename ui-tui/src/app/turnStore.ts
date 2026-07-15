@@ -20,6 +20,7 @@ const buildTurnState = (): TurnState => ({
   toolTokens: 0,
   tools: [],
   turnGeneration: 0,
+  turnStateRevision: 0,
   turnOrigin: null,
   turnTrail: []
 })
@@ -84,6 +85,7 @@ export interface TurnState {
   toolTokens: number
   tools: ActiveTool[]
   turnGeneration: number
+  turnStateRevision: number
   turnOrigin: TurnOrigin | null
   turnTrail: string[]
 }

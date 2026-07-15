@@ -184,6 +184,7 @@ export interface SessionInfo {
   version?: string
   turn_origin?: TurnOrigin | null
   turn_generation?: number
+  turn_state_revision?: number
 }
 
 export interface Usage {

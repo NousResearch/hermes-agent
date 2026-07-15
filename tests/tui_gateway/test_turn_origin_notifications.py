@@ -622,6 +622,108 @@ def test_deferred_durable_ack_failure_retries_without_duplicate(tmp_path, monkey
     assert len([item for item in emitted if item[0] == "status.update"]) == 1
 
 
+def test_deferred_durable_completion_survives_session_recreation_and_consumes_once(
+    tmp_path, monkeypatch
+):
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-deferred-recreate"
+    )
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("session-key", source="tui")
+    db.close()
+
+    first_session = _session(
+        defer_notifications_until_user=True,
+        deferred_notification_texts=[],
+        profile_home=str(tmp_path),
+    )
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    assert server._dispatch_notification_turn(
+        "rid-defer",
+        "sid",
+        first_session,
+        "durable result",
+        event=event,
+        consumer="test-recreate",
+    ) == "deferred"
+    assert async_delegation.get_durable_delegation("deleg-deferred-recreate")[
+        "delivery_state"
+    ] == "delivered"
+
+    calls = []
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = "session-key"
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            task_id=None,
+            persist_user_message=None,
+        ):
+            calls.append((prompt, persist_user_message))
+            return _successful_turn(prompt, conversation_history)
+
+    recreated = server._deferred_session_record(
+        "session-key",
+        cols=80,
+        cwd=".",
+        history=[],
+        lease=None,
+        profile_home=tmp_path,
+    )
+    recreated["agent"] = _Agent()
+    _patch_prompt_turn_runtime(monkeypatch, [])
+
+    assert recreated["defer_notifications_until_user"] is True
+    assert recreated["deferred_notification_texts"] == ["durable result"]
+
+    server._run_prompt_submit("rid-consume", "sid", recreated, "Next request", origin="user")
+
+    assert len(calls) == 1
+    assert calls[0][0].count("durable result") == 1
+    assert calls[0][0].endswith("Next request")
+    assert calls[0][1] == "Next request"
+    assert [
+        message["content"]
+        for message in recreated["history"]
+        if message.get("role") == "user"
+    ] == ["Next request"]
+
+    recreated_again = server._deferred_session_record(
+        "session-key",
+        cols=80,
+        cwd=".",
+        history=list(recreated["history"]),
+        lease=None,
+        profile_home=tmp_path,
+    )
+    recreated_again["agent"] = _Agent()
+    assert recreated_again.get("deferred_notification_texts", []) == []
+    assert recreated_again.get("defer_notifications_until_user", False) is False
+
+    server._run_prompt_submit(
+        "rid-after-consume", "sid", recreated_again, "Later request", origin="user"
+    )
+
+    assert len(calls) == 2
+    assert calls[1] == ("Later request", None)
+    assert sum("durable result" in prompt for prompt, _persisted in calls) == 1
+
+
 def test_durable_claim_releases_when_turn_fails_before_acceptance(tmp_path, monkeypatch):
     async_delegation, event = _durable_completion(
         tmp_path, monkeypatch, "deleg-before-accept"
@@ -945,6 +1047,7 @@ def test_live_session_reconnect_preserves_and_settles_turn_generation(monkeypatc
     assert active["running"] is True
     assert active["info"]["running"] is True
     assert active["info"]["turn_generation"] == turn_token
+    assert active["info"]["turn_state_revision"] == 1
     assert active["info"]["turn_origin"] == "notification"
 
     with session["history_lock"]:
@@ -955,7 +1058,44 @@ def test_live_session_reconnect_preserves_and_settles_turn_generation(monkeypatc
     assert settled["running"] is False
     assert settled["info"]["running"] is False
     assert settled["info"]["turn_generation"] == turn_token
+    assert settled["info"]["turn_state_revision"] == 2
     assert settled["info"]["turn_origin"] is None
+
+
+def test_message_events_advance_turn_state_revision_on_start_and_settle(monkeypatch):
+    emitted = []
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = "session-key"
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(self, prompt, conversation_history=None, **_kwargs):
+            return _successful_turn(prompt, conversation_history)
+
+    session = _session(agent=_Agent(), running=True)
+    _patch_prompt_turn_runtime(monkeypatch, emitted)
+
+    server._run_prompt_submit("rid", "sid", session, "hello", origin="user")
+
+    start = next(payload for event, _sid, payload in emitted if event == "message.start")
+    complete = next(
+        payload for event, _sid, payload in emitted if event == "message.complete"
+    )
+    settled = [
+        payload for event, _sid, payload in emitted if event == "session.info"
+    ][-1]
+    assert start["turn_generation"] == complete["turn_generation"] == 1
+    assert start["turn_state_revision"] == 1
+    assert complete["turn_state_revision"] == 2
+    assert settled["turn_state_revision"] == 2
+    assert settled["running"] is False
 
 
 def test_notification_preemption_drains_user_before_later_completion(monkeypatch):

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
-import type { GatewayEvent } from '../gatewayTypes.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import type { GatewayEvent } from '../gatewayTypes.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
@@ -82,6 +82,7 @@ describe('createGatewayEventHandler', () => {
       payload: sessionInfo({ running: true, turn_generation: 4, turn_origin: 'notification' }),
       type: 'session.info'
     } satisfies GatewayEvent
+
     onEvent(reconnect)
 
     expect(getTurnState()).toMatchObject({ turnGeneration: 4, turnOrigin: 'notification' })
@@ -91,17 +92,21 @@ describe('createGatewayEventHandler', () => {
       payload: { turn_generation: 5, turn_origin: 'user' },
       type: 'message.start'
     } satisfies GatewayEvent
+
     onEvent(nextStart)
 
     const staleSnapshot = {
       payload: sessionInfo({ running: false, turn_generation: 4, turn_origin: null }),
       type: 'session.info'
     } satisfies GatewayEvent
+
     onEvent(staleSnapshot)
+
     const staleComplete = {
       payload: { text: 'stale answer', turn_generation: 4, turn_origin: 'notification' },
       type: 'message.complete'
     } satisfies GatewayEvent
+
     onEvent(staleComplete)
 
     expect(getTurnState()).toMatchObject({ turnGeneration: 5, turnOrigin: 'user' })
@@ -112,15 +117,49 @@ describe('createGatewayEventHandler', () => {
       payload: { text: 'current answer', turn_generation: 5, turn_origin: 'user' },
       type: 'message.complete'
     } satisfies GatewayEvent
+
     onEvent(currentComplete)
+
     const settledReconnect = {
       payload: sessionInfo({ running: false, turn_generation: 5, turn_origin: null }),
       type: 'session.info'
     } satisfies GatewayEvent
+
     onEvent(settledReconnect)
 
     expect(appended).toContainEqual(expect.objectContaining({ text: 'current answer' }))
     expect(getTurnState()).toMatchObject({ turnGeneration: 5, turnOrigin: null })
+    expect(getUiState().busy).toBe(false)
+  })
+
+  it('rejects a stale active snapshot after the same generation settles', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const staleActive = {
+      payload: sessionInfo({
+        running: true,
+        turn_generation: 7,
+        turn_origin: 'notification',
+        turn_state_revision: 30
+      }),
+      type: 'session.info'
+    } satisfies GatewayEvent
+
+    onEvent(staleActive)
+    onEvent({
+      payload: {
+        text: 'done',
+        turn_generation: 7,
+        turn_origin: 'notification',
+        turn_state_revision: 31
+      },
+      type: 'message.complete'
+    } satisfies GatewayEvent)
+    onEvent(staleActive)
+
+    expect(getTurnState()).toMatchObject({ turnGeneration: 7, turnOrigin: 'notification' })
+    expect(getTurnState().turnStateRevision).toBe(31)
     expect(getUiState().busy).toBe(false)
   })
 

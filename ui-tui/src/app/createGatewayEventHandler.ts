@@ -724,14 +724,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'session.info': {
         const info = ev.payload
-        const accepted = turnController.reconcileTurn(info.turn_origin, info.turn_generation, info.running)
+
+        const accepted = turnController.reconcileTurn(
+          info.turn_origin,
+          info.turn_generation,
+          info.running,
+          info.turn_state_revision
+        )
+
         const reconciledInfo = accepted
           ? info
           : {
               ...info,
               running: getUiState().busy,
               turn_generation: getTurnState().turnGeneration,
-              turn_origin: getTurnState().turnOrigin
+              turn_origin: getTurnState().turnOrigin,
+              turn_state_revision: getTurnState().turnStateRevision
             }
 
         patchUiState(state => ({
@@ -766,9 +774,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.start':
-        if (!turnController.reconcileTurn(ev.payload?.turn_origin, ev.payload?.turn_generation, true)) {
+        if (
+          !turnController.reconcileTurn(
+            ev.payload?.turn_origin,
+            ev.payload?.turn_generation,
+            true,
+            ev.payload?.turn_state_revision
+          )
+        ) {
           return
         }
+
         resetAgentsNudgeTurnState()
         turnController.startMessage()
 
@@ -1290,9 +1306,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.complete': {
-        if (!turnController.reconcileTurn(ev.payload?.turn_origin, ev.payload?.turn_generation)) {
+        if (
+          !turnController.reconcileTurn(
+            ev.payload?.turn_origin,
+            ev.payload?.turn_generation,
+            false,
+            ev.payload?.turn_state_revision
+          )
+        ) {
           return
         }
+
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {

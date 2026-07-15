@@ -10,6 +10,7 @@ import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
+  reconcileSessionResponseTurn,
   scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
   writeActiveSessionFile
@@ -75,6 +76,61 @@ describe('live session activation in-flight state', () => {
 
     expect(turnController.bufRef).toBe('')
     expect(getTurnState().streaming).toBe('')
+  })
+})
+describe.each(['resume', 'activate'] as const)('%s response turn fence', kind => {
+  beforeEach(() => {
+    resetUiState()
+    resetTurnState()
+    turnController.fullReset()
+  })
+
+  it('rejects a stale active response released after the same generation settles', () => {
+    turnController.reconcileTurn('notification', 6, true, 50)
+
+    const requestFence = {
+      busy: true,
+      turnGeneration: 6,
+      turnOrigin: 'notification' as const,
+      turnStateRevision: 50
+    }
+
+    turnController.reconcileTurn(null, 6, false, 51)
+
+    const response = {
+      info: {
+        model: 'test-model',
+        running: true,
+        skills: {},
+        tools: {},
+        turn_generation: 6,
+        turn_origin: 'notification' as const,
+        turn_state_revision: 50
+      },
+      messages: [],
+      running: true,
+      session_id: 'sid',
+      status: 'working' as const,
+      turn_generation: 6,
+      turn_origin: 'notification' as const,
+      turn_state_revision: 50,
+      ...(kind === 'resume' ? { resumed: 'stored' } : {})
+    }
+
+    const reconciled = reconcileSessionResponseTurn(response, requestFence)
+
+    expect(reconciled.running).toBe(false)
+    expect(reconciled.turn).toEqual({
+      turnGeneration: 6,
+      turnOrigin: null,
+      turnStateRevision: 51
+    })
+    expect(reconciled.info).toMatchObject({
+      running: false,
+      turn_generation: 6,
+      turn_origin: null,
+      turn_state_revision: 51
+    })
   })
 })
 

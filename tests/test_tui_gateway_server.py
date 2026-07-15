@@ -9372,7 +9372,7 @@ def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
     that copy without leaking the transport object.
     """
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(server, "_session_info", lambda agent, _session: {"model": agent.model})
     agent = types.SimpleNamespace(model="model-live")
     session = _session(
         agent=agent,
@@ -9435,7 +9435,13 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         assert resp["result"]["session_key"] == "key-b"
         assert resp["result"]["running"] is True
         assert resp["result"]["status"] == "working"
-        assert resp["result"]["info"] == {"model": "model-b"}
+        assert resp["result"]["info"] == {
+            "model": "model-b",
+            "running": True,
+            "turn_generation": 0,
+            "turn_origin": None,
+            "turn_state_revision": 0,
+        }
         assert resp["result"]["messages"] == [
             {"role": "user", "text": "new prompt"},
             {"role": "assistant", "text": "new answer"},

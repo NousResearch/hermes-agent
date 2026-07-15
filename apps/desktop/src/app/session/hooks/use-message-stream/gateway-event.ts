@@ -6,6 +6,7 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
+import { reconcileClientTurnState } from '@/app/session/turn-state'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
@@ -58,14 +59,7 @@ import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
-import {
-  hasSessionInfoStatePatch,
-  isStaleTurnPayload,
-  sessionInfoStatePatch,
-  SUBAGENT_EVENT_TYPES,
-  toTodoPayload,
-  turnGenerationFromPayload
-} from './utils'
+import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
 
 function firstBillingLine(text: string): string {
   return (text || '').split('\n')[0]?.trim() ?? ''
@@ -348,49 +342,35 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
         }
 
-        if (sessionId && hasStatePatch) {
+        if (
+          sessionId &&
+          (hasStatePatch ||
+            runningChanged ||
+            payload?.turn_generation !== undefined ||
+            payload?.turn_state_revision !== undefined ||
+            Object.hasOwn(payload ?? {}, 'turn_origin'))
+        ) {
           updateSessionState(
             sessionId,
             state => {
-              const patch = isStaleTurnPayload(state, payload)
-                ? {
-                    ...statePatch,
-                    turnGeneration: state.turnGeneration,
-                    turnOrigin: state.turnOrigin
-                  }
-                : statePatch
+              const reconciled = reconcileClientTurnState(state, payload, 'snapshot')
+              const turnState = reconciled.accepted ? reconciled.state : state
 
-              return {
-                ...state,
-                ...patch,
-                branch: patch.branch ?? state.branch,
-                cwd: patch.cwd ?? state.cwd
-              }
-            },
-            payload?.stored_session_id || undefined
-          )
-        }
-
-        // The running→busy transition must reach EVERY session, not just the
-        // active one. The `apply` gate above correctly scopes view-only side
-        // effects (setCurrentCwd, etc.) to the focused chat,
-        // but the per-session busy state is what drives the sidebar working
-        // indicator — a background session's turn start/finish must update
-        // its dot without the user opening it. updateSessionState only
-        // mutates the per-runtime cache entry, and syncSessionStateToView
-        // guards the view publish to the active session, so this is safe.
-        if (runningChanged && sessionId) {
-          updateSessionState(
-            sessionId,
-            state => {
-              if (isStaleTurnPayload(state, payload)) {
-                return state
+              const next = {
+                ...turnState,
+                ...statePatch,
+                branch: statePatch.branch ?? turnState.branch,
+                cwd: statePatch.cwd ?? turnState.cwd
               }
 
-              const busy = Boolean(payload!.running)
+              if (!reconciled.accepted || !runningChanged) {
+                return next
+              }
+
+              const busy = reconciled.state.busy
 
               if (state.busy === busy && (busy || !state.awaitingResponse)) {
-                return state
+                return next
               }
 
               if (busy) {
@@ -400,24 +380,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 // running is still true in the heartbeat. The turn's
                 // finally block will emit running=false to clear busy.
                 if (state.interrupted) {
-                  return state
+                  return next
                 }
 
                 return {
-                  ...state,
-                  busy,
+                  ...next,
                   turnStartedAt: state.turnStartedAt ?? Date.now()
                 }
               }
 
               if (state.awaitingResponse && !state.sawAssistantPayload) {
-                return state
+                return { ...next, busy: state.busy }
               }
 
               return {
-                ...state,
+                ...next,
                 awaitingResponse: false,
-                busy,
                 pendingBranchGroup: null,
                 streamId: null,
                 turnStartedAt: null
@@ -454,29 +432,22 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         const startedAt = Date.now()
-        const generation = turnGenerationFromPayload(payload)
         let accepted = false
 
         updateSessionState(sessionId, state => {
-          if (isStaleTurnPayload(state, payload)) {
+          const reconciled = reconcileClientTurnState(state, payload, 'start')
+
+          if (!reconciled.accepted) {
             return state
           }
 
           accepted = true
 
           return {
-            ...state,
-            busy: true,
+            ...reconciled.state,
             awaitingResponse: true,
             sawAssistantPayload: false,
             interrupted: false,
-            turnGeneration: generation ?? state.turnGeneration,
-            turnOrigin:
-              payload?.turn_origin === 'notification' ||
-              payload?.turn_origin === 'goal' ||
-              payload?.turn_origin === 'user'
-                ? payload.turn_origin
-                : 'user',
             turnStartedAt: startedAt
           }
         })
@@ -654,21 +625,19 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           payload?.turn_origin === 'notification' || payload?.turn_origin === 'goal' || payload?.turn_origin === 'user'
             ? payload.turn_origin
             : null
-        const generation = turnGenerationFromPayload(payload)
+
         let accepted = false
 
         updateSessionState(sessionId, state => {
-          if (isStaleTurnPayload(state, payload)) {
+          const reconciled = reconcileClientTurnState(state, payload, 'settle')
+
+          if (!reconciled.accepted) {
             return state
           }
 
           accepted = true
 
-          return {
-            ...state,
-            turnGeneration: generation ?? state.turnGeneration,
-            ...(completedOrigin ? { turnOrigin: completedOrigin } : {})
-          }
+          return reconciled.state
         })
 
         if (!accepted) {

@@ -204,4 +204,5 @@ export interface ClientSessionState {
   usage: null | UsageStats
   turnOrigin?: TurnOrigin | null
   turnGeneration: number
+  turnStateRevision: number
 }

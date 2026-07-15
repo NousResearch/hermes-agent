@@ -59,7 +59,8 @@ export function createClientSessionState(
     turnStartedAt: null,
     usage: null,
     turnOrigin: null,
-    turnGeneration: 0
+    turnGeneration: 0,
+    turnStateRevision: 0
   }
 }
 

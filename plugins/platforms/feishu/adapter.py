@@ -155,15 +155,19 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_INTERACTIVE_CONTENT_INVALID_RE = re.compile(
+    r"content format.*incorrect|invalid.*card|card.*invalid|failed to create card content|200861|230099",
+    re.IGNORECASE,
+)
+_INLINE_MD_IN_CELL_RE = re.compile(
+    r"\*\*[^*\n]+\*\*|__[^_\n]+__|`[^`\n]+`|\[[^\]]+\]\([^)]+\)"
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -560,6 +564,61 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------
+
+
+def _build_markdown_table_card(content: str) -> Optional[Dict[str, Any]]:
+    """Build a CardKit v2 card when content has a validated GFM table."""
+    from gateway.platforms.helpers import split_markdown_table_segments
+
+    segments = split_markdown_table_segments(content)
+    if not any(segment["type"] == "table" for segment in segments):
+        return None
+
+    elements: List[Dict[str, Any]] = []
+    for segment in segments:
+        if segment["type"] == "text":
+            text = segment.get("content", "").strip()
+            if text:
+                elements.append({"tag": "markdown", "content": text})
+            continue
+
+        headers = segment["headers"]
+        rows = segment["rows"]
+        columns = []
+        for index, header in enumerate(headers):
+            values = [row[index] for row in rows]
+            data_type = "lark_md" if any(_INLINE_MD_IN_CELL_RE.search(value) for value in values) else "text"
+            columns.append(
+                {
+                    "name": f"col_{index}",
+                    "display_name": header or " ",
+                    "data_type": data_type,
+                    "width": "auto",
+                    "horizontal_align": "left",
+                }
+            )
+        elements.append(
+            {
+                "tag": "table",
+                "page_size": 10,
+                "row_height": "low",
+                "header_style": {
+                    "bold": True,
+                    "text_align": "left",
+                    "text_size": "normal",
+                    "background_style": "grey",
+                    "text_color": "default",
+                    "lines": 1,
+                },
+                "columns": columns,
+                "rows": [
+                    {f"col_{index}": value for index, value in enumerate(row)}
+                    for row in rows
+                ],
+            }
+        )
+
+    return {"schema": "2.0", "body": {"elements": elements}}
 
 
 def _build_markdown_post_payload(content: str) -> str:
@@ -1911,17 +1970,36 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive" and _INTERACTIVE_CONTENT_INVALID_RE.search(str(exc)):
+                        logger.warning("[Feishu] Interactive table card rejected; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": chunk}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    else:
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                if msg_type == "interactive" and not self._response_succeeded(response):
+                    logger.warning("[Feishu] Interactive table card rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps({"text": chunk}, ensure_ascii=False),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
-                if (
+                elif (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
@@ -1960,7 +2038,16 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+            if not result.success and msg_type == "interactive":
+                logger.warning("[Feishu] Interactive table update rejected; falling back to plain text")
+                fallback_body = self._build_update_message_body(
+                    msg_type="text",
+                    content=json.dumps({"text": content}, ensure_ascii=False),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await self._run_blocking(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
+            elif not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
@@ -4526,12 +4613,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        card = _build_markdown_table_card(content)
+        if card is not None:
+            return "interactive", json.dumps(card, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

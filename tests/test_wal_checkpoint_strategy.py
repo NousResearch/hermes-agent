@@ -68,6 +68,30 @@ class TestTryWalCheckpointPassive:
             f"Expected warning log about PASSIVE checkpoint failure, got: {caplog.text}"
         )
 
+    def test_returned_busy_checkpoint_is_logged_at_debug(self, db, caplog):
+        """The busy flag returned by SQLite is normal contention, not a failure."""
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = (1, 100, 0)
+        db._conn = mock_conn
+
+        with caplog.at_level(logging.DEBUG):
+            db._try_wal_checkpoint()
+
+        assert "WAL checkpoint skipped (database busy)" in caplog.text
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_busy_checkpoint_exception_is_logged_at_debug(self, db, caplog):
+        """A busy exception is expected under concurrency and remains best-effort."""
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+        db._conn = mock_conn
+
+        with caplog.at_level(logging.DEBUG):
+            db._try_wal_checkpoint()
+
+        assert "WAL checkpoint skipped (database busy)" in caplog.text
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
     def test_checkpoint_returns_result_on_success(self, db):
         """Successful PASSIVE checkpoint does not raise."""
         db._try_wal_checkpoint()

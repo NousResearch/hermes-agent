@@ -515,15 +515,28 @@ def persist_deferred_notification(
 
 
 def reconcile_adopted_deferred_notifications(*, db_path=None) -> int:
-    """Finish ledger rows whose transcript adoption committed before a crash."""
+    """Finish adopted ledger rows and retire the proof in one transaction."""
     now = time.time()
     with _DB_LOCK, _connect(db_path) as conn:
         cur = conn.execute(
-            """UPDATE deferred_notifications
+            """UPDATE deferred_notifications AS deferred
                   SET delivery_state='delivered', delivered_at=?, updated_at=?
                 WHERE delivery_state='pending'
-                  AND event_id IN (SELECT event_id FROM deferred_notification_adoptions)""",
+                  AND EXISTS (
+                      SELECT 1 FROM deferred_notification_adoptions AS adoption
+                       WHERE adoption.event_id=deferred.event_id
+                         AND adoption.session_id=deferred.session_id
+                  )""",
             (now, now),
+        )
+        conn.execute(
+            """DELETE FROM deferred_notification_adoptions
+                WHERE EXISTS (
+                    SELECT 1 FROM deferred_notifications AS deferred
+                     WHERE deferred.event_id=deferred_notification_adoptions.event_id
+                       AND deferred.session_id=deferred_notification_adoptions.session_id
+                       AND deferred.delivery_state='delivered'
+                )"""
         )
         return cur.rowcount
 
@@ -594,19 +607,39 @@ def migrate_compression_lineage_deferred_notifications(
         return cur.rowcount
 
 
-def deferred_notification_adoptions_exist(event_ids, *, db_path=None) -> bool:
-    """Return true only when every event has durable transcript proof."""
+def deferred_notifications_adopted_or_delivered(
+    session_id: str,
+    event_ids,
+    *,
+    db_path=None,
+) -> bool:
+    """Return true when an owned batch has proof or is already delivered."""
     ids = sorted({str(event_id) for event_id in event_ids if event_id})
     if not ids:
         return True
+    owner = str(session_id or "")
+    if not owner:
+        return False
     placeholders = ",".join("?" for _ in ids)
     with _DB_LOCK, _connect(db_path) as conn:
-        count = conn.execute(
-            f"""SELECT COUNT(*) FROM deferred_notification_adoptions
-                  WHERE event_id IN ({placeholders})""",
+        rows = conn.execute(
+            f"""SELECT deferred.event_id, deferred.session_id,
+                       deferred.delivery_state,
+                       EXISTS (
+                           SELECT 1
+                             FROM deferred_notification_adoptions AS adoption
+                            WHERE adoption.event_id=deferred.event_id
+                              AND adoption.session_id=deferred.session_id
+                       )
+                  FROM deferred_notifications AS deferred
+                 WHERE deferred.event_id IN ({placeholders})""",
             tuple(ids),
-        ).fetchone()[0]
-    return count == len(ids)
+        ).fetchall()
+    return (
+        len(rows) == len(ids)
+        and all(row[1] == owner for row in rows)
+        and all(row[2] == "delivered" or bool(row[3]) for row in rows)
+    )
 
 
 def load_deferred_notifications(session_id: str, *, db_path=None) -> List[Dict[str, Any]]:
@@ -635,10 +668,11 @@ def complete_deferred_notifications(
     *,
     db_path=None,
 ) -> bool:
-    """Mark an owned batch delivered after its explicit turn reaches history.
+    """Durably deliver one adopted batch and retire its transcript proof.
 
-    Missing rows and rows owned by another session fail closed. Already-delivered
-    rows remain an idempotent success only for the same owner.
+    Pending rows require matching adoption proof. Already-delivered rows remain
+    idempotent for the same owner after that proof has been pruned. Missing rows
+    and rows owned by another session fail closed.
     """
     ids = sorted({str(event_id) for event_id in event_ids if event_id})
     if not ids:
@@ -657,20 +691,40 @@ def complete_deferred_notifications(
         ).fetchall()
         if len(rows) != len(ids) or any(row[1] != owner for row in rows):
             return False
-        conn.execute(
-            f"""UPDATE deferred_notifications
-                   SET delivery_state='delivered', delivered_at=?, updated_at=?
-                 WHERE session_id=? AND delivery_state='pending'
-                   AND event_id IN ({placeholders})""",
-            (now, now, owner, *ids),
-        )
+
+        pending_ids = [row[0] for row in rows if row[2] == "pending"]
+        if pending_ids:
+            pending_placeholders = ",".join("?" for _ in pending_ids)
+            proof_count = conn.execute(
+                f"""SELECT COUNT(*) FROM deferred_notification_adoptions
+                      WHERE session_id=?
+                        AND event_id IN ({pending_placeholders})""",
+                (owner, *pending_ids),
+            ).fetchone()[0]
+            if proof_count != len(pending_ids):
+                return False
+            conn.execute(
+                f"""UPDATE deferred_notifications
+                       SET delivery_state='delivered', delivered_at=?, updated_at=?
+                     WHERE session_id=? AND delivery_state='pending'
+                       AND event_id IN ({pending_placeholders})""",
+                (now, now, owner, *pending_ids),
+            )
+
         delivered = conn.execute(
             f"""SELECT COUNT(*) FROM deferred_notifications
                   WHERE session_id=? AND delivery_state='delivered'
                     AND event_id IN ({placeholders})""",
             (owner, *ids),
         ).fetchone()[0]
-    return delivered == len(ids)
+        if delivered != len(ids):
+            return False
+        conn.execute(
+            f"""DELETE FROM deferred_notification_adoptions
+                  WHERE session_id=? AND event_id IN ({placeholders})""",
+            (owner, *ids),
+        )
+        return True
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:

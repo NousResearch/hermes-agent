@@ -305,7 +305,7 @@ def finalize_turn(
         # Compare content (not just role) so a verification candidate that
         # matches the final response is not duplicated at budget
         # exhaustion. (#65919 §7)
-        if final_response and not interrupted:
+        if completed and final_response and not interrupted:
             try:
                 _tail = messages[-1] if messages else None
             except Exception:
@@ -350,7 +350,7 @@ def finalize_turn(
         _adopted_ids = tuple(
             getattr(agent, "_deferred_notification_ids", ()) or ()
         )
-        if completed and final_response and not interrupted and _adopted_ids:
+        if completed and not interrupted and _adopted_ids:
             if messages and messages[-1].get("role") == "assistant":
                 messages[-1]["_deferred_notification_ids"] = list(_adopted_ids)
                 _adoption_message = messages[-1]

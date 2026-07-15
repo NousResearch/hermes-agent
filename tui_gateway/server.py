@@ -10473,11 +10473,11 @@ def _hydrate_deferred_notification_state(session: dict) -> None:
 
     session_key = str(session.get("session_key") or "")
     db_path = _deferred_notification_db_path(session)
-    reconcile_adopted_deferred_notifications(db_path=db_path)
     migrate_compression_lineage_deferred_notifications(
         session_key,
         db_path=db_path,
     )
+    reconcile_adopted_deferred_notifications(db_path=db_path)
     rows = load_deferred_notifications(session_key, db_path=db_path)
     texts = list(session.get("deferred_notification_texts") or [])
     ids = set(session.get("deferred_notification_event_ids") or ())
@@ -10508,6 +10508,38 @@ def _persist_deferred_notification(
     )
 
 
+def _deferred_notifications_have_durable_adoption(
+    session: dict,
+    event_ids: set[str],
+) -> bool:
+    """Check whether an owned batch is adopted or already reconciled."""
+    if not event_ids:
+        return False
+    from tools.async_delegation import (
+        deferred_notifications_adopted_or_delivered,
+        migrate_compression_lineage_deferred_notifications,
+    )
+
+    session_key = str(session.get("session_key") or "")
+    db_path = _deferred_notification_db_path(session)
+    try:
+        migrate_compression_lineage_deferred_notifications(
+            session_key, db_path=db_path
+        )
+        return deferred_notifications_adopted_or_delivered(
+            session_key, event_ids, db_path=db_path
+        )
+    except Exception:
+        logger.warning(
+            "failed to reconcile deferred adoption before batch restore: "
+            "session=%s events=%s",
+            session_key,
+            sorted(event_ids),
+            exc_info=True,
+        )
+        return False
+
+
 def _retry_consumed_deferred_ack(
     session_key: str,
     event_ids: set[str],
@@ -10515,7 +10547,6 @@ def _retry_consumed_deferred_ack(
 ) -> None:
     from tools.async_delegation import (
         complete_deferred_notifications,
-        deferred_notification_adoptions_exist,
         migrate_compression_lineage_deferred_notifications,
     )
 
@@ -10530,11 +10561,6 @@ def _retry_consumed_deferred_ack(
             migrate_compression_lineage_deferred_notifications(
                 session_key, db_path=db_path
             )
-            if not deferred_notification_adoptions_exist(
-                event_ids, db_path=db_path
-            ):
-                attempt += 1
-                continue
             if complete_deferred_notifications(
                 session_key, event_ids, db_path=db_path
             ):
@@ -10550,12 +10576,14 @@ def _retry_consumed_deferred_ack(
         attempt += 1
 
 
-def _ack_consumed_deferred_notifications(session: dict, event_ids: set[str]) -> None:
+def _ack_consumed_deferred_notifications(
+    session: dict,
+    event_ids: set[str],
+) -> bool:
     if not event_ids:
-        return
+        return True
     from tools.async_delegation import (
         complete_deferred_notifications,
-        deferred_notification_adoptions_exist,
         migrate_compression_lineage_deferred_notifications,
     )
 
@@ -10565,13 +10593,13 @@ def _ack_consumed_deferred_notifications(session: dict, event_ids: set[str]) -> 
         migrate_compression_lineage_deferred_notifications(
             session_key, db_path=db_path
         )
-        if not deferred_notification_adoptions_exist(event_ids, db_path=db_path):
-            raise RuntimeError("deferred adoption is not durably represented in transcript")
         if complete_deferred_notifications(
             session_key, event_ids, db_path=db_path
         ):
-            return
-        error: BaseException = RuntimeError("deferred delivery rows remain pending")
+            return True
+        error: BaseException = RuntimeError(
+            "deferred delivery rows remain pending or lack adoption proof"
+        )
     except Exception as exc:
         error = exc
     logger.warning(
@@ -10598,6 +10626,7 @@ def _ack_consumed_deferred_notifications(session: dict, event_ids: set[str]) -> 
             session_key,
             sorted(event_ids),
         )
+    return False
 
 
 def _retry_accepted_notification_ack(
@@ -11448,6 +11477,14 @@ def _run_prompt_submit(
                 status = "complete"
 
             claimed_notifications_consumed = status == "complete" and history_adopted
+            if (
+                status == "complete"
+                and not claimed_notifications_consumed
+                and _deferred_notifications_have_durable_adoption(
+                    session, claimed_notification_ids
+                )
+            ):
+                claimed_notifications_consumed = True
             if claimed_notifications_consumed:
                 _ack_consumed_deferred_notifications(
                     session, claimed_notification_ids

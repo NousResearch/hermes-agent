@@ -147,6 +147,113 @@ def test_finalizer_stamps_deferred_adoption_on_closing_assistant(monkeypatch):
     assert "_deferred_notification_ids" not in result["messages"][-1]
 
 
+def test_empty_success_persists_adoption_and_acks_without_retry_or_replay(
+    tmp_path, monkeypatch
+):
+    """An empty successful reply still closes and consumes its durable batch."""
+    from hermes_state import SessionDB
+    from tools import async_delegation
+    from tui_gateway import server
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = tmp_path / "state.db"
+    event_id = "async_delegation:deleg-empty-success"
+    db = SessionDB(db_path)
+    db.create_session("sess-test", source="tui")
+    assert async_delegation.persist_deferred_notification(
+        "sess-test",
+        event_id,
+        "durable empty-turn result",
+        {
+            "type": "async_delegation",
+            "delegation_id": "deleg-empty-success",
+            "session_key": "sess-test",
+        },
+        db_path=db_path,
+    )
+
+    agent = FakeAgent()
+    agent._deferred_notification_ids = (event_id,)
+
+    def persist(messages, _conversation_history):
+        for message in messages:
+            db.append_message(
+                "sess-test",
+                message.get("role", "unknown"),
+                message.get("content"),
+                deferred_notification_ids=message.get(
+                    "_deferred_notification_ids"
+                ),
+            )
+
+    agent._persist_session = persist
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "Next request"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="Next request",
+        original_user_message="Next request",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["completed"] is True
+    assert result["messages"][-1] == {"role": "assistant", "content": ""}
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM deferred_notification_adoptions WHERE event_id=?",
+        (event_id,),
+    ).fetchone()[0] == 1
+
+    retry_threads = []
+
+    class _RecordingThread:
+        def __init__(self, *args, name=None, **kwargs):
+            retry_threads.append(name)
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(server.threading, "Thread", _RecordingThread)
+    session = {
+        "session_key": "sess-test",
+        "profile_home": str(tmp_path),
+    }
+    assert server._ack_consumed_deferred_notifications(session, {event_id}) is True
+    assert retry_threads == []
+    assert async_delegation.load_deferred_notifications(
+        "sess-test", db_path=db_path
+    ) == []
+    assert db._conn.execute(
+        "SELECT COUNT(*) FROM deferred_notification_adoptions WHERE event_id=?",
+        (event_id,),
+    ).fetchone()[0] == 0
+
+    history = db.get_messages_as_conversation("sess-test")
+    db.close()
+    assert [(message["role"], message["content"]) for message in history] == [
+        ("user", "Next request"),
+        ("assistant", ""),
+    ]
+    restarted = server._deferred_session_record(
+        "sess-test",
+        cols=80,
+        cwd=".",
+        history=history,
+        lease=None,
+        profile_home=tmp_path,
+    )
+    assert restarted["deferred_notification_texts"] == []
+    assert restarted["deferred_notification_event_ids"] == set()
+    assert restarted["defer_notifications_until_user"] is False
+
+
 def test_finalizer_restores_clean_api_local_multimodal_before_return(monkeypatch):
     """A queued note does not remain in the next-turn native image payload."""
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])

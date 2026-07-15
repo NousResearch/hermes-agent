@@ -15967,7 +15967,7 @@ def mount_spa(application: FastAPI):
             "Headless backend (hermes serve): web UI disabled — use "
             "`hermes dashboard` for the browser UI."
             if _headless
-            else "Frontend not built. Run: cd web && npm run build"
+            else "Frontend assets not found. If this is a source installation, ensure frontend files were built before packaging, or re-install the package. For development: cd web && npm run build"
         )
 
         @application.get("/{full_path:path}")

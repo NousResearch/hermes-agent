@@ -1886,6 +1886,7 @@ class TestMultimodalToolContentUnsupported:
         """Make sure the patterns don't false-positive on normal 400s."""
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
+        assert result.reason != FailoverReason.multimodal_tool_content_unsupported
 
 
 class TestOpenRouterUpstreamRateLimit:
@@ -1995,6 +1996,28 @@ class TestOpenRouterUpstreamRateLimit:
         assert result.reason == FailoverReason.overloaded
 
 
+class TestRemoteChatModelLocked409:
+    """A 409 model-routing/policy lock must not churn the fallback chain."""
+
+    def test_model_not_allowed_for_remote_chat_is_policy_blocked(self):
+        e = MockAPIError(
+            "Remote chat is limited to the compatible shared model pool so it cannot force protected model swaps.",
+            status_code=409,
+            body={"error": {"type": "model_not_allowed_for_remote_chat",
+                            "message": "Remote chat is limited to the compatible shared model pool so it cannot force protected model swaps."}},
+        )
+        r = classify_api_error(e)
+        assert r.reason == FailoverReason.provider_policy_blocked
+        assert r.retryable is False
+        assert r.should_fallback is False
+
+    def test_generic_409_falls_through_to_non_retryable(self):
+        e = MockAPIError("resource conflict", status_code=409, body={})
+        r = classify_api_error(e)
+        assert r.retryable is False
+        assert r.should_fallback is True
+
+
 # ── HTTP 408 request timeout ────────────────────────────────────────────
 
 class Test408RequestTimeout:
@@ -2066,4 +2089,3 @@ class Test408RequestTimeout:
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
         assert result.should_compress is False
-

@@ -1805,6 +1805,7 @@ export const ja = defineLocale({
     updateNow: '今すぐ更新',
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
+    copyFullLog: '完全な変更ログをコピー',
     manualTitle: 'ターミナルから更新',
     manualBody:
       'Hermes をコマンドラインからインストールしたため、更新もそこで実行されます。これをターミナルに貼り付けてください:',

@@ -9,8 +9,8 @@ import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, parseCommitHeader, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
+import { buildCommitChangelog, formatFullChangelogText, type CommitGroup } from '@/lib/commit-changelog'
+import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
 import {
@@ -33,26 +33,6 @@ import {
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
-}
-
-function formatFullChangelogText(commits: readonly DesktopUpdateCommit[], behind: number, branch: string | undefined): string {
-  const lines: string[] = ['=== Hermes Update Changelog ===']
-  if (behind > 0) {
-    lines.push(`Behind by ${behind} commit${behind === 1 ? '' : 's'}${branch ? ` on branch ${branch}` : ''}`)
-  }
-  lines.push('')
-
-  for (const c of commits) {
-    const parsed = parseCommitHeader(c.summary ?? '')
-    const prefix = parsed.type ? (parsed.breaking ? `${parsed.type}!` : parsed.type) : ''
-    const scope = parsed.scope ? `(${parsed.scope})` : ''
-    const tag = prefix + scope
-    const subject = parsed.subject || c.summary || ''
-    const line = tag ? `${tag}: ${subject} — ${c.author}` : `${subject} — ${c.author}`
-    lines.push(line)
-  }
-
-  return lines.join('\n')
 }
 
 export function UpdatesOverlay() {

@@ -502,6 +502,19 @@ export function StatusRule({
       ? `Δ ${(usage.dev_credits_spent_micros / 10000).toFixed(1)}¢`
       : ''
 
+  // Provider account quota (e.g. Copilot premium-interactions). Width-budgeted
+  // like every tail segment; picks progressively shorter labels as the
+  // terminal narrows, and colors by remaining-quota level.
+  const accountLabelText =
+    cols < 90
+      ? usage.account_label_tiny ?? usage.account_label_short ?? usage.account_label
+      : cols < 120
+        ? usage.account_label_short ?? usage.account_label
+        : usage.account_label
+  const accountLevelColor =
+    usage.account_level === 'error' ? t.color.error : usage.account_level === 'warn' ? t.color.warn : t.color.muted
+  const showAccountLabel = !!accountLabelText && fits(SEP + stringWidth(accountLabelText))
+
   const showBar = !!bar && fits(SEP + stringWidth(`[${bar}] ${pct != null ? `${pct}%` : ''}`))
   const showDuration = segs.duration && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
@@ -649,6 +662,12 @@ export function StatusRule({
           <Text color={t.color.accent} wrap="truncate-end">
             {' │ '}
             {devCreditsText}
+          </Text>
+        ) : null}
+        {showAccountLabel ? (
+          <Text color={accountLevelColor} wrap="truncate-end">
+            {' │ '}
+            {accountLabelText}
           </Text>
         ) : null}
         {/* SpawnHud isn't part of the tail budget (its width is dynamic), so it

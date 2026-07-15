@@ -40,6 +40,12 @@ class AccountUsageSnapshot:
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
+    # Optional compact status-bar labels (currently populated for Copilot).
+    # Width-adaptive: full label ≥120 cols, short ≥90, tiny below.
+    compact_label: Optional[str] = None
+    compact_short_label: Optional[str] = None
+    compact_tiny_label: Optional[str] = None
+    compact_level: Optional[str] = None  # ok / warn / error
 
     @property
     def available(self) -> bool:
@@ -885,6 +891,146 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "copilot":
+            return _fetch_copilot_account_usage()
     except Exception:
         return None
     return None
+
+
+# --- Copilot ---------------------------------------------------------------
+
+_COPILOT_USAGE_CACHE: dict[str, Any] = {"snap": None, "fetched_at": 0.0}
+_COPILOT_USAGE_TTL_SECONDS = 300.0
+
+
+def _fetch_copilot_account_usage() -> Optional[AccountUsageSnapshot]:
+    """Fetch GitHub Copilot quota from ``api.github.com/copilot_internal/user``.
+
+    Result is cached in-process for 5 minutes to avoid hammering the endpoint
+    on every status-bar render. Only called when the active provider is
+    ``copilot`` (see ``fetch_account_usage``).
+    """
+    import time as _time
+
+    now = _time.time()
+    cached = _COPILOT_USAGE_CACHE.get("snap")
+    cached_at = float(_COPILOT_USAGE_CACHE.get("fetched_at") or 0.0)
+    if cached is not None and (now - cached_at) < _COPILOT_USAGE_TTL_SECONDS:
+        return cached
+
+    try:
+        from hermes_cli.copilot_auth import resolve_copilot_token
+    except Exception:
+        return None
+    try:
+        raw_token, _src = resolve_copilot_token()
+    except Exception:
+        return None
+    if not raw_token:
+        return None
+
+    headers = {
+        "Authorization": f"token {raw_token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "hermes-agent",
+    }
+    try:
+        with httpx.Client(timeout=8.0) as client:
+            resp = client.get("https://api.github.com/copilot_internal/user", headers=headers)
+        if resp.status_code != 200:
+            return None
+        data = resp.json() or {}
+    except Exception:
+        return None
+
+    snapshot = _build_copilot_snapshot(data)
+    _COPILOT_USAGE_CACHE["snap"] = snapshot
+    _COPILOT_USAGE_CACHE["fetched_at"] = now
+    return snapshot
+
+
+def _extract_copilot_quota(data: dict) -> tuple[Optional[int], Optional[int]]:
+    """Pull (remaining, quota) premium-interaction counts from the API payload.
+
+    Handles the three flat field-name pairs GitHub has used across plans plus
+    the nested ``quota_snapshots.premium_interactions`` shape. Returns
+    ``(None, None)`` when no recognizable quota fields are present.
+    """
+    candidates = [
+        ("chat_enabled_quota_remaining", "chat_enabled_quota"),
+        ("premium_interactions_remaining", "premium_interactions_quota"),
+        ("monthly_quota_remaining", "monthly_quota"),
+    ]
+    for r_key, q_key in candidates:
+        if r_key in data and q_key in data:
+            try:
+                return int(data[r_key]), int(data[q_key])
+            except (TypeError, ValueError):
+                continue
+
+    snaps = data.get("quota_snapshots") or {}
+    pi = snaps.get("premium_interactions") if isinstance(snaps, dict) else None
+    if isinstance(pi, dict):
+        r_val = pi.get("remaining")
+        q_val = pi.get("entitlement")
+        if r_val is not None and q_val is not None:
+            try:
+                return int(r_val), int(q_val)
+            except (TypeError, ValueError):
+                pass
+    return None, None
+
+
+def _build_copilot_snapshot(data: dict) -> AccountUsageSnapshot:
+    """Build an ``AccountUsageSnapshot`` from a copilot_internal/user payload.
+
+    Split out from the HTTP fetcher so it can be unit-tested against fixture
+    JSON without network access.
+    """
+    plan = data.get("access_type_sku") or data.get("chat_enabled_plan") or None
+    windows: list[AccountUsageWindow] = []
+    compact_label: Optional[str] = None
+    compact_short: Optional[str] = None
+    compact_tiny: Optional[str] = None
+    level = "ok"
+
+    reset_at = _parse_dt(data.get("quota_reset_date"))
+    remaining, quota = _extract_copilot_quota(data)
+
+    if remaining is not None and quota and quota > 0:
+        used_pct = max(0.0, min(100.0, (1.0 - remaining / quota) * 100.0))
+        windows.append(
+            AccountUsageWindow(
+                label="Premium interactions",
+                used_percent=used_pct,
+                reset_at=reset_at,
+                detail=f"{remaining}/{quota} remaining",
+            )
+        )
+        reset_short = reset_at.astimezone().strftime("%b %-d") if reset_at else None
+        full = f"quota {remaining}/{quota} left"
+        short = f"q {remaining}/{quota}"
+        if reset_short:
+            full += f" · resets {reset_short}"
+            short += f" · {reset_short}"
+        compact_label = full
+        compact_short = short
+        compact_tiny = f"q {remaining}"
+        remaining_pct = (remaining / quota) * 100.0
+        if remaining_pct < 10:
+            level = "error"
+        elif remaining_pct < 25:
+            level = "warn"
+
+    return AccountUsageSnapshot(
+        provider="copilot",
+        source="copilot_internal_user",
+        fetched_at=_utc_now(),
+        plan=_title_case_slug(plan),
+        windows=tuple(windows),
+        compact_label=compact_label,
+        compact_short_label=compact_short,
+        compact_tiny_label=compact_tiny,
+        compact_level=level if compact_label else None,
+    )

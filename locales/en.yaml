@@ -379,6 +379,10 @@ gateway:
     unknown_subcommand:       "Unknown /usage subcommand: `{args}`. Try `/usage` or `/usage reset [--force]`."
     reset_wrong_provider:     "Banked usage resets are only available on the openai-codex provider. Switch with `/model` first."
 
+  copilot_quota:
+    wrong_provider:           "`/copilot-quota` is only available on the copilot provider. Switch with `/model` first."
+    no_data:                  "No Copilot quota data available."
+
   credits:
     not_logged_in:            "Not logged into Nous Portal. Log in to see your credit balance and top up."
 

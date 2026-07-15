@@ -138,3 +138,102 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+
+
+class TestNotificationPollerLoopKanbanWiring:
+    """Drive a real TUI subscription through ``_notification_poller_loop``.
+
+    Covers the wiring above ``_collect_kanban_notifications``: status.update
+    emission, agent-turn dispatch when the session is idle, and the
+    busy-session pending buffer that flushes once the session goes idle.
+    """
+
+    def _start_poller(self, session: dict, monkeypatch):
+        import threading
+        import tui_gateway.server as server
+
+        emits: list = []
+        submits: list = []
+        monkeypatch.setattr(server, "_KANBAN_POLL_SECONDS", 0.01)
+        monkeypatch.setattr(
+            server, "_emit", lambda event, sid, payload=None: emits.append((event, payload))
+        )
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda rid, sid, sess, text: submits.append(text),
+        )
+        stop = threading.Event()
+        thread = threading.Thread(
+            target=server._notification_poller_loop,
+            args=(stop, "sid-poller-test", session),
+            daemon=True,
+        )
+        thread.start()
+        return stop, thread, emits, submits
+
+    @staticmethod
+    def _wait_for(predicate, timeout: float = 5.0) -> bool:
+        import time as _time
+
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            if predicate():
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def _poller_session(self, *, running: bool = False) -> dict:
+        import threading
+
+        return {
+            "session_key": SESSION_KEY,
+            "history_lock": threading.Lock(),
+            "running": running,
+        }
+
+    def test_idle_session_gets_status_update_and_agent_turn(self, monkeypatch):
+        tid = _create_subscribed_task()
+        _complete(tid, summary="poller e2e done")
+        session = self._poller_session(running=False)
+
+        stop, thread, emits, submits = self._start_poller(session, monkeypatch)
+        try:
+            assert self._wait_for(lambda: submits), "agent turn was never dispatched"
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+        status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
+        assert any(tid in t for t in status_texts), status_texts
+        assert any(e == "message.start" for e, _ in emits)
+        assert any(tid in text for text in submits), submits
+        assert session["running"] is True  # poller claimed the turn
+        assert not session.get("_kanban_pending")
+
+    def test_busy_session_buffers_then_flushes_when_idle(self, monkeypatch):
+        tid = _create_subscribed_task()
+        _complete(tid, summary="buffered while busy")
+        session = self._poller_session(running=True)
+
+        stop, thread, emits, submits = self._start_poller(session, monkeypatch)
+        try:
+            # Busy: the status line appears and the event is buffered, but no
+            # agent turn is dispatched while another turn is running.
+            assert self._wait_for(
+                lambda: any(e == "status.update" for e, _ in emits)
+                and session.get("_kanban_pending")
+            )
+            assert not submits
+
+            with session["history_lock"]:
+                session["running"] = False
+
+            assert self._wait_for(lambda: submits), "pending batch never flushed"
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+
+        assert any(tid in text for text in submits), submits
+        assert session["_kanban_pending"] == []
+        assert session["running"] is True

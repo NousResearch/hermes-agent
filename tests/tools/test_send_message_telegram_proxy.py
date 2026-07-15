@@ -15,6 +15,7 @@ the same way the gateway adapter (and the Discord standalone path) do.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -155,3 +156,66 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+    def test_text_only_timeout_falls_back_to_direct_bot_api(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If python-telegram-bot times out, text cron alerts should still
+        deliver through the plain Bot API endpoint when it is reachable.
+        """
+        from tools.send_message_tool import _send_telegram
+
+        for var in (
+            "TELEGRAM_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=TimeoutError("Timed out"))
+        bot_factory = MagicMock(return_value=bot)
+        httpx_request_factory = MagicMock(side_effect=lambda **kw: MagicMock(_kw=kw))
+        _install_telegram_mock_with_request(monkeypatch, bot_factory, httpx_request_factory)
+
+        opened = []
+
+        class _FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"ok": True, "result": {"message_id": 777}}
+                ).encode("utf-8")
+
+        def fake_urlopen(url, *, data, timeout):
+            opened.append((url, data, timeout))
+            return _FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        result: dict[str, Any] = asyncio.run(
+            _send_telegram("tok", "-100123", "✅ 한글 alert")
+        )
+
+        assert result["success"] is True
+        assert result["message_id"] == "777"
+        assert "urllib Bot API fallback" in result["warnings"][0]
+        bot.send_message.assert_awaited_once()
+        assert opened
+        url, data, timeout = opened[0]
+        assert url == "https://api.telegram.org/bottok/sendMessage"
+        assert timeout == 30
+        assert b"chat_id=-100123" in data
+        assert "%E2%9C%85" in data.decode("utf-8")

@@ -863,13 +863,17 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         "hermes_cli.runtime_provider",
         mod(
             "hermes_cli.runtime_provider",
-            resolve_runtime_provider=lambda **_kwargs: {
-                "api_key": "k",
-                "base_url": "u",
-                "provider": "p",
-                "api_mode": "chat_completions",
-                "credential_pool": None,
-            },
+            resolve_runtime_provider_with_fallback=lambda **_kwargs: (
+                {
+                    "api_key": "k",
+                    "base_url": "u",
+                    "provider": "p",
+                    "api_mode": "chat_completions",
+                    "credential_pool": None,
+                },
+                None,
+                None,
+            ),
         ),
     )
     monkeypatch.setitem(

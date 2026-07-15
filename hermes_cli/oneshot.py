@@ -30,6 +30,8 @@ from typing import Optional
 
 from hermes_cli.fallback_config import get_fallback_chain
 
+logger = logging.getLogger(__name__)
+
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     if not toolsets:
@@ -313,7 +315,7 @@ def _run_agent(
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import resolve_runtime_provider_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -372,11 +374,26 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    # The chain serves double duty: a setup-time recovery when the primary
+    # provider cannot authenticate at resolution time (an AuthError raised
+    # before any inference call, which runtime failover can never catch), and
+    # the agent's own runtime failover chain below.
+    _fb = get_fallback_chain(cfg)
+
+    runtime, _fb_provider, _fb_model = resolve_runtime_provider_with_fallback(
         requested=effective_provider,
         target_model=effective_model or None,
         explicit_base_url=explicit_base_url_from_alias,
+        fallback_chain=_fb,
+        on_fallback=lambda p, m, exc: logger.warning(
+            "oneshot: primary provider auth failed (%s); switching to fallback %s/%s",
+            exc, p, m,
+        ),
     )
+    if _fb_provider:
+        effective_provider, effective_model = _fb_provider, _fb_model
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -386,9 +403,6 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read the effective fallback chain from profile config so oneshot workers
-    # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

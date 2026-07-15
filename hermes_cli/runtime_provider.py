@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from urllib.parse import urlparse
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -2089,6 +2089,67 @@ def resolve_runtime_provider(
     )
     runtime["requested_provider"] = requested_provider
     return runtime
+
+
+def resolve_runtime_provider_with_fallback(
+    *,
+    requested: Optional[str] = None,
+    target_model: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    fallback_chain: Optional[list] = None,
+    on_fallback: Optional[Callable[[str, str, "AuthError"], None]] = None,
+) -> tuple[Dict[str, Any], Optional[str], Optional[str]]:
+    """Resolve the primary provider; on an ``AuthError`` walk *fallback_chain*.
+
+    A missing primary credential (e.g. an OAuth/managed provider that is not
+    logged in) raises :class:`AuthError` at resolution time — before any
+    inference call, so runtime failover (``try_activate_fallback``) can never
+    help. The gateway (``gateway/run.py``) and the interactive CLI
+    (``cli_agent_setup_mixin.py``) both recover by re-resolving against the
+    configured ``fallback_providers``; this helper centralizes that recovery so
+    oneshot workers (``hermes -z``) get the same behavior instead of dying.
+
+    ``fallback_chain`` is a list of ``{"provider": str, "model": str}`` dicts
+    (as produced by :func:`hermes_cli.fallback_config.get_fallback_chain`).
+    Each entry is tried in order via ``resolve_runtime_provider(requested=...)``;
+    the first that resolves wins. ``on_fallback(provider, model, primary_exc)``
+    is invoked once when a fallback is selected (for UI/logging).
+
+    Returns ``(runtime, provider, model)`` where ``provider``/``model`` name the
+    fallback entry that was selected, or ``(runtime, None, None)`` when the
+    primary resolved without a switch (so callers keep their own provider/model).
+
+    Recovery is auth-only: a non-``AuthError`` primary failure propagates
+    immediately without touching the chain. When the primary raises
+    ``AuthError`` and the chain is empty or every entry fails to resolve, the
+    original primary ``AuthError`` is re-raised.
+    """
+    try:
+        runtime = resolve_runtime_provider(
+            requested=requested,
+            target_model=target_model,
+            explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
+        return runtime, None, None
+    except AuthError as primary_exc:
+        for entry in fallback_chain or []:
+            fb_provider = str((entry or {}).get("provider") or "").strip().lower()
+            fb_model = str((entry or {}).get("model") or "").strip()
+            if not fb_provider or not fb_model:
+                continue
+            try:
+                runtime = resolve_runtime_provider(requested=fb_provider)
+            except Exception:
+                continue
+            if on_fallback is not None:
+                try:
+                    on_fallback(fb_provider, fb_model, primary_exc)
+                except Exception:
+                    pass
+            return runtime, fb_provider, fb_model
+        raise
 
 
 def format_runtime_provider_error(error: Exception) -> str:

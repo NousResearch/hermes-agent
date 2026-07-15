@@ -85,6 +85,39 @@ class TestParseDashScopeOutputCap:
         assert parse_available_output_tokens_from_error(msg) == 32768
 
 
+class TestParseVolcengineCeilingOutputCap:
+    """Volcengine Ark plan/v3 rejects an over-cap max_tokens with a parameter-
+    validation 400 whose ceiling IS the real max-output cap (#51773)."""
+
+    def test_volcengine_above_maximum_value(self):
+        msg = (
+            "HTTP 400 InvalidParameter: the parameter `max_tokens` specified in "
+            "the request are not valid: integer above maximum value, expected a "
+            "value <= 32768, but got 65536 instead."
+        )
+        assert parse_available_output_tokens_from_error(msg) == 32768
+
+    def test_volcengine_less_than_or_equal_to_maximum(self):
+        msg = (
+            "Invalid value for max_completion_tokens: must be less than or equal "
+            "to the maximum value of 16384"
+        )
+        assert parse_available_output_tokens_from_error(msg) == 16384
+
+    def test_volcengine_is_output_cap(self):
+        assert is_output_cap_error(
+            "the parameter `max_tokens` ... integer above maximum value, "
+            "expected a value <= 32768, but got 65536 instead."
+        ) is True
+
+    def test_volcengine_input_overflow_still_compresses(self):
+        # Even with a ceiling phrase, if the message clearly describes an
+        # oversized INPUT it must stay on the compression path.
+        assert is_output_cap_error(
+            "prompt is too long: max_tokens above maximum value"
+        ) is False
+
+
 class TestIsOutputCapError:
     """`is_output_cap_error` is the broader yes/no gate that keeps an
     output-cap 400 out of the compression death-loop even when we can't parse

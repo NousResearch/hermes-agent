@@ -1293,9 +1293,56 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # Volcengine Ark plan/v3 and similar OpenAI-compatible endpoints reject a
+        # max_tokens value that exceeds the server-side ceiling with a parameter-
+        # validation 400, e.g. (issue #51773):
+        #   "the parameter `max_tokens` ... integer above maximum value,
+        #    expected a value <= 32768, but got 65536 instead."
+        # The parameter IS supported — only the requested OUTPUT cap is too large
+        # — so this belongs in the output-cap-reduction path (retry with a smaller
+        # max_tokens), NOT compression and NOT a hard format_error. Require a
+        # max_tokens/max_completion_tokens mention AND an above-the-ceiling phrase
+        # so genuine INPUT context-overflow 400s (which never name max_tokens
+        # this way) keep compressing.
+        (
+            ("max_tokens" in error_lower or "max_completion_tokens" in error_lower)
+            and (
+                "above maximum value" in error_lower
+                or "integer above" in error_lower
+                or "less than or equal to the maximum" in error_lower
+            )
+        )
     )
     if not is_output_cap_error:
         return None
+
+    # Volcengine-style ceiling: "expected a value <= 32768" (optionally followed
+    # by "but got 65536"). The ceiling itself is the largest output cap the
+    # endpoint accepts, so extract it directly; the caller retries with
+    # max_tokens clamped just under it.
+    if (
+        "max_tokens" in error_lower or "max_completion_tokens" in error_lower
+    ) and (
+        "above maximum value" in error_lower
+        or "integer above" in error_lower
+        or "less than or equal to the maximum" in error_lower
+    ):
+        _m_ceiling = (
+            # "expected a value <= 32768" / "value <= 32768"
+            re.search(r'(?:expected a value|value)\s*<=\s*(\d+)', error_lower)
+            # "less than or equal to [the maximum value of] 16384"
+            or re.search(
+                r'less than or equal to(?:\s+the maximum(?:\s+value)?(?:\s+of)?)?\s*(\d+)',
+                error_lower,
+            )
+            # "above maximum value ... <= 32768" catch-all
+            or re.search(r'maximum value[^0-9]*<=\s*(\d+)', error_lower)
+        )
+        if _m_ceiling:
+            _ceiling = int(_m_ceiling.group(1))
+            if _ceiling >= 1:
+                return _ceiling
 
     # DashScope / Alibaba range form: "Range of max_tokens should be [1, 65536]".
     # The upper bound is the available output cap.
@@ -1416,6 +1463,8 @@ def is_output_cap_error(error_msg: str) -> bool:
         or "should be" in error_lower                       # generic "max_tokens should be <= N"
         or "less than or equal" in error_lower
         or "must be" in error_lower
+        or "above maximum value" in error_lower              # Volcengine Ark ceiling (#51773)
+        or "integer above" in error_lower
     )
     if not output_cap_signal:
         return False

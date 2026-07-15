@@ -313,30 +313,6 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
-# A server-side ``max_tokens`` *ceiling* rejection — distinct from the
-# "unsupported parameter" case above. Some OpenAI-compatible endpoints whose
-# server ceiling is below the custom-provider default (e.g. Volcengine Ark
-# plan/v3 caps max_tokens at 32768, while the custom profile injects 65536)
-# hard-reject the request with messages like:
-#   "the parameter `max_tokens` ... integer above maximum value, expected a
-#    value <= 32768, but got 65536 instead."  (code: InvalidParameter)
-# The message contains the literal substring "max_tokens" — one of the
-# _CONTEXT_OVERFLOW_PATTERNS — so without a dedicated guard it is misclassified
-# as a context-window overflow, routed into the compression loop, re-sent with
-# the same too-large reservation, and dead-ends at "Cannot compress further"
-# (against a 1M-token window). These are deterministic parameter-validation
-# 400s, so classify as a non-retryable format_error and fall back. To avoid
-# colliding with genuine *context*-overflow 400s (whose messages also say
-# things like "expected a value <= 128000"), the guard requires BOTH a
-# ``max_tokens``/``max_completion_tokens`` mention AND one of these
-# above-the-ceiling phrases.
-# See: https://github.com/NousResearch/hermes-agent/issues/51773
-_MAX_TOKENS_CEILING_PATTERNS = [
-    "above maximum value",
-    "integer above",
-    "less than or equal to the maximum",
-]
-
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -1196,28 +1172,10 @@ def _classify_400(
     # so matching it would mis-route real overflows away from compression. The
     # unambiguous signals are the explicit "unsupported/unknown parameter"
     # message text and the specific parameter-level error codes.
-    #
-    # A second, distinct shape is a server-side ``max_tokens`` *ceiling*
-    # rejection (issue #51773): the parameter IS supported, but the requested
-    # value exceeds the endpoint's hard limit (e.g. Volcengine Ark plan/v3 caps
-    # it at 32768 while the custom profile injects 65536). The message says
-    # "max_tokens ... above maximum value, expected a value <= N" — which trips
-    # both "max_tokens" (context-overflow) and nothing in the unsupported-param
-    # list. We require BOTH a max_tokens mention AND an above-the-ceiling
-    # phrase so genuine context-overflow 400s (which never name max_tokens this
-    # way) keep compressing.
-    _mentions_max_tokens_param = (
-        "max_tokens" in error_msg or "max_completion_tokens" in error_msg
-    )
-    _is_max_tokens_ceiling = (
-        _mentions_max_tokens_param
-        and any(p in error_msg for p in _MAX_TOKENS_CEILING_PATTERNS)
-    )
     if (
         any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS
             if p != "invalid_request_error")
         or error_code_lower in {"unknown_parameter", "unsupported_parameter"}
-        or _is_max_tokens_ceiling
     ):
         return result_fn(
             FailoverReason.format_error,

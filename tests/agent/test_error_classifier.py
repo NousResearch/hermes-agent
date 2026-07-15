@@ -1165,30 +1165,6 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_compress is False
 
-    def test_400_max_tokens_ceiling_rejection_not_context_overflow(self):
-        """A server-side max_tokens *ceiling* 400 (Volcengine Ark plan/v3 caps
-        max_tokens at 32768; the custom profile injects 65536) must NOT be
-        misclassified as context overflow. The message contains the literal
-        'max_tokens' (a _CONTEXT_OVERFLOW_PATTERNS entry) but is a deterministic
-        parameter-validation rejection that no amount of compression can fix.
-        Without the ceiling guard it dead-ends at 'Cannot compress further'
-        against a 1M-token window. Regression for #51773."""
-        msg = ("the parameter `max_tokens` specified in the request are not "
-               "valid: integer above maximum value, expected a value <= 32768, "
-               "but got 65536 instead.")
-        e = MockAPIError(
-            msg,
-            status_code=400,
-            body={"error": {"message": msg, "type": "BadRequest",
-                            "code": "InvalidParameter", "param": "max_tokens"}},
-        )
-        # Tiny context against a huge window — definitely not a real overflow.
-        result = classify_api_error(e, provider="custom", model="kimi-k2.7-code",
-                                    approx_tokens=4670, context_length=1000000)
-        assert result.reason == FailoverReason.format_error
-        assert result.retryable is False
-        assert result.should_compress is False
-
     def test_400_unknown_parameter_not_context_overflow(self):
         """'Unknown parameter' 400s are deterministic request-validation
         failures, not overflows."""

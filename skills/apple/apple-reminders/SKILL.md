@@ -66,9 +66,12 @@ remindctl open --list Work --app    # Open list in Reminders.app
 `remindctl` uses public EventKit APIs and does not expose collaborator invites
 or native Reminders list sharing. When a user asks to share a list:
 
-1. Create or verify the target list with `remindctl list <name> --create`.
-2. Open it in Reminders.app with `remindctl open --list "<name>" --app`.
-3. Tell the user to use the Reminders.app Share List control to add people.
+1. Check for the target list with `remindctl list "<name>"`.
+2. If the list does not exist, create it with
+   `remindctl list "<name>" --create`. Do not pass `--create` when the list
+   already exists because it always creates a new list.
+3. Open it in Reminders.app with `remindctl open --list "<name>" --app`.
+4. Tell the user to use the Reminders.app Share List control to add people.
 
 Do not claim a terminal command can share the list directly unless `remindctl`
 adds an explicit sharing command in the future.

@@ -4923,11 +4923,11 @@ def _quarantine_nous_oauth_state(
     reason: str,
 ) -> None:
     """Keep routing metadata but remove dead OAuth material so it is not replayed."""
-    # Forensic logging BEFORE we clear the token material. A NAS-hosted Fly agent
+    # Forensic logging BEFORE we clear the token material. A hosted agent
     # can take a terminal invalid_grant and get quarantined here silently: the
     # only downstream signal is a "No access token found" WARNING once the pool
-    # is already empty, which is too late to root-cause. The Fly log drain is
-    # WARNING-only, so this MUST be logger.warning (INFO never reaches the drain).
+    # is already empty, which is too late to root-cause. A managed log drain may
+    # be WARNING-only, so this MUST be logger.warning (INFO never reaches it).
     #
     # Redaction safety: emit ONLY the 12-char SHA-256 hex prefix of the refresh
     # token (correlates to NAS's refreshTokenHash without leaking the secret) plus

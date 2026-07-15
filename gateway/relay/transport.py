@@ -30,6 +30,13 @@ from gateway.relay.descriptor import CapabilityDescriptor
 # Callback the transport invokes for each inbound normalized event.
 InboundHandler = Callable[[MessageEvent], Awaitable[None]]
 
+# Callback the transport invokes for each forwarded passthrough request (§5.1).
+# The first arg is a PassthroughForward (gateway/relay/ws_transport.py) — typed
+# as Any here to keep this protocol module free of a concrete-transport import
+# (ws_transport imports FROM this module). The second is an optional bufferId
+# (Phase 5 §5.3 buffered flip) the handler acks after durable handoff.
+PassthroughHandler = Callable[[Any, Optional[str]], Awaitable[None]]
+
 
 @runtime_checkable
 class RelayTransport(Protocol):
@@ -51,11 +58,31 @@ class RelayTransport(Protocol):
         """Register the callback invoked with each inbound MessageEvent."""
         ...
 
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    def set_passthrough_handler(self, handler: "PassthroughHandler") -> None:
+        """Register the callback invoked with each forwarded passthrough request.
+
+        Phase 5 §5.1: the passthrough plane (Discord interactions, Twilio, …)
+        answers the provider's edge ACK at the connector, then forwards the real
+        request to the gateway over this same outbound socket (a hosted gateway
+        has no public inbound port). The transport invokes ``handler(forward,
+        buffer_id)`` for each ``passthrough_forward`` frame. Optional on a
+        transport (an in-memory stub may not implement it).
+        """
+        ...
+
+    async def send_outbound(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Carry an outbound action (send/edit/typing) to the connector.
 
         Returns a result dict; for ``op == "send"`` it carries
         ``success`` and optionally ``message_id`` / ``error``.
+
+        ``platform`` (Phase 1.5) tags WHICH fronted platform this reply targets,
+        carried on the OutboundFrame envelope so a gateway fronting N platforms
+        egresses each reply through the right sender (the transport resolves the
+        matching advertised botId). Omitted ⇒ the connector falls back to the
+        session's default platform (single-platform deploys unchanged).
         """
         ...
 
@@ -74,7 +101,22 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def go_idle(self, timeout_s: float = 10.0) -> bool:
+        """Ask the connector to flip this instance to buffered-only (Phase 5 §5.3).
+
+        Sends ``going_idle`` and awaits the connector's ``going_idle_ack`` — the
+        connector-authoritative confirmation that live delivery stopped and inbound
+        now buffers durably for replay on reconnect (Q-5.3c). Returns True on ack,
+        False on timeout / not-connected (the caller proceeds to close regardless;
+        without §5.3 wiring there is simply no buffering). Optional on a transport
+        (an in-memory stub may not implement it). Emitted as part of the gateway's
+        EXISTING drain transition — not a new idle path.
+        """
+        ...
+
+    async def send_follow_up(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Act on a shared-identity capability bound to a session (A2 outbound).
 
         Some platforms hand the connector a credential that acts on the SHARED

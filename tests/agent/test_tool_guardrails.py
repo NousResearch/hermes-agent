@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
@@ -75,12 +77,17 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.no_progress_block_after == 8
 
 
-def test_gateway_platform_defaults_to_hard_stop_without_changing_cli_default():
-    cli_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cli")
+@pytest.mark.parametrize("platform", ["cli", "tui", "desktop", "acp"])
+def test_interactive_platforms_keep_warning_only_default(platform):
+    cfg = ToolCallGuardrailConfig.from_mapping({}, platform=platform)
+
+    assert cfg.hard_stop_enabled is False
+
+
+def test_unattended_platforms_default_to_hard_stop():
     telegram_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="telegram")
     cron_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cron")
 
-    assert cli_cfg.hard_stop_enabled is False
     assert telegram_cfg.hard_stop_enabled is True
     assert cron_cfg.hard_stop_enabled is True
 

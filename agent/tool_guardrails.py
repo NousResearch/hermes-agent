@@ -65,7 +65,7 @@ class ToolCallGuardrailConfig:
     """Thresholds for per-turn tool-call loop detection.
 
     Warnings are enabled by default and never prevent tool execution. Hard stops
-    stay opt-in for interactive CLI/TUI sessions, but default on for
+    stay opt-in for interactive CLI/TUI/Desktop/ACP sessions, but default on for
     non-interactive gateway/cron platforms where nobody is present to interrupt
     a model that ignores loop warnings.
     """
@@ -135,11 +135,14 @@ class ToolCallGuardrailConfig:
         )
 
 
+_INTERACTIVE_PLATFORMS = frozenset({"acp", "cli", "desktop", "tui"})
+
+
 def _is_non_interactive_platform(platform: str | None) -> bool:
-    """Return true for gateway/cron sessions where tool loops are unattended."""
+    """Return true for unattended surfaces while preserving interactive clients."""
     if not isinstance(platform, str) or not platform.strip():
         return False
-    return platform.strip().lower() not in {"cli", "tui"}
+    return platform.strip().lower() not in _INTERACTIVE_PLATFORMS
 
 
 @dataclass(frozen=True)

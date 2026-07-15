@@ -19,12 +19,17 @@
 #   scripts/run_tests.sh tests/agent/               # discover only here
 #   scripts/run_tests.sh tests/agent/ tests/acp/    # multiple roots
 #   scripts/run_tests.sh tests/foo.py               # single file
-#   scripts/run_tests.sh tests/foo.py -- --tb=long  # path + pytest args
-#   scripts/run_tests.sh -- -v --tb=long            # pytest args only
+#   scripts/run_tests.sh tests/foo.py -q            # path + bare pytest flag
+#   scripts/run_tests.sh tests/foo.py -v --tb=long  # bare flags "just work"
+#   scripts/run_tests.sh -k 'pattern'               # value flags pass through too
+#   scripts/run_tests.sh tests/foo.py -- --tb=long  # explicit '--' still works
 #
-# Everything after a literal '--' is passed through to each per-file
-# pytest invocation. Positional path arguments before '--' override
-# the default discovery root (tests/).
+# Bare pytest flags (anything starting with '-' that isn't one of this
+# runner's own options: -j/--jobs, --paths, --slice, --file-timeout, etc.)
+# are forwarded to each per-file pytest invocation automatically — no '--'
+# separator required. The explicit '--' form still works and stacks with
+# bare flags. Positional path arguments override the default discovery
+# root (tests/).
 
 set -euo pipefail
 
@@ -66,6 +71,15 @@ echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 
 cd "$REPO_ROOT"
 
+# ── Pre-compile .pyc bytecode cache ─────────────────────────────────────────
+# Each test file runs in its own subprocess via run_tests_parallel.py.
+# Pre-building the bytecode cache once here (instead of each subprocess
+# compiling on first import) avoids redundant work across ~2000 processes.
+# Uses git to list tracked .py files (skips venv, node_modules, etc).
+echo "▶ pre-compiling bytecode cache"
+"$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+
+echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \
   HOME="$HOME" \
@@ -73,7 +87,7 @@ exec env -i \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
-  PYTHONDONTWRITEBYTECODE=1 \
+  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

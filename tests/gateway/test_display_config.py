@@ -54,6 +54,22 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_tool_progress_boolean_like_strings_normalise(self):
+        """Quoted YAML booleans should not unexpectedly enable progress."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({"display": {"tool_progress": "false"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "0"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "no"}}, "telegram", "tool_progress") == "off"
+        assert resolve_display_setting({"display": {"tool_progress": "true"}}, "telegram", "tool_progress") == "all"
+
+    def test_busy_steer_ack_enabled_string_false_normalises(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"telegram": {"busy_steer_ack_enabled": "false"}}}}
+
+        assert resolve_display_setting(config, "telegram", "busy_steer_ack_enabled", True) is False
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting
@@ -148,6 +164,42 @@ class TestYAMLNormalisation:
 
         config = {"display": {"tool_progress": True}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
+
+    def test_tool_progress_generic_is_not_a_mode(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"tool_progress": "generic"}}}}
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "all"
+
+    def test_tool_progress_mode_strips_whitespace(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"tool_progress": " off\n"}}}}
+        assert resolve_display_setting(config, "whatsapp", "tool_progress") == "off"
+
+    def test_only_long_running_visibility_accepts_generic_mode(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "whatsapp": {
+                        "thinking_progress": "generic",
+                        "interim_assistant_messages": "generic",
+                        "long_running_notifications": "generic",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
+        assert resolve_display_setting(config, "whatsapp", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "whatsapp", "long_running_notifications") == "generic"
+
+    def test_thinking_progress_string_false_normalised_to_false(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"whatsapp": {"thinking_progress": "false"}}}}
+        assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
 
     def test_show_reasoning_string_true(self):
         """String 'true' is normalised to bool True."""
@@ -510,3 +562,48 @@ class TestToolProgressGrouping:
             resolve_display_setting(config, "telegram", "tool_progress_grouping")
             == "separate"
         )
+
+
+class TestReasoningStyle:
+    """Per-platform reasoning render style (code | blockquote | subtext)."""
+
+    def test_discord_defaults_to_subtext(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "discord", "reasoning_style") == "subtext"
+
+    def test_other_platforms_default_to_code(self):
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "slack", "matrix", "api_server"):
+            assert (
+                resolve_display_setting({}, plat, "reasoning_style") == "code"
+            ), plat
+
+    def test_platform_override_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"platforms": {"discord": {"reasoning_style": "blockquote"}}}}
+        assert (
+            resolve_display_setting(config, "discord", "reasoning_style") == "blockquote"
+        )
+
+    def test_global_override(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "subtext"}}
+        assert (
+            resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+        )
+
+    def test_invalid_value_falls_back_to_code(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "bogus"}}
+        assert resolve_display_setting(config, "telegram", "reasoning_style") == "code"
+
+    def test_case_insensitive(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"reasoning_style": "SUBTEXT"}}
+        assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"

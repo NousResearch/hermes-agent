@@ -1,6 +1,7 @@
 """Tests for _detect_file_drop — file path detection that prevents
 dragged/pasted absolute paths from being mistaken for slash commands."""
 
+import os
 
 import pytest
 
@@ -220,6 +221,18 @@ class TestEscapedSpaces:
         assert result is not None
         assert result["path"] == tmp_image_with_spaces
         assert result["is_image"] is True
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows drive-letter URI contract")
+    def test_windows_drive_letter_file_uri_drops_url_leading_slash(self, tmp_path):
+        image = tmp_path / "drive-uri.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        uri = image.as_uri()
+        assert uri.startswith("file:///") and ":/" in uri
+
+        result = _detect_file_drop(uri)
+
+        assert result is not None
+        assert result["path"] == image
 
     def test_tilde_prefixed_path(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

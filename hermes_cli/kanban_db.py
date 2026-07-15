@@ -2770,6 +2770,29 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def _validate_persistent_workspace_path(
+    workspace_kind: str, workspace_path: Optional[str]
+) -> Optional[str]:
+    """Normalize and validate a workspace path before it is persisted."""
+    if workspace_path is not None:
+        workspace_path = str(workspace_path).strip() or None
+    if not workspace_path or workspace_kind not in {"dir", "worktree"}:
+        return workspace_path
+
+    # Quoted absolute paths look valid to a human but are relative to pathlib.
+    if workspace_path[0] in {'"', "'"} or workspace_path[-1] in {'"', "'"}:
+        raise ValueError(
+            "workspace_path must be an absolute, unquoted path "
+            f"for {workspace_kind} workspaces; got {workspace_path!r}"
+        )
+    if not Path(workspace_path).expanduser().is_absolute():
+        raise ValueError(
+            "workspace_path must be absolute for "
+            f"{workspace_kind} workspaces; got {workspace_path!r}"
+        )
+    return workspace_path
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2854,22 +2877,6 @@ def create_task(
         raise ValueError("branch_name is only valid for worktree workspaces")
     if workspace_path is not None:
         workspace_path = str(workspace_path).strip() or None
-    if workspace_path and workspace_kind in {"dir", "worktree"}:
-        # Validate persistent workspace paths before writing the task row.
-        # Waiting until dispatch time leaves an unspawnable task in the DB;
-        # quoted absolute paths like '"/tmp/work"' are especially confusing
-        # because the human-visible value looks absolute while Path sees the
-        # leading quote and treats it as relative.
-        if workspace_path[0] in {'"', "'"} or workspace_path[-1] in {'"', "'"}:
-            raise ValueError(
-                "workspace_path must be an absolute, unquoted path "
-                f"for {workspace_kind} workspaces; got {workspace_path!r}"
-            )
-        if not Path(workspace_path).expanduser().is_absolute():
-            raise ValueError(
-                "workspace_path must be absolute for "
-                f"{workspace_kind} workspaces; got {workspace_path!r}"
-            )
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch
@@ -3098,6 +3105,10 @@ def create_task(
                             )
                         except Exception:
                             branch_name = None
+
+                workspace_path = _validate_persistent_workspace_path(
+                    workspace_kind, workspace_path
+                )
 
                 conn.execute(
                     """
@@ -5948,6 +5959,11 @@ def decompose_triage_task(
         root_ws_kind = root_row["workspace_kind"] or "scratch"
         root_ws_path = root_row["workspace_path"]
 
+        # Resolve and validate every child workspace before the first direct
+        # INSERT. decompose_triage_task intentionally bypasses create_task() to
+        # preserve one atomic transaction, so it must reuse the same creation
+        # invariant (absolute, unquoted path validation) here.
+
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
         # sees a coherent state, and recompute_ready() at the end
@@ -5961,7 +5977,10 @@ def decompose_triage_task(
             # workspace. A child that sets workspace_kind without a path
             # falls back to the root path only when kinds match (so a
             # child can't accidentally point a 'dir' at the root's
-            # worktree path or vice versa).
+            # worktree path or vice versa). Worktree children never share
+            # the root's literal checkout (concurrency safety). The
+            # resolved path is then validated (absolute, unquoted) before
+            # it is persisted.
             child_ws_kind = child.get("workspace_kind") or root_ws_kind
             if child.get("workspace_path"):
                 child_ws_path = child.get("workspace_path")
@@ -5978,6 +5997,9 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            child_ws_path = _validate_persistent_workspace_path(
+                child_ws_kind, child_ws_path
+            )
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "

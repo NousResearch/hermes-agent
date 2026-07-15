@@ -40,6 +40,36 @@ def test_project_linked_task_gets_deterministic_worktree_and_branch(kanban_conn)
     assert not task.branch_name.startswith("wt/")
 
 
+def test_project_conversion_rejects_relative_workspace_path(kanban_conn):
+    """Project normalization cannot turn a scratch-path bypass into worktree state."""
+    proj = _make_project(name="Relative Path Guard", repo="/tmp/path-guard")
+
+    with pytest.raises(ValueError, match="workspace_path must be absolute"):
+        kb.create_task(
+            kanban_conn,
+            title="invalid project workspace",
+            project_id=proj.slug,
+            workspace_kind="scratch",
+            workspace_path="../relative-worktree",
+        )
+
+
+@pytest.mark.parametrize("workspace_kind", ["dir", "worktree"])
+def test_resolve_workspace_rejects_legacy_relative_path(kanban_conn, workspace_kind):
+    """Dispatch validation remains a safety rail for pre-fix database rows."""
+    tid = kb.create_task(kanban_conn, title="legacy", assignee="worker")
+    kanban_conn.execute(
+        "UPDATE tasks SET workspace_kind = ?, workspace_path = ? WHERE id = ?",
+        (workspace_kind, "../legacy-relative", tid),
+    )
+    kanban_conn.commit()
+
+    task = kb.get_task(kanban_conn, tid)
+    assert task is not None
+    with pytest.raises(ValueError, match="non-absolute"):
+        kb.resolve_workspace(task)
+
+
 def test_explicit_branch_overrides_project_default(kanban_conn):
     proj = _make_project()
     tid = kb.create_task(

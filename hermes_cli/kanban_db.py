@@ -1602,6 +1602,187 @@ def _task_has_notification_subscription(
     return row is not None
 
 
+# Stable machine-readable child-creation denial code (ORCH-001D).
+CHILD_CREATION_DENIED = "child_creation_denied"
+
+
+class ChildCreationDeniedError(ValueError):
+    """Raised when a task contract forbids creating children (ORCH-001D)."""
+
+    def __init__(self, task_id: str, message: Optional[str] = None):
+        self.task_id = task_id
+        self.code = CHILD_CREATION_DENIED
+        super().__init__(
+            message
+            or (
+                f"child creation denied by task contract on {task_id} "
+                f"(allow_child_creation=false); reason={CHILD_CREATION_DENIED}"
+            )
+        )
+
+
+def evaluate_child_creation_allowed(
+    contract: Optional[dict[str, Any]],
+) -> tuple[bool, Optional[str]]:
+    """Return ``(allowed, denial_code_or_None)`` for a task contract.
+
+    HERMES-ORCH-001D policy:
+    - legacy / no contract → allowed (unenforced)
+    - ``allow_child_creation is True`` → allowed
+    - ``allow_child_creation is False`` → denied with
+      :data:`CHILD_CREATION_DENIED`
+    """
+    if contract is None:
+        return True, None
+    if contract.get("allow_child_creation") is False:
+        return False, CHILD_CREATION_DENIED
+    return True, None
+
+
+def assert_child_creation_allowed(
+    contract: Optional[dict[str, Any]],
+    *,
+    task_id: str,
+) -> None:
+    """Raise :class:`ChildCreationDeniedError` when the contract forbids children."""
+    allowed, _code = evaluate_child_creation_allowed(contract)
+    if not allowed:
+        raise ChildCreationDeniedError(task_id)
+
+
+def inspect_task_admission(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    enforce_mode: Optional[str] = None,
+) -> dict[str, Any]:
+    """Privacy-safe task admission / contract inspection (ORCH-001D).
+
+    Surfaces only machine-usable enforcement facts for CLI/tool ``show``:
+
+    - enforcement applicability and resolved mode
+    - contract version / presence / child-creation policy
+    - admission state + exact reason codes
+    - notification-required state and matching subscription count
+    - inherited source task ids (no platform chat/user credentials or
+      unrelated Telegram message content)
+
+    Raises :class:`ValueError` if the task does not exist.
+    """
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path, contract FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown task: {task_id}")
+
+    keys = set(row.keys())
+    raw_blob = row["contract"] if "contract" in keys else None
+    has_blob = bool(isinstance(raw_blob, str) and raw_blob.strip()) or (
+        raw_blob is not None and not isinstance(raw_blob, str)
+    )
+
+    contract: Optional[dict[str, Any]] = None
+    contract_error: Optional[str] = None
+    if has_blob:
+        try:
+            contract = deserialize_task_contract(
+                raw_blob if isinstance(raw_blob, str) else str(raw_blob)
+            )
+            if contract is None:
+                has_blob = False
+        except TaskContractError as exc:
+            contract_error = str(exc)
+
+    sub_count_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM kanban_notify_subs WHERE task_id = ?",
+        (task_id,),
+    ).fetchone()
+    subscription_count = int(sub_count_row["c"] if sub_count_row is not None else 0)
+
+    mode = resolve_admission_enforce_mode(enforce_mode)
+    decision = evaluate_admission(
+        contract=contract,
+        workspace_kind=row["workspace_kind"] if "workspace_kind" in keys else "scratch",
+        workspace_path=row["workspace_path"] if "workspace_path" in keys else None,
+        has_notification_subscription=subscription_count > 0,
+        enforce_mode=mode,
+        contract_present=has_blob or contract is not None,
+        contract_error=contract_error,
+    )
+
+    # Notification is required whenever enforcement is active for this task
+    # (contract present under contracts mode, or enforce-all).
+    notification_required = bool(decision.enforced)
+    notification_verified = (
+        bool(contract.get("notification_verified"))
+        if isinstance(contract, dict)
+        else None
+    )
+    allow_child = (
+        bool(contract.get("allow_child_creation"))
+        if isinstance(contract, dict)
+        else None
+    )
+    contract_version = (
+        int(contract["version"])
+        if isinstance(contract, dict) and "version" in contract
+        else None
+    )
+    child_ok, child_denial = evaluate_child_creation_allowed(contract)
+
+    # Inherited sources: task ids only from notify_subs_inherited audit events.
+    inherited_sources: list[str] = []
+    seen_sources: set[str] = set()
+    for ev in conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY id ASC",
+        (task_id, "notify_subs_inherited"),
+    ).fetchall():
+        try:
+            payload = json.loads(ev["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for sid in payload.get("sources") or []:
+            if isinstance(sid, str) and sid and sid not in seen_sources:
+                seen_sources.add(sid)
+                inherited_sources.append(sid)
+        for route in payload.get("routes") or []:
+            if not isinstance(route, dict):
+                continue
+            sid = route.get("from_task_id")
+            if isinstance(sid, str) and sid and sid not in seen_sources:
+                seen_sources.add(sid)
+                inherited_sources.append(sid)
+
+    return {
+        "task_id": task_id,
+        "enforcement_applicable": bool(decision.enforced),
+        "enforce_mode": mode,
+        "contract_present": bool(has_blob or contract is not None),
+        "contract_version": contract_version,
+        "contract_error": contract_error,
+        "allow_child_creation": allow_child,
+        "child_creation_allowed": child_ok,
+        "child_creation_denial_code": child_denial,
+        "notification_verified": notification_verified,
+        "notification_required": notification_required,
+        "subscription_count": subscription_count,
+        "inherited_sources": inherited_sources,
+        "admission": {
+            "admitted": bool(decision.admitted),
+            "enforced": bool(decision.enforced),
+            "reasons": [
+                {"code": r.code, "message": r.message} for r in decision.rejections
+            ],
+            "codes": list(decision.codes),
+            "summary": decision.summary(),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------

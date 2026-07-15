@@ -1490,6 +1490,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        # ORCH-001D: privacy-safe admission / contract inspection.
+        try:
+            admission_inspection = kb.inspect_task_admission(conn, args.task_id)
+        except Exception:
+            admission_inspection = None
 
     if getattr(args, "json", False):
         payload = {
@@ -1526,6 +1531,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 }
                 for r in runs
             ],
+            "admission_inspection": admission_inspection,
         }
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
@@ -1561,6 +1567,55 @@ def _cmd_show(args: argparse.Namespace) -> int:
         else:
             print(f"  max-retries: {kb.DEFAULT_FAILURE_LIMIT} (default)")
     print(f"  created:   {_fmt_ts(task.created_at)} by {task.created_by or '-'}")
+
+    # ORCH-001D admission / contract inspection (privacy-safe: counts +
+    # codes only — no chat ids, tokens, or Telegram message content).
+    if admission_inspection:
+        adm = admission_inspection.get("admission") or {}
+        print("\n  Admission inspection:")
+        print(
+            f"    enforcement: "
+            f"{'yes' if admission_inspection.get('enforcement_applicable') else 'no'}"
+            f" (mode={admission_inspection.get('enforce_mode')})"
+        )
+        print(
+            f"    contract:    "
+            f"v{admission_inspection.get('contract_version')}"
+            if admission_inspection.get("contract_present")
+            else "    contract:    none (legacy)"
+        )
+        if admission_inspection.get("contract_error"):
+            print(f"    contract_err: {admission_inspection['contract_error']}")
+        print(
+            f"    admission:   "
+            f"{'admitted' if adm.get('admitted') else 'rejected'}"
+            + (
+                f" reasons={','.join(adm.get('codes') or [])}"
+                if adm.get("codes")
+                else ""
+            )
+        )
+        print(
+            f"    notify:      required="
+            f"{admission_inspection.get('notification_required')} "
+            f"verified={admission_inspection.get('notification_verified')} "
+            f"subs={admission_inspection.get('subscription_count')}"
+        )
+        srcs = admission_inspection.get("inherited_sources") or []
+        if srcs:
+            print(f"    inherited:   sources={','.join(srcs)}")
+        else:
+            print("    inherited:   sources=-")
+        child_ok = admission_inspection.get("child_creation_allowed")
+        print(
+            f"    children:    "
+            f"{'allowed' if child_ok else 'denied'}"
+            + (
+                f" ({admission_inspection.get('child_creation_denial_code')})"
+                if not child_ok
+                else ""
+            )
+        )
 
     # Diagnostics section — surface active distress signals at the top
     # of show output so CLI users see them before scrolling through

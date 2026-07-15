@@ -409,6 +409,13 @@ def _handle_show(args: dict, **kw) -> str:
                     "started_at": r.started_at, "ended_at": r.ended_at,
                 }
 
+            # ORCH-001D: privacy-safe admission/contract inspection (no
+            # credentials / chat tokens / raw Telegram content).
+            try:
+                admission_inspection = kb.inspect_task_admission(conn, tid)
+            except Exception:
+                admission_inspection = None
+
             return json.dumps({
                 "task": _task_dict(task),
                 "parents": parents,
@@ -429,6 +436,7 @@ def _handle_show(args: dict, **kw) -> str:
                 # the same string build_worker_context returns to the
                 # dispatcher at spawn time.
                 "worker_context": kb.build_worker_context(conn, tid),
+                "admission_inspection": admission_inspection,
             })
         finally:
             conn.close()
@@ -1126,19 +1134,33 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # ORCH-001D: deterministic allow_child_creation=false gate.
+            # A restricted *running worker* (HERMES_KANBAN_TASK set with a
+            # contract that forbids children) must not mutate the graph.
+            # Unrestricted orchestrators (no env task, or legacy / allowed
+            # contracts) can still fan out.
+            _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+            _self_task = None
+            if _self_tid:
+                _self_task = kb.get_task(conn, _self_tid)
+                if _self_task is not None:
+                    try:
+                        kb.assert_child_creation_allowed(
+                            _self_task.contract, task_id=_self_tid
+                        )
+                    except kb.ChildCreationDeniedError as exc:
+                        return tool_error(f"kanban_create: {exc}")
+
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
             if _inherit_workspace:
-                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
-                if _self_tid:
-                    _self_task = kb.get_task(conn, _self_tid)
-                    if _self_task is not None and _self_task.workspace_kind:
-                        workspace_kind = _self_task.workspace_kind
-                        workspace_path = _self_task.workspace_path
-                        # Keep follow-up children inside the same project so the
-                        # whole subtree shares one repo + branch convention.
-                        if project_id is None and _self_task.project_id:
-                            project_id = _self_task.project_id
+                if _self_task is not None and _self_task.workspace_kind:
+                    workspace_kind = _self_task.workspace_kind
+                    workspace_path = _self_task.workspace_path
+                    # Keep follow-up children inside the same project so the
+                    # whole subtree shares one repo + branch convention.
+                    if project_id is None and _self_task.project_id:
+                        project_id = _self_task.project_id
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),

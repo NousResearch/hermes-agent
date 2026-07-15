@@ -252,6 +252,57 @@ class TestWindowsShellDestructiveCommands:
         assert desc is None
 
 
+class TestWindowsVerificationArtifactCleanupExemption:
+    """Windows-native sibling of TestDetectDangerousRm's verification-cleanup
+    exemption tests: cmd /c del and powershell Remove-Item, not just POSIX rm -f."""
+
+    _TEMP_DIR = r"C:\Users\test\AppData\Local\Temp"
+
+    def test_cmd_del_verification_cleanup_is_not_dangerous(self):
+        with mock_patch("tempfile.gettempdir", return_value=self._TEMP_DIR):
+            for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
+                target = f"{self._TEMP_DIR}\\{prefix}example.py"
+                assert detect_dangerous_command(f"cmd /c del {target}") == (
+                    False, None, None,
+                )
+                assert detect_dangerous_command(f'cmd.exe /c del "{target}"') == (
+                    False, None, None,
+                )
+
+    def test_powershell_remove_item_verification_cleanup_is_not_dangerous(self):
+        with mock_patch("tempfile.gettempdir", return_value=self._TEMP_DIR):
+            target = f"{self._TEMP_DIR}\\hermes-verify-example.py"
+            assert detect_dangerous_command(f"powershell Remove-Item {target}") == (
+                False, None, None,
+            )
+            assert detect_dangerous_command(
+                f'powershell -Command "Remove-Item \'{target}\'"'
+            ) == (False, None, None)
+            assert detect_dangerous_command(f'pwsh -c Remove-Item "{target}"') == (
+                False, None, None,
+            )
+
+    def test_windows_verification_cleanup_exemption_rejects_broader_deletions(self):
+        target = f"{self._TEMP_DIR}\\hermes-verify-example.py"
+        commands = (
+            f"cmd /c del {target} & echo pwned",
+            f'cmd /c del "{target}" "C:\\Users\\test\\AppData\\Local\\Temp\\other.py"',
+            f"cmd /c del {self._TEMP_DIR}\\nested\\hermes-verify-example.py",
+            f"cmd /c del C:\\Users\\test\\AppData\\Local\\Temp2\\hermes-verify-example.py",
+            f"cmd /c rmdir {target}",
+            f"powershell Remove-Item -Recurse {target}",
+            f"powershell Remove-Item {target} -Recurse",
+            f"powershell Remove-Item {target} C:\\Users\\test\\AppData\\Local\\Temp\\other.py",
+            f"powershell Remove-Item {self._TEMP_DIR}\\unrelated.py",
+        )
+        with mock_patch("tempfile.gettempdir", return_value=self._TEMP_DIR):
+            for command in commands:
+                is_dangerous, key, desc = detect_dangerous_command(command)
+                assert is_dangerous is True, command
+                assert key is not None, command
+                assert "delete" in desc.lower(), command
+
+
 class TestDetectDangerousSudo:
     def test_shell_via_c_flag(self):
         is_dangerous, key, desc = detect_dangerous_command("bash -c 'echo pwned'")

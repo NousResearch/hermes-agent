@@ -1452,13 +1452,84 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
 
 
+_WINDOWS_VERIFY_CLEANUP_CMD_RE = re.compile(r"cmd(?:\.exe)?\s+/[ck]\s+(.+)", re.IGNORECASE)
+_WINDOWS_VERIFY_CLEANUP_DEL_RE = re.compile(r"del\s+(.+)", re.IGNORECASE)
+_WINDOWS_VERIFY_CLEANUP_PS_RE = re.compile(
+    r"(?:powershell|pwsh)(?:\.exe)?\s+(?:-(?:command|c)\s+)?(.+)", re.IGNORECASE
+)
+_WINDOWS_VERIFY_CLEANUP_REMOVE_ITEM_RE = re.compile(r"remove-item\s+(.+)", re.IGNORECASE)
+
+
+def _is_windows_verification_artifact_cleanup(command: str) -> bool:
+    """Windows-native sibling of :func:`_is_verification_artifact_cleanup`.
+
+    Verify-on-stop's cleanup instruction (``agent/verification_stop.py``,
+    ``tempfile.gettempdir()`` + a ``hermes-verify-``/``hermes-ad-hoc-``
+    filename) is platform-agnostic, but the POSIX exemption above only
+    recognizes ``rm -f <path>`` — a Windows-native agent cleaning up the
+    same self-prescribed artifact via ``cmd /c del <path>`` or
+    ``powershell Remove-Item <path>`` still trips the Windows destructive-
+    delete patterns below, reproducing the exact "two safety policies
+    compose into mandatory approval friction" bug for Windows sessions.
+
+    Uses ``ntpath`` explicitly (not ``os.path``) so the path lexical checks
+    are deterministic regardless of the OS actually running Hermes — the
+    same reasoning ``tools/file_tools.py`` already applies to Windows path
+    handling elsewhere in this codebase.
+    """
+    normalized = command.strip()
+
+    match = _WINDOWS_VERIFY_CLEANUP_CMD_RE.fullmatch(normalized)
+    if match:
+        inner = _strip_optional_shell_quotes(match.group(1).strip())
+        del_match = _WINDOWS_VERIFY_CLEANUP_DEL_RE.fullmatch(inner)
+        if not del_match:
+            return False
+        operand_raw = del_match.group(1)
+    else:
+        match = _WINDOWS_VERIFY_CLEANUP_PS_RE.fullmatch(normalized)
+        if not match:
+            return False
+        inner = _strip_optional_shell_quotes(match.group(1).strip())
+        ri_match = _WINDOWS_VERIFY_CLEANUP_REMOVE_ITEM_RE.fullmatch(inner)
+        if not ri_match:
+            return False
+        operand_raw = ri_match.group(1)
+
+    operand_raw = operand_raw.strip()
+    was_quoted = (
+        len(operand_raw) >= 2
+        and operand_raw[0] == operand_raw[-1]
+        and operand_raw[0] in ("'", '"')
+    )
+    operand = _strip_optional_shell_quotes(operand_raw)
+    if not operand:
+        return False
+    # An unquoted operand must be a single bare token — remaining whitespace
+    # means a second path/flag was appended (e.g. "del a.py & echo pwned"),
+    # which the basename/dirname checks below cannot always catch on their
+    # own. A quoted operand's boundaries are unambiguous, so real temp-dir
+    # usernames containing spaces (e.g. "C:\Users\John Doe\...\Temp") still
+    # work as long as the agent quoted the path.
+    if not was_quoted and re.search(r"\s", operand):
+        return False
+
+    import ntpath
+
+    temp_dir = ntpath.normpath(tempfile.gettempdir())
+    basename = ntpath.basename(operand)
+    if ntpath.normpath(ntpath.dirname(operand)) != temp_dir:
+        return False
+    return re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    if _is_verification_artifact_cleanup(command):
+    if _is_verification_artifact_cleanup(command) or _is_windows_verification_artifact_cleanup(command):
         return (False, None, None)
 
     for command_variant in _command_detection_variants(command):

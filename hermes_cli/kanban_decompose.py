@@ -140,8 +140,7 @@ _LARGE_REFACTOR_GUARD_TEMPLATE = """
 Large-refactor guard: ACTIVE ({signals}).
 This task looks too broad for a single worker turn and must be split before any
 worker is spawned. You MUST return fanout=true with 3-5 smaller child tasks. Each
-child must be independently executable, should target a narrow slice (roughly <=5
-files or <=4k tokens of instructions), and must avoid human-review/approval
+child must be independently executable and must avoid human-review/approval
 blockers. Do not return fanout=false for this task.
 """
 
@@ -178,17 +177,21 @@ def _large_refactor_signals(title: str, body: str) -> list[str]:
     file_refs = _FILE_REFERENCE_RE.findall(text)
     token_estimate = _estimate_tokens(text)
     keyword_hits = sorted({m.group(1).lower() for m in _LARGE_REFACTOR_KEYWORD_RE.finditer(text)})
+    has_broad_file_scope = len(file_refs) > _LARGE_REFACTOR_FILE_THRESHOLD
+    has_large_prompt = token_estimate > _LARGE_REFACTOR_TOKEN_THRESHOLD
+    if not (has_broad_file_scope or has_large_prompt):
+        return signals
     # "move" by itself is common in ordinary task prose (for example, moving a
     # meeting or memory). Treat it as a large-refactor signal only when paired
-    # with concrete file references or a genuinely large prompt.
+    # with a genuine breadth signal.
     high_confidence_keywords = [kw for kw in keyword_hits if kw != "move"]
-    if "move" in keyword_hits and (file_refs or token_estimate > _LARGE_REFACTOR_TOKEN_THRESHOLD):
+    if "move" in keyword_hits:
         high_confidence_keywords.append("move")
     if high_confidence_keywords:
         signals.append("keywords=" + ",".join(high_confidence_keywords[:5]))
-    if len(file_refs) > _LARGE_REFACTOR_FILE_THRESHOLD:
+    if has_broad_file_scope:
         signals.append(f"file_refs={len(file_refs)}")
-    if token_estimate > _LARGE_REFACTOR_TOKEN_THRESHOLD:
+    if has_large_prompt:
         signals.append(f"tokens≈{token_estimate}")
     return signals
 

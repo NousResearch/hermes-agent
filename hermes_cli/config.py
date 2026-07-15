@@ -2743,6 +2743,15 @@ DEFAULT_CONFIG = {
     # each claimable ready task. One dispatcher per profile is sufficient;
     # running more than one on the same kanban.db will race for claims.
     "kanban": {
+        # Ship's Crew optimization controls. S00 defines these defaults;
+        # later slices must opt in one capability at a time.
+        "ship_crew": {
+            "enforce_contracts": False,
+            "compact_worker_context": False,
+            "enforce_route_policy": False,
+            "enforce_output_budgets": False,
+            "quota_domain_scheduling": False,
+        },
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
         # and gateway is the supervisor users already have. Set to false

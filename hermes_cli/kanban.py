@@ -77,6 +77,13 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "result": t.result,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
+        "complexity_tier": t.complexity_tier,
+        "route_id": t.route_id,
+        "reasoning_effort": t.reasoning_effort,
+        "executor": t.executor,
+        "executor_mode": t.executor_mode,
+        "quota_domain": t.quota_domain,
+        "routing_metadata": t.routing_metadata,
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
@@ -360,6 +367,20 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           metavar="N", dest="goal_max_turns",
                           help="Turn budget for --goal workers (default 20). "
                                "Ignored without --goal.")
+    p_create.add_argument("--complexity-tier", choices=("T0", "T1", "T2", "T3", "T4"), default=None,
+                          help="Task routing complexity tier")
+    p_create.add_argument("--route-id", default=None,
+                          help="Allowlisted route id; dispatch fails closed if it is not calibrated")
+    p_create.add_argument("--reasoning-effort", default=None,
+                          help="Immutable route reasoning-effort value")
+    p_create.add_argument("--executor", default=None,
+                          help="Allowlisted executor identity")
+    p_create.add_argument("--executor-mode", default=None,
+                          help="Allowlisted executor mode/protocol")
+    p_create.add_argument("--quota-domain", default=None,
+                          help="Normalized shared provider quota domain")
+    p_create.add_argument("--routing-metadata", default=None,
+                          help="Routing/governance metadata as a JSON object")
     p_create.add_argument("--initial-status",
                           choices=sorted(kb.VALID_INITIAL_STATUSES),
                           default="running",
@@ -690,6 +711,16 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- Ship's Crew baseline metrics ---
+    p_metrics = sub.add_parser(
+        "metrics",
+        help="Read-only Ship's Crew baseline metrics for before/after comparison",
+    )
+    p_metrics.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit the structured diagnostics snapshot (recommended)",
+    )
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -963,6 +994,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
+            "metrics":  _cmd_metrics,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
@@ -1325,6 +1357,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    routing_metadata = None
+    raw_routing_metadata = getattr(args, "routing_metadata", None)
+    if raw_routing_metadata:
+        try:
+            routing_metadata = json.loads(raw_routing_metadata)
+            if not isinstance(routing_metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --routing-metadata: {exc}", file=sys.stderr)
+            return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1346,6 +1388,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_retries=max_retries,
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
+            complexity_tier=getattr(args, "complexity_tier", None),
+            route_id=getattr(args, "route_id", None),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
+            executor=getattr(args, "executor", None),
+            executor_mode=getattr(args, "executor_mode", None),
+            quota_domain=getattr(args, "quota_domain", None),
+            routing_metadata=routing_metadata,
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
@@ -2409,6 +2458,27 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\n(stopped)")
         return 0
+
+
+def _cmd_metrics(args: argparse.Namespace) -> int:
+    """Emit the read-only Ship's Crew baseline metrics snapshot."""
+    from hermes_cli import kanban_metrics as km
+
+    with kb.connect_closing() as conn:
+        snapshot = km.aggregate_connection(conn, board=kb.get_current_board())
+    # JSON is the stable comparison surface. Keep a compact human fallback so
+    # the command remains useful when invoked without --json.
+    if getattr(args, "json", False):
+        print(json.dumps(snapshot, indent=2, ensure_ascii=False, sort_keys=True))
+    else:
+        print(
+            f"Ship's Crew metrics: {snapshot['tasks']['total']} tasks, "
+            f"{snapshot['runs']['total']} runs, "
+            f"{snapshot['runs']['retries']} retries, "
+            f"{snapshot['protocol_violations']} protocol violations"
+        )
+        print("Use `hermes kanban metrics --json` for the comparison snapshot.")
+    return 0
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

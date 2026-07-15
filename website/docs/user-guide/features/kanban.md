@@ -205,7 +205,24 @@ hermes kanban watch
 # 5. See the board (you)
 hermes kanban list
 hermes kanban stats
+hermes kanban metrics --json
 ```
+
+`metrics --json` is a local, read-only Ship's Crew baseline snapshot. It is intended for before/after comparisons and does not send telemetry or mutate the board. It reports task/run counts, profiles, outcomes, retries, protocol-violation events, goal-mode use, explicitly recorded context/output byte counts, route/model/effort/quota-domain fields, rate-limit/quota events, and queue/run timing. Missing optional fields are placed in an explicit `unknown` bucket rather than inferred.
+
+The optimization feature gates are disabled by default under `kanban.ship_crew`:
+
+```yaml
+kanban:
+  ship_crew:
+    enforce_contracts: false
+    compact_worker_context: false
+    enforce_route_policy: false
+    enforce_output_budgets: false
+    quota_domain_scheduling: false
+```
+
+S00 only defines these rollback-safe defaults and the snapshot surface. Later optimization slices must enable and consume each capability independently.
 
 When the dispatcher picks up `t_abcd` and spawns the `researcher` profile, the very first thing that worker's model does is call `kanban_show()` to read its task. It doesn't run `hermes kanban show t_abcd`.
 
@@ -675,6 +692,7 @@ hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
 hermes kanban stats [--json]                           # per-status + per-assignee counts
+hermes kanban metrics [--json]                         # read-only Ship's Crew baseline snapshot
 hermes kanban log <id> [--tail BYTES]                  # worker log from ~/.hermes/kanban/logs/
 hermes kanban notify-subscribe <id>                    # gateway bridge hook (used by /kanban in the gateway)
         --platform <name> --chat-id <id> [--thread-id <id>] [--user-id <id>]

@@ -91,6 +91,21 @@ def test_run_slash_create_and_list(kanban_home):
     assert "alice" in out
 
 
+def test_run_slash_create_preserves_routing_metadata(kanban_home):
+    out = kc.run_slash(
+        "create 'routed feature' --assignee captain --complexity-tier T2 "
+        "--route-id local-safe --reasoning-effort medium --executor local "
+        "--executor-mode structured --quota-domain local:model "
+        "--routing-metadata '{\"contract_version\":\"1.0\",\"governance_class\":\"standard\"}' --json"
+    )
+    task = json.loads(out)
+    assert task["complexity_tier"] == "T2"
+    assert task["route_id"] == "local-safe"
+    assert task["executor_mode"] == "structured"
+    assert task["quota_domain"] == "local:model"
+    assert task["routing_metadata"]["contract_version"] == "1.0"
+
+
 def test_run_slash_create_worktree_path_and_branch(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     target_arg = target.as_posix()

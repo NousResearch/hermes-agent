@@ -122,7 +122,7 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
 # unblocking them only to have the worker re-block for the same reason.
 # ``None`` = legacy/un-typed block (treated as a generic human blocker).
-VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient", "contract_rejected"}
 
 # After a task has been blocked, unblocked, and re-blocked this many times for
 # the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
@@ -908,6 +908,15 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Nullable Ship's Crew task routing metadata. Legacy rows remain profile-
+    # routed when these fields are absent.
+    complexity_tier: Optional[str] = None
+    route_id: Optional[str] = None
+    reasoning_effort: Optional[str] = None
+    executor: Optional[str] = None
+    executor_mode: Optional[str] = None
+    quota_domain: Optional[str] = None
+    routing_metadata: Optional[dict] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -990,6 +999,17 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            complexity_tier=(row["complexity_tier"] if "complexity_tier" in keys else None),
+            route_id=(row["route_id"] if "route_id" in keys else None),
+            reasoning_effort=(row["reasoning_effort"] if "reasoning_effort" in keys else None),
+            executor=(row["executor"] if "executor" in keys else None),
+            executor_mode=(row["executor_mode"] if "executor_mode" in keys else None),
+            quota_domain=(row["quota_domain"] if "quota_domain" in keys else None),
+            routing_metadata=(
+                json.loads(row["routing_metadata"])
+                if "routing_metadata" in keys and row["routing_metadata"]
+                else None
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1142,6 +1162,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- to the worker, overriding the profile's default model. NULL = use
     -- the profile default.
     model_override       TEXT,
+    -- Nullable task-scoped route selection. NULL preserves legacy profile
+    -- defaults and is intentionally additive for old boards.
+    complexity_tier      TEXT,
+    route_id             TEXT,
+    reasoning_effort     TEXT,
+    executor             TEXT,
+    executor_mode        TEXT,
+    quota_domain         TEXT,
+    routing_metadata     TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -1971,6 +2000,18 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    for column, definition in (
+        ("complexity_tier", "complexity_tier TEXT"),
+        ("route_id", "route_id TEXT"),
+        ("reasoning_effort", "reasoning_effort TEXT"),
+        ("executor", "executor TEXT"),
+        ("executor_mode", "executor_mode TEXT"),
+        ("quota_domain", "quota_domain TEXT"),
+        ("routing_metadata", "routing_metadata TEXT"),
+    ):
+        if column not in cols:
+            _add_column_if_missing(conn, "tasks", column, definition)
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -2404,6 +2445,13 @@ def create_task(
     max_retries: Optional[int] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
+    complexity_tier: Optional[str] = None,
+    route_id: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    executor: Optional[str] = None,
+    executor_mode: Optional[str] = None,
+    quota_domain: Optional[str] = None,
+    routing_metadata: Optional[dict] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
@@ -2636,8 +2684,15 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        complexity_tier, route_id, reasoning_effort, executor,
+                        executor_mode, quota_domain, routing_metadata
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?
+                    )
                     """,
                     (
                         task_id,
@@ -2660,6 +2715,13 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        complexity_tier,
+                        route_id,
+                        reasoning_effort,
+                        executor,
+                        executor_mode,
+                        quota_domain,
+                        json.dumps(routing_metadata, ensure_ascii=False, sort_keys=True) if routing_metadata is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -2679,6 +2741,12 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "complexity_tier": complexity_tier,
+                        "route_id": route_id,
+                        "reasoning_effort": reasoning_effort,
+                        "executor": executor,
+                        "executor_mode": executor_mode,
+                        "quota_domain": quota_domain,
                     },
                 )
             return task_id
@@ -2706,6 +2774,58 @@ def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> l
 def get_task(conn: sqlite3.Connection, task_id: str) -> Optional[Task]:
     row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row) if row else None
+
+
+def update_task_routing(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    complexity_tier: Optional[str] = None,
+    route_id: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    executor: Optional[str] = None,
+    executor_mode: Optional[str] = None,
+    quota_domain: Optional[str] = None,
+    routing_metadata: Optional[dict] = None,
+) -> bool:
+    """Atomically set nullable routing fields before a task is claimed."""
+    if complexity_tier is not None and complexity_tier not in {"T0", "T1", "T2", "T3", "T4"}:
+        raise ValueError(f"invalid complexity_tier {complexity_tier!r}")
+    if routing_metadata is not None and not isinstance(routing_metadata, dict):
+        raise ValueError("routing_metadata must be a JSON object")
+    with write_txn(conn):
+        row = conn.execute("SELECT status FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if row is None or row["status"] in {"running", "done", "archived"}:
+            return False
+        conn.execute(
+            """UPDATE tasks SET complexity_tier=?, route_id=?, reasoning_effort=?,
+               executor=?, executor_mode=?, quota_domain=?, routing_metadata=?
+               WHERE id=?""",
+            (
+                complexity_tier,
+                route_id,
+                reasoning_effort,
+                executor,
+                executor_mode,
+                quota_domain,
+                json.dumps(routing_metadata, ensure_ascii=False, sort_keys=True) if routing_metadata is not None else None,
+                task_id,
+            ),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "routing_updated",
+            {
+                "complexity_tier": complexity_tier,
+                "route_id": route_id,
+                "reasoning_effort": reasoning_effort,
+                "executor": executor,
+                "executor_mode": executor_mode,
+                "quota_domain": quota_domain,
+            },
+        )
+    return True
 
 
 # Canonical sort-order mappings for ``hermes kanban list --sort``.
@@ -5946,6 +6066,10 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    quarantined: list[str] = field(default_factory=list)
+    """Task ids held because pre-dispatch contract validation failed."""
+    quota_deferred: list[tuple[str, str]] = field(default_factory=list)
+    """Task/domain pairs deferred while a shared quota circuit is open."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -7603,6 +7727,48 @@ def _dispatch_once_locked(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Contract/routing validation happens before claim and before any
+        # workspace or subprocess side effect. It is opt-in for legacy boards,
+        # but automatically applies to tasks that carry route metadata.
+        _policy_task = None
+        try:
+            from hermes_cli.ship_crew_dispatch import (
+                should_validate_dispatch,
+                validate_task_for_dispatch,
+                quarantine_task,
+            )
+            _policy_task = get_task(conn, row["id"])
+            _require_contracts = os.environ.get(
+                "HERMES_SHIP_CREW_ENFORCE_DISPATCH_VALIDATION", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if _policy_task and should_validate_dispatch(
+                _policy_task, require_contracts=_require_contracts
+            ):
+                _validation = validate_task_for_dispatch(
+                    _policy_task, require_contracts=_require_contracts
+                )
+                if not _validation.valid:
+                    quarantine_task(conn, row["id"], _validation)
+                    result.quarantined.append(row["id"])
+                    continue
+        except ImportError:
+            # Keep core Kanban dispatch usable in minimal installations.
+            _log.debug("ship-crew dispatch policy unavailable", exc_info=True)
+        if _policy_task and _policy_task.quota_domain:
+            try:
+                from hermes_cli.ship_crew_quota import quota_available
+                if not quota_available(conn, _policy_task.quota_domain):
+                    result.quota_deferred.append((row["id"], _policy_task.quota_domain))
+                    with write_txn(conn):
+                        _append_event(
+                            conn,
+                            row["id"],
+                            "quota_deferred",
+                            {"quota_domain": _policy_task.quota_domain},
+                        )
+                    continue
+            except ImportError:
+                _log.debug("ship-crew quota policy unavailable", exc_info=True)
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API

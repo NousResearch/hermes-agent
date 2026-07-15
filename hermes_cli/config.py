@@ -1700,6 +1700,18 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
+        # Goal judge — evaluates whether a /goal run's latest response
+        # satisfies the goal/contract, and drafts goal contracts. Short
+        # structured-JSON calls; a fast cheap model is fine.
+        "goal_judge": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+        },
         # Curator — skill-usage review fork. Timeout is generous because the
         # review pass can take several minutes on reasoning models (umbrella
         # building over hundreds of candidate skills). "auto" = use main chat

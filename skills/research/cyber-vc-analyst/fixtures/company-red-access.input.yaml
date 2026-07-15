@@ -1,0 +1,13 @@
+mode: company
+company: Red Access Security
+stage_hint: seed
+geography: unknown
+save_to_vault: true
+vault_output_root: 4.Resources/Companies
+required_evidence_order:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence
+notes:
+  - Start from vault company notes only when present.
+  - Use Return on Security MCP for competitor and category context when available.

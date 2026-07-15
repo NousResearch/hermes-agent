@@ -1,0 +1,12 @@
+mode: triage
+company: Red Access Security
+save_to_vault: false
+required_evidence_order:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence
+expected_output_shape:
+  - likely category
+  - why now view
+  - top risks
+  - escalation recommendation

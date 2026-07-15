@@ -1,0 +1,32 @@
+schema_version: 1
+kind: competitors_analysis
+required_fields:
+  - category
+  - scope
+  - market_maturity
+  - confidence
+required_sections:
+  - "1. Landscape Summary"
+  - "2. Category Boundary"
+  - "3. Company Set"
+  - "4. Positioning Patterns"
+  - "5. Likely Winners And Fragile Narratives"
+  - "6. Investment Implications"
+enum_rules:
+  scope:
+    - landscape
+    - positioning
+    - watchlist
+  market_maturity:
+    - emerging
+    - forming
+    - scaling
+    - mature
+  confidence:
+    - high
+    - medium
+    - low
+evidence_classes:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence

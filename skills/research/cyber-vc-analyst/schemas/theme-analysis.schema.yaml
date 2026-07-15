@@ -1,0 +1,54 @@
+schema_version: 1
+kind: theme_analysis
+required_frontmatter:
+  - theme
+  - date
+  - scope
+  - geography
+  - time_horizon
+  - primary_theme
+  - related_themes
+  - market_maturity
+  - used_returnonsecurity_mcp
+  - confidence
+required_sections:
+  - "1. Theme Summary"
+  - "2. Scope And Taxonomy"
+  - "3. Why Now?"
+  - "4. Market Structure"
+  - "5. Company Landscape"
+  - "6. Investment Thesis"
+  - "7. Competitive Dynamics"
+  - "8. Risks And Failure Modes"
+  - "9. Watchlist"
+  - "10. Knowledge Base Tags"
+  - "11. Confidence"
+enum_rules:
+  scope:
+    - category
+    - thesis
+    - market map
+    - architecture shift
+  geography:
+    - global
+    - region
+    - country
+    - unknown
+  time_horizon:
+    - 12-24 months
+    - 3-5 years
+    - 5-10 years
+    - unknown
+  market_maturity:
+    - emerging
+    - forming
+    - scaling
+    - mature
+  confidence:
+    - high
+    - medium
+    - low
+evidence_classes:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence

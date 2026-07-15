@@ -1,0 +1,19 @@
+mode: theme
+theme: SOC Automation / AI SOC
+scope: thesis
+geography: global
+time_horizon: 3-5 years
+save_to_vault: true
+vault_output_root: 3.Areas/cyber futures frontier
+required_evidence_order:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence
+included_subthemes:
+  - SOC automation
+  - alert triage automation
+  - investigation automation
+  - SIEM-to-data-lake transition
+  - API-first tooling
+excluded_subthemes:
+  - generic MSSP coverage unless directly relevant to AI SOC architecture

@@ -1,0 +1,57 @@
+schema_version: 1
+kind: company_analysis
+required_frontmatter:
+  - company
+  - date
+  - stage
+  - recommendation
+  - overall_score
+  - primary_theme
+  - cyber_category
+  - customer_type
+  - buyer
+  - confidence
+  - used_returnonsecurity_mcp
+required_sections:
+  - "1. Executive Summary"
+  - "2. Cybersecurity Classification"
+  - "3. Investment Themes"
+  - "4. Investment Thesis Mapping"
+  - "5. Why Now?"
+  - "6. Market Analysis"
+  - "7. Competitive Landscape"
+  - "8. Defensibility"
+  - "9. Venture Assessment"
+  - "10. Key Risks"
+  - "11. Investment Recommendation"
+  - "12. Knowledge Base Tags"
+  - "13. Confidence"
+enum_rules:
+  recommendation:
+    - Invest
+    - High Priority Investigation
+    - Monitor
+    - Pass
+  confidence:
+    - high
+    - medium
+    - low
+  stage:
+    - pre-seed
+    - seed
+    - unknown
+  thesis_mapping:
+    - Strong
+    - Medium
+    - Weak
+    - Not Applicable
+  defensibility:
+    - High
+    - Medium
+    - Low
+score_rules:
+  venture_assessment: integer_1_to_5
+evidence_classes:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence

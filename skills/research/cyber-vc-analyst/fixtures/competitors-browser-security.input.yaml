@@ -1,0 +1,9 @@
+mode: competitors
+depth: deep
+category: browser security
+scope: landscape
+geography: global
+used_returnonsecurity_mcp: true
+expected_artifacts:
+  - competitor landscape memo
+  - resumable research-state artifact if evidence remains incomplete

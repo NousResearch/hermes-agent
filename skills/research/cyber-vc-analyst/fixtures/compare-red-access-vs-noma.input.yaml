@@ -1,0 +1,14 @@
+mode: compare
+companies:
+  - Red Access Security
+  - Noma Security
+save_to_vault: false
+comparison_basis:
+  - category attractiveness
+  - why now
+  - defensibility
+  - likely commercial urgency
+required_evidence_order:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence

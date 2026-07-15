@@ -1,0 +1,28 @@
+schema_version: 1
+kind: compare_analysis
+required_fields:
+  - companies
+  - comparison_basis
+  - current_winner
+  - confidence
+required_sections:
+  - "1. Comparison Summary"
+  - "2. Category And Market Context"
+  - "3. Side-By-Side Assessment"
+  - "4. Why One Looks Stronger Now"
+  - "5. What Could Change The Ranking"
+  - "6. Recommended Next Step"
+enum_rules:
+  confidence:
+    - high
+    - medium
+    - low
+  next_step:
+    - full_memo_both
+    - full_memo_winner_only
+    - monitor_both
+    - pass_both
+evidence_classes:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence

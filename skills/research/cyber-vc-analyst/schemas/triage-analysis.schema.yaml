@@ -1,0 +1,29 @@
+schema_version: 1
+kind: triage_analysis
+required_fields:
+  - company
+  - likely_category
+  - why_now_view
+  - key_risks
+  - recommendation
+  - confidence
+required_sections:
+  - "1. Fast Read"
+  - "2. Likely Category"
+  - "3. Why Now?"
+  - "4. Key Risks"
+  - "5. Escalation Recommendation"
+enum_rules:
+  recommendation:
+    - full_memo
+    - investigate_further
+    - monitor
+    - pass
+  confidence:
+    - high
+    - medium
+    - low
+evidence_classes:
+  - private_vault_context
+  - return_on_security_market_intelligence
+  - public_evidence

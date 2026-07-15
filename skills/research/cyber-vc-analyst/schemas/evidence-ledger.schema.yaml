@@ -1,0 +1,31 @@
+schema_version: 1
+kind: evidence_ledger
+fields:
+  subject: string
+  mode:
+    allowed:
+      - company
+      - theme
+      - compare
+      - triage
+  evidence_items:
+    item_shape:
+      source_class:
+        allowed:
+          - private_vault_context
+          - return_on_security_market_intelligence
+          - public_evidence
+      source_ref: string
+      claim_type:
+        allowed:
+          - fact
+          - reasonable_inference
+          - assumption
+      claim: string
+      confidence:
+        allowed:
+          - high
+          - medium
+          - low
+  missing_information:
+    type: list

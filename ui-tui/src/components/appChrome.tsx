@@ -18,6 +18,11 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Skin contracts distinguish faces shown while waiting for an API response
+// from faces shown while the model is reasoning.
+export const spinnerFacesForPhase = (t: Theme, reasoningActive: boolean) =>
+  reasoningActive ? t.spinner.thinkingFaces : t.spinner.waitingFaces
+
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
 export const verbPadLen = (verbs: string[]) =>
@@ -74,10 +79,11 @@ const renderIndicator = (style: IndicatorStyle, tick: number, faces: string[]): 
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
-// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
-// module load instead of rescanning on every status render.
+// Measure the static emoji frames once; skin-provided face arrays are measured
+// at render time because a gateway skin can replace them during a session.
 const kaomojiFrameWidth = (faces: string[]) =>
   faces.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+
 const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
 
 const indicatorFrameWidth = (style: IndicatorStyle, faces: string[]): number => {
@@ -429,6 +435,8 @@ export function StatusRule({
   onSessionCountClick,
   t
 }: StatusRuleProps) {
+  const reasoningActive = useTurnSelector(state => state.reasoningActive)
+  const spinnerFaces = spinnerFacesForPhase(t, reasoningActive)
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
   const segs = statusBarSegments(cols)
@@ -464,7 +472,7 @@ export function StatusRule({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, t.spinner.waitingFaces, t.spinner.thinkingVerbs)
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, spinnerFaces, t.spinner.thinkingVerbs)
     : showNotice
       ? noticeReserve
       : stringWidth(status)
@@ -561,7 +569,7 @@ export function StatusRule({
         <Box flexDirection="row" flexShrink={0}>
           <Text color={t.color.border}>{'─ '}</Text>
           {busy ? (
-            <FaceTicker color={statusColor} faces={t.spinner.waitingFaces} startedAt={turnStartedAt} style={indicatorStyle} verbs={t.spinner.thinkingVerbs} />
+            <FaceTicker color={statusColor} faces={spinnerFaces} startedAt={turnStartedAt} style={indicatorStyle} verbs={t.spinner.thinkingVerbs} />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}

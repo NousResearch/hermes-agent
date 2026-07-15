@@ -1,10 +1,26 @@
 import { describe, expect, it } from 'vitest'
 
-import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+import { busyIndicatorWidth, spinnerFacesForPhase, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const faces = DEFAULT_THEME.spinner.waitingFaces
 const verbs = DEFAULT_THEME.spinner.thinkingVerbs
+
+describe('spinnerFacesForPhase', () => {
+  it('uses waiting faces outside the reasoning phase', () => {
+    const theme = {
+      ...DEFAULT_THEME,
+      spinner: {
+        ...DEFAULT_THEME.spinner,
+        waitingFaces: ['WAIT'],
+        thinkingFaces: ['THINK']
+      }
+    }
+
+    expect(spinnerFacesForPhase(theme, false)).toEqual(['WAIT'])
+    expect(spinnerFacesForPhase(theme, true)).toEqual(['THINK'])
+  })
+})
 
 describe('statusRuleWidths', () => {
   it('keeps the status rule within the terminal width', () => {

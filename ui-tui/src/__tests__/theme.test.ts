@@ -300,6 +300,29 @@ describe('fromSkin', () => {
     expect(theme.color.text).toBe('ansi256(136)')
   })
 
+  it('maps spinner overrides and falls back per field', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({}, {}, '', '', '', '', {
+      waiting_faces: ['WAIT'],
+      thinking_faces: ['THINK'],
+      thinking_verbs: ['focus'],
+      wings: [['wing']]
+    })
+
+    expect(theme.spinner.waitingFaces).toEqual(['WAIT'])
+    expect(theme.spinner.thinkingFaces).toEqual(['THINK'])
+    expect(theme.spinner.thinkingVerbs).toEqual(['focus'])
+    expect(theme.spinner.wings).toEqual([['wing']])
+
+    const partial = fromSkin({}, {}, '', '', '', '', { thinking_faces: ['THINK-ONLY'] })
+
+    expect(partial.spinner.thinkingFaces).toEqual(['THINK-ONLY'])
+    expect(partial.spinner.waitingFaces).toEqual(DEFAULT_THEME.spinner.waitingFaces)
+    expect(partial.spinner.thinkingVerbs).toEqual(DEFAULT_THEME.spinner.thinkingVerbs)
+    expect(partial.spinner.wings).toEqual(DEFAULT_THEME.spinner.wings)
+  })
+
   it('passes banner logo/hero', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 

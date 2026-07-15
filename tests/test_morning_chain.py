@@ -4,6 +4,7 @@ Each test is anchored to a specific Acceptance Criterion.
 """
 import os
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -56,6 +57,7 @@ class TestPlist:
         assert "morning-chain" in plist_text, \
             "Plist must reference morning-chain.sh"
 
+    @pytest.mark.skipif(shutil.which("plutil") is None, reason="plutil not available (macOS-only)")
     def test_plutil_lint_passes(self):
         """AC9 — CI validates the plist with plutil -lint."""
         result = subprocess.run(

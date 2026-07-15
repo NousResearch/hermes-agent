@@ -732,16 +732,38 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 expr,
             )
             return None
+        # Per-job timezone override: if the schedule carries a ``tz`` field
+        # (an IANA zone name such as "Asia/Bangkok"), compute next_run_at in
+        # that zone so the cron expression fires at the intended wall-clock
+        # time regardless of the system or globally configured Hermes timezone.
+        # Falls back to the global Hermes timezone (``_hermes_now()``) when
+        # ``tz`` is absent or invalid — preserving the existing behaviour for
+        # all jobs that predate this field.
+        tz_name = schedule.get("tz")
+        if tz_name:
+            try:
+                from zoneinfo import ZoneInfo
+                _zone = ZoneInfo(tz_name)
+                job_now = datetime.now(_zone)
+            except Exception:
+                logger.warning(
+                    "Invalid per-job timezone %r in schedule %r; "
+                    "falling back to global Hermes timezone",
+                    tz_name, expr,
+                )
+                job_now = now
+        else:
+            job_now = now
         # Use last_run_at as the croniter base when available, consistent
         # with interval jobs.  This ensures that after a crash/restart,
         # the next run is anchored to the actual last execution time
         # rather than to an arbitrary restart time.
-        base_time = now
+        base_time = job_now
         if last_run_at:
             try:
                 base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
             except Exception:
-                base_time = now
+                base_time = job_now
         cron = croniter(expr, base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
@@ -2339,3 +2361,78 @@ def rewrite_skill_refs(
             "jobs_updated": len(rewrites),
             "jobs_scanned": len(jobs),
         }
+
+
+# =============================================================================
+# Morning Brief Discord — seeded job definition (issue #7)
+# =============================================================================
+
+MORNING_BRIEF_DISCORD_JOB_NAME = "morning_brief_discord"
+
+_MORNING_BRIEF_DISCORD_SCHEDULE = {
+    "kind": "cron",
+    "expr": "0 6 * * *",
+    "tz": "Asia/Bangkok",
+    "display": "daily 06:00 Asia/Bangkok",
+}
+
+
+def register_morning_brief_discord_job() -> Dict[str, Any]:
+    """Create the morning_brief_discord cron job if it does not already exist.
+
+    Reads ``config.discord.morning_brief_channel_id`` from config.yaml at call
+    time and stores ``deliver="discord:<channel_id>"`` in the job spec.  If the
+    config key is absent the job is still created with ``deliver="local"`` so
+    the scheduler can run it — the delivery script itself enforces the config
+    requirement and exits non-zero when the key is missing.
+
+    Calling this function more than once is safe: if the job is already
+    registered (matched by name) the existing record is returned unchanged.
+    """
+    with _jobs_lock():
+        existing_jobs = load_jobs()
+        for job in existing_jobs:
+            if job.get("name") == MORNING_BRIEF_DISCORD_JOB_NAME:
+                return _normalize_job_record(job)
+
+    # Resolve the Discord channel from config so the deliver field is concrete.
+    deliver = "local"
+    try:
+        import yaml
+        cfg_path = get_hermes_home() / "config.yaml"
+        if cfg_path.exists():
+            with cfg_path.open(encoding="utf-8") as _f:
+                _cfg = yaml.safe_load(_f) or {}
+            channel_id = str(
+                (_cfg.get("discord") or {}).get("morning_brief_channel_id") or ""
+            ).strip()
+            if channel_id:
+                deliver = f"discord:{channel_id}"
+    except Exception:
+        pass
+
+    schedule_str = "0 6 * * *"
+    job = create_job(
+        prompt="Compose and deliver the morning brief to Discord.",
+        schedule=schedule_str,
+        name=MORNING_BRIEF_DISCORD_JOB_NAME,
+        skills=["brief-composer"],
+        script="morning_brief_discord.py",
+        no_agent=True,
+        deliver=deliver,
+    )
+    # Patch the schedule dict to include the per-job timezone and display text
+    # that `compute_next_run` will use for timezone-aware scheduling.
+    with _jobs_lock():
+        jobs = load_jobs()
+        for j in jobs:
+            if j.get("id") == job["id"]:
+                j["schedule"] = _MORNING_BRIEF_DISCORD_SCHEDULE
+                j["schedule_display"] = _MORNING_BRIEF_DISCORD_SCHEDULE["display"]
+                # Recompute next_run_at in the Bangkok timezone
+                j["next_run_at"] = compute_next_run(_MORNING_BRIEF_DISCORD_SCHEDULE)
+                job = _normalize_job_record(j)
+                break
+        _save_jobs_unlocked(jobs)
+
+    return job

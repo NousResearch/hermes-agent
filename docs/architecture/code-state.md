@@ -1,4 +1,4 @@
-# Code State — sprint-1.1
+# Code State — sprint-1.3
 
 _Deterministic snapshot generated at sprint finish. Do not hand-edit — regenerated each sprint._
 
@@ -10,15 +10,18 @@ _Deterministic snapshot generated at sprint finish. Do not hand-edit — regener
 - **`tests/`** — Pytest test suite (unit and integration)
 - **`docs/`** — Project documentation
 
-## Recent Deltas (sprint-1.1)
+## Recent Deltas (sprint-1.3)
 
-Files changed: **15**
+Files changed: **26**
 
-- `services/` — 5 file(s)
-- `(root)/` — 3 file(s)
+- `services/` — 7 file(s)
+- `tests/` — 7 file(s)
+- `cron/` — 4 file(s)
 - `deploy/` — 3 file(s)
-- `tests/` — 3 file(s)
+- `(root)/` — 2 file(s)
+- `docs/` — 1 file(s)
 - `plugins/` — 1 file(s)
+- `scripts/` — 1 file(s)
 
 ## Hot Files (last 90 days)
 
@@ -38,7 +41,7 @@ Files changed: **15**
 | `tests/test_tui_gateway_server.py` | 162 |
 | `hermes_cli/kanban_db.py` | 154 |
 | `gateway/platforms/telegram.py` | 148 |
-| `cron/scheduler.py` | 143 |
+| `cron/scheduler.py` | 144 |
 | `gateway/platforms/base.py` | 143 |
 | `hermes_state.py` | 138 |
 | `agent/conversation_loop.py` | 134 |
@@ -47,6 +50,6 @@ Files changed: **15**
 
 ## Generated
 
-Sprint: `sprint-1.1`  
-Timestamp: `2026-07-14T16:09:57Z`  
+Sprint: `sprint-1.3`  
+Timestamp: `2026-07-14T17:17:08Z`  
 _Generated deterministically — no LLM required._

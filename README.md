@@ -155,6 +155,28 @@ Hermes has two entry points: start the terminal UI with `hermes`, or run the gat
 | Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
 | Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
 
+### Morning Brief
+
+Compose a four-section daily markdown brief from upstream contract files:
+
+```bash
+python3 scripts/morning_brief_composer.py          # writes ~/.hermes/morning_brief.md
+python3 scripts/morning_brief_composer.py --dry-run  # print to stdout, no file written
+```
+
+To deliver the brief automatically to a Discord channel each morning, configure `discord.morning_brief_channel_id` in `~/.hermes/config.yaml` and set `DISCORD_BOT_TOKEN` in `~/.hermes/.env`. See [`cron/README.md`](cron/README.md) for full setup.
+
+### Discord Bedtime Scheduler
+
+The Discord gateway can post a nightly overnight-sprint prompt with **Start / Skip** buttons. Set these env vars to enable it:
+
+| Variable | Description |
+| --- | --- |
+| `DISCORD_BEDTIME_HOUR` | UTC hour to fire (e.g. `22`) |
+| `DISCORD_BEDTIME_MINUTE` | UTC minute (default `0`) |
+| `DISCORD_HOME_CHANNEL` | Discord channel ID to post the prompt |
+| `DISCORD_BEDTIME_TIMEOUT` | Seconds to wait for a click (default `300`) |
+
 For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
 
 ---

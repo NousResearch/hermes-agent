@@ -27,11 +27,36 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import httpx
 
+from agent.bounded_response import read_streaming_error_body
 from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
+try:
+    import hermes_cli as _hermes_cli
+
+    _HERMES_VERSION = str(_hermes_cli.__version__)
+except Exception:
+    _HERMES_VERSION = "0.0.0"
+
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+# Published max output-token ceiling shared by every current Gemini text model
+# (2.5 + 3.x: flash, flash-lite, pro). Used as the default when the caller
+# passes max_tokens=None, because Gemini's native API otherwise applies a low
+# internal default and truncates output (unlike OpenAI-compat endpoints where
+# an omitted limit means full budget).
+GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
+
+
+def bare_gemini_model_id(model: str) -> str:
+    """Strip Gemini's own provider prefix from an aggregator-style model id."""
+    name = (model or "").strip()
+    lowered = name.lower()
+    for prefix in ("google/", "gemini/"):
+        if lowered.startswith(prefix):
+            return name[len(prefix):].strip() or name
+    return name
 
 
 def is_native_gemini_base_url(base_url: str) -> bool:
@@ -81,7 +106,10 @@ def probe_gemini_tier(
                 url,
                 params={"key": key},
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
+                },
             )
     except Exception as exc:
         logger.debug("probe_gemini_tier: network error: %s", exc)
@@ -320,10 +348,26 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
         if parts:
             contents.append({"role": gemini_role, "parts": parts})
 
+    # Gemini's generateContent requires strict user/model alternation;
+    # consecutive same-role contents are rejected with HTTP 400 "Please ensure
+    # that multiturn requests alternate between user and model". The loop above
+    # emits one content per source message, so parallel tool calls (N tool
+    # results become N user functionResponse contents), back-to-back user turns,
+    # or merged assistant turns would each violate that. Merge adjacent
+    # same-role contents by concatenating their parts. For parallel calls this
+    # also produces the grouped multi-functionResponse turn Gemini expects.
+    merged_contents: List[Dict[str, Any]] = []
+    for content in contents:
+        if merged_contents and merged_contents[-1]["role"] == content["role"]:
+            merged_contents[-1]["parts"].extend(content["parts"])
+        else:
+            merged_contents.append(content)
+    contents = merged_contents
+
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:
-        system_instruction = {"parts": [{"text": joined_system}]}
+        system_instruction = {"role": "system", "parts": [{"text": joined_system}]}
     return contents, system_instruction
 
 
@@ -414,6 +458,18 @@ def build_gemini_request(
         generation_config["temperature"] = temperature
     if max_tokens is not None:
         generation_config["maxOutputTokens"] = max_tokens
+    else:
+        # Gemini's native generateContent does NOT treat an omitted
+        # maxOutputTokens as "use the model's full output budget" — it applies
+        # a low internal default and the model stops early with
+        # finishReason=MAX_TOKENS, truncating tool calls mid-stream (Hermes
+        # then retries 3× and refuses the incomplete call). Every current
+        # Gemini text model (2.5 + 3.x, flash / flash-lite / pro) caps at
+        # 65,535 output tokens, so default to that ceiling when the caller
+        # passes None ("unlimited"). See the OpenAI-compat path where omitting
+        # the field genuinely means full budget — that assumption does not
+        # hold on the native API.
+        generation_config["maxOutputTokens"] = GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
     if top_p is not None:
         generation_config["topP"] = top_p
     if stop:
@@ -679,18 +735,35 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
-        chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
+        finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
+        # Attach usage from this event's usageMetadata so the streaming
+        # loop in run_agent.py can record token counts (mirrors the
+        # non-streaming path in translate_gemini_response).
+        usage_meta = event.get("usageMetadata") or {}
+        if usage_meta:
+            finish_chunk.usage = SimpleNamespace(
+                prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
+                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+                total_tokens=int(usage_meta.get("totalTokenCount") or 0),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
+                ),
+            )
+        chunks.append(finish_chunk)
     return chunks
 
 
-def gemini_http_error(response: httpx.Response) -> GeminiAPIError:
+def gemini_http_error(
+    response: httpx.Response, *, body_text: Optional[str] = None
+) -> GeminiAPIError:
     status = response.status_code
-    body_text = ""
     body_json: Dict[str, Any] = {}
-    try:
-        body_text = response.text
-    except Exception:
-        body_text = ""
+    if body_text is None:
+        try:
+            body_text = response.text
+        except Exception:
+            body_text = ""
+    body_text = body_text or ""
     if body_text:
         try:
             parsed = json.loads(body_text)
@@ -838,7 +911,11 @@ class GeminiNativeClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "x-goog-api-key": self.api_key,
-            "User-Agent": "hermes-agent (gemini-native)",
+            # Include Hermes client context following Gemini's partner
+            # integration guidance.
+            # See https://ai.google.dev/gemini-api/docs/partner-integration
+            "User-Agent": f"hermes-agent/{_HERMES_VERSION} (gemini-native)",
+            "X-Goog-Api-Client": f"hermes-agent/{_HERMES_VERSION}",
         }
         headers.update(self._default_headers)
         return headers
@@ -881,6 +958,7 @@ class GeminiNativeClient:
             thinking_config=thinking_config,
         )
 
+        model = bare_gemini_model_id(model)
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)
 
@@ -908,8 +986,8 @@ class GeminiNativeClient:
             try:
                 with self._http.stream("POST", url, json=request, headers=stream_headers, timeout=timeout) as response:
                     if response.status_code != 200:
-                        response.read()
-                        raise gemini_http_error(response)
+                        body_text = read_streaming_error_body(response)
+                        raise gemini_http_error(response, body_text=body_text)
                     tool_call_indices: Dict[str, Dict[str, Any]] = {}
                     for event in _iter_sse_events(response):
                         for chunk in translate_stream_event(event, model, tool_call_indices):
@@ -931,6 +1009,12 @@ class AsyncGeminiNativeClient:
         self.api_key = sync_client.api_key
         self.base_url = sync_client.base_url
         self.chat = _AsyncGeminiChatNamespace(self)
+        # Expose the underlying sync client as _real_client so the auxiliary
+        # cache's eviction-by-leaf-client helper (#23482) can find and drop
+        # this async entry when the sync GeminiNativeClient is poisoned.
+        # GeminiNativeClient is itself the leaf (no OpenAI client beneath
+        # it), so we point at the sync_client directly.
+        self._real_client = sync_client
 
     async def _create_chat_completion(self, **kwargs: Any) -> Any:
         stream = bool(kwargs.get("stream"))

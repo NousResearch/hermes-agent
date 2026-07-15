@@ -1,12 +1,43 @@
 from pathlib import Path
 from subprocess import CalledProcessError
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
 from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
+
+# ---------------------------------------------------------------------------
+# Managed-uv compatibility for tests that patch shutil.which
+# ---------------------------------------------------------------------------
+# The production code now uses ``ensure_uv()`` / ``update_managed_uv()``
+# instead of ``shutil.which("uv")``.  Many tests in this file patch
+# ``shutil.which`` to control whether uv is "available" — these autouse
+# fixtures make the managed_uv functions delegate to the patched
+# ``shutil.which`` so the existing test setup keeps working without
+# per-test changes.
+@pytest.fixture(autouse=True)
+def _patch_managed_uv(request):
+    """Make managed_uv helpers follow shutil.which mocking in tests."""
+    import shutil
+
+    # resolve_uv delegates to shutil.which("uv") so that test patches
+    # on shutil.which flow through naturally.
+    def _fake_resolve_uv():
+        return shutil.which("uv")
+
+    def _fake_ensure_uv():
+        return shutil.which("uv")
+
+    def _fake_update_managed_uv():
+        return None  # never actually self-update in tests
+
+    with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
+         patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
+        yield
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
     calls = []
@@ -291,6 +322,63 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
         hermes_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
 
 
+def test_discard_lockfile_churn_skips_lock_when_package_json_dirty(tmp_path):
+    """Intentional dependency edits update package.json and lockfile together."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"1"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"old"}\n')
+    git("add", "package.json", "package-lock.json")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"2"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"new"}\n')
+
+    hermes_main._discard_lockfile_churn(["git"], tmp_path)
+
+    assert (tmp_path / "package-lock.json").read_text() == '{"lock":"new"}\n'
+
+
+def test_discard_lockfile_churn_restores_lock_when_package_json_clean(tmp_path):
+    """Runtime npm lockfile rewrites are still discarded on managed updates."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "package.json").write_text('{"dependencies":{"a":"1"}}\n')
+    (tmp_path / "package-lock.json").write_text('{"lock":"old"}\n')
+    git("add", "package.json", "package-lock.json")
+    git("commit", "-qm", "init")
+
+    (tmp_path / "package-lock.json").write_text('{"lock":"runtime-churn"}\n')
+
+    hermes_main._discard_lockfile_churn(["git"], tmp_path)
+
+    assert (tmp_path / "package-lock.json").read_text() == '{"lock":"old"}\n'
+
+
 # ---------------------------------------------------------------------------
 # Update uses .[all] with fallback to .
 # ---------------------------------------------------------------------------
@@ -305,33 +393,35 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
+    monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)
 
 
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
     """When .[all] fails, update should keep base deps and retry extras individually."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: ["matrix", "mcp"])
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda group="all": ["matrix", "mcp"])
 
     recorded = []
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", "."]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"]:
             return SimpleNamespace(returncode=0)
         # Catch-all must include stdout/stderr so consumers that parse
         # output (e.g. the dashboard-restart `ps -A` scan added in the
@@ -344,10 +434,10 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
     ]
 
     out = capsys.readouterr().out
@@ -360,18 +450,19 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     """When .[all] succeeds, no fallback should be attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
 
     recorded = []
 
     def fake_run(cmd, **kwargs):
         recorded.append(cmd)
-        if cmd == ["git", "fetch", "origin"]:
+        if cmd == ["git", "fetch", "origin", "main"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -382,6 +473,54 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     install_cmds = [c for c in recorded if "pip" in c and "install" in c]
     assert len(install_cmds) == 1
     assert ".[all]" in install_cmds[0]
+
+
+def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
+    """Termux update path should target .[termux-all] when requested."""
+    calls = []
+    monkeypatch.setattr(
+        hermes_main,
+        "_load_installable_optional_extras",
+        lambda group="all": ["termux", "mcp"] if group == "termux-all" else [],
+    )
+
+    def fake_run_with_heartbeat(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-1] == ".[termux-all]":
+            raise CalledProcessError(returncode=1, cmd=cmd)
+        return None
+
+    monkeypatch.setattr(hermes_main, "_run_install_with_heartbeat", fake_run_with_heartbeat)
+
+    hermes_main._install_python_dependencies_with_optional_fallback(
+        ["/usr/bin/uv", "pip"],
+        group="termux-all",
+    )
+
+    assert calls == [
+        ["/usr/bin/uv", "pip", "install", "-e", ".[termux-all]"],
+        ["/usr/bin/uv", "pip", "install", "-e", "."],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[termux]"],
+        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]"],
+    ]
+
+
+def test_install_heartbeat_prints_when_dependency_install_is_silent(monkeypatch, capsys):
+    """Long quiet installs should emit periodic heartbeat lines."""
+
+    def fake_run(cmd, **kwargs):
+        hermes_main._time.sleep(1.2)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    hermes_main._run_install_with_heartbeat(
+        ["uv", "pip", "install", "-e", "."],
+        heartbeat_interval_seconds=1,
+    )
+
+    out = capsys.readouterr().out
+    assert "still installing dependencies" in out
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +687,23 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
     assert len(checkout_calls) == 0
 
 
+def test_cmd_update_fetch_is_scoped_to_target_branch(monkeypatch, tmp_path):
+    """The update fetch must name the target branch. A bare `git fetch origin`
+    pulls every ref, and this repo has thousands of auto-generated branches, so
+    an unscoped fetch can stall for minutes on a non-single-branch checkout."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    fetch_calls = [c for c in recorded if "fetch" in c]
+    assert fetch_calls == [["git", "fetch", "origin", "main"]]
+    assert ["git", "fetch", "origin"] not in recorded
+
+
 # ---------------------------------------------------------------------------
 # Fetch failure — friendly error messages
 # ---------------------------------------------------------------------------
@@ -615,3 +771,133 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "preserved in stash" in out
+
+
+# ---------------------------------------------------------------------------
+# Non-interactive update.non_interactive_local_changes setting
+# (chat app / gateway): "discard" throws stashed changes away, "stash"
+# (default) restores them. Interactive terminal updates ignore the setting
+# and always go through the restore path.
+# ---------------------------------------------------------------------------
+
+def _setup_setting_test(monkeypatch, tmp_path, mode):
+    """Common wiring: real stash returns a ref, restore + discard are
+    recorded, and load_config reports the given non_interactive_local_changes
+    mode."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_main, "_stash_local_changes_if_needed",
+        lambda *a, **kw: "abc123deadbeef",
+    )
+    restore_calls = []
+    discard_calls = []
+    monkeypatch.setattr(
+        hermes_main, "_restore_stashed_changes",
+        lambda *a, **kw: restore_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        hermes_main, "_discard_stashed_changes",
+        lambda *a, **kw: discard_calls.append(1) or True,
+    )
+    monkeypatch.setattr(
+        hermes_config, "load_config",
+        lambda *a, **kw: {"updates": {"non_interactive_local_changes": mode}},
+    )
+    side_effect, recorded = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+    return restore_calls, discard_calls, recorded
+
+
+def test_non_interactive_discard_throws_changes_away(monkeypatch, tmp_path):
+    """Gateway/chat-app update with discard mode drops the stash, never restores."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "discard")
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert len(discard_calls) == 1
+    assert len(restore_calls) == 0
+
+
+def test_non_interactive_stash_restores_changes(monkeypatch, tmp_path):
+    """Gateway/chat-app update with the default stash mode restores, never discards."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "stash")
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert len(restore_calls) == 1
+    assert len(discard_calls) == 0
+
+
+def test_interactive_update_ignores_discard_setting(monkeypatch, tmp_path):
+    """An interactive (TTY) terminal update always restores — the discard
+    setting only governs non-interactive updates."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "discard")
+    # Force an interactive TTY so _non_interactive_update is False even though
+    # the config says discard.
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(hermes_main.sys.stdout, "isatty", lambda: True)
+
+    hermes_main.cmd_update(SimpleNamespace())  # no gateway, no --yes
+
+    assert len(restore_calls) == 1
+    assert len(discard_calls) == 0
+
+
+def test_non_interactive_defaults_to_stash_when_setting_absent(monkeypatch, tmp_path):
+    """A config with no update section falls back to stash (safe default)."""
+    restore_calls, discard_calls, _ = _setup_setting_test(monkeypatch, tmp_path, "stash")
+    # Override load_config to return a config with NO update section at all.
+    monkeypatch.setattr(hermes_config, "load_config", lambda *a, **kw: {"model": {}})
+
+    hermes_main.cmd_update(SimpleNamespace(gateway=True))
+
+    assert len(restore_calls) == 1
+    assert len(discard_calls) == 0
+
+
+def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
+    """#38529: the Desktop bootstrap marker must be git-ignored so that
+    ``hermes update``'s ``git stash push --include-untracked`` does not sweep it
+    into an autostash on every run.
+
+    Behavioral + hermetic: build a throwaway repo that adopts the project's real
+    ``.gitignore`` (the contract under test), drop the marker, and confirm the
+    same stash invocation the updater uses leaves it untouched.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    repo_gitignore = Path(hermes_main.__file__).resolve().parents[1] / ".gitignore"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
+    (tmp_path / "tracked.txt").write_text("x\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    marker = tmp_path / ".hermes-bootstrap-complete"
+    marker.write_text("")
+
+    # Exact flags used by hermes update (hermes_cli/main.py).
+    git("stash", "push", "--include-untracked", "-m", "hermes-update-autostash")
+
+    assert marker.exists(), (
+        ".hermes-bootstrap-complete was swept into the update autostash — it must "
+        "be listed in .gitignore so `git stash -u` skips it (#38529)."
+    )
+    # It must not even register as a dirty/untracked change.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
+    assert ".hermes-bootstrap-complete" not in status

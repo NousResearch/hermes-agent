@@ -11,6 +11,7 @@ avoid retrying with a partial topic route that can render outside the lane.
 import sys
 import types
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -455,6 +456,81 @@ async def test_send_private_dm_topic_uses_direct_messages_topic_id():
     assert result.success is True
     assert call_log[0]["message_thread_id"] is None
     assert call_log[0]["direct_messages_topic_id"] == 99999
+
+
+@pytest.mark.asyncio
+async def test_private_chat_explicit_thread_id_uses_message_thread_id_without_anchor():
+    """Cron-resolved private-chat forum topics route by message_thread_id."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=270454)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="cron topic delivery",
+        metadata={"thread_id": "270453"},
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] == 270453
+    assert "direct_messages_topic_id" not in call_log[0]
+
+
+@pytest.mark.asyncio
+async def test_private_chat_explicit_direct_messages_topic_id_uses_direct_topic_without_anchor():
+    """Explicit Bot API Direct Messages topics do not need a reply anchor."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=270454)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="direct topic delivery",
+        metadata={"direct_messages_topic_id": "270453"},
+    )
+
+    assert result.success is True
+    assert call_log[0]["reply_to_message_id"] is None
+    assert call_log[0]["message_thread_id"] is None
+    assert call_log[0]["direct_messages_topic_id"] == 270453
+
+
+@pytest.mark.asyncio
+async def test_private_dm_topic_reply_fallback_without_anchor_fails_loud():
+    """Anchor-required DM topic fallback must not silently send elsewhere."""
+    adapter = _make_adapter()
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        return SimpleNamespace(message_id=270454)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="775566675",
+        content="missing anchor",
+        metadata={
+            "thread_id": "270453",
+            "telegram_dm_topic_reply_fallback": True,
+        },
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.error == adapter._dm_topic_missing_anchor_error()
+    assert call_log == []
 
 
 def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
@@ -1336,6 +1412,46 @@ async def test_send_retries_pool_timeout():
     assert result.success is True
     assert result.message_id == "202"
     assert attempt[0] == 3
+
+
+@pytest.mark.asyncio
+async def test_send_drains_general_request_pool_before_retrying_pool_timeout():
+    """Pool timeout should reset the send-message request pool before retrying."""
+    adapter = _make_adapter()
+    general_request = SimpleNamespace(
+        shutdown=AsyncMock(),
+        initialize=AsyncMock(),
+    )
+    polling_request = SimpleNamespace(
+        shutdown=AsyncMock(),
+        initialize=AsyncMock(),
+    )
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_request, general_request))
+    )
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            raise FakeTimedOut(
+                "Pool timeout: All connections in the connection pool are "
+                "occupied. Request was *not* sent to Telegram."
+            )
+        return SimpleNamespace(message_id=203)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "203"
+    assert attempt[0] == 2
+    general_request.shutdown.assert_awaited_once()
+    general_request.initialize.assert_awaited_once()
+    polling_request.shutdown.assert_not_awaited()
+    polling_request.initialize.assert_not_awaited()
 
 
 @pytest.mark.asyncio

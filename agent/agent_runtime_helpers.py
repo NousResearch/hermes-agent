@@ -1717,20 +1717,42 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     A ``custom_providers`` entry can carry an ``extra_body`` (e.g.
     ``chat_template_kwargs`` to toggle a local model's thinking). The gateway
     rebuild path carries this via ``request_overrides``; an *in-place* swap
-    (CLI / TUI ``/model``) must re-derive it for the new provider, otherwise the
-    previous provider's ``extra_body`` lingers. Non-provider overrides
-    (``service_tier`` / ``speed`` from ``/fast``) are preserved.
+    (CLI / TUI ``/model``) must re-derive it for the switched-to provider,
+    otherwise the previous provider's ``extra_body`` lingers.
+
+    The switched-to entry is matched by **provider key, base_url, and model** —
+    the same condition ``agent_init._merge_custom_provider_extra_body`` applies
+    at build time — via the shared ``_custom_provider_extra_body_for_agent``
+    matcher. Matching by name alone would let a *different* model selected at the
+    same named endpoint inherit an ``extra_body`` configured for another model.
+    A stale ``extra_body`` is always cleared when the switched-to provider/model
+    resolves none; non-provider overrides (``service_tier`` / ``speed`` from
+    ``/fast``) are preserved.
     """
-    from hermes_cli.runtime_provider import (
-        _get_named_custom_provider,
-        _custom_provider_request_overrides,
+    from agent.agent_init import _custom_provider_extra_body_for_agent
+
+    # Prefer the init-time cache (agent_init stores ``agent._custom_providers``
+    # right where it runs its own _merge_custom_provider_extra_body); fall back
+    # to a fresh load only if a caller built the agent without it.
+    custom_providers = getattr(agent, "_custom_providers", None)
+    if custom_providers is None:
+        try:
+            from hermes_cli.config import load_config, get_compatible_custom_providers
+            custom_providers = get_compatible_custom_providers(load_config())
+        except Exception:
+            custom_providers = []
+
+    new_extra_body = _custom_provider_extra_body_for_agent(
+        provider=new_provider,
+        model=getattr(agent, "model", "") or "",
+        base_url=getattr(agent, "base_url", "") or "",
+        custom_providers=custom_providers or [],
     )
-    cp = _get_named_custom_provider(new_provider)
-    new_ro = _custom_provider_request_overrides(cp) if cp else None
+
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    overrides.pop("extra_body", None)
-    if new_ro and new_ro.get("extra_body"):
-        overrides["extra_body"] = new_ro["extra_body"]
+    overrides.pop("extra_body", None)  # always drop the previous provider's extra_body
+    if new_extra_body:
+        overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
 
 

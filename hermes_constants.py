@@ -995,6 +995,12 @@ def apply_ipv4_preference(force: bool = False) -> None:
     import socket
     import logging
 
+    # Guard against double-patching. Return before probing/logging so the
+    # dead-route warning fires only on the patch transition — not on every
+    # (cached) call, e.g. once per cron job.
+    if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):
+        return
+
     if not force:
         # No explicit force: auto-enable only when IPv6 is configured-but-dead.
         if ipv6_route_alive():
@@ -1004,10 +1010,6 @@ def apply_ipv4_preference(force: bool = False) -> None:
             "to avoid connection hangs. Set network.force_ipv4 in config.yaml "
             "to make this explicit (and skip the probe)."
         )
-
-    # Guard against double-patching
-    if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):
-        return
 
     _original_getaddrinfo = socket.getaddrinfo
 

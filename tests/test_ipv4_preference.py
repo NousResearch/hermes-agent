@@ -55,6 +55,36 @@ class TestApplyIPv4Preference:
         assert getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False) is True
         assert any("IPv6 route appears dead" in r.getMessage() for r in caplog.records)
 
+    def test_second_call_does_not_re_warn(self, monkeypatch, caplog):
+        """Once patched, a repeat force=False call is a no-op — no second warning.
+
+        The dead-route warning must fire only on the patch transition. Callers
+        like the cron scheduler invoke apply_ipv4_preference() per job, so a
+        warning on every (already-patched) call would spam the logs. The
+        double-patch guard returns before the probe/log block to prevent this.
+        """
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "ipv6_route_alive", lambda: False)
+
+        # First call patches and warns.
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            hermes_constants.apply_ipv4_preference(force=False)
+        patched = socket.getaddrinfo
+        assert getattr(patched, "_hermes_ipv4_patched", False) is True
+        first_warnings = [
+            r for r in caplog.records if "IPv6 route appears dead" in r.getMessage()
+        ]
+        assert len(first_warnings) == 1
+
+        # Second call: already patched → early return, no new warning, no re-wrap.
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            hermes_constants.apply_ipv4_preference(force=False)
+        assert socket.getaddrinfo is patched
+        assert not any(
+            "IPv6 route appears dead" in r.getMessage() for r in caplog.records
+        )
+
     def test_force_true_skips_the_probe(self, monkeypatch):
         """force=True patches unconditionally, without probing IPv6."""
         import hermes_constants

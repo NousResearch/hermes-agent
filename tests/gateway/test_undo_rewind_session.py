@@ -63,6 +63,44 @@ def test_rewind_soft_deletes_rows_for_audit(store):
     assert store._db.get_session(sid)["rewind_count"] == 1
 
 
+def test_rewind_reconciles_message_count(store):
+    sid = _seed(store, "gw-mc")
+    assert store._db.get_session(sid)["message_count"] == 6
+    store.rewind_session(sid, 1)
+    # message_count must follow the active (live) transcript, not the
+    # pre-rewind total. q3 + a3 went inactive, so four rows remain.
+    sess = store._db.get_session(sid)
+    assert sess["message_count"] == 4
+    assert sess["message_count"] == len(store.load_transcript(sid))
+    # A message sent after the undo counts up from the reconciled value.
+    store._db.append_message(sid, "user", "q3-again")
+    assert store._db.get_session(sid)["message_count"] == 5
+
+
+def test_rewind_and_restore_reconcile_session_counts(store):
+    sid = "gw-tc"
+    store._db.create_session(sid, source="telegram")
+    store._db.append_message(sid, "user", "q1")
+    store._db.append_message(sid, "assistant", "a1")
+    store._db.append_message(sid, "user", "q2")
+    store._db.append_message(
+        sid, "assistant", "a2", tool_calls=[{"id": "t1"}, {"id": "t2"}]
+    )
+    q3_id = store._db.append_message(sid, "user", "q3")
+    store._db.append_message(sid, "assistant", "a3", tool_calls=[{"id": "t3"}])
+
+    store.rewind_session(sid, 1)
+    rewound = store._db.get_session(sid)
+    assert rewound["message_count"] == 4
+    assert rewound["tool_call_count"] == 2
+
+    assert store._db.restore_rewound(sid, q3_id) == 2
+    restored = store._db.get_session(sid)
+    assert restored["message_count"] == 6
+    assert restored["tool_call_count"] == 3
+    assert len(store.load_transcript(sid)) == 6
+
+
 def test_rewind_clamps_to_oldest_turn(store):
     sid = _seed(store, "gw-4", turns=2)
     res = store.rewind_session(sid, 99)

@@ -2859,6 +2859,11 @@ class TestDeleteEmptySessions:
        NULL) rather than cascade-deleted, matching the
        ``delete_session`` / ``prune_sessions`` contract.
     5. The pre-DB count matches the post-DB delete return value.
+    6. A session whose ``message_count`` is 0 but which still holds
+       message rows on disk is NOT empty. ``message_count`` tracks the
+       live (active) set, so a session rewound all the way back reports
+       0 while its ``active = 0`` audit rows remain. Deleting it would
+       destroy the history ``rewind_to_message`` promises to keep.
     """
 
     def test_count_and_delete_empties_only(self, db):
@@ -2906,6 +2911,26 @@ class TestDeleteEmptySessions:
         assert db.count_empty_sessions() == 0
         assert db.delete_empty_sessions() == 0
         assert db.get_session("archived_empty") is not None
+
+    def test_skips_fully_rewound_sessions_with_audit_rows(self, db):
+        """A session rewound back to its first user message has
+        ``message_count = 0`` (the counter tracks the live set) but its
+        rewound rows are still on disk with ``active = 0`` for audit.
+        The sweep must not treat it as empty, since deleting it would
+        destroy exactly the history the soft-delete exists to preserve."""
+        db.create_session(session_id="rewound", source="cli")
+        first_id = db.append_message("rewound", role="user", content="q1")
+        db.append_message("rewound", role="assistant", content="a1")
+        db.rewind_to_message("rewound", first_id)
+        db.end_session("rewound", end_reason="done")
+
+        assert db.get_session("rewound")["message_count"] == 0
+        assert db.count_empty_sessions() == 0
+        assert db.delete_empty_sessions() == 0
+        assert db.get_session("rewound") is not None
+        # The audit rows survive the sweep.
+        kept = db.get_messages("rewound", include_inactive=True)
+        assert [m["content"] for m in kept] == ["q1", "a1"]
 
     def test_returns_zero_when_nothing_to_delete(self, db):
         """No-op path: no candidate rows → return 0, no error."""

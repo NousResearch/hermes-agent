@@ -114,13 +114,18 @@ def test_notifier_agent_wake_is_opt_in_by_default(tmp_path, monkeypatch):
 
 def test_notifier_agent_wake_opt_in_still_injects_message(tmp_path, monkeypatch):
     """Opt-in deployments keep the collaboration wake path."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "kanban:\n  wake_agent_on_terminal_events: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_CONFIG", raising=False)
     db_path = tmp_path / "wake-opt-in.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
-    monkeypatch.setattr(
-        "gateway.kanban_watchers._resolve_notifier_agent_wake_enabled",
-        lambda _load_config: True,
-    )
 
     tid = _create_completed_subscription(session_id="creator-session")
     adapter = RecordingAdapter()

@@ -269,6 +269,12 @@ class GatewaySlashCommandsMixin:
             new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_new")
 
+        # Keep the visible Telegram topic honest while the replacement session
+        # is still untitled. This is deliberately not persisted as the session
+        # title: the first real exchange should still run the auto-title
+        # pipeline and replace the placeholder with a descriptive name.
+        _telegram_topic_title = "New Session"
+
         # Set session title if provided with /new <title>
         _title_arg = event.get_command_args().strip()
         _title_note = ""
@@ -283,6 +289,7 @@ class GatewaySlashCommandsMixin:
                 try:
                     await self._session_db.set_session_title(new_entry.session_id, sanitized)
                     header = t("gateway.reset.header_titled", title=sanitized)
+                    _telegram_topic_title = sanitized
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
                 except Exception:
@@ -302,6 +309,27 @@ class GatewaySlashCommandsMixin:
                 await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
+
+            # Reused topics otherwise keep advertising the old conversation
+            # until auto-title completes after the first exchange. Rename now
+            # to a neutral placeholder (or the explicit /new <title>) and let
+            # the normal auto-title callback replace it later.
+            schedule_rename = getattr(
+                self, "_schedule_telegram_topic_title_rename", None
+            )
+            if callable(schedule_rename):
+                try:
+                    await asyncio.to_thread(
+                        schedule_rename,
+                        source,
+                        new_entry.session_id,
+                        _telegram_topic_title,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to rename Telegram topic after /new",
+                        exc_info=True,
+                    )
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:

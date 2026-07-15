@@ -360,6 +360,7 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
 
     runner = _make_runner()
     runner._telegram_topic_mode_enabled = lambda source: True
+    runner._schedule_telegram_topic_title_rename = MagicMock()
     topic_source = _make_source(thread_id="17585")
     topic_key = build_session_key(topic_source)
     old_entry = SessionEntry(
@@ -394,6 +395,13 @@ async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(
     assert "parallel work" in result
     assert "All Messages" in result
     runner.session_store.reset_session.assert_called_once_with(topic_key)
+    runner._schedule_telegram_topic_title_rename.assert_called_once()
+    scheduled_source, session_id, title = (
+        runner._schedule_telegram_topic_title_rename.call_args.args
+    )
+    assert scheduled_source.thread_id == "17585"
+    assert session_id == "new-topic-session"
+    assert title == "New Session"
 
 
 @pytest.mark.asyncio

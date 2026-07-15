@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import platform
 import sys
 import threading
 import contextvars
@@ -925,6 +926,31 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
+_WINDOWS_11_MIN_BUILD = 22000
+
+
+def _windows_release() -> str:
+    """Return the Windows product release ('10' or '11').
+
+    ``platform.release()`` returns the NT kernel version, which is ``'10'``
+    on Windows 11 for Python < 3.12.  ``platform.win32_ver()[0]`` is also
+    ``'10'`` on CPython 3.11 because its client-release table maps the
+    shared ``(10, 0)`` NT version to ``'10'``.
+
+    The reliable signal is the NT build number from
+    ``sys.getwindowsversion().build``: build ``>= 22000`` is Windows 11.
+    Falls back to ``platform.release()`` when the API is unavailable
+    (non-Windows, ancient CPython, or monkeypatched test stubs).
+    """
+    try:
+        build = sys.getwindowsversion().build  # type: ignore[attr-defined]
+    except AttributeError:
+        return platform.release()
+    if build >= _WINDOWS_11_MIN_BUILD:
+        return "11"
+    return platform.release()
+
+
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
     "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
@@ -1098,7 +1124,7 @@ def build_environment_hints() -> str:
         if is_wsl():
             host_lines.append("Host: WSL (Windows Subsystem for Linux)")
         elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({platform.release()})")
+            host_lines.append(f"Host: Windows ({_windows_release()})")
         elif sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")

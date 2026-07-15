@@ -1193,6 +1193,65 @@ class TestEnvironmentHints:
         assert "bash" in result
         assert "PowerShell" in result
 
+    def test_build_environment_hints_windows_11_shows_11(self, monkeypatch):
+        """Windows 11 (build >= 22000) must display '11', not '10'."""
+        import agent.prompt_builder as _pb
+        import sys
+        import platform
+        from collections import namedtuple
+
+        _WinVer = namedtuple("getwindowsversion", "major minor build platform version_string")
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "release", lambda: "10")
+        monkeypatch.setattr(
+            sys, "getwindowsversion",
+            lambda: _WinVer(10, 0, 26200, 2, "Windows 11"),
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: Windows (11)" in result
+        assert "Windows (10)" not in result
+
+    def test_build_environment_hints_windows_10_shows_10(self, monkeypatch):
+        """Windows 10 (build < 22000) must display '10'."""
+        import agent.prompt_builder as _pb
+        import sys
+        import platform
+        from collections import namedtuple
+
+        _WinVer = namedtuple("getwindowsversion", "major minor build platform version_string")
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "release", lambda: "10")
+        monkeypatch.setattr(
+            sys, "getwindowsversion",
+            lambda: _WinVer(10, 0, 19045, 2, "Windows 10"),
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: Windows (10)" in result
+
+    def test_build_environment_hints_windows_fallback_no_getwinver(self, monkeypatch):
+        """When sys.getwindowsversion is unavailable, fall back to platform.release()."""
+        import agent.prompt_builder as _pb
+        import sys
+        import platform
+
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "release", lambda: "10")
+        # Simulate non-Windows / ancient CPython: no getwindowsversion attr.
+        monkeypatch.delattr(sys, "getwindowsversion", raising=False)
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+        result = _pb.build_environment_hints()
+        assert "Host: Windows (10)" in result
+
     def test_build_environment_hints_on_macos_local(self, monkeypatch):
         import agent.prompt_builder as _pb
         import sys

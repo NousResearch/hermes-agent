@@ -245,6 +245,13 @@ class MattermostAdapter(BasePlatformAdapter):
     async def _api_delete(self, path: str) -> bool:
         """DELETE /api/v4/{path}. Returns True on a 2xx response."""
         import aiohttp
+        # Path-traversal guard — mirrors _api_get/_api_post/_api_put (d836b2bac).
+        # WebSocket-derived ids (post_id, channel_id, emoji names) are
+        # interpolated into this bearer-token-authenticated path, so a crafted
+        # '..' payload could redirect the authed request to another endpoint.
+        if ".." in path:
+            logger.error("MM API path traversal blocked: %s", path)
+            return False
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
             async with self._session.delete(
@@ -465,9 +472,11 @@ class MattermostAdapter(BasePlatformAdapter):
     def _reactions_enabled(self) -> bool:
         """Whether processing-lifecycle reactions are enabled.
 
-        Gated by ``MATTERMOST_REACTIONS`` (default on), parallel to Slack's
-        ``SLACK_REACTIONS``. Set to ``false``/``0``/``no`` to disable the
-        👀/✅/❌ progress reactions entirely.
+        Configured via ``config.yaml`` ``mattermost.reactions`` (default on),
+        bridged to the internal ``MATTERMOST_REACTIONS`` env var by
+        ``_apply_yaml_config`` — the same pattern as ``mattermost.require_mention``.
+        Set ``mattermost.reactions: false`` to disable the 👀/✅/❌ progress
+        reactions entirely.
         """
         return os.getenv("MATTERMOST_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
@@ -1335,6 +1344,11 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """
     if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
         os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    # reactions: 👀/✅/❌ progress annotations on handled messages (default on).
+    # Behavioral toggle → config.yaml per AGENTS.md; the adapter reads the
+    # bridged MATTERMOST_REACTIONS env only as the internal mechanism.
+    if "reactions" in mattermost_cfg and not os.getenv("MATTERMOST_REACTIONS"):
+        os.environ["MATTERMOST_REACTIONS"] = str(mattermost_cfg["reactions"]).lower()
     frc = mattermost_cfg.get("free_response_channels")
     if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
         if isinstance(frc, list):
@@ -1394,7 +1408,7 @@ def register(ctx) -> None:
         # hermes_cli/setup.py::_setup_mattermost function.
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of
-        # ``config.yaml`` ``mattermost:`` keys (require_mention,
+        # ``config.yaml`` ``mattermost:`` keys (require_mention, reactions,
         # free_response_channels, allowed_channels) into ``MATTERMOST_*``
         # env vars that the adapter reads via ``os.getenv()``.  Replaces
         # the hardcoded block that used to live in ``gateway/config.py``.

@@ -228,10 +228,16 @@ reply to the triggering message):
   `mattermost:<channel_id>:<root_post_id>`.
 
 Hermes can also **delete** its own posts (e.g. to clean up streaming preview
-posts). When `MATTERMOST_REACTIONS` is enabled (the default), Hermes annotates
-messages it is directly handling (DMs and `@mentions`) with **emoji reactions**:
-👀 while it is working, then ✅ on success or ❌ on failure. Set
-`MATTERMOST_REACTIONS=false` to turn the progress reactions off.
+posts). By default Hermes also annotates messages it is directly handling (DMs
+and `@mentions`) with **emoji reactions**: 👀 while it is working, then ✅ on
+success or ❌ on failure. This is a behavioral toggle, so it lives in
+`config.yaml` (bridged to an internal env var like the other `mattermost.*`
+settings):
+
+```yaml
+mattermost:
+  reactions: false   # turn off the 👀/✅/❌ progress reactions (default: true)
+```
 
 ## Mention Behavior
 

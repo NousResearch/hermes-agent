@@ -1381,6 +1381,31 @@ class TestMattermostDeleteAndReactions:
         ok = await self.adapter._remove_reaction("post_1", "thumbsup")
         assert ok is False
 
+    @pytest.mark.asyncio
+    async def test_api_delete_rejects_path_traversal(self):
+        """``_api_delete`` must reject any path containing ``..`` before issuing
+        the request — parity with the ``_api_get``/``_api_post``/``_api_put``
+        guard (d836b2bac). WebSocket-derived ids (post_id, emoji names) are
+        interpolated into this bearer-token-authenticated path, so a crafted
+        ``..`` payload could redirect the authed request to another endpoint."""
+        self.adapter._session = MagicMock()
+        self.adapter._session.delete = MagicMock()
+        # Exercise the real method (not the AsyncMock used elsewhere).
+        ok = await self.adapter._api_delete("posts/../../users/me")
+        assert ok is False
+        # The guard fires before any network call is made.
+        self.adapter._session.delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_remove_reaction_with_traversal_emoji_is_blocked(self):
+        """A traversal payload smuggled through the emoji name reaches
+        ``_api_delete`` and is rejected by the guard, not sent to the API."""
+        self.adapter._session = MagicMock()
+        self.adapter._session.delete = MagicMock()
+        ok = await self.adapter._remove_reaction("post_1", "../../../users/me")
+        assert ok is False
+        self.adapter._session.delete.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # reaction lifecycle hooks are actually WIRED
@@ -1463,6 +1488,52 @@ class TestMattermostReactionHooks:
         from plugins.platforms.mattermost.adapter import MattermostAdapter
         assert MattermostAdapter.on_processing_start is not BasePlatformAdapter.on_processing_start
         assert MattermostAdapter.on_processing_complete is not BasePlatformAdapter.on_processing_complete
+
+
+# ---------------------------------------------------------------------------
+# reactions preference is YAML-backed (config.yaml `mattermost.reactions`)
+# ---------------------------------------------------------------------------
+
+class TestMattermostReactionsYamlBridge:
+    """The reactions toggle is a behavioral setting, so per AGENTS.md it lives in
+    ``config.yaml`` as ``mattermost.reactions`` and is bridged to the internal
+    ``MATTERMOST_REACTIONS`` env var by ``_apply_yaml_config`` — mirroring
+    ``mattermost.require_mention``. The env var is only the internal mechanism."""
+
+    def test_reactions_false_bridged_to_env(self, monkeypatch):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        monkeypatch.delenv("MATTERMOST_REACTIONS", raising=False)
+        _apply_yaml_config({}, {"reactions": False})
+        assert os.environ["MATTERMOST_REACTIONS"] == "false"
+
+    def test_reactions_true_bridged_to_env(self, monkeypatch):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        monkeypatch.delenv("MATTERMOST_REACTIONS", raising=False)
+        _apply_yaml_config({}, {"reactions": True})
+        assert os.environ["MATTERMOST_REACTIONS"] == "true"
+
+    def test_explicit_env_wins_over_yaml(self, monkeypatch):
+        """Env precedence — an explicit MATTERMOST_REACTIONS survives config.yaml,
+        matching every other ``mattermost.*`` bridge key."""
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        monkeypatch.setenv("MATTERMOST_REACTIONS", "false")
+        _apply_yaml_config({}, {"reactions": True})
+        assert os.environ["MATTERMOST_REACTIONS"] == "false"
+
+    def test_absent_key_leaves_env_untouched(self, monkeypatch):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        monkeypatch.delenv("MATTERMOST_REACTIONS", raising=False)
+        _apply_yaml_config({}, {})
+        assert "MATTERMOST_REACTIONS" not in os.environ
+
+    def test_yaml_reactions_false_disables_via_reactions_enabled(self, monkeypatch):
+        """End-to-end: ``mattermost.reactions: false`` in config.yaml flows through
+        the bridge so ``_reactions_enabled()`` reports False."""
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        monkeypatch.delenv("MATTERMOST_REACTIONS", raising=False)
+        _apply_yaml_config({}, {"reactions": False})
+        adapter = _make_adapter()
+        assert adapter._reactions_enabled() is False
 
 
 # ---------------------------------------------------------------------------

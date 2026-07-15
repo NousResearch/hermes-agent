@@ -3258,31 +3258,10 @@ def create_task(
                         except Exception:
                             branch_name = None
 
-                # ORCH-001B: gate create-time ready on admission. New tasks
-                # never have notification subscriptions yet, so a contract-
-                # bearing task lands in todo until subscribed + promoted.
-                if task_status == "ready":
-                    normalized_for_admission = None
-                    admission_contract_error = None
-                    if contract_blob is not None:
-                        try:
-                            normalized_for_admission = deserialize_task_contract(
-                                contract_blob
-                            )
-                        except TaskContractError as exc:
-                            admission_contract_error = str(exc)
-                    decision = evaluate_admission(
-                        contract=normalized_for_admission,
-                        workspace_kind=workspace_kind,
-                        workspace_path=workspace_path,
-                        has_notification_subscription=False,
-                        contract_present=contract_blob is not None,
-                        contract_error=admission_contract_error,
-                    )
-                    if not decision.admitted:
-                        task_status = "todo"
-                        admission_rejection = decision
-
+                # Insert at the provisional parent-derived status first. ORCH-001C
+                # inherits parent notify subscriptions in this same transaction
+                # before readiness is finalized; ORCH-001B then gates ready on
+                # admission using the post-inheritance subscription state.
                 conn.execute(
                     """
                     INSERT INTO tasks (
@@ -3323,6 +3302,40 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                # ORCH-001C: inherit active parent subscriptions before ready.
+                if parents:
+                    _inherit_notify_subs_unlocked(
+                        conn, child_id=task_id, source_task_ids=parents
+                    )
+
+                if task_status == "ready":
+                    normalized_for_admission = None
+                    admission_contract_error = None
+                    if contract_blob is not None:
+                        try:
+                            normalized_for_admission = deserialize_task_contract(
+                                contract_blob
+                            )
+                        except TaskContractError as exc:
+                            admission_contract_error = str(exc)
+                    decision = evaluate_admission(
+                        contract=normalized_for_admission,
+                        workspace_kind=workspace_kind,
+                        workspace_path=workspace_path,
+                        has_notification_subscription=_task_has_notification_subscription(
+                            conn, task_id
+                        ),
+                        contract_present=contract_blob is not None,
+                        contract_error=admission_contract_error,
+                    )
+                    if not decision.admitted:
+                        task_status = "todo"
+                        admission_rejection = decision
+                        conn.execute(
+                            "UPDATE tasks SET status = 'todo' WHERE id = ?",
+                            (task_id,),
+                        )
+
                 _append_event(
                     conn,
                     task_id,
@@ -3489,6 +3502,11 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
+        )
+        # ORCH-001C: inherit active parent notification routes onto the child
+        # before any readiness change. Idempotent if the edge already existed.
+        _inherit_notify_subs_unlocked(
+            conn, child_id=child_id, source_task_ids=[parent_id]
         )
         # If child was ready but parent is not yet done, demote child to todo.
         parent_status = conn.execute(
@@ -6228,6 +6246,14 @@ def decompose_triage_task(
                 conn, new_id, "created",
                 {"by": author or "decomposer", "from_decompose_of": task_id},
             )
+            # ORCH-001C: fan-out children inherit the root's active notify
+            # subscriptions before any recompute_ready promotion. Note the
+            # dependency edge direction later links root as a *child* of
+            # workers, so create_task-style parent-id inheritance does not
+            # cover this path — inherit from the triage root explicitly.
+            _inherit_notify_subs_unlocked(
+                conn, child_id=new_id, source_task_ids=[task_id]
+            )
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
@@ -6239,6 +6265,10 @@ def decompose_triage_task(
                     "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
                     "VALUES (?, ?)",
                     (parent_id, child_id),
+                )
+                # Sibling parents may also carry routes; union them in.
+                _inherit_notify_subs_unlocked(
+                    conn, child_id=child_id, source_task_ids=[parent_id]
                 )
                 _append_event(
                     conn, child_id, "linked",
@@ -9517,6 +9547,195 @@ def task_age(task: Task) -> dict:
 # Notification subscriptions (used by the gateway kanban-notifier)
 # ---------------------------------------------------------------------------
 
+def _insert_notify_sub_unlocked(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+    created_at: Optional[int] = None,
+    last_event_id: int = 0,
+) -> bool:
+    """Insert one notify sub row. Must run inside an open write transaction.
+
+    Returns True when a new row was inserted. Idempotent on the primary key
+    ``(task_id, platform, chat_id, thread_id)``. Backfills empty
+    ``user_id`` / ``notifier_profile`` on an existing row when the call
+    supplies non-empty values.
+    """
+    now = int(created_at if created_at is not None else time.time())
+    tid = thread_id or ""
+    cur = conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs
+            (task_id, platform, chat_id, thread_id, user_id, notifier_profile,
+             created_at, last_event_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id,
+            platform,
+            chat_id,
+            tid,
+            user_id,
+            notifier_profile,
+            now,
+            int(last_event_id),
+        ),
+    )
+    inserted = int(cur.rowcount or 0) > 0
+    if notifier_profile:
+        # Self-heal legacy rows that predate notifier ownership by
+        # backfilling only when the existing value is unset.
+        conn.execute(
+            """
+            UPDATE kanban_notify_subs
+               SET notifier_profile = ?
+             WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+               AND (notifier_profile IS NULL OR notifier_profile = '')
+            """,
+            (notifier_profile, task_id, platform, chat_id, tid),
+        )
+    if user_id:
+        conn.execute(
+            """
+            UPDATE kanban_notify_subs
+               SET user_id = ?
+             WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+               AND (user_id IS NULL OR user_id = '')
+            """,
+            (user_id, task_id, platform, chat_id, tid),
+        )
+    return inserted
+
+
+def _inherit_notify_subs_unlocked(
+    conn: sqlite3.Connection,
+    *,
+    child_id: str,
+    source_task_ids: Iterable[str],
+) -> int:
+    """Copy active notification subscriptions from source tasks onto ``child_id``.
+
+    Must be called inside an open write transaction (HERMES-ORCH-001C).
+
+    - Exact route fields preserved: platform, chat_id, thread_id, user_id,
+      notifier_profile.
+    - ``last_event_id`` always resets to 0 so the child sees its own events.
+    - Idempotent / duplicate-free via the notify-subs primary key.
+    - Unsubscribed sources invent nothing.
+    - When new rows are inserted, appends a ``notify_subs_inherited`` audit
+      event with source metadata.
+
+    Returns the number of newly inserted subscription rows.
+    """
+    sources = []
+    seen_sources: set[str] = set()
+    for sid in source_task_ids:
+        if not sid or sid == child_id or sid in seen_sources:
+            continue
+        seen_sources.add(sid)
+        sources.append(sid)
+    if not sources:
+        return 0
+
+    placeholders = ",".join("?" * len(sources))
+    rows = conn.execute(
+        f"SELECT * FROM kanban_notify_subs WHERE task_id IN ({placeholders}) "
+        f"ORDER BY task_id, platform, chat_id, thread_id",
+        sources,
+    ).fetchall()
+    if not rows:
+        return 0
+
+    now = int(time.time())
+    inserted = 0
+    inherited_routes: list[dict[str, Any]] = []
+    # Dedupe identical routes that appear on multiple parents: first wins.
+    seen_routes: set[tuple[str, str, str]] = set()
+    for r in rows:
+        platform = r["platform"]
+        chat_id = r["chat_id"]
+        thread_id = r["thread_id"] or ""
+        route_key = (platform, chat_id, thread_id)
+        if route_key in seen_routes:
+            continue
+        seen_routes.add(route_key)
+        user_id = r["user_id"] if "user_id" in r.keys() else None
+        notifier_profile = (
+            r["notifier_profile"] if "notifier_profile" in r.keys() else None
+        )
+        was_new = _insert_notify_sub_unlocked(
+            conn,
+            task_id=child_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
+            created_at=now,
+            last_event_id=0,
+        )
+        if was_new:
+            inserted += 1
+            inherited_routes.append(
+                {
+                    "from_task_id": r["task_id"],
+                    "platform": platform,
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "notifier_profile": notifier_profile,
+                }
+            )
+
+    if inserted > 0:
+        _append_event(
+            conn,
+            child_id,
+            "notify_subs_inherited",
+            {
+                "sources": sources,
+                "routes": inherited_routes,
+                "count": inserted,
+            },
+        )
+    return inserted
+
+
+def inherit_notify_subs_from_parents(
+    conn: sqlite3.Connection,
+    child_id: str,
+    parent_ids: Optional[Iterable[str]] = None,
+) -> int:
+    """Transactionally inherit active parent notification subscriptions.
+
+    When ``parent_ids`` is omitted, sources are the child's current
+    ``task_links`` parents. Safe to call repeatedly (idempotent).
+
+    Returns the number of newly inserted subscription rows.
+    """
+    with write_txn(conn):
+        sources: list[str]
+        if parent_ids is None:
+            sources = [
+                r["parent_id"]
+                for r in conn.execute(
+                    "SELECT parent_id FROM task_links WHERE child_id = ? "
+                    "ORDER BY parent_id",
+                    (child_id,),
+                ).fetchall()
+            ]
+        else:
+            sources = list(parent_ids)
+        return _inherit_notify_subs_unlocked(
+            conn, child_id=child_id, source_task_ids=sources
+        )
+
+
 def add_notify_sub(
     conn: sqlite3.Connection,
     *,
@@ -9529,28 +9748,16 @@ def add_notify_sub(
 ) -> None:
     """Register a gateway source that wants terminal-state notifications
     for ``task_id``. Idempotent on (task, platform, chat, thread)."""
-    now = int(time.time())
     with write_txn(conn):
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+        _insert_notify_sub_unlocked(
+            conn,
+            task_id=task_id,
+            platform=platform,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            notifier_profile=notifier_profile,
         )
-        if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
-            conn.execute(
-                """
-                UPDATE kanban_notify_subs
-                   SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
-                   AND (notifier_profile IS NULL OR notifier_profile = '')
-                """,
-                (notifier_profile, task_id, platform, chat_id, thread_id or ""),
-            )
 
 
 def list_notify_subs(

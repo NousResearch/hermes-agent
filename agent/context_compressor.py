@@ -2364,8 +2364,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             # from a distinct auxiliary summary_model; only a failure on the
             # main model — or a fallback that also access/quota-fails — makes
             # the abort stick.
-            _is_auth_error = _is_summary_access_or_quota_error(e)
-            if _is_auth_error:
+            _is_access_or_quota_error = _is_summary_access_or_quota_error(e)
+            if _is_access_or_quota_error:
+                # Keep the established field name for caller compatibility;
+                # it now represents the broader terminal access/quota class.
                 self._last_summary_auth_failure = True
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
@@ -3251,16 +3253,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         #           surface a warning.
         # Default is False (historical behavior).
         #
-        # EXCEPTION — auth AND transient network failures always abort. A
-        # 401/403 from the summary call means the credential or endpoint is
-        # broken (invalid/blocked key, or a token pointed at the wrong
-        # inference host). A connection/stream-close error means the network
-        # blipped at the compaction moment (#29559). In BOTH cases rotating into
-        # a child session with a placeholder summary on a broken credential
-        # strands the user on a degraded session for zero benefit — every
-        # subsequent call fails the same way. So when the failure was an auth
-        # error we abort regardless of abort_on_summary_failure, preserving
-        # the conversation unchanged until the credential is fixed.
+        # EXCEPTION — terminal access/quota AND transient network failures
+        # always abort. Missing credentials, 401/402/403 access failures, and
+        # confirmed non-resetting quota exhaustion cannot be repaired by
+        # retrying the same summary request. A connection/stream-close error
+        # means the network blipped at the compaction moment (#29559). In all
+        # of these cases, rotating into a child session with a placeholder
+        # summary degrades the conversation for zero benefit. Preserve it
+        # unchanged until access is restored or connectivity recovers.
         if not summary and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
@@ -3273,11 +3273,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(
-                        "Summary generation failed with an authentication "
-                        "error — aborting compression. %d message(s) preserved "
-                        "unchanged; the session was NOT rotated. Check your "
-                        "provider credential / inference endpoint, then retry "
-                        "with /compress or start fresh with /new.",
+                        "Summary generation failed with a terminal access or "
+                        "quota error — aborting compression. %d message(s) "
+                        "preserved unchanged; the session was NOT rotated. "
+                        "Check the provider credential, permission, quota, or "
+                        "inference endpoint, then retry with /compress or "
+                        "start fresh with /new.",
                         n_skipped,
                     )
                 elif self._last_summary_network_failure:

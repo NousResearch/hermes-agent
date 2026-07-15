@@ -37,6 +37,28 @@ def test_aborted_compression_reports_preserved_messages_and_reason():
     assert "no API key was found" in feedback["note"]
 
 
+def test_failure_reason_redaction_is_forced_at_ui_boundary(monkeypatch):
+    messages = _messages(12)
+    fake_secret = "sk-proj-" + "X" * 40
+    state = SimpleNamespace(
+        _last_compress_aborted=True,
+        _last_summary_fallback_used=False,
+        _last_summary_error=f"provider rejected OPENAI_API_KEY={fake_secret}",
+    )
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False, raising=False)
+
+    feedback = summarize_manual_compression(
+        messages,
+        list(messages),
+        120_000,
+        120_000,
+        compression_state=state,
+    )
+
+    assert fake_secret not in feedback["note"]
+    assert "OPENAI_API_KEY=" in feedback["note"]
+
+
 def test_fallback_compression_reports_dropped_message_count():
     before = _messages(12)
     after = before[:2] + before[-2:]

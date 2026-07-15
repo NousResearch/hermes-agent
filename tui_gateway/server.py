@@ -5358,10 +5358,13 @@ def _make_agent(
 
     # Appends a resume note when the conversation history predates this
     # process start, indicating the session was restored from a prior
-    # Hermes run.
-    if session_db is not None and session_id is not None:
+    # Hermes run.  Resolve the effective DB first — callers that don't
+    # pass a session_db (e.g. the default-profile cold-resume path in
+    # _start_agent_build) pass None, but _get_db() provides the fallback.
+    _db = session_db if session_db is not None else _get_db()
+    if _db is not None and session_id is not None:
         try:
-            row = session_db._conn.execute(
+            row = _db._conn.execute(
                 "SELECT MAX(timestamp) FROM messages "
                 "WHERE session_id = ? AND active = 1",
                 (session_id,),

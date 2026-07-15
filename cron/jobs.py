@@ -116,11 +116,21 @@ _cron_store_override: ContextVar[Optional[_CronStorePaths]] = ContextVar(
 
 
 def _current_cron_store() -> _CronStorePaths:
-    """Return paths pinned to this execution context's profile."""
+    """Return paths pinned to this execution context's profile.
+
+    An explicit ``use_cron_store()`` override always wins. Otherwise resolve
+    ``get_hermes_home()`` LIVE rather than returning the module-level
+    ``CRON_DIR``/``JOBS_FILE`` constants — those are frozen at *import* time,
+    so a ``HERMES_HOME`` set AFTER this module was imported (a test's hermetic
+    fixture, or an e2e harness pointing at a tempdir) would otherwise be
+    ignored and jobs would leak into whatever home was active at import (the
+    real ``~/.hermes`` when a live agent boots from a shared-home worktree).
+    """
     override = _cron_store_override.get()
     if override is not None:
         return override
-    return _CronStorePaths(CRON_DIR, JOBS_FILE, OUTPUT_DIR)
+    cron_dir = get_hermes_home().resolve() / "cron"
+    return _CronStorePaths(cron_dir, cron_dir / "jobs.json", cron_dir / "output")
 
 
 @contextlib.contextmanager
@@ -763,12 +773,12 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Best-effort: a write failure must never disrupt the tick loop.
     """
     try:
-        _atomic_write_epoch(TICKER_HEARTBEAT_FILE)
+        _atomic_write_epoch(_current_cron_store().cron_dir / "ticker_heartbeat")
     except Exception:
         pass
     if success:
         try:
-            _atomic_write_epoch(TICKER_SUCCESS_FILE)
+            _atomic_write_epoch(_current_cron_store().cron_dir / "ticker_last_success")
         except Exception:
             pass
 
@@ -787,12 +797,12 @@ def get_ticker_heartbeat_age() -> Optional[float]:
     None = heartbeat file missing/unreadable (older build, never ran, or a
     torn read). Callers treat None as "cannot determine", not "dead".
     """
-    return _epoch_file_age(TICKER_HEARTBEAT_FILE)
+    return _epoch_file_age(_current_cron_store().cron_dir / "ticker_heartbeat")
 
 
 def get_ticker_success_age() -> Optional[float]:
     """Seconds since the ticker last completed a tick WITHOUT raising, or None."""
-    return _epoch_file_age(TICKER_SUCCESS_FILE)
+    return _epoch_file_age(_current_cron_store().cron_dir / "ticker_last_success")
 
 
 # =============================================================================

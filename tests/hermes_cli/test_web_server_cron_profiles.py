@@ -135,9 +135,10 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
     default_file.write_text(json.dumps({"jobs": [default_job]}), encoding="utf-8")
     worker_file.write_text(json.dumps({"jobs": [worker_job]}), encoding="utf-8")
 
-    monkeypatch.setattr(cron_jobs, "CRON_DIR", default_cron)
-    monkeypatch.setattr(cron_jobs, "JOBS_FILE", default_file)
-    monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", default_cron / "output")
+    # The ticker thread runs with NO cron-store override, so it resolves
+    # HERMES_HOME live — point that at the default profile home so the ticker's
+    # save lands in default_file (mirrors the real gateway's default ticker).
+    monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
     monkeypatch.setattr(
         cron_jobs,
         "compute_next_run",

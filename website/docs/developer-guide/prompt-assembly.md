@@ -192,15 +192,20 @@ Be targeted and efficient in your exploration and investigations.
 def build_context_files_prompt(cwd=None, skip_soul=False):
     cwd_path = Path(cwd).resolve()
 
-    # Priority: first match wins — only ONE project context loaded
+    sections = []
+
+    # AGENTS.md from HERMES_HOME (cwd-independent operational policy)
+    home_agents = load_home_agents_md()
+    if home_agents:
+        sections.append(home_agents)
+
+    # Priority: first match wins — only ONE cwd project context loaded
     project_context = (
         _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
         or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
         or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
         or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
     )
-
-    sections = []
     if project_context:
         sections.append(project_context)
 

@@ -15,6 +15,9 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
+_REPLY_ORIGINAL_UNAVAILABLE = "\x00__HERMES_REPLY_ORIGINAL_UNAVAILABLE__\x00"
+
+
 def _make_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
@@ -180,3 +183,50 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+@pytest.mark.asyncio
+async def test_unavailable_reply_uses_history_without_exposing_marker():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="继续处理这个",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=_REPLY_ORIGINAL_UNAVAILABLE,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[{"role": "assistant", "content": "Earlier context"}],
+    )
+
+    assert "Review the conversation history first" in result
+    assert "Do not guess" in result
+    assert _REPLY_ORIGINAL_UNAVAILABLE not in result
+    assert result.endswith("继续处理这个")
+
+
+@pytest.mark.asyncio
+async def test_unavailable_reply_without_history_requires_search_or_resend():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="继续处理这个",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=_REPLY_ORIGINAL_UNAVAILABLE,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert "this session has no history" in result
+    assert "session_search" in result
+    assert "Do not guess or act" in result
+    assert _REPLY_ORIGINAL_UNAVAILABLE not in result
+    assert result.endswith("继续处理这个")

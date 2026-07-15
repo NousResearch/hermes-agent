@@ -156,6 +156,8 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
 
+_REPLY_ORIGINAL_UNAVAILABLE = "\x00__HERMES_REPLY_ORIGINAL_UNAVAILABLE__\x00"
+
 
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
@@ -10712,20 +10714,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
-            if getattr(event, "reply_to_is_own_message", False):
-                message_text = (
-                    f'[Replying to your previous message: "{reply_snippet}"]\n\n'
-                    f"{message_text}"
-                )
+            if event.reply_to_text == _REPLY_ORIGINAL_UNAVAILABLE:
+                if history:
+                    reply_context = (
+                        "The user replied to an earlier message, but its text is unavailable. "
+                        "Review the conversation history first. If the target is still unclear, "
+                        "use session_search or ask the user to resend it. Do not guess."
+                    )
+                else:
+                    reply_context = (
+                        "The user replied to an earlier message, but its text is unavailable and "
+                        "this session has no history. Use session_search or ask the user to resend "
+                        "it. Do not guess or act on inferred instructions."
+                    )
+                message_text = f"[Reply context: {reply_context}]\n\n{message_text}"
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                # Always inject the reply-to pointer — even when the quoted text
+                # already appears in history. The prefix isn't deduplication, it's
+                # disambiguation: it tells the agent *which* prior message the user
+                # is referencing. History can contain the same or similar text
+                # multiple times, and without an explicit pointer the agent has to
+                # guess (or answer for both subjects). Token overhead is minimal.
+                reply_snippet = event.reply_to_text[:500]
+                if getattr(event, "reply_to_is_own_message", False):
+                    message_text = (
+                        f'[Replying to your previous message: "{reply_snippet}"]\n\n'
+                        f"{message_text}"
+                    )
+                else:
+                    message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:

@@ -498,3 +498,632 @@ class TestServiceScriptNameArgument:
         from hermes_cli._hermes_gateway_service import main
         # main() reads from sys.argv, so we can test by checking it exists
         assert callable(main)
+
+
+# =========================================================================
+# Service binPath persists HERMES_HOME / profile (PR #50200 review)
+# =========================================================================
+
+
+class TestInstallServiceBinPathHermesHome:
+    """install_service must include --hermes-home and (for named profiles)
+    --profile in the SCM binPath so the SCM-launched wrapper restores the
+    same Hermes home the user picked at install time. Without it the wrapper
+    fell back to APPDATA/home (review PRRT_kwDOPRF1G86Q6vjE).
+    """
+
+    def test_default_profile_binpath_includes_hermes_home(self, tmp_path, monkeypatch):
+        """Default profile install: binPath contains --hermes-home with the
+        resolved HERMES_HOME, no --profile flag."""
+        from hermes_cli import gateway_windows
+
+        default_home = tmp_path / "default_home"
+        default_home.mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.config.get_hermes_home", lambda: default_home
+        )
+
+        # Force _profile_arg(...) to return "" for the default home.
+        monkeypatch.setattr(
+            "hermes_cli.gateway._profile_arg",
+            lambda *_a, **_k: "",
+        )
+
+        captured: dict = {}
+
+        def fake_create_service(scm, name, display, access, svc_type, start_type,
+                                error, bin_path, *rest):
+            captured["bin_path"] = bin_path
+            svc = MagicMock()
+            return svc
+
+        mock_ws = MagicMock()
+        mock_ws.OpenSCManager.return_value = MagicMock()
+        mock_ws.OpenService.side_effect = Exception("not found")
+        mock_ws.CreateService.side_effect = fake_create_service
+
+        with patch.dict("sys.modules", {"win32service": mock_ws}):
+            gateway_windows.install_service(force=False, allow_fallback=False)
+
+        assert "bin_path" in captured, "CreateService was not called"
+        bin_path = captured["bin_path"]
+        # Path with spaces — list2cmdline wraps it in quotes.
+        assert "--hermes-home" in bin_path
+        # On Windows the temp dir from pytest is case-preserving but
+        # ``Path.resolve()`` may normalise to lowercase; compare case-insensitively.
+        assert str(default_home).lower() in bin_path.lower()
+        # Default profile must NOT advertise a --profile flag.
+        assert "--profile" not in bin_path
+
+    def test_named_profile_binpath_includes_hermes_home_and_profile(
+        self, tmp_path, monkeypatch
+    ):
+        """Named profile install: binPath must contain both --hermes-home
+        and --profile so the wrapper restores the named profile."""
+        from hermes_cli import gateway_windows
+
+        profile_home = tmp_path / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setattr(
+            "hermes_cli.config.get_hermes_home", lambda: profile_home
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway._profile_arg",
+            lambda *_a, **_k: "--profile coder",
+        )
+
+        captured: dict = {}
+
+        def fake_create_service(scm, name, display, access, svc_type, start_type,
+                                error, bin_path, *rest):
+            captured["bin_path"] = bin_path
+            return MagicMock()
+
+        mock_ws = MagicMock()
+        mock_ws.OpenSCManager.return_value = MagicMock()
+        mock_ws.OpenService.side_effect = Exception("not found")
+        mock_ws.CreateService.side_effect = fake_create_service
+
+        with patch.dict("sys.modules", {"win32service": mock_ws}):
+            gateway_windows.install_service(force=False, allow_fallback=False)
+
+        bin_path = captured["bin_path"]
+        assert "--hermes-home" in bin_path
+        assert str(profile_home).lower() in bin_path.lower()
+        assert "--profile" in bin_path
+        assert "coder" in bin_path
+
+    def test_named_profile_binpath_quotes_paths_with_spaces(
+        self, tmp_path, monkeypatch
+    ):
+        """Paths containing spaces must be properly quoted so the SCM
+        service controller reads them as a single argument (PR review:
+        'parameter passing and Windows command line quoting must be
+        reliable, including paths with spaces')."""
+        from hermes_cli import gateway_windows
+
+        spaced_home = tmp_path / "My Hermes Profile"
+        spaced_home.mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.config.get_hermes_home", lambda: spaced_home
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway._profile_arg",
+            lambda *_a, **_k: "--profile coder",
+        )
+
+        captured: dict = {}
+
+        def fake_create_service(scm, name, display, access, svc_type, start_type,
+                                error, bin_path, *rest):
+            captured["bin_path"] = bin_path
+            return MagicMock()
+
+        mock_ws = MagicMock()
+        mock_ws.OpenSCManager.return_value = MagicMock()
+        mock_ws.OpenService.side_effect = Exception("not found")
+        mock_ws.CreateService.side_effect = fake_create_service
+
+        with patch.dict("sys.modules", {"win32service": mock_ws}):
+            gateway_windows.install_service(force=False, allow_fallback=False)
+
+        bin_path = captured["bin_path"]
+        # list2cmdline wraps space-containing args in double quotes.
+        # WindowsPath.resolve() may lowercase the path; check both cases.
+        home_in_path = (
+            f'"{spaced_home}"' in bin_path
+            or f'"{str(spaced_home).lower()}"' in bin_path.lower()
+        )
+        assert home_in_path, (
+            f"spaced home not found quoted in binPath: {bin_path}"
+        )
+        # Round-trip the result through a minimal cmd-line parser to verify
+        # the spaced home path survives as a single argv slot.
+        argv = []
+        buf = ""
+        in_quote = False
+        for ch in bin_path:
+            if ch == '"':
+                in_quote = not in_quote
+                continue
+            if ch == " " and not in_quote:
+                argv.append(buf)
+                buf = ""
+                continue
+            buf += ch
+        if buf:
+            argv.append(buf)
+        # The spaced path may appear as either original-case or normalised;
+        # check it is present in argv as a single contiguous slot.
+        spaced_normalised = str(spaced_home).replace("\\", "/").lower()
+        assert any(
+            spaced_normalised in slot.replace("\\", "/").lower()
+            for slot in argv
+        ), f"spaced home did not survive as one argv slot: {argv}"
+
+
+class TestServiceScriptEarlyArgParsing:
+    """The service wrapper must parse --hermes-home / --profile from
+    sys.argv BEFORE importing any hermes module that depends on
+    HERMES_HOME, so config/session/state/log and the planned-stop
+    marker all land under the install-time-selected home.
+    """
+
+    def test_hermes_home_arg_sets_env_before_handle_command_line(self):
+        """When --hermes-home is in sys.argv, main() must set
+        os.environ['HERMES_HOME'] before HandleCommandLine runs."""
+        import sys
+        from hermes_cli import _hermes_gateway_service as svc
+
+        # Patch HandleCommandLine + everything that touches Hermes home so
+        # the test stays pure-Python on any platform.
+        captured_env = {}
+
+        def fake_handle_command_line(service_class):
+            # Capture env as it stands at HandleCommandLine time.
+            captured_env["HERMES_HOME"] = os.environ.get("HERMES_HOME")
+            captured_env["HERMES_PROFILE"] = os.environ.get("HERMES_PROFILE")
+            return 0
+
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = [
+                "_hermes_gateway_service.py",
+                "--hermes-home",
+                r"C:\Users\KK\AppData\Local\hermes\profiles\coder",
+                "--profile",
+                "coder",
+            ]
+            # Ensure any pre-existing env doesn't pollute the assertion.
+            os.environ.pop("HERMES_HOME", None)
+            os.environ.pop("HERMES_PROFILE", None)
+            with patch.object(svc, "win32serviceutil") as mock_util:
+                mock_util.HandleCommandLine.side_effect = fake_handle_command_line
+                svc.main()
+            assert captured_env["HERMES_HOME"] == (
+                r"C:\Users\KK\AppData\Local\hermes\profiles\coder"
+            )
+            assert captured_env["HERMES_PROFILE"] == "coder"
+        finally:
+            sys.argv = original_argv
+
+    def test_custom_args_stripped_before_handle_command_line(self):
+        """--hermes-home and --profile must be popped from sys.argv so
+        HandleCommandLine doesn't see them as unknown options."""
+        import sys
+        from hermes_cli import _hermes_gateway_service as svc
+
+        seen_argv = []
+
+        def fake_handle_command_line(service_class):
+            seen_argv.extend(sys.argv)
+            return 0
+
+        original_argv = sys.argv[:]
+        try:
+            sys.argv = [
+                "_hermes_gateway_service.py",
+                "--hermes-home",
+                r"C:\some\home",
+                "--profile",
+                "coder",
+                "start",
+            ]
+            with patch.object(svc, "win32serviceutil") as mock_util:
+                mock_util.HandleCommandLine.side_effect = fake_handle_command_line
+                svc.main()
+            assert "--hermes-home" not in seen_argv
+            assert "--profile" not in seen_argv
+            assert r"C:\some\home" not in seen_argv
+            assert "coder" not in seen_argv
+            # "start" is the win32serviceutil verb and must remain.
+            assert "start" in seen_argv
+        finally:
+            sys.argv = original_argv
+
+    def test_consume_arg_handles_equals_form(self):
+        """--hermes-home=VALUE form must also be consumed (defense in
+        depth, even though install_service uses space form)."""
+        from hermes_cli._hermes_gateway_service import _consume_arg
+
+        argv = ["script", "--hermes-home=C:\\path with space", "start"]
+        value = _consume_arg(argv, "--hermes-home")
+        assert value == "C:\\path with space"
+        assert "--hermes-home=C:\\path with space" not in argv
+        assert "start" in argv
+
+    def test_consume_arg_returns_none_when_absent(self):
+        from hermes_cli._hermes_gateway_service import _consume_arg
+
+        argv = ["script", "start"]
+        assert _consume_arg(argv, "--hermes-home") is None
+        assert argv == ["script", "start"]
+
+
+# =========================================================================
+# Per-profile SCM pause / resume (PR #50200 review)
+# =========================================================================
+
+
+class TestUpdatePauseResumeScm:
+    """PR #50200 review: ``hermes update`` pause/resume must route through
+    SCM for SCM-managed profiles and never call ``_spawn_detached()`` for
+    them. Scheduled Task / detached gateways keep their existing behavior.
+    """
+
+    def _fake_profile_process(self, name, path, pid):
+        from hermes_cli.gateway import ProfileGatewayProcess
+
+        return ProfileGatewayProcess(profile=name, path=path, pid=pid)
+
+    def test_pause_calls_scm_stop_not_terminate_pid_for_service_profile(
+        self, monkeypatch
+    ):
+        """When a profile is SCM-managed, ``_pause_windows_gateways_for_update``
+        must call ``gateway_windows.stop_service_for_hermes_home`` for that
+        home and must NOT call ``terminate_pid`` on the service child PID.
+        """
+        from hermes_cli import main as main_module
+
+        proc = self._fake_profile_process(
+            name="coder", path=Path("/tmp/profiles/coder"), pid=12345
+        )
+        proc_path = Path("/tmp/profiles/coder")
+
+        calls = {
+            "stop_service_for_home": [],
+            "terminate_pid": [],
+        }
+
+        # Stub find_gateway_pids / find_profile_gateway_processes so the
+        # pause logic discovers exactly one SCM-managed profile gateway.
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [12345],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_profile_gateway_processes",
+            lambda exclude_pids=None: [proc],
+        )
+
+        def fake_stop_service_for_hermes_home(home):
+            calls["stop_service_for_home"].append(home)
+            return True
+
+        def fake_is_service_registered_for_hermes_home(_home):
+            return True
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.stop_service_for_hermes_home",
+            fake_stop_service_for_hermes_home,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered_for_hermes_home",
+            fake_is_service_registered_for_hermes_home,
+        )
+
+        # terminate_pid is the legacy escape hatch — must NOT be called
+        # for an SCM-managed profile, otherwise RecoveryActions would
+        # immediately restart the gateway we just paused.
+        def fake_terminate_pid(pid, force=False):
+            calls["terminate_pid"].append((pid, force))
+            raise ProcessLookupError(pid)
+
+        # Patch the gateway.status.terminate_pid that main.py imports.
+        import gateway.status as gstatus
+        monkeypatch.setattr(gstatus, "terminate_pid", fake_terminate_pid)
+        # Also patch it where main.py's namespace has already imported it.
+        monkeypatch.setattr(
+            "hermes_cli.main.terminate_pid", fake_terminate_pid, raising=False
+        )
+
+        token = main_module._pause_windows_gateways_for_update()
+
+        assert calls["stop_service_for_home"] == [str(proc_path.resolve())], (
+            "SCM-managed profile must be paused via "
+            "stop_service_for_hermes_home, got "
+            f"{calls['stop_service_for_home']}"
+        )
+        assert calls["terminate_pid"] == [], (
+            "terminate_pid must NOT be called for SCM-managed profile; got "
+            f"{calls['terminate_pid']}"
+        )
+        assert token is not None
+        assert "coder" in token["scm_managed_profiles"]
+        assert token["scm_managed_profiles"]["coder"] == str(proc_path.resolve())
+
+    def test_pause_keeps_legacy_terminate_pid_path_for_manual_profile(
+        self, monkeypatch
+    ):
+        """Non-SCM profiles must keep the legacy
+        ``_write_update_planned_stop_marker`` + drain + ``terminate_pid``
+        path (review: 'original Scheduled Task and non-service backends
+        must remain unchanged').
+
+        Specifically: ``stop_service_for_hermes_home`` must NOT be called
+        for a non-SCM profile (so the SCM branch stays exclusive to
+        SCM-managed profiles), and the planned-stop marker IS written.
+        """
+        from hermes_cli import main as main_module
+        import gateway.status as gstatus
+
+        proc = self._fake_profile_process(
+            name="default", path=Path("/tmp/default_home"), pid=22222
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [22222],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_profile_gateway_processes",
+            lambda exclude_pids=None: [proc],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.is_service_registered_for_hermes_home",
+            lambda _home: False,  # not SCM-managed
+        )
+
+        marker_writes: list = []
+        monkeypatch.setattr(
+            main_module,
+            "_write_update_planned_stop_marker",
+            lambda profile_path, pid: marker_writes.append((str(profile_path), pid)),
+        )
+
+        scm_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.stop_service_for_hermes_home",
+            lambda home: scm_calls.append(home) or True,
+        )
+
+        calls = {"terminate_pid": []}
+
+        def fake_terminate_pid(pid, force=False):
+            calls["terminate_pid"].append((pid, force))
+            raise ProcessLookupError(pid)
+
+        monkeypatch.setattr(gstatus, "terminate_pid", fake_terminate_pid)
+        monkeypatch.setattr(
+            "hermes_cli.main.terminate_pid", fake_terminate_pid, raising=False
+        )
+
+        token = main_module._pause_windows_gateways_for_update()
+
+        # Legacy non-SCM path keeps the planned-stop marker.
+        assert marker_writes == [(str(Path("/tmp/default_home")), 22222)]
+        # And does NOT route through SCM stop.
+        assert scm_calls == []
+        assert token is not None
+        assert "scm_managed_profiles" in token
+        assert token["scm_managed_profiles"] == {}
+
+    def test_resume_calls_scm_start_not_detached_for_service_profile(
+        self, monkeypatch
+    ):
+        """When a token marks a profile as SCM-managed, the resume path
+        must use ``start_service_for_hermes_home`` and MUST NOT call
+        ``launch_detached_profile_gateway_restart`` for that profile.
+        """
+        from hermes_cli import main as main_module
+
+        token = {
+            "resume_needed": True,
+            "profiles": {"coder": 12345},
+            "unmapped_pids": [],
+            "unmapped": [],
+            "scm_managed_profiles": {"coder": "/tmp/profiles/coder"},
+        }
+
+        calls = {
+            "start_service_for_home": [],
+            "launch_detached_profile_gateway_restart": [],
+        }
+
+        def fake_start_service_for_hermes_home(home):
+            calls["start_service_for_home"].append(home)
+            return True
+
+        def fake_launch_detached_profile_gateway_restart(profile, old_pid):
+            calls["launch_detached_profile_gateway_restart"].append((profile, old_pid))
+            return True
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service_for_hermes_home",
+            fake_start_service_for_hermes_home,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway.launch_detached_profile_gateway_restart",
+            fake_launch_detached_profile_gateway_restart,
+        )
+
+        main_module._resume_windows_gateways_after_update(token)
+
+        assert calls["start_service_for_home"] == ["/tmp/profiles/coder"], (
+            "SCM-managed profile must be restarted via "
+            "start_service_for_hermes_home, got "
+            f"{calls['start_service_for_home']}"
+        )
+        assert calls["launch_detached_profile_gateway_restart"] == [], (
+            "Must NOT call launch_detached_profile_gateway_restart for an "
+            f"SCM-managed profile; got {calls['launch_detached_profile_gateway_restart']}"
+        )
+
+    def test_resume_routes_named_profile_to_correct_service(self, monkeypatch):
+        """For multiple profiles with different HERMES_HOME, the resume
+        must route each SCM-managed profile to its OWN
+        ``start_service_for_hermes_home`` call (not to a single shared
+        active-profile service)."""
+        from hermes_cli import main as main_module
+
+        token = {
+            "resume_needed": True,
+            "profiles": {"coder": 100, "writer": 200, "default": 300},
+            "unmapped_pids": [],
+            "unmapped": [],
+            "scm_managed_profiles": {
+                "coder": "/tmp/profiles/coder",
+                "writer": "/tmp/profiles/writer",
+            },
+        }
+
+        calls = []
+
+        def fake_start_service_for_hermes_home(home):
+            calls.append(home)
+            return True
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service_for_hermes_home",
+            fake_start_service_for_hermes_home,
+        )
+        # If any non-SCM profile falls through to the legacy detached
+        # path, this list captures it.
+        detached_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.gateway.launch_detached_profile_gateway_restart",
+            lambda profile, old_pid: detached_calls.append((profile, old_pid)) or True,
+        )
+
+        main_module._resume_windows_gateways_after_update(token)
+
+        assert "/tmp/profiles/coder" in calls
+        assert "/tmp/profiles/writer" in calls
+        assert ("coder", 100) not in detached_calls
+        assert ("writer", 200) not in detached_calls
+        # Default profile is not SCM-managed — legacy detached path applies.
+        assert ("default", 300) in detached_calls
+
+    def test_resume_keeps_legacy_detached_path_for_manual_profile(
+        self, monkeypatch
+    ):
+        """Non-SCM profiles continue to use ``launch_detached_profile_gateway_restart``.
+        """
+        from hermes_cli import main as main_module
+
+        token = {
+            "resume_needed": True,
+            "profiles": {"default": 999},
+            "unmapped_pids": [],
+            "unmapped": [],
+            "scm_managed_profiles": {},
+        }
+
+        calls = {"scm_start": [], "detached": []}
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service_for_hermes_home",
+            lambda home: calls["scm_start"].append(home) or True,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway.launch_detached_profile_gateway_restart",
+            lambda profile, old_pid: calls["detached"].append((profile, old_pid)) or True,
+        )
+
+        main_module._resume_windows_gateways_after_update(token)
+
+        assert calls["scm_start"] == []
+        assert calls["detached"] == [("default", 999)]
+
+    def test_resume_cold_start_uses_scm_when_active_profile_service_registered(
+        self, monkeypatch
+    ):
+        """When no gateway was running but the active install has an
+        SCM service registered, cold-start must go through SCM StartService
+        (not ``_spawn_detached``), avoiding a parallel detached gateway.
+        """
+        from hermes_cli import main as main_module
+
+        token = {
+            "resume_needed": True,
+            "profiles": {},
+            "unmapped_pids": [],
+            "unmapped": [],
+            "scm_managed_profiles": {},
+            "cold_start_if_installed": True,
+            "cold_start_via_scm": True,
+        }
+
+        # Re-check liveness: no PID.
+        monkeypatch.setattr(
+            "hermes_cli.gateway.find_gateway_pids",
+            lambda all_profiles=False: [],
+        )
+
+        calls = {"scm_start": [], "spawn_detached": []}
+
+        def fake_start_service():
+            calls["scm_start"].append(True)
+            return True
+
+        def fake_spawn_detached():
+            calls["spawn_detached"].append(True)
+            return 1234
+
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows.start_service",
+            fake_start_service,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_windows._spawn_detached",
+            fake_spawn_detached,
+        )
+
+        main_module._resume_windows_gateways_after_update(token)
+
+        assert calls["scm_start"] == [True]
+        assert calls["spawn_detached"] == [], (
+            "Must NOT call _spawn_detached when SCM is registered; got "
+            f"{calls['spawn_detached']}"
+        )
+
+
+class TestServiceNameForHermesHome:
+    """get_service_name_for_hermes_home must mirror _profile_suffix so
+    the update pause/resume path resolves the correct SCM unit for any
+    profile, not just the active one.
+    """
+
+    def test_default_home_returns_default_service(self, tmp_path, monkeypatch):
+        from hermes_cli import gateway_windows
+
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root",
+            lambda: tmp_path,
+        )
+        name = gateway_windows.get_service_name_for_hermes_home(str(tmp_path))
+        assert name == "HermesGateway"
+
+    def test_named_profile_returns_suffixed_service(self, tmp_path, monkeypatch):
+        from hermes_cli import gateway_windows
+
+        default = tmp_path
+        profile_home = tmp_path / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            "hermes_constants.get_default_hermes_root",
+            lambda: default,
+        )
+        name = gateway_windows.get_service_name_for_hermes_home(str(profile_home))
+        assert name == "HermesGateway-coder"

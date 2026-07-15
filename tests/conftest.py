@@ -419,8 +419,9 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # handlers would keep prior tmpdirs open and fan later records into stale
     # homes. Tear the queue down before monkeypatch restores the environment.
     logging_mod = sys.modules.get("hermes_logging")
-    if logging_mod is not None:
-        logging_mod._reset_queued_handlers()
+    reset_queued_handlers = getattr(logging_mod, "_reset_queued_handlers", None)
+    if callable(reset_queued_handlers):
+        reset_queued_handlers()
         logging_mod._logging_initialized = False
 
 

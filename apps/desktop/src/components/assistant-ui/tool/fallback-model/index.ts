@@ -1380,9 +1380,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const baseSubtitle = error || toolSubtitle(viewPart, argsRecord, resultRecord)
 
   const keepSubtitleWithTitle =
-    toolName === 'terminal' ||
-    toolName === 'execute_code' ||
-    (isFileEditTool(toolName) && Boolean(baseSubtitle.trim()))
+    toolName === 'terminal' || toolName === 'execute_code' || (isFileEditTool(toolName) && Boolean(baseSubtitle.trim()))
 
   const subtitle = titleEnriched && !error && !keepSubtitleWithTitle ? '' : baseSubtitle
   const detailBody = stripDividerLines(toolDetailText(viewPart, argsRecord, resultRecord))

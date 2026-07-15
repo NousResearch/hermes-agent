@@ -333,7 +333,7 @@ describe('buildToolView title actions', () => {
   })
 
   it('keeps real MCP server tool names visible', () => {
-    const view = buildToolView(part({ result: undefined, toolName: 'mcp__filesystem_write_file' }), '')
+    const view = buildToolView(part({ result: undefined, toolName: 'mcp__filesystem__write_file' }), '')
 
     expect(view.title).toBe('Running filesystem write file')
   })

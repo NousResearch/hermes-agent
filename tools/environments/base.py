@@ -298,8 +298,21 @@ class BaseEnvironment(ABC):
     # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
     _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
 
+    # Backends that can inject secret env vars out-of-band at exec time
+    # (never on argv / in the snapshot) set this True in ``_run_bash``.
+    # Consumed by the terminal tool to gate ``env_secret_refs`` so a secret
+    # ref is never consumed for a backend that cannot deliver it.
+    supports_secret_env: bool = False
+
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
+
+    @property
+    def supports_secret_stdin(self) -> bool:
+        """True when stdin is delivered via a real pipe rather than embedded
+        in command text (heredoc/payload). Secret stdin is only safe on pipe
+        backends, since embedding would place the secret in the command."""
+        return self._stdin_mode == "pipe"
 
     def get_temp_dir(self) -> str:
         """Return the backend temp directory used for session artifacts.
@@ -333,11 +346,18 @@ class BaseEnvironment(ABC):
         login: bool = False,
         timeout: int = 120,
         stdin_data: str | None = None,
+        secret_env: dict[str, str] | None = None,
     ) -> ProcessHandle:
         """Spawn a bash process to run *cmd_string*.
 
         Returns a ProcessHandle (subprocess.Popen or _ThreadedProcessHandle).
         Must be overridden by every backend.
+
+        *secret_env*, when provided, holds ephemeral secret env vars that must
+        be injected into the command's environment out-of-band (never on the
+        command line / argv, never persisted to the session snapshot). Only
+        backends advertising :attr:`supports_secret_env` receive a non-empty
+        value; others may ignore it.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement _run_bash()")
 
@@ -926,31 +946,28 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        previous_env = None
-        transient_env_keys = None
-        if transient_env:
-            transient_env_keys = list(transient_env)
-            previous_env = {key: self.env.get(key) for key in transient_env}
-            self.env.update(transient_env)
+        # ``transient_env`` (e.g. secure-input secrets) is injected out-of-band
+        # by each backend's ``_run_bash`` at the process boundary — NOT written
+        # into ``self.env``. Writing to ``self.env`` only reaches the subprocess
+        # for the local backend (Popen ``env=``); Docker/Singularity/SSH read
+        # their environment from the session snapshot, so a ``self.env`` update
+        # would never reach the command while still consuming the secret ref.
+        # We still pass ``transient_env_keys`` to ``_wrap_command`` so the keys
+        # are ``unset`` before the snapshot is re-dumped and the value is never
+        # persisted to disk (see :meth:`_wrap_command`).
+        transient_env_keys = list(transient_env) if transient_env else None
 
         wrapped = self._wrap_command(exec_command, effective_cwd, transient_env_keys=transient_env_keys)
 
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
 
-        try:
-            proc = self._run_bash(
-                wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
-            )
-            result = self._wait_for_process(proc, timeout=effective_timeout)
-            self._update_cwd(result)
-        finally:
-            if previous_env is not None:
-                for key, old_value in previous_env.items():
-                    if old_value is None:
-                        self.env.pop(key, None)
-                    else:
-                        self.env[key] = old_value
+        proc = self._run_bash(
+            wrapped, login=login, timeout=effective_timeout,
+            stdin_data=effective_stdin, secret_env=transient_env,
+        )
+        result = self._wait_for_process(proc, timeout=effective_timeout)
+        self._update_cwd(result)
 
         return result
 

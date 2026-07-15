@@ -407,8 +407,14 @@ class ModalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None):
-        """Return a _ThreadedProcessHandle wrapping an async Modal sandbox exec."""
+                  stdin_data: str | None = None,
+                  secret_env: dict[str, str] | None = None):
+        """Return a _ThreadedProcessHandle wrapping an async Modal sandbox exec.
+
+        ``secret_env`` is ignored: this backend serializes execution through an
+        external API, so the terminal tool gates ``env_secret_refs`` off
+        (``supports_secret_env`` is False) and never passes a value here.
+        """
         sandbox = self._sandbox
         worker = self._worker
 

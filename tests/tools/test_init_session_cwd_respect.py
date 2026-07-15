@@ -25,7 +25,7 @@ class _TestableEnv(BaseEnvironment):
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
 
-    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None, secret_env=None):
         raise NotImplementedError("Use mock")
 
     def cleanup(self):
@@ -42,7 +42,7 @@ class TestInitSessionCwdRespect:
         # Capture the bootstrap script that init_session would pass to _run_bash
         captured = {}
 
-        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None, secret_env=None):
             captured["cmd"] = cmd_string
             mock = MagicMock()
             mock.poll.return_value = 0
@@ -81,7 +81,7 @@ class TestInitSessionCwdRespect:
 
         marker = env._cwd_marker
 
-        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None, secret_env=None):
             mock = MagicMock()
             mock.poll.return_value = 0
             mock.returncode = 0
@@ -106,7 +106,7 @@ class TestInitSessionCwdRespect:
 
         marker = env._cwd_marker
 
-        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None, secret_env=None):
             mock = MagicMock()
             mock.poll.return_value = 0
             mock.returncode = 0
@@ -128,7 +128,7 @@ class TestInitSessionCwdRespect:
 
         captured = {}
 
-        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+        def mock_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None, secret_env=None):
             captured["cmd"] = cmd_string
             mock = MagicMock()
             mock.poll.return_value = 0

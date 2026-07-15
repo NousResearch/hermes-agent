@@ -954,6 +954,41 @@ from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
 
+def _backend_class_for(env_type: str):
+    """Return the environment class for *env_type* without instantiating it, so
+    secure-input capability can be gated before the (possibly expensive)
+    backend is created. Returns None for unknown types."""
+    cls_map = {
+        "local": _LocalEnvironment,
+        "docker": _DockerEnvironment,
+        "singularity": _SingularityEnvironment,
+        "ssh": _SSHEnvironment,
+        "modal": _ModalEnvironment,
+    }
+    cls = cls_map.get(env_type)
+    if cls is None and env_type == "daytona":
+        try:
+            from tools.environments.daytona import DaytonaEnvironment as cls
+        except Exception:
+            cls = None
+    return cls
+
+
+def _backend_supports_secret_env(env_type: str) -> bool:
+    """True when the backend can inject secret env vars out-of-band (read from
+    the class-level ``supports_secret_env`` attribute)."""
+    cls = _backend_class_for(env_type)
+    return bool(getattr(cls, "supports_secret_env", False)) if cls else False
+
+
+def _backend_supports_secret_stdin(env_type: str) -> bool:
+    """True when the backend streams stdin via a real pipe (``_stdin_mode`` ==
+    "pipe") rather than embedding it in command text. Read at class level so it
+    works without an instance (mirrors BaseEnvironment.supports_secret_stdin)."""
+    cls = _backend_class_for(env_type)
+    return getattr(cls, "_stdin_mode", "pipe") == "pipe" if cls else False
+
+
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
 
@@ -2124,6 +2159,13 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
+        # Secure-input refs: validate structure and gate backend capability
+        # here (cheaply, before the backend is created), but do NOT consume the
+        # ref yet. Consumption is deferred until after approval + workdir
+        # validation (see the consumption block below) so that a denied,
+        # rejected, or capability-blocked command never burns a single-use ref —
+        # the broker marks a ref consumed on the first successful read and there
+        # is no un-consume.
         stdin_secret_value = None
         secret_env_values: Dict[str, str] = {}
         if stdin_secret_ref:
@@ -2134,7 +2176,7 @@ def terminal_tool(
                     "error": "stdin_secret_ref is only supported for foreground terminal commands.",
                     "status": "blocked",
                 }, ensure_ascii=False)
-            if env_type in {"modal", "daytona"}:
+            if not _backend_supports_secret_stdin(env_type):
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
@@ -2145,45 +2187,41 @@ def terminal_tool(
                     ),
                     "status": "blocked",
                 }, ensure_ascii=False)
-            try:
-                from agent.secure_input_broker import consume_secret
-
-                stdin_secret_value = consume_secret(stdin_secret_ref, consumer="terminal")
-            except Exception as exc:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": f"Invalid stdin_secret_ref: {exc}",
-                    "status": "blocked",
-                }, ensure_ascii=False)
-
         if env_secret_refs:
-            if env_type in {"modal", "daytona"}:
+            for _raw_key in env_secret_refs:
+                _key = str(_raw_key or "").strip()
+                if _key and not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", _key):
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": f"Invalid env_secret_refs: invalid env var name {_key!r}",
+                        "status": "blocked",
+                    }, ensure_ascii=False)
+            # Env injection needs an out-of-band channel. Foreground: the
+            # backend must advertise supports_secret_env. Background: only the
+            # local backend has a secure channel (spawn_local env_vars);
+            # non-local background runs through spawn_via_env, which has none.
+            if background:
+                if env_type != "local":
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": (
+                            "env_secret_refs are only supported for background "
+                            "commands on the local terminal backend. Run the "
+                            "command in the foreground, or use a local backend."
+                        ),
+                        "status": "blocked",
+                    }, ensure_ascii=False)
+            elif not _backend_supports_secret_env(env_type):
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
                     "error": (
-                        "env_secret_refs are not supported for terminal backends "
-                        "that may serialize command execution through external APIs. "
-                        "Use a local, Docker, Singularity, or SSH terminal backend."
+                        "env_secret_refs are not supported for this terminal "
+                        "backend (no out-of-band env channel). Use a local, "
+                        "Docker, or Singularity terminal backend."
                     ),
-                    "status": "blocked",
-                }, ensure_ascii=False)
-            try:
-                from agent.secure_input_broker import consume_secret
-
-                for key, ref in env_secret_refs.items():
-                    key = str(key or "").strip()
-                    if not key:
-                        continue
-                    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-                        raise ValueError(f"invalid env var name {key!r}")
-                    secret_env_values[key] = consume_secret(str(ref), consumer="terminal")
-            except Exception as exc:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": f"Invalid env_secret_refs: {exc}",
                     "status": "blocked",
                 }, ensure_ascii=False)
 
@@ -2369,6 +2407,41 @@ def terminal_tool(
                     "exit_code": -1,
                     "error": workdir_error,
                     "status": "blocked"
+                }, ensure_ascii=False)
+
+        # ------------------------------------------------------------------
+        # Consume secure-input secret refs — deferred to AFTER approval and
+        # workdir validation (and the early capability gate above) so a denied,
+        # rejected, or capability-blocked command never burns a single-use ref.
+        # This is the last gate before execution; nothing below returns without
+        # running the command.
+        # ------------------------------------------------------------------
+        if stdin_secret_ref:
+            try:
+                from agent.secure_input_broker import consume_secret
+                stdin_secret_value = consume_secret(stdin_secret_ref, consumer="terminal")
+            except Exception as exc:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Invalid stdin_secret_ref: {exc}",
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
+        if env_secret_refs:
+            try:
+                from agent.secure_input_broker import consume_secret
+                for key, ref in env_secret_refs.items():
+                    key = str(key or "").strip()
+                    if not key:
+                        continue
+                    secret_env_values[key] = consume_secret(str(ref), consumer="terminal")
+            except Exception as exc:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Invalid env_secret_refs: {exc}",
+                    "status": "blocked",
                 }, ensure_ascii=False)
 
         # Prepare command for execution

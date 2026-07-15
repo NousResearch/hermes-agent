@@ -948,9 +948,14 @@ class LocalEnvironment(BaseEnvironment):
         """Use native paths for Python, but Git Bash-friendly paths for cd."""
         return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
 
+    # Secret env vars are merged into the Popen ``env=`` mapping below — never
+    # placed on argv and never written to the session snapshot.
+    supports_secret_env = True
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  secret_env: dict[str, str] | None = None) -> subprocess.Popen:
         bash = _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /
@@ -964,6 +969,11 @@ class LocalEnvironment(BaseEnvironment):
                 cmd_string = _prepend_shell_init(cmd_string, init_files)
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
+        # Inject ephemeral secret env vars into the child environment only.
+        # These are not part of ``self.env`` (so they never reach the snapshot)
+        # and never appear on the command line.
+        if secret_env:
+            run_env.update(secret_env)
 
         # Recover when the cwd has been deleted out from under us — usually by
         # a previous tool call that ran ``rm -rf`` on its own working dir

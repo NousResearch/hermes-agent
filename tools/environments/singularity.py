@@ -229,9 +229,16 @@ class SingularityEnvironment(BaseEnvironment):
         except subprocess.TimeoutExpired:
             raise RuntimeError("Instance start timed out")
 
+    # Secret env vars are forwarded via the ``SINGULARITYENV_``/``APPTAINERENV_``
+    # convention: the launcher reads these from its own environment and strips
+    # the prefix inside the container, so the value never appears on argv or in
+    # the container snapshot.
+    supports_secret_env = True
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  secret_env: dict[str, str] | None = None) -> subprocess.Popen:
         """Spawn a bash process inside the Singularity instance."""
         if not self._instance_started:
             raise RuntimeError("Singularity instance not started")
@@ -242,6 +249,17 @@ class SingularityEnvironment(BaseEnvironment):
             cmd.extend(["bash", "-l", "-c", cmd_string])
         else:
             cmd.extend(["bash", "-c", cmd_string])
+
+        # Inject ephemeral secret env vars via the launcher's environment using
+        # both the Singularity and Apptainer prefixes for compatibility. The
+        # value is unset inside the container before the snapshot is re-dumped
+        # (see BaseEnvironment._wrap_command), so it is never persisted.
+        if secret_env:
+            popen_env = dict(os.environ)
+            for key, value in secret_env.items():
+                popen_env[f"SINGULARITYENV_{key}"] = value
+                popen_env[f"APPTAINERENV_{key}"] = value
+            return _popen_bash(cmd, stdin_data, env=popen_env)
 
         return _popen_bash(cmd, stdin_data)
 

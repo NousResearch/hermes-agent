@@ -2662,12 +2662,13 @@
       "data-task-id": t.id,
       className: cn(
         "hermes-kanban-card",
+        t.superseded_by ? "hermes-kanban-card--superseded" : "",
         props.selected ? "hermes-kanban-card--selected" : "",
         props.failed ? "hermes-kanban-card--failed" : "",
         props.draggingSource ? "hermes-kanban-card--dragging-source" : "",
         stalenessClass(t),
       ),
-      draggable: true,
+      draggable: !t.superseded_by,
       tabIndex: 0,
       role: "button",
       "aria-label": `${t.title || "untitled"} — ${t.id} — ${t.status}`,
@@ -2731,6 +2732,13 @@
                   className: "hermes-kanban-needs-assignee",
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
+              : null,
+            t.superseded_by
+              ? h(Badge, {
+                  variant: "outline",
+                  className: "hermes-kanban-superseded",
+                  title: `This task is obsolete and will not be dispatched. Replacement: ${t.superseded_by}`,
+                }, `Superseded → ${t.superseded_by}`)
               : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },

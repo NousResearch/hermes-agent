@@ -915,6 +915,9 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Replacement task that made this card obsolete. Superseded cards remain
+    # visible for audit/history but are never auto-promoted or dispatched.
+    superseded_by: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1001,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            superseded_by=(
+                row["superseded_by"]
+                if "superseded_by" in keys and row["superseded_by"]
+                else None
             ),
         )
 
@@ -1176,7 +1184,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Structured duplicate/replacement marker. A non-NULL target makes this
+    -- task terminal for dispatcher purposes while preserving its history.
+    superseded_by        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1985,6 +1996,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "superseded_by" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "superseded_by", "superseded_by TEXT"
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -3315,12 +3331,14 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, superseded_by "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if row["superseded_by"]:
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3441,6 +3459,7 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND superseded_by IS NULL
             """,
             (lock, expires, now, task_id),
         )
@@ -4977,6 +4996,120 @@ def block_task(
     return True
 
 
+_SUPERSEDED_BY_RE = re.compile(
+    r"\bsuperseded\s+by\s+(t_[0-9a-f]+)\b", re.IGNORECASE
+)
+
+
+def supersede_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    replacement_id: str,
+    *,
+    actor: str,
+) -> bool:
+    """Mark ``task_id`` as obsolete in favor of ``replacement_id``.
+
+    Active queue states are parked in ``blocked`` but retain a structured
+    marker so operators and dispatchers can distinguish them from actionable
+    blocked work. Running tasks must be stopped or blocked first.
+    """
+    if task_id == replacement_id:
+        raise ValueError("a task cannot supersede itself")
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, status FROM tasks WHERE id IN (?, ?)",
+            (task_id, replacement_id),
+        ).fetchall()
+        by_id = {row["id"]: row for row in rows}
+        if task_id not in by_id:
+            return False
+        if replacement_id not in by_id:
+            raise ValueError(f"replacement task {replacement_id} not found")
+        if by_id[task_id]["status"] == "running":
+            raise RuntimeError(
+                f"cannot supersede running task {task_id}; block or stop it first"
+            )
+        conn.execute(
+            "UPDATE tasks SET superseded_by = ?, "
+            "status = CASE WHEN status IN "
+            "('triage', 'todo', 'scheduled', 'ready', 'blocked', 'review') "
+            "THEN 'blocked' ELSE status END, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ?",
+            (replacement_id, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "superseded",
+            {"superseded_by": replacement_id, "actor": actor},
+        )
+    return True
+
+
+def clear_supersession(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+) -> bool:
+    """Clear a supersession marker without implicitly re-queueing the task."""
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT superseded_by FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row is None or not row["superseded_by"]:
+            return False
+        previous = row["superseded_by"]
+        conn.execute(
+            "UPDATE tasks SET superseded_by = NULL WHERE id = ?", (task_id,)
+        )
+        _append_event(
+            conn,
+            task_id,
+            "supersession_cleared",
+            {"previous": previous, "actor": actor},
+        )
+    return True
+
+
+def find_supersession_candidates(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Report legacy run summaries containing ``Superseded by t_<id>``.
+
+    The newest matching summary per task is returned. This is deliberately
+    read-only: operators must review the target and apply ``supersede_task``.
+    """
+    rows = conn.execute(
+        "SELECT r.task_id, r.summary, t.superseded_by "
+        "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.summary IS NOT NULL ORDER BY r.id DESC"
+    ).fetchall()
+    existing_ids = {
+        row["id"] for row in conn.execute("SELECT id FROM tasks").fetchall()
+    }
+    seen: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        task_id = row["task_id"]
+        if task_id in seen:
+            continue
+        match = _SUPERSEDED_BY_RE.search(row["summary"] or "")
+        if not match:
+            continue
+        seen.add(task_id)
+        replacement_id = match.group(1).lower()
+        candidates.append(
+            {
+                "task_id": task_id,
+                "superseded_by": replacement_id,
+                "summary": row["summary"],
+                "already_structured": row["superseded_by"] == replacement_id,
+                "replacement_exists": replacement_id in existing_ids,
+            }
+        )
+    return candidates
+
 
 def promote_task(
     conn: sqlite3.Connection,
@@ -4998,12 +5131,17 @@ def promote_task(
     promotion would succeed without mutating state.
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT status, superseded_by FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
 
     cur_status = row["status"]
+    if row["superseded_by"]:
+        return False, (
+            f"task {task_id} is superseded by {row['superseded_by']}; "
+            "clear the supersession marker before promoting it"
+        )
     if cur_status not in ("todo", "blocked"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
@@ -5061,9 +5199,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id, superseded_by FROM tasks "
+            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
+        if stale and stale["superseded_by"]:
+            return False
         if stale and stale["current_run_id"]:
             conn.execute(
                 """
@@ -7285,7 +7426,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
-        "    AND claim_lock IS NULL"
+        "    AND claim_lock IS NULL AND superseded_by IS NULL"
     ).fetchall()
     if not rows:
         return False
@@ -7480,6 +7621,7 @@ def _dispatch_once_locked(
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
+        "AND superseded_by IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     # Honour kanban.max_in_progress: if the board already has enough running

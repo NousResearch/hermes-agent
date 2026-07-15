@@ -41,6 +41,7 @@ _STATUS_ICONS = {
     "blocked":  "⊘",
     "done":     "✓",
     "archived": "—",
+    "superseded": "⇢",
 }
 
 
@@ -51,10 +52,15 @@ def _fmt_ts(ts: Optional[int]) -> str:
 
 
 def _fmt_task_line(t: kb.Task) -> str:
-    icon = _STATUS_ICONS.get(t.status, "?")
+    display_status = "superseded" if t.superseded_by else t.status
+    icon = _STATUS_ICONS.get(display_status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    replacement = f" → {t.superseded_by}" if t.superseded_by else ""
+    return (
+        f"{icon} {t.id}  {display_status:10s}  "
+        f"{assignee:20s}{tenant}  {t.title}{replacement}"
+    )
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -80,6 +86,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "superseded_by": t.superseded_by,
     }
 
 
@@ -617,6 +624,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit machine-readable JSON result",
     )
 
+    p_supersede = sub.add_parser(
+        "supersede",
+        help="Mark an obsolete task as replaced by another task",
+    )
+    p_supersede.add_argument("task_id")
+    p_supersede.add_argument("replacement_id")
+
+    p_unsupersede = sub.add_parser(
+        "unsupersede",
+        help="Clear a task's supersession marker without re-queueing it",
+    )
+    p_unsupersede.add_argument("task_id")
+
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
@@ -957,6 +977,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
             "promote":  _cmd_promote,
+            "supersede": _cmd_supersede,
+            "unsupersede": _cmd_unsupersede,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
             "dispatch": _cmd_dispatch,
@@ -1508,6 +1530,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     print(f"Task {task.id}: {task.title}")
     print(f"  status:    {task.status}")
+    if task.superseded_by:
+        print(f"  superseded-by: {task.superseded_by} (not dispatchable)")
     print(f"  assignee:  {task.assignee or '-'}")
     if task.tenant:
         print(f"  tenant:    {task.tenant}")
@@ -2066,6 +2090,43 @@ def _cmd_promote(args: argparse.Namespace) -> int:
         else:
             print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
     return 0 if not failed else 1
+
+
+def _cmd_supersede(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        try:
+            ok = kb.supersede_task(
+                conn,
+                args.task_id,
+                args.replacement_id,
+                actor=_profile_author(),
+            )
+        except (RuntimeError, ValueError) as exc:
+            print(f"cannot supersede {args.task_id}: {exc}", file=sys.stderr)
+            return 1
+    if not ok:
+        print(f"cannot supersede {args.task_id}: task not found", file=sys.stderr)
+        return 1
+    print(f"Superseded {args.task_id} by {args.replacement_id}")
+    return 0
+
+
+def _cmd_unsupersede(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        ok = kb.clear_supersession(
+            conn,
+            args.task_id,
+            actor=_profile_author(),
+        )
+    if not ok:
+        print(
+            f"cannot clear supersession for {args.task_id} "
+            "(task not found or not superseded)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Cleared supersession for {args.task_id}; task remains blocked")
+    return 0
 
 
 def _cmd_archive(args: argparse.Namespace) -> int:

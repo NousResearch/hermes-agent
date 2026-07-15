@@ -161,7 +161,7 @@ fallback_providers:
 ```yaml
 fallback_providers:
   - provider: openai-codex
-    model: gpt-5.3-codex
+    model: gpt-5.6-sol
 ```
 
 ### Where Fallback Works

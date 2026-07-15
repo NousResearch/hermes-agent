@@ -84,7 +84,7 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
-  codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
+  codex_gpt55_autoraise: true  # GPT-5.4/5.5/5.6 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
 
@@ -104,24 +104,25 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
-| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
-| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
+| `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for GPT-5.4, GPT-5.5, and GPT-5.6 family models on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
+| `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
 
-### Codex gpt-5.5 threshold autoraise
+### Codex GPT-5.4/5.5/5.6 threshold autoraise
 
-The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
-(the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
-GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
-half the window the model can actually use. When the active route is Codex
-OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
-trigger to **85%** (~231K) and shows a notice with the opt-out command. The
-notice is shown once per profile — a marker under `$HERMES_HOME`
-(`.codex_gpt55_autoraise_notice`) records that it ran, so repeated agent/session
-inits (e.g. every inbound gateway message) don't re-emit it; if the raised
-threshold later changes it re-notifies once. Only this exact route is affected;
-gpt-5.5 on any other provider keeps your global `threshold`. To opt back down to
-the global value:
+The ChatGPT Codex OAuth backend hard-caps GPT-5.4, GPT-5.5, and GPT-5.6
+family models at a **272K** context window (the same slugs can expose larger
+windows on OpenAI's direct API, OpenRouter, or GitHub Copilot). At the default
+50% trigger, compaction would fire at ~136K — half the window the model can
+actually use. When the active route is Codex OAuth (`provider: openai-codex`)
+and the model is in one of those families, Hermes raises the trigger to **85%**
+(~231K) and shows a notice with the opt-out command. The notice is shown once
+per profile — a marker under `$HERMES_HOME` (`.codex_gpt55_autoraise_notice`)
+records that it ran, so repeated agent/session inits (e.g. every inbound
+gateway message) don't re-emit it; if the raised threshold later changes it
+re-notifies once. The config key name is historical; only the Codex OAuth route
+is affected, and the same model families on other providers keep your global
+`threshold`. To opt back down to the global value:
 
 ```bash
 hermes config set compression.codex_gpt55_autoraise false

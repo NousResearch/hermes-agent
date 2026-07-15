@@ -1618,6 +1618,30 @@ class TestBankIdTemplate:
         assert p._bank_id == "hermes-coder"
         assert p._bank_id_template == "hermes-{profile}"
 
+    def test_provider_uses_chat_placeholder_in_template(self, tmp_path, monkeypatch):
+        # Regression: initialize() must pass chat_id through to the template
+        # resolver so that {chat} resolves to the real platform chat id.
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id": "fallback-bank",
+            "bank_id_template": "hermes-{chat}",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        p = HindsightMemoryProvider()
+        p.initialize(
+            session_id="s1",
+            hermes_home=str(tmp_path),
+            platform="telegram",
+            chat_id="999000001",
+        )
+        assert p._bank_id == "hermes-999000001"
+
     def test_provider_without_template_uses_static_bank_id(self, tmp_path, monkeypatch):
         config = {
             "mode": "cloud",

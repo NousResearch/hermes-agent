@@ -390,3 +390,46 @@ class TestRunJobTerminalCwd:
         # And after run_job completes, it's still the sentinel (nothing
         # overwrote or cleared it).
         assert os.environ["TERMINAL_CWD"] == before
+
+    def test_workdir_uses_job_workdir_for_prerun_script(self, tmp_path, monkeypatch):
+        """The agent pre-run script receives the configured child-process CWD."""
+        import importlib
+        import hermes_constants
+
+        home = tmp_path / ".hermes"
+        scripts_dir = home / "scripts"
+        scripts_dir.mkdir(parents=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        (scripts_dir / "pwd.py").write_text(
+            "from pathlib import Path\n"
+            "print(Path.cwd().resolve())\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        importlib.reload(hermes_constants)
+
+        import cron.scheduler as sched
+        importlib.reload(sched)
+
+        observed: dict = {}
+        self._install_stubs(monkeypatch, observed)
+
+        def capture_prerun_script(_job, prerun_script=None):
+            observed["prerun_script"] = prerun_script
+            return "hi"
+
+        monkeypatch.setattr(sched, "_build_job_prompt", capture_prerun_script)
+        job = {
+            "id": "pre-run-cwd",
+            "name": "pre-run cwd",
+            "prompt": "use collected data",
+            "model": "test-model",
+            "script": "pwd.py",
+            "workdir": str(project),
+            "schedule_display": "manual",
+        }
+
+        success, _output, _response, error = sched.run_job(job)
+
+        assert success is True, error
+        assert observed["prerun_script"] == (True, str(project.resolve()))

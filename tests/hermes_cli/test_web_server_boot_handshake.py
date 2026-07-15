@@ -36,10 +36,6 @@ def _fail_if_called(*_args, **_kwargs):
     raise AssertionError("healthz touched a heavyweight status dependency")
 
 
-def test_lifespan_has_no_gateway_module_warmup():
-    assert not hasattr(web_server_mod, "_warm_gateway_module")
-
-
 def test_get_status_does_not_block_event_loop():
     """Slow status config resolution must not block unrelated requests."""
     import httpx

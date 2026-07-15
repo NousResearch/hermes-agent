@@ -2058,7 +2058,11 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
             answer_present = rid in _answers
             answer = _answers.pop(rid, "")
 
-    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+    if not answered and not answer_present and event in {
+        "secret.request",
+        "sudo.request",
+        "terminal.read.request",
+    }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
             sid,
@@ -10253,7 +10257,12 @@ def _(rid, params: dict) -> dict:
 @method("terminal.read.respond")
 def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the serialized terminal buffer + line metadata.
-    return _respond(rid, params, "text")
+    # allow_expired=True: the read_terminal tool's _block() call uses a short
+    # 30s timeout (vs. 300s default), so a slow renderer losing the race is
+    # the common case, not an edge case — same reasoning as sudo/secret below.
+    # Without this, a late response after the tool already gave up on an
+    # empty string hits the generic "no pending text request" 4009 error.
+    return _respond(rid, params, "text", allow_expired=True)
 
 
 @method("sudo.respond")

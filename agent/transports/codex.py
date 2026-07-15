@@ -7,10 +7,20 @@ streaming, or the _run_codex_stream() call path.
 
 import hashlib
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+logger = logging.getLogger(__name__)
+
+# Kwargs that the Codex backend rejects with HTTP 400 for certain models
+# (currently GPT-5.5 / codex-gpt-5.5).  Shared with auxiliary_client.py.
+_CODEX_KWARG_STRIP_KEYS = ("reasoning", "include", "store")
+
+# Model prefixes that trigger kwarg stripping on the Codex backend.
+_CODEX_STRIP_MODEL_PREFIXES = ("gpt-5.5", "codex-gpt-5.5")
 
 
 def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
@@ -303,6 +313,25 @@ class ResponsesApiTransport(ProviderTransport):
         request_overrides = params.get("request_overrides")
         if request_overrides:
             kwargs.update(request_overrides)
+
+        # GPT-5.5 / codex-gpt-5.5 on the Codex backend rejects reasoning,
+        # include, and store kwargs with 400.  Strip them if present.
+        # Runs AFTER request_overrides so user-injected values are also
+        # cleaned.  See run_agent.py:_codex_gpt55_hang_hint() for the
+        # upstream symptom history (#21444, #32892).
+        model_lower = model.lower()
+        if is_codex_backend and any(
+            model_lower == p or model_lower.startswith(p + "-") or model_lower.startswith(p + ".")
+            for p in _CODEX_STRIP_MODEL_PREFIXES
+        ):
+            stripped = [k for k in _CODEX_KWARG_STRIP_KEYS if k in kwargs]
+            for _key in stripped:
+                kwargs.pop(_key)
+            if stripped:
+                logger.debug(
+                    "codex kwarg sanitize: stripped %s for model %s",
+                    stripped, model,
+                )
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

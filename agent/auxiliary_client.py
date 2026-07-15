@@ -978,6 +978,21 @@ class _CodexCompletionsAdapter:
                     }
                     resp_kwargs["include"] = ["reasoning.encrypted_content"]
 
+        # GPT-5.5 / codex-gpt-5.5 on the Codex backend rejects reasoning,
+        # include, and store kwargs with 400.  Mirror the stripping from
+        # agent/transports/codex.py so auxiliary callers (compression,
+        # flush_memories, MoA) targeting these models don't 400.
+        from agent.transports.codex import _CODEX_KWARG_STRIP_KEYS, _CODEX_STRIP_MODEL_PREFIXES
+
+        model_lower = model.lower()
+        if any(
+            model_lower == p or model_lower.startswith(p + "-") or model_lower.startswith(p + ".")
+            for p in _CODEX_STRIP_MODEL_PREFIXES
+        ):
+            stripped = [k for k in _CODEX_KWARG_STRIP_KEYS if k in resp_kwargs]
+            for _key in stripped:
+                resp_kwargs.pop(_key)
+
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:

@@ -5769,3 +5769,71 @@ class TestCustomEndpointApiKeyInheritance:
             )
 
         assert captured.get("api_key") == "no-key-required"
+
+
+# ---------------------------------------------------------------------------
+# GPT-5.5 kwarg stripping in auxiliary Codex adapter
+# ---------------------------------------------------------------------------
+
+
+class TestCodexAuxiliaryGpt55Stripping:
+    """_CodexCompletionsAdapter must strip reasoning/include/store for
+    GPT-5.5 on the Codex backend, matching the main transport behavior."""
+
+    @staticmethod
+    def _build_adapter(model="gpt-5.5"):
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        message_item = SimpleNamespace(
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[SimpleNamespace(type="output_text", text="hi")],
+        )
+        events = [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_item.done", item=message_item),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    status="completed",
+                    id="resp_test",
+                    usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self): return iter(events)
+            def close(self): pass
+
+        captured_kwargs = {}
+
+        def _create(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeCreateStream()
+
+        real_client = MagicMock()
+        real_client.responses.create = _create
+        adapter = _CodexCompletionsAdapter(real_client, model)
+        return adapter, captured_kwargs
+
+    def test_gpt55_strips_reasoning_and_include(self):
+        adapter, captured = self._build_adapter("gpt-5.5")
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "medium"}},
+        )
+        assert "reasoning" not in captured
+        assert "include" not in captured
+        assert "store" not in captured
+
+    def test_gpt54_preserves_reasoning(self):
+        adapter, captured = self._build_adapter("gpt-5.4")
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "medium"}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert "include" in captured

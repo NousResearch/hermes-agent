@@ -1712,3 +1712,70 @@ class TestRequireBoto3VersionCheck:
         with patch.dict("sys.modules", {"boto3": fake_boto3}):
             result = _require_boto3()
             assert result is fake_boto3
+
+
+# ---------------------------------------------------------------------------
+# Inference-profile dedup for the /model picker (#58185)
+# ---------------------------------------------------------------------------
+
+class TestDedupProfileCoveredIds:
+    """Bare foundation-model IDs covered by a profile must be dropped."""
+
+    def test_drops_bare_id_when_profile_present(self):
+        from agent.bedrock_adapter import _dedup_profile_covered_ids
+
+        ids = [
+            "global.anthropic.claude-fable-5",
+            "anthropic.claude-fable-5",
+        ]
+        result = _dedup_profile_covered_ids(ids)
+        assert "global.anthropic.claude-fable-5" in result
+        assert "anthropic.claude-fable-5" not in result
+
+    def test_keeps_uncovered_bare_ids(self):
+        from agent.bedrock_adapter import _dedup_profile_covered_ids
+
+        # No profile sibling for the titan model → keep it.
+        ids = [
+            "us.anthropic.claude-sonnet-4-6",
+            "anthropic.claude-sonnet-4-6",
+            "amazon.titan-text-express-v1",
+        ]
+        result = _dedup_profile_covered_ids(ids)
+        assert result == [
+            "us.anthropic.claude-sonnet-4-6",
+            "amazon.titan-text-express-v1",
+        ]
+
+    def test_dedups_across_all_regional_prefixes(self):
+        from agent.bedrock_adapter import _dedup_profile_covered_ids
+
+        ids = [
+            "eu.anthropic.claude-opus-4-6",
+            "anthropic.claude-opus-4-6",
+            "ap.amazon.nova-pro",
+            "amazon.nova-pro",
+        ]
+        result = _dedup_profile_covered_ids(ids)
+        assert result == ["eu.anthropic.claude-opus-4-6", "ap.amazon.nova-pro"]
+
+    def test_preserves_order_and_noop_without_profiles(self):
+        from agent.bedrock_adapter import _dedup_profile_covered_ids
+
+        ids = ["amazon.titan-text-express-v1", "cohere.command-r-v1:0"]
+        assert _dedup_profile_covered_ids(ids) == ids
+
+    def test_helper_applied_by_bedrock_model_ids_or_none(self):
+        from agent import bedrock_adapter
+
+        discovered = [
+            {"id": "global.anthropic.claude-fable-5", "provider": "inference-profile"},
+            {"id": "anthropic.claude-fable-5", "provider": "Anthropic"},
+        ]
+        with patch.object(
+            bedrock_adapter, "discover_bedrock_models", return_value=discovered
+        ), patch.object(
+            bedrock_adapter, "resolve_bedrock_region", return_value="us-east-1"
+        ):
+            result = bedrock_adapter.bedrock_model_ids_or_none()
+        assert result == ["global.anthropic.claude-fable-5"]

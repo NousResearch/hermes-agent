@@ -372,3 +372,46 @@ def test_pid_start_time_mismatch_prunes_reused_pid(tmp_path, monkeypatch):
         "new-session"
     ]
     lease.release()
+
+
+def test_touch_active_session_refreshes_lease_and_merges_metadata(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    now = iter([100.0, 130.0])
+    monkeypatch.setattr(active_sessions.time, "time", lambda: next(now))
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="session-live",
+        surface="desktop",
+        config={},
+        metadata={"live_session_id": "ui-1", "state": "idle"},
+    )
+    assert message is None
+    assert lease is not None
+
+    assert lease.touch({"state": "running", "latest_status": "Hermes is working…"}) is True
+    entry = active_sessions.active_session_registry_snapshot()[0]
+    assert entry["updated_at"] == 130.0
+    assert entry["metadata"] == {
+        "live_session_id": "ui-1",
+        "state": "running",
+        "latest_status": "Hermes is working…",
+    }
+
+
+def test_clear_stale_active_session_refuses_fresh_and_removes_stale(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(active_sessions.time, "time", lambda: 100.0)
+    lease, _ = active_sessions.try_acquire_active_session(
+        session_id="session-live",
+        surface="desktop",
+        config={},
+        metadata={"state": "running"},
+    )
+    assert lease is not None
+
+    assert active_sessions.clear_stale_active_session(lease.lease_id, now=200.0) == "active"
+    assert active_sessions.clear_stale_active_session(lease.lease_id, now=401.0) == "cleared"
+    assert active_sessions.active_session_registry_snapshot() == []
+    assert active_sessions.clear_stale_active_session(lease.lease_id, now=401.0) == "not_found"

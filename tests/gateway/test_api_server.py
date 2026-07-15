@@ -627,6 +627,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/active-sessions", adapter._handle_active_sessions)
+    app.router.add_delete("/v1/active-sessions/{lease_id}", adapter._handle_delete_active_session)
     app.router.add_put("/v1/mobile/devices/{installation_id}", adapter._handle_mobile_device_upsert)
     app.router.add_delete("/v1/mobile/devices/{installation_id}", adapter._handle_mobile_device_delete)
     app.router.add_get("/v1/skills", adapter._handle_skills)
@@ -1008,16 +1009,24 @@ class TestCapabilitiesEndpoint:
                 assert data["features"]["chat_completions"] is True
                 assert data["features"]["run_status"] is True
                 assert data["features"]["run_events_sse"] is True
+                assert data["features"]["run_event_replay"] is True
+                assert data["features"]["run_submission_idempotency"] is True
+                assert data["features"]["run_slash_commands"] is True
                 assert data["features"]["run_permission_mode"] is True
                 assert data["features"]["run_task_updates"] is True
                 assert data["features"]["run_subagent_updates"] is True
                 assert data["features"]["mobile_notifications"] is True
                 assert data["features"]["active_session_registry"] is True
+                assert data["features"]["active_session_cleanup"] is True
                 assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
                 assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
                 assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
                 assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
                 assert data["endpoints"]["active_sessions"]["path"] == "/v1/active-sessions"
+                assert data["endpoints"]["active_session_cleanup"] == {
+                    "method": "DELETE",
+                    "path": "/v1/active-sessions/{lease_id}",
+                }
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -1102,6 +1111,37 @@ class TestMobileControlPlane:
             }],
         ):
             assert adapter._active_mobile_sessions() == []
+
+    def test_active_sessions_omit_idle_surface_leases(self, adapter):
+        with patch(
+            "hermes_cli.active_sessions.active_session_registry_snapshot",
+            return_value=[{
+                "lease_id": "lease-idle",
+                "session_id": "session-idle",
+                "surface": "desktop",
+                "updated_at": time.time(),
+                "metadata": {"state": "idle"},
+            }],
+        ):
+            assert adapter._active_mobile_sessions() == []
+
+    @pytest.mark.asyncio
+    async def test_delete_active_session_only_clears_stale_lease(self, adapter):
+        app = _create_app(adapter)
+        with patch(
+            "hermes_cli.active_sessions.clear_stale_active_session",
+            side_effect=["active", "cleared", "not_found"],
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                active = await cli.delete("/v1/active-sessions/lease-1")
+                cleared = await cli.delete("/v1/active-sessions/lease-1")
+                cleared_data = await cleared.json()
+                missing = await cli.delete("/v1/active-sessions/lease-1")
+
+        assert active.status == 409
+        assert cleared.status == 200
+        assert cleared_data["cleared"] is True
+        assert missing.status == 404
 
     def test_mobile_session_title_uses_session_database(self, adapter):
         adapter._session_db = SimpleNamespace(
@@ -3508,6 +3548,7 @@ class TestCORS:
             )
             assert resp.status == 200
             assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
+            assert "Last-Event-ID" in resp.headers.get("Access-Control-Allow-Headers", "")
 
     @pytest.mark.asyncio
     async def test_cors_sets_vary_origin_header(self):

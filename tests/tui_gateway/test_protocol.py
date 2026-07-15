@@ -1015,6 +1015,28 @@ def test_sync_session_key_after_compress_reanchors_active_session_lease(
     lease.release()
 
 
+def test_touch_active_session_slot_reports_running_and_idle(server):
+    lease = MagicMock()
+    lease.touch.return_value = True
+    session = {"active_session_lease": lease}
+
+    assert server._touch_active_session_slot(
+        session,
+        state="running",
+        latest_status="Starting the task…",
+    ) is True
+    assert server._touch_active_session_slot(
+        session,
+        state="idle",
+        latest_status="",
+    ) is True
+
+    assert lease.touch.call_args_list == [
+        (({"state": "running", "latest_status": "Starting the task…"},), {}),
+        (({"state": "idle", "latest_status": ""},), {}),
+    ]
+
+
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
     """Live resume should not reuse a stale ancestor-inclusive snapshot."""
 

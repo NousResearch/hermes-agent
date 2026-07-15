@@ -260,6 +260,186 @@ class TestStartRun:
                 )
                 assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_idempotency_key_replays_same_run_without_duplicate_agent(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-submit-1"}
+                body = {"input": "hello", "session_id": "session-1"}
+
+                first = await cli.post("/v1/runs", json=body, headers=headers)
+                second = await cli.post("/v1/runs", json=body, headers=headers)
+                first_data = await first.json()
+                second_data = await second.json()
+
+                assert first.status == 202
+                assert second.status == 202
+                assert second_data["run_id"] == first_data["run_id"]
+                assert second_data["idempotent_replay"] is True
+                for _ in range(20):
+                    if mock_agent.run_conversation.call_count == 1:
+                        break
+                    await asyncio.sleep(0.05)
+                assert mock_agent.run_conversation.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_idempotency_key_rejects_different_run_payload(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "ok"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "mobile-submit-1"}
+
+                first = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                conflict = await cli.post("/v1/runs", json={"input": "different"}, headers=headers)
+                conflict_data = await conflict.json()
+
+                assert first.status == 202
+                assert conflict.status == 409
+                assert conflict_data["error"]["code"] == "idempotency_key_reused"
+
+    @pytest.mark.asyncio
+    async def test_installed_skill_slash_command_is_expanded_for_api_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch("agent.skill_commands.resolve_skill_command_key", return_value="/plan"),
+                patch("agent.skill_commands.build_skill_invocation_message", return_value="expanded plan skill"),
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "planned",
+                    "messages": [],
+                }
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "/plan ship the mobile release", "session_id": "session-plan"},
+                )
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        call = mock_agent.run_conversation.call_args.kwargs
+        assert call["user_message"] == "expanded plan skill"
+        assert call["persist_user_message"] == "/plan ship the mobile release"
+
+    @pytest.mark.asyncio
+    async def test_goal_slash_command_sets_goal_and_runs_the_judged_loop(self, adapter):
+        app = _create_runs_app(adapter)
+        contract = MagicMock()
+        contract.is_empty.return_value = True
+        manager = MagicMock()
+        manager.set.return_value = MagicMock(goal="ship the mobile release")
+        manager.evaluate_after_turn.return_value = {
+            "should_continue": False,
+            "message": "Goal achieved",
+        }
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent") as mock_create,
+                patch("hermes_cli.goals.GoalManager", return_value=manager),
+                patch("hermes_cli.goals.parse_contract", return_value=("ship the mobile release", contract)),
+            ):
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {
+                    "final_response": "shipped",
+                    "messages": [{"role": "assistant", "content": "shipped"}],
+                }
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "/goal ship the mobile release", "session_id": "session-goal"},
+                )
+                run_id = (await resp.json())["run_id"]
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        manager.set.assert_called_once_with("ship the mobile release", contract=None)
+        manager.evaluate_after_turn.assert_called_once_with("shipped", user_initiated=True)
+        call = mock_agent.run_conversation.call_args.kwargs
+        assert call["user_message"] == "ship the mobile release"
+        assert call["persist_user_message"] == "/goal ship the mobile release"
+
+    @pytest.mark.asyncio
+    async def test_goal_runs_for_one_session_are_serialized(self, adapter):
+        app = _create_runs_app(adapter)
+        entered = threading.Event()
+        release = threading.Event()
+        contract = MagicMock()
+        contract.is_empty.return_value = True
+        manager = MagicMock()
+        manager.set.return_value = MagicMock(goal="ship safely")
+        manager.evaluate_after_turn.return_value = {"should_continue": False, "message": "done"}
+
+        def run_conversation(**_kwargs):
+            entered.set()
+            release.wait(timeout=3)
+            return {"final_response": "done", "messages": []}
+
+        def make_agent():
+            agent = MagicMock()
+            agent.run_conversation.side_effect = run_conversation
+            agent.session_prompt_tokens = 0
+            agent.session_completion_tokens = 0
+            agent.session_total_tokens = 0
+            return agent
+
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_create_agent", side_effect=lambda **_kwargs: make_agent()),
+                patch("hermes_cli.goals.GoalManager", return_value=manager) as manager_factory,
+                patch("hermes_cli.goals.parse_contract", return_value=("ship safely", contract)),
+            ):
+                first = await cli.post(
+                    "/v1/runs",
+                    json={"input": "/goal ship safely", "session_id": "shared-goal"},
+                )
+                second = await cli.post(
+                    "/v1/runs",
+                    json={"input": "/goal ship safely", "session_id": "shared-goal"},
+                )
+                run_ids = [(await first.json())["run_id"], (await second.json())["run_id"]]
+                assert await asyncio.to_thread(entered.wait, 2)
+                await asyncio.sleep(0.05)
+                assert manager_factory.call_count == 1
+
+                release.set()
+                for _ in range(40):
+                    statuses = [await (await cli.get(f"/v1/runs/{run_id}")).json() for run_id in run_ids]
+                    if all(status["status"] == "completed" for status in statuses):
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert manager_factory.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/runs/{run_id} — poll run status
@@ -347,6 +527,82 @@ class TestRunStatus:
 
 
 class TestRunEvents:
+    @pytest.mark.asyncio
+    async def test_events_replay_after_last_event_id_for_reconnect(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_replay"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = time.time()
+        adapter._publish_run_event(run_id, {"event": "tool.started", "tool": "terminal"})
+        adapter._publish_run_event(run_id, {"event": "tool.completed", "tool": "terminal"})
+        adapter._close_run_event_stream(run_id)
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={"Last-Event-ID": "1"},
+            )
+            body = await response.text()
+
+        assert response.status == 200
+        assert "id: 1" not in body
+        assert "id: 2" in body
+        assert "tool.completed" in body
+        assert "tool.started" not in body
+
+    @pytest.mark.asyncio
+    async def test_completed_event_stream_can_be_read_by_multiple_subscribers(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_multi_subscriber"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = time.time()
+        adapter._publish_run_event(run_id, {"event": "run.completed", "output": "done"})
+        adapter._close_run_event_stream(run_id)
+
+        async with TestClient(TestServer(app)) as cli:
+            first = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+            second = await (await cli.get(f"/v1/runs/{run_id}/events")).text()
+
+        assert "run.completed" in first
+        assert "run.completed" in second
+
+    @pytest.mark.asyncio
+    async def test_connected_slow_subscriber_gets_explicit_cursor_expiry(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_slow_subscriber"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = time.time()
+        adapter._publish_run_event(run_id, {"event": "run.started"})
+
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get(
+                f"/v1/runs/{run_id}/events",
+                headers={"Last-Event-ID": "1"},
+            )
+            for index in range(adapter._RUN_EVENT_HISTORY_LIMIT + 1):
+                adapter._publish_run_event(run_id, {"event": "message.delta", "delta": str(index)})
+            adapter._close_run_event_stream(run_id)
+            body = await response.text()
+
+        assert "event: error" in body
+        assert "event_cursor_expired" in body
+        assert run_id not in adapter._run_stream_subscribers
+
+    @pytest.mark.asyncio
+    async def test_prepare_failure_does_not_register_subscriber(self, adapter):
+        app = _create_runs_app(adapter)
+        run_id = "run_prepare_failure"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams_created[run_id] = time.time()
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(web.StreamResponse, "prepare", side_effect=RuntimeError("disconnected")):
+                with pytest.raises(Exception):
+                    await cli.get(f"/v1/runs/{run_id}/events")
+
+        assert run_id not in adapter._run_stream_subscribers
+        assert run_id not in adapter._run_stream_subscriber_counts
+
     @pytest.mark.asyncio
     async def test_events_forward_subagent_thinking_only_when_enabled(self, adapter, monkeypatch):
         loop = asyncio.get_running_loop()

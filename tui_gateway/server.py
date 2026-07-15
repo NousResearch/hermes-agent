@@ -433,7 +433,7 @@ def _claim_active_session_slot(
             session_id=session_key,
             surface=surface,
             config=_load_cfg(),
-            metadata={"live_session_id": live_session_id},
+            metadata={"live_session_id": live_session_id, "state": "idle"},
         )
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -450,6 +450,53 @@ def _release_active_session_slot(session: dict | None) -> None:
         lease.release()
     except Exception:
         logger.debug("Failed to release active session slot", exc_info=True)
+
+
+def _touch_active_session_slot(
+    session: dict | None,
+    *,
+    state: str,
+    latest_status: str,
+) -> bool:
+    if not session:
+        return False
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return False
+    try:
+        return bool(lease.touch({"state": state, "latest_status": latest_status}))
+    except Exception:
+        logger.debug("Failed to heartbeat active session slot", exc_info=True)
+        return False
+
+
+def _start_active_session_heartbeat(session: dict) -> None:
+    """Refresh the lease while a desktop turn is genuinely executing."""
+    if session.get("_active_session_heartbeat"):
+        return
+    session["_active_session_heartbeat"] = True
+
+    def _heartbeat() -> None:
+        try:
+            while not session.get("_finalized"):
+                with session["history_lock"]:
+                    running = bool(session.get("running"))
+                if not running:
+                    return
+                _touch_active_session_slot(
+                    session,
+                    state="running",
+                    latest_status="Hermes is working…",
+                )
+                time.sleep(30)
+        finally:
+            session["_active_session_heartbeat"] = False
+
+    threading.Thread(
+        target=_heartbeat,
+        name="active-session-heartbeat",
+        daemon=True,
+    ).start()
 
 
 def _transfer_active_session_slot(
@@ -8518,6 +8565,13 @@ def _(rid, params: dict) -> dict:
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
+    _touch_active_session_slot(
+        session,
+        state="running",
+        latest_status="Starting the task…",
+    )
+    _start_active_session_heartbeat(session)
+
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
     # A branch becomes real here: copy its parent's transcript into the row so it
@@ -8540,12 +8594,18 @@ def _(rid, params: dict) -> dict:
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)
+            _touch_active_session_slot(session, state="idle", latest_status="")
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
-                return
+                cancelled = True
+            else:
+                cancelled = False
+        if cancelled:
+            _touch_active_session_slot(session, state="idle", latest_status="")
+            return
         _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
@@ -8951,6 +9011,12 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    _touch_active_session_slot(
+        session,
+        state="running",
+        latest_status="Hermes is working…",
+    )
+    _start_active_session_heartbeat(session)
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -9375,6 +9441,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["running"] = False
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
+            _touch_active_session_slot(session, state="idle", latest_status="")
             _emit("session.info", sid, _session_info(agent, session))
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over

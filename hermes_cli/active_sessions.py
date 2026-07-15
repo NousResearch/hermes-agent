@@ -230,6 +230,11 @@ class ActiveSessionLease:
             return
         release_active_session(self)
 
+    def touch(self, metadata: Optional[dict[str, Any]] = None) -> bool:
+        if self.released or not self.enabled:
+            return False
+        return touch_active_session(self, metadata=metadata)
+
 
 def try_acquire_active_session(
     *,
@@ -302,6 +307,75 @@ def release_active_session(lease: ActiveSessionLease) -> None:
                 _write_entries(state_path, kept)
     finally:
         lease.released = True
+
+
+def touch_active_session(
+    lease: ActiveSessionLease,
+    *,
+    metadata: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Refresh a live lease and merge bounded lifecycle metadata."""
+    if lease.released or not lease.enabled:
+        return False
+    state_path = _state_path()
+    with _FileLock(_lock_path()):
+        entries = _prune_dead(_read_entries(state_path))
+        updated = False
+        for entry in entries:
+            if str(entry.get("lease_id") or "") != lease.lease_id:
+                continue
+            entry["updated_at"] = time.time()
+            if metadata:
+                existing = entry.get("metadata")
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                merged.update({
+                    str(key): value
+                    for key, value in metadata.items()
+                    if isinstance(key, str)
+                })
+                entry["metadata"] = merged
+            updated = True
+            break
+        if updated:
+            _write_entries(state_path, entries)
+        return updated
+
+
+def clear_stale_active_session(
+    lease_id: str,
+    *,
+    stale_after_seconds: float = 300.0,
+    now: Optional[float] = None,
+) -> str:
+    """Remove one stale lease without allowing a live turn to be cleared."""
+    target = str(lease_id or "").strip()
+    if not target:
+        return "not_found"
+    current_time = time.time() if now is None else float(now)
+    state_path = _state_path()
+    with _FileLock(_lock_path()):
+        entries = _prune_dead(_read_entries(state_path))
+        target_entry = next(
+            (entry for entry in entries if str(entry.get("lease_id") or "") == target),
+            None,
+        )
+        if target_entry is None:
+            _write_entries(state_path, entries)
+            return "not_found"
+        metadata = target_entry.get("metadata")
+        state = str(metadata.get("state") or "") if isinstance(metadata, dict) else ""
+        updated_at = _optional_float(
+            target_entry.get("updated_at") or target_entry.get("started_at")
+        )
+        stale = updated_at is not None and current_time - updated_at >= stale_after_seconds
+        if state != "idle" and not stale:
+            _write_entries(state_path, entries)
+            return "active"
+        _write_entries(
+            state_path,
+            [entry for entry in entries if str(entry.get("lease_id") or "") != target],
+        )
+        return "cleared"
 
 
 def transfer_active_session(

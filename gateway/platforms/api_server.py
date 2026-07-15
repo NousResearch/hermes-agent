@@ -43,6 +43,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -555,7 +556,9 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, Last-Event-ID"
+    ),
 }
 
 
@@ -956,8 +959,20 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
-        # Runs with a connected SSE consumer; their queue is actively draining.
+        # Bounded replay state lets clients resume after Android/network loss.
+        self._run_event_history: Dict[str, Any] = {}
+        self._run_event_signals: Dict[str, "asyncio.Event"] = {}
+        self._run_event_next_ids: Dict[str, int] = {}
+        self._closed_run_streams: set[str] = set()
+        self._run_stream_subscriber_counts: Dict[str, int] = {}
+        # Runs with at least one connected SSE consumer.
         self._run_stream_subscribers: set[str] = set()
+        # Client submission keys prevent a lost 202 response from duplicating work.
+        self._run_submission_keys: Dict[str, tuple[str, str, float]] = {}
+        # Goal state is persisted per session, so autonomous goal loops sharing
+        # a session must not evaluate and overwrite the same snapshot concurrently.
+        self._goal_session_locks: Dict[str, threading.Lock] = {}
+        self._goal_session_locks_guard = threading.Lock()
         # Active run agent/task references for stop support
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
@@ -1760,6 +1775,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
+                "run_event_replay": True,
+                "run_submission_idempotency": True,
+                "run_slash_commands": True,
                 "run_stop": True,
                 "run_approval_response": True,
                 "run_reasoning_effort": True,
@@ -1771,6 +1789,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "approval_events": True,
                 "mobile_notifications": True,
                 "active_session_registry": True,
+                "active_session_cleanup": True,
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
@@ -1797,6 +1816,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "active_sessions": {"method": "GET", "path": "/v1/active-sessions"},
+                "active_session_cleanup": {"method": "DELETE", "path": "/v1/active-sessions/{lease_id}"},
                 "mobile_device": {"method": "PUT", "path": "/v1/mobile/devices/{installation_id}"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
@@ -4397,9 +4417,11 @@ class APIServerAdapter(BasePlatformAdapter):
     # /v1/runs — structured event streaming
     # ------------------------------------------------------------------
 
-    _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
+    _RUN_STREAM_TTL = 3600  # bounded replay window for disconnected clients
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
     _RUN_UNRESPONSIVE_AFTER = 300  # seconds without a client-visible run update
+    _RUN_EVENT_HISTORY_LIMIT = 512
+    _RUN_SUBMISSION_KEY_TTL = 3600
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -4415,6 +4437,45 @@ class APIServerAdapter(BasePlatformAdapter):
         current.update(fields)
         self._run_statuses[run_id] = current
         return current
+
+    def _publish_run_event(self, run_id: str, event: Dict[str, Any]) -> None:
+        """Append one numbered event to the bounded replay log and wake readers."""
+        if run_id not in self._run_streams:
+            return
+        from collections import deque
+
+        event_id = self._run_event_next_ids.get(run_id, 0) + 1
+        self._run_event_next_ids[run_id] = event_id
+        payload = dict(event)
+        payload["event_id"] = event_id
+        history = self._run_event_history.setdefault(
+            run_id,
+            deque(maxlen=self._RUN_EVENT_HISTORY_LIMIT),
+        )
+        history.append(payload)
+        queue = self._run_streams.get(run_id)
+        if queue is not None:
+            try:
+                queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(payload)
+                except (asyncio.QueueEmpty, asyncio.QueueFull):
+                    pass
+        self._run_event_signals.setdefault(run_id, asyncio.Event()).set()
+
+    def _close_run_event_stream(self, run_id: str) -> None:
+        if run_id not in self._run_streams:
+            return
+        self._closed_run_streams.add(run_id)
+        queue = self._run_streams.get(run_id)
+        if queue is not None:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+        self._run_event_signals.setdefault(run_id, asyncio.Event()).set()
 
     def _mobile_session_title(self, session_id: str) -> str:
         """Resolve a short session title without exposing message contents."""
@@ -4456,6 +4517,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 default=None,
             )
             state = str(run_status.get("status") or metadata.get("state") or "active")
+            if state == "idle":
+                continue
             latest_status = str(
                 metadata.get("latest_status")
                 or run_status.get("latest_status")
@@ -4514,6 +4577,30 @@ class APIServerAdapter(BasePlatformAdapter):
         sessions = self._active_mobile_sessions()
         return web.json_response({"object": "list", "active_count": len(sessions), "data": sessions})
 
+    async def _handle_delete_active_session(self, request: "web.Request") -> "web.Response":
+        """Clear one stale lease without permitting live work to be hidden."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from hermes_cli.active_sessions import clear_stale_active_session
+
+        lease_id = request.match_info["lease_id"]
+        result = clear_stale_active_session(lease_id)
+        if result == "not_found":
+            return web.json_response(
+                _openai_error("Active session not found", code="active_session_not_found"),
+                status=404,
+            )
+        if result == "active":
+            return web.json_response(
+                _openai_error(
+                    "Active session is still reporting recent work",
+                    code="active_session_still_live",
+                ),
+                status=409,
+            )
+        return web.json_response({"lease_id": lease_id, "cleared": True})
+
     async def _handle_mobile_device_upsert(self, request: "web.Request") -> "web.Response":
         auth_err = self._check_auth(request)
         if auth_err:
@@ -4561,11 +4648,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 **fields,
             )
-            q = self._run_streams.get(run_id)
-            if q is None:
+            if run_id not in self._run_streams:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                loop.call_soon_threadsafe(self._publish_run_event, run_id, event)
             except Exception:
                 pass
 
@@ -4761,12 +4847,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
-
         try:
             body = await request.json()
         except Exception:
@@ -4853,6 +4933,61 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
+        idempotency_key = str(request.headers.get("Idempotency-Key") or "").strip()
+        if len(idempotency_key) > 200:
+            return web.json_response(
+                _openai_error("Idempotency-Key is too long", code="invalid_idempotency_key"),
+                status=400,
+            )
+        idempotency_fingerprint = _make_request_fingerprint(
+            body,
+            keys=[
+                "input",
+                "session_id",
+                "conversation_history",
+                "instructions",
+                "previous_response_id",
+                "model",
+                "reasoning_effort",
+                "permission_mode",
+            ],
+        )
+        now = time.time()
+        if idempotency_key:
+            existing = self._run_submission_keys.get(idempotency_key)
+            if existing is not None:
+                fingerprint, existing_run_id, expires_at = existing
+                if expires_at <= now or existing_run_id not in self._run_statuses:
+                    self._run_submission_keys.pop(idempotency_key, None)
+                elif fingerprint != idempotency_fingerprint:
+                    return web.json_response(
+                        _openai_error(
+                            "Idempotency-Key was already used for a different run request",
+                            code="idempotency_key_reused",
+                        ),
+                        status=409,
+                    )
+                else:
+                    response_headers = (
+                        {"X-Hermes-Session-Key": gateway_session_key}
+                        if gateway_session_key else {}
+                    )
+                    return web.json_response(
+                        {
+                            "run_id": existing_run_id,
+                            "status": self._run_statuses[existing_run_id].get("status", "started"),
+                            "idempotent_replay": True,
+                        },
+                        status=202,
+                        headers=response_headers,
+                    )
+
+        # A replay is allowed even when the host is at capacity; genuinely new
+        # work is admitted only after the idempotency lookup above.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
+
         run_id = f"run_{uuid.uuid4().hex}"
         session_id = body.get("session_id") or stored_session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
@@ -4863,10 +4998,16 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue(
+            maxsize=self._RUN_EVENT_HISTORY_LIMIT,
+        )
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
+        self._run_event_history.pop(run_id, None)
+        self._run_event_signals[run_id] = asyncio.Event()
+        self._run_event_next_ids[run_id] = 0
+        self._closed_run_streams.discard(run_id)
         self._run_approval_sessions[run_id] = approval_session_key
 
         event_cb = self._make_run_event_callback(run_id, loop)
@@ -4874,7 +5015,10 @@ class APIServerAdapter(BasePlatformAdapter):
         def _put_event_if_active(event: Optional[Dict]) -> None:
             """Enqueue only while this run still owns live transport state."""
             if self._run_streams.get(run_id) is q:
-                q.put_nowait(event)
+                if event is None:
+                    self._close_run_event_stream(run_id)
+                else:
+                    self._publish_run_event(run_id, event)
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -4931,6 +5075,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if limit_message is not None:
             self._run_streams.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
+            self._run_event_history.pop(run_id, None)
+            self._run_event_signals.pop(run_id, None)
+            self._run_event_next_ids.pop(run_id, None)
+            self._closed_run_streams.discard(run_id)
             self._run_approval_sessions.pop(run_id, None)
             self._run_statuses.pop(run_id, None)
             return web.json_response(
@@ -5005,7 +5153,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "state": "waiting_for_approval",
                     })
                     try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
+                        loop.call_soon_threadsafe(self._publish_run_event, run_id, event)
                     except Exception:
                         pass
 
@@ -5023,6 +5171,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    goal_lock = None
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
@@ -5034,26 +5183,156 @@ class APIServerAdapter(BasePlatformAdapter):
                         register_gateway_notify(approval_session_key, _approval_notify)
                         if permission_mode == "full-access":
                             enable_session_yolo(approval_session_key)
-                        r = agent.run_conversation(
-                            user_message=user_message,
-                            conversation_history=conversation_history,
-                            task_id=effective_task_id,
-                        )
+                        effective_user_message = user_message
+                        goal_manager = None
+                        command_response = None
+                        if isinstance(user_message, str) and user_message.startswith("/"):
+                            command_name, _, command_args = user_message[1:].partition(" ")
+                            command_name = command_name.strip().lower().replace("_", "-")
+                            command_args = command_args.strip()
+                            if command_name == "goal":
+                                from hermes_cli.goals import GoalManager, parse_contract
+
+                                with self._goal_session_locks_guard:
+                                    goal_lock = self._goal_session_locks.setdefault(
+                                        str(session_id),
+                                        threading.Lock(),
+                                    )
+                                goal_lock.acquire()
+                                goal_manager = GoalManager(str(session_id))
+                                lower_args = command_args.lower()
+                                if not command_args or lower_args == "status":
+                                    command_response = goal_manager.status_line()
+                                elif lower_args == "show":
+                                    command_response = (
+                                        f"{goal_manager.status_line()}\n{goal_manager.render_contract()}"
+                                    )
+                                elif lower_args == "pause":
+                                    state = goal_manager.pause(reason="user-paused")
+                                    command_response = (
+                                        f"Goal paused: {state.goal}"
+                                        if state is not None else "No active goal to pause."
+                                    )
+                                elif lower_args in {"clear", "stop", "done"}:
+                                    had_goal = goal_manager.has_goal()
+                                    goal_manager.clear()
+                                    command_response = (
+                                        "Goal cleared." if had_goal else "No active goal."
+                                    )
+                                elif lower_args == "resume":
+                                    state = goal_manager.resume()
+                                    if state is None:
+                                        command_response = "No paused goal to resume."
+                                    else:
+                                        effective_user_message = (
+                                            goal_manager.next_continuation_prompt() or state.goal
+                                        )
+                                else:
+                                    headline, contract = parse_contract(command_args)
+                                    state = goal_manager.set(
+                                        headline or command_args,
+                                        contract=contract if not contract.is_empty() else None,
+                                    )
+                                    effective_user_message = state.goal
+                            else:
+                                from agent.skill_commands import (
+                                    build_skill_invocation_message,
+                                    resolve_skill_command_key,
+                                )
+
+                                skill_key = resolve_skill_command_key(command_name)
+                                if skill_key:
+                                    expanded = build_skill_invocation_message(
+                                        skill_key,
+                                        command_args,
+                                        task_id=str(effective_task_id),
+                                    )
+                                    if expanded:
+                                        effective_user_message = expanded
+
+                        if command_response is not None:
+                            db = self._ensure_session_db()
+                            if db is not None:
+                                db.append_message(str(session_id), "user", user_message)
+                                db.append_message(str(session_id), "assistant", command_response)
+                            r = {
+                                "final_response": command_response,
+                                "messages": conversation_history + [
+                                    {"role": "user", "content": user_message},
+                                    {"role": "assistant", "content": command_response},
+                                ],
+                                "completed": True,
+                                "failed": False,
+                            }
+                        else:
+                            run_kwargs = {
+                                "user_message": effective_user_message,
+                                "conversation_history": conversation_history,
+                                "task_id": effective_task_id,
+                            }
+                            if effective_user_message != user_message:
+                                run_kwargs["persist_user_message"] = user_message
+                            r = agent.run_conversation(**run_kwargs)
+                            goal_user_initiated = True
+                            while (
+                                goal_manager is not None
+                                and not r.get("failed")
+                                and run_id not in self._stopping_run_ids
+                            ):
+                                final_text = str(r.get("final_response") or "")
+                                decision = goal_manager.evaluate_after_turn(
+                                    final_text,
+                                    user_initiated=goal_user_initiated,
+                                )
+                                status_text = str(decision.get("message") or "").strip()
+                                if status_text:
+                                    loop.call_soon_threadsafe(
+                                        self._publish_run_event,
+                                        run_id,
+                                        {
+                                            "event": "reasoning.available",
+                                            "run_id": run_id,
+                                            "timestamp": time.time(),
+                                            "text": status_text,
+                                        },
+                                    )
+                                if not decision.get("should_continue"):
+                                    break
+                                continuation = str(
+                                    decision.get("continuation_prompt") or ""
+                                ).strip()
+                                if not continuation:
+                                    break
+                                next_history = r.get("messages")
+                                r = agent.run_conversation(
+                                    user_message=continuation,
+                                    conversation_history=(
+                                        next_history
+                                        if isinstance(next_history, list)
+                                        else conversation_history
+                                    ),
+                                    task_id=effective_task_id,
+                                )
+                                goal_user_initiated = False
                     finally:
                         try:
-                            unregister_gateway_notify(approval_session_key)
+                            try:
+                                unregister_gateway_notify(approval_session_key)
+                            finally:
+                                clear_session(approval_session_key)
+                                if approval_token is not None:
+                                    try:
+                                        reset_current_session_key(approval_token)
+                                    except Exception:
+                                        pass
+                                if session_tokens:
+                                    try:
+                                        clear_session_vars(session_tokens)
+                                    except Exception:
+                                        pass
                         finally:
-                            clear_session(approval_session_key)
-                            if approval_token is not None:
-                                try:
-                                    reset_current_session_key(approval_token)
-                                except Exception:
-                                    pass
-                            if session_tokens:
-                                try:
-                                    clear_session_vars(session_tokens)
-                                except Exception:
-                                    pass
+                            if goal_lock is not None:
+                                goal_lock.release()
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -5192,6 +5471,12 @@ class APIServerAdapter(BasePlatformAdapter):
         response_headers = (
             {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
+        if idempotency_key:
+            self._run_submission_keys[idempotency_key] = (
+                idempotency_fingerprint,
+                run_id,
+                created_at + self._RUN_SUBMISSION_KEY_TTL,
+            )
         return web.json_response(
             {"run_id": run_id, "status": "started"},
             status=202,
@@ -5214,7 +5499,7 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
-        """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
+        """Replay and stream numbered run events after the client's cursor."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -5229,8 +5514,27 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
 
-        q = self._run_streams[run_id]
-        self._run_stream_subscribers.add(run_id)
+        raw_cursor = request.headers.get("Last-Event-ID") or request.query.get("after") or "0"
+        try:
+            cursor = int(raw_cursor)
+            if cursor < 0:
+                raise ValueError(raw_cursor)
+        except (TypeError, ValueError):
+            return web.json_response(
+                _openai_error("Invalid run event cursor", code="invalid_event_cursor"),
+                status=400,
+            )
+        history = self._run_event_history.get(run_id, ())
+        if history:
+            earliest = int(history[0].get("event_id", 1))
+            if cursor and cursor < earliest - 1:
+                return web.json_response(
+                    _openai_error(
+                        "Run event cursor is older than the replay buffer",
+                        code="event_cursor_expired",
+                    ),
+                    status=409,
+                )
 
         response = web.StreamResponse(
             status=200,
@@ -5241,26 +5545,58 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         )
         await response.prepare(request)
+        self._run_stream_subscriber_counts[run_id] = (
+            self._run_stream_subscriber_counts.get(run_id, 0) + 1
+        )
+        self._run_stream_subscribers.add(run_id)
 
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    await response.write(b": keepalive\n\n")
-                    continue
-                if event is None:
-                    # Run finished — send final SSE comment and close
+                history = self._run_event_history.get(run_id, ())
+                if history:
+                    earliest = int(history[0].get("event_id", 1))
+                    if cursor and cursor < earliest - 1:
+                        error = _openai_error(
+                            "Run event cursor expired while streaming",
+                            code="event_cursor_expired",
+                        )
+                        await response.write(
+                            f"event: error\ndata: {json.dumps(error)}\n\n".encode()
+                        )
+                        break
+                pending = [
+                    event for event in history
+                    if int(event.get("event_id", 0)) > cursor
+                ]
+                for event in pending:
+                    event_id = int(event.get("event_id", 0))
+                    payload = f"id: {event_id}\ndata: {json.dumps(event)}\n\n"
+                    await response.write(payload.encode())
+                    cursor = event_id
+
+                latest_id = self._run_event_next_ids.get(run_id, 0)
+                if run_id in self._closed_run_streams and cursor >= latest_id:
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+
+                signal = self._run_event_signals.setdefault(run_id, asyncio.Event())
+                signal.clear()
+                latest_id = self._run_event_next_ids.get(run_id, 0)
+                if latest_id > cursor or run_id in self._closed_run_streams:
+                    continue
+                try:
+                    await asyncio.wait_for(signal.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            self._run_stream_subscribers.discard(run_id)
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            remaining = self._run_stream_subscriber_counts.get(run_id, 1) - 1
+            if remaining <= 0:
+                self._run_stream_subscriber_counts.pop(run_id, None)
+                self._run_stream_subscribers.discard(run_id)
+            else:
+                self._run_stream_subscriber_counts[run_id] = remaining
 
         return response
 
@@ -5338,10 +5674,9 @@ class APIServerAdapter(BasePlatformAdapter):
             last_event="approval.responded",
             latest_status="Continuing after approval…",
         )
-        q = self._run_streams.get(run_id)
-        if q is not None:
+        if run_id in self._run_streams:
             try:
-                q.put_nowait({
+                self._publish_run_event(run_id, {
                     "event": "approval.responded",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -5420,6 +5755,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # independent and survives until the executor-backed task returns.
             self._run_streams.pop(run_id, None)
             self._run_streams_created.pop(run_id, None)
+            self._run_event_history.pop(run_id, None)
+            self._run_event_signals.pop(run_id, None)
+            self._run_event_next_ids.pop(run_id, None)
+            self._closed_run_streams.discard(run_id)
+            self._run_stream_subscriber_counts.pop(run_id, None)
             if task_done:
                 self._active_run_agents.pop(run_id, None)
                 self._active_run_tasks.pop(run_id, None)
@@ -5434,6 +5774,9 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+        for key, (_fingerprint, run_id, expires_at) in list(self._run_submission_keys.items()):
+            if expires_at <= now or run_id not in self._run_statuses:
+                self._run_submission_keys.pop(key, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
@@ -5503,6 +5846,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/active-sessions", self._handle_active_sessions)
+            self._app.router.add_delete("/v1/active-sessions/{lease_id}", self._handle_delete_active_session)
             self._app.router.add_put("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_upsert)
             self._app.router.add_delete("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_delete)
             self._app.router.add_get("/v1/skills", self._handle_skills)

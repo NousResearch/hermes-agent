@@ -74,8 +74,10 @@ class DispatcherClient:
         timeout_s: float = DEFAULT_DISPATCHER_TIMEOUT_S,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
-        self._path = socket_path or os.environ.get(
-            "DISPATCHER_SOCKET_PATH", _resolve_default_socket()
+        self._path = (
+            socket_path
+            or os.environ.get("DISPATCHER_SOCKET_PATH")
+            or _resolve_default_socket()
         )
         self._timeout_s = timeout_s
         self._max_retries = max_retries
@@ -242,6 +244,10 @@ class DispatcherClient:
             raise ConnectionError(
                 f"dispatcher closed before sending response: {e}"
             ) from e
+        except asyncio.LimitOverrunError:
+            raise DispatcherConnectionError(
+                "dispatcher response exceeded line buffer limit"
+            )
 
         return Envelope.from_jsonl(line)
 

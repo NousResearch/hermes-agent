@@ -9701,6 +9701,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # to normal message handling rather than blocking the user.
         _disp_cmds = getattr(self, "_dispatcher_commands", frozenset())
         if command and _disp_cmds and command in _disp_cmds:
+            # Gate: check access before forwarding to dispatcher
+            _denied = self._check_slash_access(source, command)
+            if _denied is not None:
+                return _denied
             result = await self._forward_to_dispatcher(event, command)
             if result is not None:
                 return result

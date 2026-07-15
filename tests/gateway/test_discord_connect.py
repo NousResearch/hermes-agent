@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1076,3 +1077,175 @@ async def test_safe_sync_detects_contexts_drift():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_awaited_once_with(999, 77)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+async def _connected_adapter_for_message_filter(monkeypatch, *, free_channels=None):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    if free_channels is None:
+        adapter.config.extra.pop("free_response_channels", None)
+        monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    else:
+        adapter.config.extra["free_response_channels"] = free_channels
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", free_channels)
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_is_allowed_user", lambda *args, **kwargs: True)
+    adapter._handle_message = AsyncMock()
+
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+
+    assert await adapter.connect() is True
+    return adapter, created["bot"]
+
+
+def _other_bot_mention_message(*, content, channel_id=123, parent_id=None, message_id=456):
+    other_bot = SimpleNamespace(id=111, bot=True)
+    return SimpleNamespace(
+        id=message_id,
+        author=SimpleNamespace(id=42, bot=False),
+        channel=SimpleNamespace(id=channel_id, parent_id=parent_id),
+        content=content,
+        mentions=[other_bot],
+        type=discord_platform.discord.MessageType.default,
+    )
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_allows_inline_other_bot_mention(monkeypatch):
+    """Free-response channels should not drop quoted/inline bot mentions."""
+    adapter, bot = await _connected_adapter_for_message_filter(monkeypatch, free_channels="123")
+    message = _other_bot_mention_message(
+        content="> old rule mentions <@111>\nplease handle this here",
+    )
+
+    await bot._events["on_message"](message)
+
+    adapter._handle_message.assert_awaited_once_with(message, role_authorized=False)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_free_response_thread_inherits_parent_for_inline_other_bot_mention(monkeypatch):
+    """Parent free-response config should apply to thread messages."""
+    adapter, bot = await _connected_adapter_for_message_filter(monkeypatch, free_channels="999")
+    message = _other_bot_mention_message(
+        content="context mentions <@111>, but this is for Hermes",
+        parent_id=999,
+        message_id=457,
+    )
+
+    await bot._events["on_message"](message)
+
+    adapter._handle_message.assert_awaited_once_with(message, role_authorized=False)
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_free_response_channel_yields_when_message_starts_with_other_bot_mention(monkeypatch):
+    """Even free-response channels should yield when another bot is directly addressed."""
+    adapter, bot = await _connected_adapter_for_message_filter(monkeypatch, free_channels="123")
+    message = _other_bot_mention_message(
+        content="<@111> please handle this",
+        message_id=458,
+    )
+
+    await bot._events["on_message"](message)
+
+    adapter._handle_message.assert_not_awaited()
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_normal_channel_still_ignores_other_bot_mentions(monkeypatch):
+    """Non-free-response channels retain the multi-agent mention guard."""
+    adapter, bot = await _connected_adapter_for_message_filter(monkeypatch, free_channels=None)
+    message = _other_bot_mention_message(
+        content="inline mention <@111> should still be ignored here",
+        message_id=459,
+    )
+
+    await bot._events["on_message"](message)
+
+    adapter._handle_message.assert_not_awaited()
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_free_response_inline_other_bot_mention_reaches_platform_event(monkeypatch):
+    """E2E-ish regression: on_message -> _handle_message -> handle_message."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    adapter.config.extra["free_response_channels"] = "123"
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "123")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+    monkeypatch.setattr(adapter, "_is_allowed_user", lambda *args, **kwargs: True)
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+
+    intents = SimpleNamespace(
+        message_content=False,
+        dm_messages=False,
+        guild_messages=False,
+        members=False,
+        voice_states=False,
+    )
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+
+    assert await adapter.connect() is True
+
+    other_bot = SimpleNamespace(id=111, bot=True)
+    message = SimpleNamespace(
+        id=460,
+        author=SimpleNamespace(id=42, bot=False, display_name="Ace", name="Ace"),
+        channel=SimpleNamespace(
+            id=123,
+            parent_id=None,
+            name="hermes-migration",
+            guild=SimpleNamespace(id=555, name="Pincer Club"),
+            topic=None,
+        ),
+        guild=SimpleNamespace(id=555, name="Pincer Club"),
+        content="> OpenClaw legacy note mentioned <@111>\nthis is for Hermes",
+        mentions=[other_bot],
+        attachments=[],
+        reference=None,
+        created_at=datetime.now(timezone.utc),
+        type=discord_platform.discord.MessageType.default,
+    )
+
+    await created["bot"]._events["on_message"](message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "> OpenClaw legacy note mentioned <@111>\nthis is for Hermes"
+    assert event.source.chat_id == "123"
+    assert event.source.chat_type == "group"
+    assert event.source.message_id == "460"
+    await adapter.disconnect()

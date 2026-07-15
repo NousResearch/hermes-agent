@@ -238,6 +238,32 @@ def test_emit_without_payload(capture):
     assert "payload" not in json.loads(buf.getvalue())["params"]
 
 
+def test_emit_mirrors_user_visible_activity_to_the_shared_journal(capture, monkeypatch):
+    server, _ = capture
+    writes = []
+
+    class _Store:
+        def append(self, **event):
+            writes.append(event)
+
+    monkeypatch.setattr("gateway.session_activity.SessionActivityStore", _Store)
+    server._sessions["s1"] = {
+        "session_key": "desktop-session",
+        "activity_turn_id": "turn-1",
+        "inflight_turn": {"user": "please implement this", "started_at": 1},
+    }
+
+    server._emit("message.start", "s1")
+    server._emit("tool.start", "s1", {"tool_id": "call-1", "name": "write_file"})
+
+    assert [(event["event_type"], event["session_id"]) for event in writes] == [
+        ("message.start", "desktop-session"),
+        ("tool.start", "desktop-session"),
+    ]
+    assert writes[0]["payload"]["user_text"] == "please implement this"
+    assert writes[1]["payload"]["tool_id"] == "call-1"
+
+
 # ── Blocking prompt round-trip ───────────────────────────────────────
 
 

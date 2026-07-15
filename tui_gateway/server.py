@@ -138,6 +138,134 @@ _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run un
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
+
+
+def _activity_safe_text(value: Any, limit: int = 2_000) -> str:
+    """Return redacted, bounded text suitable for the shared activity journal."""
+    from agent.redact import redact_sensitive_text
+
+    return redact_sensitive_text(str(value or ""), force=True)[:limit]
+
+
+def _activity_workspace_changes(diff: str | None) -> list[dict[str, Any]]:
+    """Project a local edit diff into a bounded mobile-safe representation."""
+    if not diff:
+        return []
+    safe_diff = _activity_safe_text(diff, 2_000_000)
+    changes: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in safe_diff.splitlines(keepends=True):
+        if line.startswith("+++ "):
+            path = line[4:].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+            if len(changes) >= 100:
+                break
+            current = {"path": path[:320], "additions": 0, "deletions": 0, "diff": ""}
+            changes.append(current)
+        if current is None:
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            current["additions"] += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            current["deletions"] += 1
+        if len(current["diff"]) < 20_000:
+            current["diff"] += line[:20_000 - len(current["diff"])]
+    return changes
+
+
+def _record_tui_activity(event: str, sid: str, payload: dict | None) -> None:
+    """Mirror safe TUI/Desktop activity into the durable cross-process feed."""
+    session = _sessions.get(sid)
+    if not session:
+        return
+    session_id = str(session.get("session_key") or "").strip()
+    if not session_id:
+        return
+    turn = session.get("inflight_turn")
+    started_at = turn.get("started_at") if isinstance(turn, dict) else None
+    turn_id = str(session.get("activity_turn_id") or "")
+    if not turn_id:
+        turn_id = f"tui:{sid}:{int(float(started_at or time.time()) * 1000)}"
+        session["activity_turn_id"] = turn_id
+    source = payload if isinstance(payload, dict) else {}
+    mapped: str | None = None
+    safe: dict[str, Any] = {}
+    if event == "message.start":
+        mapped = "message.start"
+        safe = {"user_text": _activity_safe_text((turn or {}).get("user"), 4_000)}
+    elif event == "message.delta":
+        mapped = "message.delta"
+        safe = {"delta": _activity_safe_text(source.get("text"), 4_000)}
+    elif event == "message.complete":
+        mapped = "message.complete"
+        safe = {
+            "text": _activity_safe_text(source.get("text"), 20_000),
+            "status": _activity_safe_text(source.get("status"), 80),
+        }
+    elif event in {"reasoning.delta", "thinking.delta", "reasoning.available"}:
+        mapped = "reasoning.available" if event == "reasoning.available" else "reasoning.delta"
+        safe = {"text": _activity_safe_text(source.get("text"), 4_000)}
+    elif event == "tool.start":
+        mapped = event
+        safe = {
+            "tool_id": _activity_safe_text(source.get("tool_id"), 160),
+            "name": _activity_safe_text(source.get("name"), 120),
+            "context": _activity_safe_text(source.get("context"), 360),
+        }
+    elif event == "tool.complete":
+        mapped = event
+        safe = {
+            "tool_id": _activity_safe_text(source.get("tool_id"), 160),
+            "name": _activity_safe_text(source.get("name"), 120),
+            "duration_s": source.get("duration_s"),
+            "summary": _activity_safe_text(source.get("summary"), 360),
+            "todos": source.get("todos") if isinstance(source.get("todos"), list) else [],
+            "workspace_changes": source.get("workspace_changes") if isinstance(source.get("workspace_changes"), list) else [],
+        }
+    elif event.startswith("subagent."):
+        mapped = event
+        allowed = {
+            "subagent_id", "parent_id", "child_session_id", "depth", "model",
+            "task_count", "task_index", "tool_count", "status", "summary",
+            "goal", "tool_name", "duration_seconds", "input_tokens", "output_tokens",
+            "reasoning_tokens", "api_calls", "files_read", "files_written", "text",
+        }
+        for key, value in source.items():
+            if key not in allowed:
+                continue
+            if isinstance(value, str):
+                safe[key] = _activity_safe_text(value, 2_000)
+            elif isinstance(value, (bool, int, float)):
+                safe[key] = value
+            elif isinstance(value, list):
+                safe[key] = [_activity_safe_text(item, 320) for item in value[:100]]
+    elif event == "approval.request":
+        mapped = event
+        safe = {"choices": list(source.get("choices") or [])}
+    elif event == "status.update":
+        mapped = event
+        safe = {
+            "kind": _activity_safe_text(source.get("kind"), 80),
+            "text": _activity_safe_text(source.get("text"), 2_000),
+        }
+    elif event == "error":
+        mapped = "status.error"
+        safe = {"message": _activity_safe_text(source.get("message"), 2_000)}
+    if mapped is None:
+        return
+    try:
+        from gateway.session_activity import SessionActivityStore
+
+        SessionActivityStore().append(
+            session_id=session_id,
+            turn_id=turn_id,
+            event_type=mapped,
+            payload=safe,
+            surface="tui_gateway",
+        )
+    except Exception:
+        logger.debug("Unable to record TUI session activity", exc_info=True)
 _cfg_path = None
 _session_resume_lock = threading.Lock()
 try:
@@ -1202,6 +1330,7 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     params = {"type": event, "session_id": sid}
     if payload is not None:
         params["payload"] = payload
+    _record_tui_activity(event, sid, payload)
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
@@ -3248,6 +3377,13 @@ def _sync_session_key_after_compress(
         )
 
     try:
+        from gateway.session_activity import SessionActivityStore
+
+        SessionActivityStore().rekey_session(old_key, new_session_id)
+    except Exception:
+        logger.debug("Could not rekey session activity after compression", exc_info=True)
+
+    try:
         from tools.approval import (
             disable_session_yolo,
             enable_session_yolo,
@@ -3755,7 +3891,15 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         except Exception:
             pass
     try:
-        from agent.display import render_edit_diff_with_delta
+        from agent.display import extract_edit_diff, render_edit_diff_with_delta
+
+        raw_diff = extract_edit_diff(
+            name,
+            result,
+            function_args=args,
+            snapshot=snapshot,
+        )
+        payload["workspace_changes"] = _activity_workspace_changes(raw_diff)
 
         rendered: list[str] = []
         if render_edit_diff_with_delta(
@@ -9061,6 +9205,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
+        session["activity_turn_id"] = f"tui:{sid}:{time.time_ns()}"
     agent = session["agent"]
     if hasattr(agent, "clear_interrupt"):
         try:

@@ -984,6 +984,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
+        # Durable, cross-process activity feed used by the mobile client to
+        # mirror TUI/Desktop-visible work without taking over their transport.
+        self._session_activity_store: Optional[Any] = None
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
@@ -1350,6 +1353,49 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
+
+    def _activity_store(self):
+        """Lazily initialise the shared activity journal.
+
+        The TUI backend and API server may be separate processes.  The store
+        therefore lives under the Hermes home, rather than in a run-local SSE
+        buffer that disappears when a client reconnects or changes surface.
+        """
+        if self._session_activity_store is None:
+            from gateway.session_activity import SessionActivityStore
+
+            self._session_activity_store = SessionActivityStore()
+        return self._session_activity_store
+
+    @staticmethod
+    def _safe_activity_text(value: Any, limit: int = 2_000) -> str:
+        """Keep journal text user-visible, bounded, and redacted."""
+        text = redact_sensitive_text(str(value or ""), force=True)
+        return " ".join(text.split())[:limit]
+
+    def _record_session_activity(
+        self,
+        *,
+        session_id: Any,
+        turn_id: Any,
+        event_type: str,
+        payload: Optional[Dict[str, Any]] = None,
+        surface: str,
+        submission_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort journal write that must never interrupt agent work."""
+        try:
+            return self._activity_store().append(
+                session_id=str(session_id or ""),
+                turn_id=str(turn_id or ""),
+                event_type=event_type,
+                payload=payload,
+                surface=surface,
+                submission_id=submission_id,
+            )
+        except Exception:
+            logger.debug("Unable to record session activity", exc_info=True)
+            return None
 
     # ------------------------------------------------------------------
     # Agent creation helper
@@ -1767,6 +1813,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     "explicit split-runtime mode is enabled."
                 ),
             },
+            "extensions": {
+                "hermes.mobile": {
+                    "version": "1.1",
+                    "features": {
+                        "session_activity_history": True,
+                        "session_activity_stream": True,
+                    },
+                },
+            },
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
@@ -1794,6 +1849,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "session_activity_history": True,
+                "session_activity_stream": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -1827,6 +1884,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "session_activity": {"method": "GET", "path": "/v1/sessions/{session_id}/activity"},
+                "session_activity_events": {"method": "GET", "path": "/v1/sessions/{session_id}/activity/events"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
@@ -2113,6 +2172,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         deleted = db.delete_session(session_id)
+        if deleted:
+            try:
+                self._activity_store().delete_session(session_id)
+            except Exception:
+                logger.debug("Unable to delete session activity", exc_info=True)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
@@ -4544,6 +4608,11 @@ class APIServerAdapter(BasePlatformAdapter):
             ):
                 state = "unresponsive"
                 latest_status = latest_status or "No recent activity — the run may be stalled"
+            activity_cursor = None
+            try:
+                activity_cursor = self._activity_store().latest_cursor(session_id)
+            except Exception:
+                logger.debug("Unable to read activity cursor", exc_info=True)
             sessions.append({
                 "lease_id": str(entry.get("lease_id") or ""),
                 "session_id": session_id,
@@ -4553,6 +4622,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_id": run_id,
                 "latest_status": latest_status,
                 "status_history": status_history,
+                "activity_cursor": activity_cursor,
+                "activity_turn_id": run_id or None,
                 "started_at": entry.get("started_at"),
                 "updated_at": updated_at,
             })
@@ -4590,6 +4661,109 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
         sessions = self._active_mobile_sessions()
         return web.json_response({"object": "list", "active_count": len(sessions), "data": sessions})
+
+    @staticmethod
+    def _parse_activity_cursor(value: Any) -> Optional[int]:
+        if value in {None, ""}:
+            return None
+        try:
+            cursor = int(str(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid activity event cursor") from exc
+        if cursor < 0:
+            raise ValueError("Invalid activity event cursor")
+        return cursor
+
+    async def _handle_session_activity(self, request: "web.Request") -> "web.Response":
+        """Return retained, cross-surface activity for a Hermes session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = str(request.match_info["session_id"] or "").strip()
+        try:
+            before = self._parse_activity_cursor(request.query.get("before"))
+            limit = int(request.query.get("limit", "100"))
+            if limit < 1 or limit > 512:
+                raise ValueError("Activity limit must be between 1 and 512")
+        except (TypeError, ValueError) as exc:
+            return web.json_response(
+                _openai_error(str(exc), code="invalid_activity_cursor"), status=400
+            )
+        events = await asyncio.to_thread(
+            self._activity_store().events,
+            session_id,
+            before_event_id=before,
+            limit=limit,
+        )
+        return web.json_response({
+            "object": "hermes.session.activity.list",
+            "session_id": session_id,
+            "data": events,
+            "next_before": events[0]["event_id"] if events else None,
+        })
+
+    async def _handle_session_activity_events(self, request: "web.Request") -> "web.StreamResponse":
+        """Replay and then poll the durable journal as Server-Sent Events."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = str(request.match_info["session_id"] or "").strip()
+        try:
+            cursor = self._parse_activity_cursor(
+                request.headers.get("Last-Event-ID") or request.query.get("after")
+            )
+            await asyncio.to_thread(
+                self._activity_store().assert_cursor_available, session_id, cursor
+            )
+        except ValueError as exc:
+            from gateway.session_activity import ActivityCursorExpired
+
+            code = "activity_cursor_expired" if isinstance(exc, ActivityCursorExpired) else "invalid_activity_cursor"
+            return web.json_response(
+                _openai_error(str(exc), code=code),
+                status=409 if code == "activity_cursor_expired" else 400,
+            )
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        cursor = cursor or 0
+        keepalive_at = time.monotonic() + 20.0
+        try:
+            while True:
+                try:
+                    events = await asyncio.to_thread(
+                        self._activity_store().events,
+                        session_id,
+                        after_event_id=cursor,
+                        limit=512,
+                    )
+                except Exception as exc:
+                    logger.debug("Activity SSE journal read failed", exc_info=True)
+                    await response.write(
+                        f"event: error\ndata: {json.dumps(_openai_error(str(exc), code='activity_stream_error'))}\n\n".encode()
+                    )
+                    break
+                for event in events:
+                    cursor = int(event["event_id"])
+                    await response.write(
+                        f"id: {cursor}\nevent: activity\ndata: {json.dumps(event)}\n\n".encode()
+                    )
+                if time.monotonic() >= keepalive_at:
+                    await response.write(b": keepalive\n\n")
+                    keepalive_at = time.monotonic() + 20.0
+                await asyncio.sleep(0.5)
+        except (asyncio.CancelledError, ConnectionError):
+            raise
+        except Exception as exc:
+            logger.debug("Activity SSE stream ended for session %s: %s", session_id, exc)
+        return response
 
     async def _handle_delete_active_session(self, request: "web.Request") -> "web.Response":
         """Clear one stale lease without permitting live work to be hidden."""
@@ -4648,9 +4822,27 @@ class APIServerAdapter(BasePlatformAdapter):
         deleted = MobileDeviceStore().delete(request.match_info["installation_id"])
         return web.json_response({"deleted": deleted})
 
-    def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
+    def _make_run_event_callback(
+        self,
+        run_id: str,
+        loop: "asyncio.AbstractEventLoop",
+        *,
+        session_id: Optional[str] = None,
+        submission_id: Optional[str] = None,
+    ):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         thinking_progress_enabled = self._thinking_progress_enabled()
+
+        def _record(event_type: str, payload: Dict[str, Any]) -> None:
+            if session_id:
+                self._record_session_activity(
+                    session_id=session_id,
+                    turn_id=run_id,
+                    submission_id=submission_id,
+                    event_type=event_type,
+                    payload=payload,
+                    surface="api_server",
+                )
 
         def _push(event: Dict[str, Any]) -> None:
             fields: Dict[str, Any] = {"last_event": event.get("event")}
@@ -4672,22 +4864,24 @@ class APIServerAdapter(BasePlatformAdapter):
         def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
             ts = time.time()
             if event_type == "tool.started":
-                _push({
+                event = {
                     "event": "tool.started",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "preview": preview,
-                })
+                }
+                _push(event)
             elif event_type == "tool.completed":
-                _push({
+                event = {
                     "event": "tool.completed",
                     "run_id": run_id,
                     "timestamp": ts,
                     "tool": tool_name,
                     "duration": round(kwargs.get("duration", 0), 3),
                     "error": kwargs.get("is_error", False),
-                })
+                }
+                _push(event)
                 if tool_name == "todo":
                     tasks = self._safe_todo_tasks(kwargs.get("result"))
                     if tasks:
@@ -4697,13 +4891,16 @@ class APIServerAdapter(BasePlatformAdapter):
                             "timestamp": ts,
                             "tasks": tasks,
                         })
+                        _record("tasks.updated", {"tasks": tasks})
             elif event_type == "reasoning.available":
-                _push({
+                event = {
                     "event": "reasoning.available",
                     "run_id": run_id,
                     "timestamp": ts,
                     "text": preview or "",
-                })
+                }
+                _push(event)
+                _record("reasoning.available", {"text": self._safe_activity_text(preview)})
             elif event_type == "_thinking" and thinking_progress_enabled:
                 text = preview or tool_name or ""
                 if text:
@@ -4713,6 +4910,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": ts,
                         "text": text,
                     })
+                    _record("reasoning.available", {"text": self._safe_activity_text(text)})
             elif event_type.startswith("subagent."):
                 subagent = self._safe_subagent_update(
                     event_type,
@@ -4728,6 +4926,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": ts,
                         "subagent": subagent,
                     })
+                    _record(event_type, {"subagent": subagent})
 
         return _callback
 
@@ -4795,6 +4994,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 continue
             tasks.append({"id": task_id, "content": content, "status": status})
         return tasks
+
+    @staticmethod
+    def _safe_workspace_changes(diff: Any) -> List[Dict[str, Any]]:
+        """Project a unified diff into a bounded, redacted mobile payload."""
+        if not isinstance(diff, str) or not diff.strip():
+            return []
+        safe_diff = redact_sensitive_text(diff, force=True)
+        changes: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+        for line in safe_diff.splitlines(keepends=True):
+            if line.startswith("+++ "):
+                path = line[4:].strip()
+                if path.startswith("b/"):
+                    path = path[2:]
+                if len(changes) >= 100:
+                    break
+                current = {"path": path[:320], "additions": 0, "deletions": 0, "diff": ""}
+                changes.append(current)
+            if current is None:
+                continue
+            if line.startswith("+") and not line.startswith("+++"):
+                current["additions"] += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                current["deletions"] += 1
+            if len(current["diff"]) < 20_000:
+                current["diff"] += line[:20_000 - len(current["diff"])]
+        return changes
 
     @staticmethod
     def _safe_subagent_update(
@@ -5024,7 +5250,69 @@ class APIServerAdapter(BasePlatformAdapter):
         self._closed_run_streams.discard(run_id)
         self._run_approval_sessions[run_id] = approval_session_key
 
-        event_cb = self._make_run_event_callback(run_id, loop)
+        event_cb = self._make_run_event_callback(
+            run_id,
+            loop,
+            session_id=str(session_id),
+            submission_id=idempotency_key or None,
+        )
+        tool_started_at: Dict[str, float] = {}
+        edit_snapshots: Dict[str, Any] = {}
+
+        def _on_tool_start(tool_call_id: str, name: str, args: Dict[str, Any]) -> None:
+            tool_id = str(tool_call_id or "")
+            tool_started_at[tool_id] = time.time()
+            try:
+                from agent.display import capture_local_edit_snapshot
+
+                snapshot = capture_local_edit_snapshot(name, args)
+                if snapshot is not None:
+                    edit_snapshots[tool_id] = snapshot
+            except Exception:
+                logger.debug("Could not snapshot API tool edit", exc_info=True)
+            self._record_session_activity(
+                session_id=session_id,
+                turn_id=run_id,
+                submission_id=idempotency_key or None,
+                event_type="tool.start",
+                payload={
+                    "tool_id": self._safe_activity_text(tool_id, 160),
+                    "name": self._safe_activity_text(name, 120),
+                },
+                surface="api_server",
+            )
+
+        def _on_tool_complete(tool_call_id: str, name: str, args: Dict[str, Any], result: Any) -> None:
+            tool_id = str(tool_call_id or "")
+            started_at = tool_started_at.pop(tool_id, None)
+            duration_s = max(0.0, time.time() - started_at) if started_at is not None else None
+            workspace_changes: List[Dict[str, Any]] = []
+            try:
+                from agent.display import extract_edit_diff
+
+                diff = extract_edit_diff(
+                    name,
+                    result if isinstance(result, str) else json.dumps(result, default=str),
+                    function_args=args,
+                    snapshot=edit_snapshots.pop(tool_id, None),
+                )
+                workspace_changes = self._safe_workspace_changes(diff)
+            except Exception:
+                logger.debug("Could not extract API tool diff", exc_info=True)
+            self._record_session_activity(
+                session_id=session_id,
+                turn_id=run_id,
+                submission_id=idempotency_key or None,
+                event_type="tool.complete",
+                payload={
+                    "tool_id": self._safe_activity_text(tool_id, 160),
+                    "name": self._safe_activity_text(name, 120),
+                    "duration_s": round(duration_s, 3) if duration_s is not None else None,
+                    "failed": bool(isinstance(result, dict) and result.get("error")),
+                    "workspace_changes": workspace_changes,
+                },
+                surface="api_server",
+            )
 
         def _put_event_if_active(event: Optional[Dict]) -> None:
             """Enqueue only while this run still owns live transport state."""
@@ -5058,6 +5346,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 })
             except Exception:
                 pass
+            self._record_session_activity(
+                session_id=session_id,
+                turn_id=run_id,
+                submission_id=idempotency_key or None,
+                event_type="message.delta",
+                payload={"delta": redact_sensitive_text(str(delta), force=True)[:4_000]},
+                surface="api_server",
+            )
 
         response_started = False
         self._set_run_status(
@@ -5067,6 +5363,14 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             model=body.get("model", self._model_name),
             latest_status="Queued…",
+        )
+        self._record_session_activity(
+            session_id=session_id,
+            turn_id=run_id,
+            submission_id=idempotency_key or None,
+            event_type="message.start",
+            payload={"user_text": self._safe_activity_text(user_message, 4_000)},
+            surface="api_server",
         )
 
         # Per-client model routing for /v1/runs (see model_routes).
@@ -5101,6 +5405,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 headers={"Retry-After": "1"},
             )
         async def _run_and_close():
+            rotated_session_id: Optional[str] = None
             try:
                 self._set_run_status(run_id, "running", latest_status="Starting the task…")
                 self._queue_mobile_notification({
@@ -5128,6 +5433,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    tool_start_callback=_on_tool_start,
+                    tool_complete_callback=_on_tool_complete,
                     gateway_session_key=gateway_session_key,
                     route=route,
                     reasoning_override=reasoning_override,
@@ -5170,6 +5477,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         loop.call_soon_threadsafe(self._publish_run_event, run_id, event)
                     except Exception:
                         pass
+                    self._record_session_activity(
+                        session_id=session_id,
+                        turn_id=run_id,
+                        submission_id=idempotency_key or None,
+                        event_type="approval.request",
+                        payload={"choices": list(event.get("choices") or [])},
+                        surface="api_server",
+                    )
 
                 def _run_sync():
                     from gateway.session_context import clear_session_vars
@@ -5355,6 +5670,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                effective_session_id = (
+                    str(result.get("session_id") or "").strip()
+                    if isinstance(result, dict)
+                    else ""
+                )
+                if effective_session_id and effective_session_id != str(session_id):
+                    rotated_session_id = effective_session_id
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -5383,6 +5705,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         error=error_msg,
                         last_event="run.failed",
                     )
+                    self._record_session_activity(
+                        session_id=session_id,
+                        turn_id=run_id,
+                        submission_id=idempotency_key or None,
+                        event_type="status.error",
+                        payload={"message": self._safe_activity_text(error_msg)},
+                        surface="api_server",
+                    )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                     _put_event_if_active({
@@ -5399,6 +5729,14 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.completed",
                     )
+                    self._record_session_activity(
+                        session_id=session_id,
+                        turn_id=run_id,
+                        submission_id=idempotency_key or None,
+                        event_type="message.complete",
+                        payload={"text": self._safe_activity_text(final_response, 20_000)},
+                        surface="api_server",
+                    )
             except asyncio.CancelledError:
                 self._set_run_status(
                     run_id,
@@ -5413,6 +5751,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
                 except Exception:
                     pass
+                self._record_session_activity(
+                    session_id=session_id,
+                    turn_id=run_id,
+                    submission_id=idempotency_key or None,
+                    event_type="status.cancelled",
+                    payload={},
+                    surface="api_server",
+                )
                 raise
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
@@ -5431,8 +5777,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     })
                 except Exception:
                     pass
+                self._record_session_activity(
+                    session_id=session_id,
+                    turn_id=run_id,
+                    submission_id=idempotency_key or None,
+                    event_type="status.error",
+                    payload={"message": self._safe_activity_text(exc)},
+                    surface="api_server",
+                )
             finally:
                 terminal_status = self._run_statuses.get(run_id, {}).get("status", "completed")
+                if rotated_session_id:
+                    try:
+                        self._activity_store().rekey_session(str(session_id), rotated_session_id)
+                    except Exception:
+                        logger.debug("Unable to rekey activity after session rotation", exc_info=True)
                 terminal_event = {
                     "failed": "session.failed",
                     "cancelled": "session.cancelled",
@@ -5860,6 +6219,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/active-sessions", self._handle_active_sessions)
+            self._app.router.add_get("/v1/sessions/{session_id}/activity", self._handle_session_activity)
+            self._app.router.add_get("/v1/sessions/{session_id}/activity/events", self._handle_session_activity_events)
             self._app.router.add_delete("/v1/active-sessions/{lease_id}", self._handle_delete_active_session)
             self._app.router.add_put("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_upsert)
             self._app.router.add_delete("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_delete)

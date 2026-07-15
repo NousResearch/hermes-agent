@@ -36,6 +36,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from gateway.session_activity import SessionActivityStore
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +628,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/active-sessions", adapter._handle_active_sessions)
+    app.router.add_get("/v1/sessions/{session_id}/activity", adapter._handle_session_activity)
+    app.router.add_get("/v1/sessions/{session_id}/activity/events", adapter._handle_session_activity_events)
     app.router.add_delete("/v1/active-sessions/{lease_id}", adapter._handle_delete_active_session)
     app.router.add_put("/v1/mobile/devices/{installation_id}", adapter._handle_mobile_device_upsert)
     app.router.add_delete("/v1/mobile/devices/{installation_id}", adapter._handle_mobile_device_delete)
@@ -1018,6 +1021,9 @@ class TestCapabilitiesEndpoint:
                 assert data["features"]["mobile_notifications"] is True
                 assert data["features"]["active_session_registry"] is True
                 assert data["features"]["active_session_cleanup"] is True
+                assert data["features"]["session_activity_history"] is True
+                assert data["features"]["session_activity_stream"] is True
+                assert data["extensions"]["hermes.mobile"]["version"] == "1.1"
                 assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
                 assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
                 assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
@@ -1026,6 +1032,9 @@ class TestCapabilitiesEndpoint:
                 assert data["endpoints"]["active_session_cleanup"] == {
                     "method": "DELETE",
                     "path": "/v1/active-sessions/{lease_id}",
+                }
+                assert data["endpoints"]["session_activity_events"] == {
+                    "method": "GET", "path": "/v1/sessions/{session_id}/activity/events",
                 }
 
     @pytest.mark.asyncio
@@ -1045,6 +1054,56 @@ class TestCapabilitiesEndpoint:
 
 
 class TestMobileControlPlane:
+    @pytest.mark.asyncio
+    async def test_session_activity_history_is_authenticated_and_paginated(self, auth_adapter, tmp_path):
+        auth_adapter._session_activity_store = SessionActivityStore(tmp_path / "activity.db")
+        auth_adapter._record_session_activity(
+            session_id="session-a",
+            turn_id="turn-a",
+            event_type="tool.complete",
+            payload={"tool_id": "call-1", "name": "write_file"},
+            surface="tui_gateway",
+        )
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            unauthenticated = await cli.get("/v1/sessions/session-a/activity")
+            assert unauthenticated.status == 401
+            response = await cli.get(
+                "/v1/sessions/session-a/activity?limit=1",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert response.status == 200
+            data = await response.json()
+            assert data["session_id"] == "session-a"
+            assert data["data"][0]["type"] == "tool.complete"
+            assert data["data"][0]["payload"]["tool_id"] == "call-1"
+
+    @pytest.mark.asyncio
+    async def test_session_activity_stream_replays_retained_events(self, auth_adapter, tmp_path):
+        auth_adapter._session_activity_store = SessionActivityStore(tmp_path / "activity.db")
+        recorded = auth_adapter._record_session_activity(
+            session_id="session-a",
+            turn_id="turn-a",
+            event_type="reasoning.available",
+            payload={"text": "Checking the current task"},
+            surface="tui_gateway",
+        )
+        assert recorded is not None
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get(
+                "/v1/sessions/session-a/activity/events",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert response.status == 200
+            assert "text/event-stream" in response.headers.get("Content-Type", "")
+            chunk = await asyncio.wait_for(response.content.readuntil(b"\n\n"), timeout=1)
+            assert f"id: {recorded['event_id']}".encode() in chunk
+            assert b"event: activity" in chunk
+            assert b"Checking the current task" in chunk
+            response.close()
+
     @pytest.mark.asyncio
     async def test_register_and_unregister_device(self, adapter):
         app = _create_app(adapter)

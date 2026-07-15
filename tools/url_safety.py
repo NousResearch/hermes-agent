@@ -203,6 +203,25 @@ def _embedded_ipv4_is_blocked(embedded_ip: ipaddress.IPv4Address) -> bool:
             embedded_ip in _CGNAT_NETWORK)
 
 
+def _is_always_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if ``ip`` is in the non-negotiable metadata/link-local floor.
+
+    This floor is enforced even when ``allow_private_urls`` is on — the config
+    that skips ``_is_blocked_ip()`` in ``is_safe_url()``. A NAT64 Well-Known
+    Prefix address (``64:ff9b::169.254.169.254``, RFC 6052) would otherwise slip
+    past the literal ``_ALWAYS_BLOCKED_IPS`` / ``_ALWAYS_BLOCKED_NETWORKS``
+    membership test, because those sets hold the bare IPv4 metadata endpoints,
+    not their NAT64-wrapped form. Unwrap the attacker-controllable embedded IPv4
+    from the low 32 bits and re-check it against the floor so the mandatory
+    metadata block holds in every configuration.
+    """
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_NETWORK:
+        ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    return ip in _ALWAYS_BLOCKED_IPS or any(
+        ip in net for net in _ALWAYS_BLOCKED_NETWORKS
+    )
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
     # IPv4-mapped IPv6 addresses (``::ffff:x.x.x.x``) should be checked
@@ -283,9 +302,7 @@ def is_always_blocked_url(url: str) -> bool:
             ip = None
 
         if ip is not None:
-            if ip in _ALWAYS_BLOCKED_IPS or any(
-                ip in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
+            if _is_always_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to cloud metadata address "
                     "(always-blocked floor): %s",
@@ -312,9 +329,7 @@ def is_always_blocked_url(url: str) -> bool:
             except ValueError:
                 logger.warning("Unparseable IP address %r for hostname %s — skipping address", sockaddr[0], hostname)
                 continue
-            if resolved in _ALWAYS_BLOCKED_IPS or any(
-                resolved in net for net in _ALWAYS_BLOCKED_NETWORKS
-            ):
+            if _is_always_blocked_ip(resolved):
                 logger.warning(
                     "Blocked request to cloud metadata address "
                     "(always-blocked floor): %s -> %s",
@@ -388,8 +403,10 @@ def is_safe_url(url: str) -> bool:
                 logger.warning("Blocked request — unparseable IP address %r for hostname %s", sockaddr[0], hostname)
                 return False
 
-            # Always block cloud metadata IPs and link-local, even with toggle on
-            if ip in _ALWAYS_BLOCKED_IPS or any(ip in net for net in _ALWAYS_BLOCKED_NETWORKS):
+            # Always block cloud metadata IPs and link-local, even with toggle on.
+            # Unwraps NAT64-embedded IPv4 so 64:ff9b::169.254.169.254 can't slip
+            # past the floor when allow_private_urls skips _is_blocked_ip() below.
+            if _is_always_blocked_ip(ip):
                 logger.warning(
                     "Blocked request to cloud metadata address: %s -> %s",
                     hostname, ip_str,

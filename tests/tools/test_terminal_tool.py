@@ -3,6 +3,7 @@
 import glob
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import tools.terminal_tool as terminal_tool
 
@@ -332,6 +333,8 @@ def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
 def test_disk_usage_warning_short_circuits_after_threshold(monkeypatch):
     """Avoid walking the full scratch tree after the warning threshold is crossed."""
     stat_calls = []
+    warning_mock = MagicMock()
+    monkeypatch.setattr(terminal_tool.logger, "warning", warning_mock)
 
     class FakeFile:
         def __init__(self, name, size):
@@ -363,3 +366,7 @@ def test_disk_usage_warning_short_circuits_after_threshold(monkeypatch):
 
     assert terminal_tool._check_disk_usage_warning() is True
     assert stat_calls == ["first"]
+    # Verify the warning was emitted with the expected threshold message.
+    warning_mock.assert_called_once()
+    assert "Disk usage" in warning_mock.call_args[0][0]
+    assert "exceeds threshold" in warning_mock.call_args[0][0]

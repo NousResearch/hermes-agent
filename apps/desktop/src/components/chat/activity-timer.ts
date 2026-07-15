@@ -36,6 +36,14 @@ export function useElapsedSeconds(active = true, timerKey?: string): number {
   const [elapsed, setElapsed] = useState(() => Math.max(0, Math.floor((Date.now() - start.current) / 1000)))
 
   if (lastKey.current !== timerKey) {
+    // Clean up the previous key's registry entry when a mounted hook
+    // receives a new key (e.g. a new message id in ThinkingDisclosure).
+    // Components that unmount completely (StreamStallIndicator when
+    // isRunning becomes false) do NOT hit this path.
+    if (lastKey.current !== undefined) {
+      startedAtByKey.delete(lastKey.current)
+    }
+
     start.current = startedAt(timerKey)
     lastKey.current = timerKey
   }

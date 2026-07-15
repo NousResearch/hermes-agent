@@ -401,6 +401,34 @@ def _gateway_provider_error_reply(text: str) -> str:
     )
 
 
+def _format_recent_signal_chat_history(
+    recent_messages: List[Dict[str, Any]],
+    *,
+    redact_pii: bool = False,
+) -> str:
+    """Render recent Signal messages for per-turn user-message injection."""
+    if not recent_messages:
+        return ""
+
+    recent_lines: List[str] = []
+    for message in recent_messages:
+        timestamp_ms = message.get("ts")
+        try:
+            dt = datetime.fromtimestamp(int(timestamp_ms) / 1000.0)
+            ts_label = dt.strftime("%H:%M")
+        except (TypeError, ValueError, OSError):
+            ts_label = "??:??"
+
+        sender = str(message.get("sender") or "")
+        label = str(message.get("name") or sender or "unknown")
+        if redact_pii and sender and label == sender:
+            label = _hash_sender_id(sender)
+
+        recent_lines.append(f"[{ts_label}] {label}: {message.get('text', '')}")
+
+    return "[Recent Signal chat history]\n" + "\n".join(recent_lines) + "\n\n"
+
+
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
@@ -1780,6 +1808,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    _hash_sender_id,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -10753,6 +10782,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
 
+        if source is not None and getattr(source, "platform", None) == Platform.SIGNAL:
+            signal_adapter = self.adapters.get(source.platform)
+            if signal_adapter and hasattr(signal_adapter, "get_recent_chat_messages"):
+                recent_messages = signal_adapter.get_recent_chat_messages(source.chat_id, n=30)
+                if recent_messages:
+                    watermark_by_session = getattr(self, "_signal_recent_history_watermark_by_session", None)
+                    if watermark_by_session is None:
+                        watermark_by_session = {}
+                        self._signal_recent_history_watermark_by_session = watermark_by_session
+                    history_key = session_key or source.chat_id
+                    watermark = watermark_by_session.get(history_key)
+                    filtered_recent_messages = []
+                    current_text = event.text or ""
+                    current_sender = str(getattr(source, "user_id", None) or "")
+                    try:
+                        current_ts = int(event.timestamp.timestamp() * 1000) if getattr(event, "timestamp", None) else None
+                    except Exception:
+                        current_ts = None
+                    newest_seen_ts = watermark
+                    for recent_message in recent_messages:
+                        try:
+                            recent_ts = int(recent_message.get("ts"))
+                        except Exception:
+                            recent_ts = None
+                        if recent_ts is not None and (newest_seen_ts is None or recent_ts > newest_seen_ts):
+                            newest_seen_ts = recent_ts
+                        if watermark is not None and recent_ts is not None and recent_ts <= watermark:
+                            continue
+                        if recent_message.get("from_self"):
+                            continue
+                        recent_text = str(recent_message.get("text") or "")
+                        recent_sender = str(recent_message.get("sender") or "")
+                        if (
+                            recent_text == current_text
+                            and recent_sender == current_sender
+                            and (
+                                current_ts is None
+                                or recent_ts is None
+                                or abs(recent_ts - current_ts) <= 5_000
+                            )
+                        ):
+                            continue
+                        filtered_recent_messages.append(recent_message)
+
+                    if newest_seen_ts is not None:
+                        watermark_by_session[history_key] = newest_seen_ts
+
+                    if filtered_recent_messages:
+                        _redact_pii = False
+                        try:
+                            _pcfg = _load_gateway_config()
+                            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
+                        except Exception:
+                            pass
+                        message_text = (
+                            _format_recent_signal_chat_history(
+                                filtered_recent_messages,
+                                redact_pii=_redact_pii,
+                            )
+                            + message_text
+                        )
+
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
             # already appears in history. The prefix isn't deduplication, it's
@@ -11128,7 +11219,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if _was_auto_reset:

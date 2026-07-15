@@ -279,6 +279,34 @@ class TestResolveAutoMainFirst:
         assert mock_resolve.call_args.args[0] == "anthropic"
         assert mock_resolve.call_args.args[1] == "runtime-model"
 
+    def test_resolve_provider_auto_returns_runtime_model_not_stale_config_default(self):
+        """Blank auto aux requests must not pair a stale config model with live fallback provider."""
+        runtime_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="claude-opus-4-8",
+        ) as mock_read_main_model, patch(
+            "agent.auxiliary_client._resolve_auto",
+            return_value=(runtime_client, "gpt-5.5"),
+        ) as mock_resolve_auto:
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "auto",
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "base_url": "",
+                    "api_key": "",
+                    "api_mode": "codex_responses",
+                },
+            )
+
+        assert client is runtime_client
+        assert model == "gpt-5.5"
+        mock_read_main_model.assert_not_called()
+        mock_resolve_auto.assert_called_once()
+
     def test_runtime_base_url_passed_for_named_api_key_provider(self):
         """Named API-key providers inherit the live session endpoint for aux work."""
         token_plan_url = "https://token-plan-sgp.xiaomimimo.com/v1"
@@ -541,6 +569,124 @@ class TestResolveVisionMainFirst:
         # Explicit "nous" override → uses strict backend, NOT main model path
         assert provider == "nous"
         mock_strict.assert_called_once_with("nous", None)
+
+
+# ── Vision — custom provider endpoint credential passthrough ────────────────
+
+
+class TestResolveVisionCustomProvider:
+    """Custom-endpoint mains must forward base_url/api_key to Step 1.
+
+    Regression: a ``custom:<name>`` main provider resolves to the bare
+    runtime provider id ``"custom"``.  ``resolve_provider_client("custom")``
+    has no built-in endpoint, so without forwarding the live base_url/api_key
+    it returns ``(None, None)`` and vision falls through to OpenRouter / Nous,
+    which an offline / aggregator-less user has never configured — breaking
+    vision entirely with ``No LLM provider configured for task=vision
+    provider=auto``.  The fix recovers the live endpoint that
+    ``set_runtime_main()`` recorded for the turn.
+    """
+
+    def test_custom_main_forwards_runtime_endpoint(self, monkeypatch):
+        """custom main with recorded runtime endpoint → Step 1 builds a client."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://my.endpoint.example/v1")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-runtime-key")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "anthropic_messages")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "claude-opus-4-8")
+
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "custom"
+        assert client is mock_client
+        assert model == "claude-opus-4-8"
+        # The endpoint credentials recorded for the turn MUST be forwarded,
+        # otherwise resolve_provider_client("custom") returns (None, None).
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs.get("explicit_base_url") == "https://my.endpoint.example/v1"
+        assert kwargs.get("explicit_api_key") == "sk-runtime-key"
+        assert kwargs.get("is_vision") is True
+
+    def test_custom_prefixed_main_forwards_runtime_endpoint(self, monkeypatch):
+        """A ``custom:<name>`` provider id also forwards the runtime endpoint."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "https://named.example/v1")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "sk-named")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider",
+            return_value="custom:copilot-gateway",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "claude-opus-4-8")
+
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "custom:copilot-gateway"
+        assert client is mock_client
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs.get("explicit_base_url") == "https://named.example/v1"
+        assert kwargs.get("explicit_api_key") == "sk-named"
+        assert kwargs.get("is_vision") is True
+
+    def test_custom_main_no_runtime_falls_back_to_configured_endpoint(self, monkeypatch):
+        """No recorded runtime endpoint → resolve the configured custom endpoint."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_BASE_URL", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_KEY", "")
+        monkeypatch.setattr(aux, "_RUNTIME_MAIN_API_MODE", "")
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="custom",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="claude-opus-4-8",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_custom_runtime",
+            return_value=("https://configured.example/v1", "sk-configured", "chat_completions"),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client"
+        ) as mock_resolve:
+            mock_client = MagicMock()
+            mock_resolve.return_value = (mock_client, "claude-opus-4-8")
+
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert client is mock_client
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs.get("explicit_base_url") == "https://configured.example/v1"
+        assert kwargs.get("explicit_api_key") == "sk-configured"
 
 
 # ── Constant cleanup ────────────────────────────────────────────────────────

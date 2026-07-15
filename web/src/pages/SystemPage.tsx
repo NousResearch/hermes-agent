@@ -32,6 +32,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -41,11 +42,13 @@ import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type {
   StatusResponse,
   MemoryStatus,
+  MemoryProviderInfo,
   CredentialPoolProvider,
   CheckpointsResponse,
   HooksResponse,
@@ -169,6 +172,23 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_end",
 ];
 
+const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
+  ready: "ready",
+  needs_config: "needs setup",
+  unavailable: "unavailable",
+  missing: "missing",
+};
+
+const MEMORY_STATUS_TONE: Record<
+  MemoryProviderInfo["status"],
+  "success" | "warning" | "destructive" | "secondary"
+> = {
+  ready: "success",
+  needs_config: "warning",
+  unavailable: "destructive",
+  missing: "destructive",
+};
+
 export default function SystemPage() {
   const { toast, showToast } = useToast();
 
@@ -185,6 +205,7 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
+  const [consoleOpen, setConsoleOpen] = useState(false);
 
   // Add-credential form.
   const [credProvider, setCredProvider] = useState("openrouter");
@@ -617,6 +638,9 @@ export default function SystemPage() {
 
   const gatewayRunning = status?.gateway_running;
   const canUpdateHermes = status?.can_update_hermes !== false;
+  const activeMemoryProvider = memory?.active
+    ? memory.providers.find((provider) => provider.name === memory.active)
+    : null;
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
@@ -679,12 +703,16 @@ export default function SystemPage() {
         description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
         loading={hookDelete.isDeleting}
       />
+      <HermesConsoleModal
+        open={consoleOpen}
+        onClose={() => setConsoleOpen(false)}
+      />
 
       {/* Create-hook modal */}
       {hookModalOpen && (
         <div
           ref={hookModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) => e.target === e.currentTarget && setHookModalOpen(false)}
           role="dialog"
           aria-modal="true"
@@ -749,15 +777,21 @@ export default function SystemPage() {
                   />
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2.5">
+                <Checkbox
                   checked={hookApprove}
-                  onChange={(e) => setHookApprove(e.target.checked)}
+                  id="hook-approve"
+                  onCheckedChange={(checked) => setHookApprove(checked === true)}
                 />
-                Approve now (grant consent so it fires; otherwise it stays
-                configured but inactive)
-              </label>
+
+                <Label
+                  className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
+                  htmlFor="hook-approve"
+                >
+                  Approve now (grant consent so it fires; otherwise it stays
+                  configured but inactive)
+                </Label>
+              </div>
               <p className="text-xs text-warning">
                 Shell hooks run arbitrary commands on this host. Only add scripts
                 you trust. Takes effect on the next gateway/session restart.
@@ -1064,14 +1098,27 @@ export default function SystemPage() {
                   {memory?.active || "built-in only"}
                 </span>
               </span>
+              {activeMemoryProvider && (
+                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
+                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
+                </Badge>
+              )}
               <Link to="/plugins" className="underline">
                 Change in Plugins →
               </Link>
               <span className="ml-auto">
-                New credentials:{" "}
-                <span className="font-mono">hermes memory setup</span>
+                Provider setup:{" "}
+                <Link to="/plugins" className="underline">
+                  configure in Plugins
+                </Link>
               </span>
             </div>
+
+            {activeMemoryProvider?.status === "missing" && (
+              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+              </p>
+            )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
@@ -1155,6 +1202,9 @@ export default function SystemPage() {
         </H2>
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
+            <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
+              Open console
+            </Button>
             <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
               Run doctor
             </Button>
@@ -1325,16 +1375,21 @@ export default function SystemPage() {
               </Button>
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none">
-              <input
-                type="checkbox"
-                className="accent-current"
+            <div className="flex items-center gap-2.5">
+              <Checkbox
                 checked={shareRedact}
                 disabled={sharing}
-                onChange={(e) => setShareRedact(e.target.checked)}
+                id="share-redact"
+                onCheckedChange={(checked) => setShareRedact(checked === true)}
               />
-              Redact credential-shaped tokens before upload (recommended)
-            </label>
+
+              <Label
+                className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
+                htmlFor="share-redact"
+              >
+                Redact credential-shaped tokens before upload (recommended)
+              </Label>
+            </div>
 
             {shareResult && (
               <div className="flex flex-col gap-2 border-t border-border pt-3">

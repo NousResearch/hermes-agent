@@ -264,6 +264,48 @@ def test_block_and_respond(capture):
     assert result[0] == "my_answer"
 
 
+@pytest.mark.parametrize("event", ["secret.request", "sudo.request"])
+def test_sensitive_prompt_timeout_emits_expiry(capture, event):
+    server, buf = capture
+
+    assert server._block(event, "s1", {}, timeout=0) == ""
+
+    messages = [json.loads(line) for line in buf.getvalue().splitlines()]
+    request, expiry = [message["params"] for message in messages]
+    assert request["type"] == event
+    assert expiry["type"] == event.removesuffix(".request") + ".expire"
+    assert expiry["session_id"] == "s1"
+    assert expiry["payload"]["request_id"] == request["payload"]["request_id"]
+
+
+@pytest.mark.parametrize(
+    ("method", "value_key"),
+    [("secret.respond", "value"), ("sudo.respond", "password")],
+)
+def test_late_sensitive_prompt_response_is_idempotent(server, method, value_key):
+    response = server.handle_request(
+        {
+            "id": "late-response",
+            "method": method,
+            "params": {"request_id": "expired-request", value_key: ""},
+        }
+    )
+
+    assert response["result"] == {"status": "expired"}
+
+
+def test_late_clarify_response_remains_protocol_error(server):
+    response = server.handle_request(
+        {
+            "id": "late-clarify",
+            "method": "clarify.respond",
+            "params": {"request_id": "expired-request", "answer": ""},
+        }
+    )
+
+    assert response["error"]["code"] == 4009
+
+
 def test_clear_pending(server):
     ev = threading.Event()
     # _pending values are (sid, Event) tuples
@@ -315,15 +357,17 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
     resp = server.handle_request(
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": "20260409_010101_abc123", "cols": 100},
+            # eager_build: exercise the synchronous build path (this test
+            # monkeypatches _make_agent/_init_session/_session_info).
+            "params": {"session_id": "20260409_010101_abc123", "cols": 100, "eager_build": True},
         }
     )
 
@@ -334,6 +378,147 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
     ]
+
+
+def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
+    """A normal cold resume (no ``eager_build``) must return the full display
+    transcript immediately and register an upgradable live session WITHOUT
+    building the agent on the response path — that eager build is the
+    multi-second switch latency. Deferred is the default; ``eager_build: true``
+    opts back into the synchronous path."""
+
+    target = "20260409_010101_abc123"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {
+                "id": target,
+                "model": "vendor/cool-model",
+                "model_config": {"provider": "vendor"},
+            }
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+            ]
+
+    builds: list = []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    # The response path must never call _make_agent; route the deferred timer
+    # through a recorder so a 50ms fire can't build (or crash) under the test.
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no eager build"))
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: builds.append(sid))
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["message_count"] == 2
+    assert result["messages"] == [
+        {"role": "user", "text": "hello"},
+        {"role": "assistant", "text": "yo"},
+    ]
+    # Lazy info contract (same shape session.create returns), with the session's
+    # persisted model/provider restored rather than the global default.
+    assert result["info"]["lazy"] is True
+    assert result["info"]["model"] == "vendor/cool-model"
+    assert result["info"]["provider"] == "vendor"
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    # Registered but not built: agent is None and the resume key is carried so a
+    # later prompt.submit / _sess() upgrade continues THIS stored conversation.
+    assert session["agent"] is None
+    assert session["resume_session_id"] == target
+    assert not session["agent_ready"].is_set()
+    # Not a watch spectator: a normal deferred resume is a real session.
+    assert not session.get("lazy")
+    # The persisted runtime identity is stashed for the deferred build so it
+    # can't drop the provider ("No LLM provider configured").
+    assert session["resume_runtime_overrides"]["model_override"]["model"] == "vendor/cool-model"
+    assert server._find_live_session_by_key(target) == (sid, session)
+
+
+def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
+    """The LRU cap frees the least-recently-active DETACHED sessions when over
+    the limit, and never a live-transport / running / mid-build one."""
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 2})
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+    )
+
+    def _ready() -> threading.Event:
+        ev = threading.Event()
+        ev.set()
+        return ev
+
+    detached = server._detached_ws_transport
+    live = object()  # no _closed attr -> live transport, never evictable
+
+    server._sessions.clear()
+    server._sessions.update(
+        {
+            "old_detached": {"transport": detached, "last_active": 100.0, "agent_ready": _ready()},
+            "new_detached": {"transport": detached, "last_active": 300.0, "agent_ready": _ready()},
+            "running_detached": {
+                "transport": detached,
+                "last_active": 50.0,
+                "running": True,
+                "agent_ready": _ready(),
+            },
+            "focused_live": {"transport": live, "last_active": 200.0, "agent_ready": _ready()},
+        }
+    )
+
+    server._enforce_session_cap()
+
+    # 4 sessions, cap 2 -> evict 2. Only detached+idle+built are eligible, oldest
+    # first; the running one and the live-transport one are exempt.
+    assert evicted == ["old_detached", "new_detached"]
+
+
+def test_enforce_session_cap_disabled_is_noop(server, monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 0})
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+    )
+    server._sessions.clear()
+    server._sessions.update(
+        {
+            f"s{i}": {"transport": server._detached_ws_transport, "last_active": float(i)}
+            for i in range(5)
+        }
+    )
+
+    server._enforce_session_cap()
+
+    assert evicted == []
 
 
 def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
@@ -366,15 +551,15 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
             return [multimodal_user, text_only_assistant]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None, **_kwargs: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **_kwargs: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
     resp = server.handle_request(
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": "20260502_000000_listcontent", "cols": 100},
+            "params": {"session_id": "20260502_000000_listcontent", "cols": 100, "eager_build": True},
         }
     )
 
@@ -392,6 +577,226 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         },
         {"role": "assistant", "text": "ok"},
     ]
+
+
+def test_session_resume_lazy_registers_watch_session_without_agent(server, monkeypatch):
+    """``lazy: true`` (subagent watch windows) must register the live session
+    — keyed for the child mirror, on this transport — WITHOUT building an
+    agent. The eager build is what made opening a subagent window contend
+    with the already-running parent turn."""
+
+    target = "20260612_000000_child99"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "delegated goal"},
+            ]
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("lazy resume must not build an agent")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", _boom)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+    assert result["messages"] == [{"role": "user", "text": "delegated goal"}]
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    assert session["agent"] is None
+    # The child mirror finds the watch window by stored key.
+    assert server._find_live_session_by_key(target) == (sid, session)
+    # A later prompt.submit upgrade must continue THIS stored conversation.
+    assert session["resume_session_id"] == target
+    # No build started: the idle reaper must still be able to evict it, and
+    # the live status must not report a never-ending "starting".
+    assert not session["agent_ready"].is_set()
+    assert server._session_live_status(sid, session) != "starting"
+    session["transport"] = server._detached_ws_transport
+    far_future = time.time() + 999999
+    assert server._session_is_evictable(sid, session, far_future)
+
+    # Resuming again (window refresh) reuses the same live session.
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" not in resp2
+    assert resp2["result"]["session_id"] == sid
+    assert len(server._sessions) == 1
+
+
+def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypatch):
+    """A watch window attaching to a child mid-delegation must learn the run is
+    live from the resume response itself — the child can sit silent inside a
+    long tool call, so waiting for the next stream event leaves the window
+    looking dead."""
+
+    target = "20260612_000000_child42"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [{"role": "user", "content": "delegated goal"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    assert "error" not in resp
+    assert resp["result"]["running"] is True
+    assert resp["result"]["status"] == "streaming"
+
+
+def test_session_resume_lazy_tolerates_missing_row_for_active_child(server, monkeypatch):
+    """Race regression: a watch window opens on a freshly-spawned subagent and
+    resumes BEFORE the child's first run_conversation() flushes its DB row.
+
+    The child relays ``subagent.start`` (carrying child_session_id, which opens
+    the window) before ``_ensure_db_session`` writes the row, so
+    ``db.get_session(target)`` is momentarily empty. On slower hosts (WSL2) the
+    window's lazy resume consistently lands in this gap. It used to hard-fail
+    "session not found"; the frontend then 404'd on its REST messages fallback
+    and the watch window spun forever. Since the child is provably live
+    (``_child_run_active``), the lazy resume must instead register the live
+    session with empty history so the mirror can stream the turn.
+    """
+
+    target = "20260616_131212_racey"
+
+    class _DB:
+        def get_session(self, _sid):
+            # Row not flushed yet — the whole point of the race.
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            # No rows for an unwritten session.
+            return []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    # Child is live in the relay registry even though its row isn't written.
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    # The resume must succeed (no "session not found") and register a live,
+    # agent-less watch session the mirror can find by stored key.
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["messages"] == []
+    # Live for the mirror; reported running so the window shows a busy state.
+    assert result["running"] is True
+    assert result["status"] == "streaming"
+    sid = result["session_id"]
+    assert server._find_live_session_by_key(target) == (sid, server._sessions[sid])
+    assert server._sessions[sid]["agent"] is None
+
+
+def test_session_resume_missing_row_non_lazy_still_errors(server, monkeypatch):
+    """The missing-row tolerance is scoped to lazy resumes of an ACTIVE child.
+    A normal (non-lazy) resume of a genuinely unknown id must still fail fast
+    with "session not found" rather than silently registering an empty session.
+    """
+
+    target = "20260616_000000_ghost"
+
+    class _DB:
+        def get_session(self, _sid):
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    # Non-lazy resume, no active child → hard error.
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+    assert "error" in resp
+    assert "session not found" in resp["error"]["message"].lower()
+
+    # Lazy resume but the child is NOT live → still an error (no live mirror to
+    # justify an empty session; this would just be a dead, sessionless window).
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" in resp2
+    assert "session not found" in resp2["error"]["message"].lower()
 
 
 def test_session_resume_reuses_existing_live_session(server, monkeypatch):
@@ -432,7 +837,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def close(self):
             closed_sids.append(self.sid)
 
-    def make_agent(sid, key, session_id=None):
+    def make_agent(sid, key, session_id=None, session_db=None, **_kwargs):
         created_sids.append(sid)
         first_agent_started.set()
         assert agent_can_finish.wait(timeout=1)
@@ -468,7 +873,9 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {
                     "id": "first",
                     "method": "session.resume",
-                    "params": {"session_id": target, "cols": 100},
+                    # eager_build: this test drives the synchronous build race +
+                    # double-checked locking that only the eager path exercises.
+                    "params": {"session_id": target, "cols": 100, "eager_build": True},
                 }
             )
 
@@ -483,7 +890,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {
                     "id": "second",
                     "method": "session.resume",
-                    "params": {"session_id": target, "cols": 120},
+                    "params": {"session_id": target, "cols": 120, "eager_build": True},
                 }
             )
 
@@ -512,6 +919,100 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     survivors = [sid for sid in created_sids if sid not in closed_sids]
     assert survivors == [winner]
     assert all(sid == winner for sid in server._sessions)
+
+
+def test_session_resume_reuses_live_agent_after_compression_rotation(server, monkeypatch):
+    """Resume must match the live agent's current session_id, not stale session_key."""
+
+    target = "20260409_020202_child"
+    stale_parent = "20260409_010101_parent"
+    sid = "live-rotated"
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model", session_id=target),
+        "created_at": 123.0,
+        "display_history_prefix": [],
+        "history": [{"role": "assistant", "content": "live child"}],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": stale_parent,
+        "transport": server._stdio_transport,
+    }
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, _target):
+            return target
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    result = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in result
+    assert result["result"]["session_id"] == sid
+    assert result["result"]["session_key"] == target
+    assert len(server._sessions) == 1
+
+
+def test_sync_session_key_after_compress_reanchors_active_session_lease(
+    server, monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    lease, message = try_acquire_active_session(
+        session_id="session-old",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-1"},
+    )
+    assert message is None
+    assert lease is not None
+
+    session = {
+        "active_session_lease": lease,
+        "agent": types.SimpleNamespace(session_id="session-new"),
+        "session_key": "session-old",
+    }
+    fake_approval = types.SimpleNamespace(
+        disable_session_yolo=lambda *_args, **_kwargs: None,
+        enable_session_yolo=lambda *_args, **_kwargs: None,
+        is_session_yolo_enabled=lambda *_args, **_kwargs: False,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+        unregister_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args, **_kwargs: None)
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        server._sync_session_key_after_compress("ui-1", session)
+
+    snapshot = active_session_registry_snapshot()
+    assert session["session_key"] == "session-new"
+    assert lease.session_id == "session-new"
+    assert [entry["session_id"] for entry in snapshot] == ["session-new"]
+    lease.release()
 
 
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
@@ -547,7 +1048,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )
@@ -613,6 +1114,44 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     ]
 
 
+def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(server, monkeypatch):
+    """Reconnect + activate must reattach a parked live session before orphan reap."""
+
+    class _Transport:
+        def write(self, _obj):
+            return True
+
+    sid = "runtime01"
+    old_transport = server._stdio_transport
+    new_transport = _Transport()
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model"),
+        "created_at": 123.0,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": "20260409_010101_abc123",
+        "transport": old_transport,
+    }
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    resp = server.handle_request(
+        {"id": "activate", "method": "session.activate", "params": {"session_id": sid}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["session_id"] == sid
+    assert server._sessions[sid]["transport"] is new_transport
+    assert not server._ws_session_is_orphaned(server._sessions[sid])
+
+
 def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     """TUI /branch must persist a _branched_from marker so the branch stays
     visible in /resume and /sessions.
@@ -647,7 +1186,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None, session_db=None, **_kwargs: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )
@@ -769,6 +1308,58 @@ def test_slash_exec_rejects_skill_commands(server):
     assert "skill command" in resp["error"]["message"]
 
 
+def test_slash_exec_routes_custom_skill_bundle_away_from_worker(server):
+    """slash.exec expands any custom bundle through command.dispatch."""
+    sid = "test-session"
+
+    class Worker:
+        def __init__(self):
+            self.calls = []
+
+        def run(self, cmd):
+            self.calls.append(cmd)
+            return f"worker:{cmd}"
+
+    worker = Worker()
+    server._sessions[sid] = {
+        "session_key": sid,
+        "agent": None,
+        "slash_worker": worker,
+    }
+    fake_bundles = {
+        "/analysis-pack": {
+            "name": "analysis-pack",
+            "skills": ["source-check", "claim-audit"],
+        }
+    }
+    fake_msg = (
+        '[IMPORTANT: The user has invoked the "analysis-pack" skill bundle.]\n\n'
+        "User instruction: compare vector databases"
+    )
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch(
+             "agent.skill_bundles.build_bundle_invocation_message",
+             return_value=(fake_msg, ["source-check", "claim-audit"], []),
+         ):
+        resp = server.handle_request({
+            "id": "r-bundle-slash",
+            "method": "slash.exec",
+            "params": {
+                "command": "analysis-pack compare vector databases",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": fake_msg,
+        "notice": "⚡ Loading bundle: analysis-pack (2 skills)",
+    }
+    assert worker.calls == []
+
+
 def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
     """Plugin slash commands return normal slash.exec output without using the worker."""
     sid = "test-session"
@@ -862,21 +1453,46 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
-def test_slash_exec_rejects_pending_input_commands(server, cmd):
-    """slash.exec must reject commands that use _pending_input in the CLI."""
-    sid = "test-session"
-    server._sessions[sid] = {"session_key": sid, "agent": None}
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "learn create a skill from https://example.com/docs"])
+def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
+    """slash.exec must route _pending_input commands to command.dispatch
+    internally instead of returning the old 4018 "use command.dispatch"
+    fallback error (#48848). Some TUI clients failed that client-side
+    fallback, dropping the input and surfacing "empty command".
 
-    resp = server.handle_request({
+    The contract is that slash.exec produces exactly the response
+    command.dispatch would for the same command — no fragile retry hop.
+    """
+    base, _, arg = cmd.partition(" ")
+
+    def fresh_session():
+        return {"session_key": "test-session", "agent": None}
+
+    sid = "test-session"
+
+    # Response from the (new) internal routing in slash.exec.
+    server._sessions[sid] = fresh_session()
+    routed = server.handle_request({
         "id": "r1",
         "method": "slash.exec",
         "params": {"command": cmd, "session_id": sid},
     })
 
-    assert "error" in resp
-    assert resp["error"]["code"] == 4018
-    assert "pending-input command" in resp["error"]["message"]
+    # Response from calling command.dispatch directly with the parsed parts.
+    server._sessions[sid] = fresh_session()
+    direct = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": base, "arg": arg, "session_id": sid},
+    })
+
+    # slash.exec must no longer emit the old client-fallback rejection.
+    if "error" in routed:
+        assert "pending-input command" not in routed["error"]["message"]
+
+    # Internal routing must yield the same payload as command.dispatch.
+    assert routed.get("result") == direct.get("result")
+    assert routed.get("error") == direct.get("error")
 
 
 def test_command_dispatch_queue_sends_message(server):
@@ -896,6 +1512,37 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
+def test_command_dispatch_builtin_queue_wins_over_colliding_bundle(server):
+    """A custom /queue bundle must not shadow the built-in /queue command."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    fake_bundles = {
+        "/queue": {
+            "name": "queue",
+            "skills": ["source-check", "claim-audit"],
+        }
+    }
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch("agent.skill_bundles.build_bundle_invocation_message") as build_bundle:
+        resp = server.handle_request({
+            "id": "r-queue-collision",
+            "method": "command.dispatch",
+            "params": {
+                "name": "queue",
+                "arg": "tell me about quantum computing",
+                "session_id": sid,
+            },
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": "tell me about quantum computing",
+    }
+    build_bundle.assert_not_called()
+
+
 def test_command_dispatch_queue_requires_arg(server):
     """command.dispatch /queue without an argument returns an error."""
     sid = "test-session"
@@ -909,6 +1556,38 @@ def test_command_dispatch_queue_requires_arg(server):
 
     assert "error" in resp
     assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_learn_sends_built_prompt(server):
+    """command.dispatch /learn returns {type: 'send', message: <built prompt>}
+    so the TUI fires a real agent turn (#51829). The CLI handler queues onto
+    _pending_input — a queue the TUI slash worker has no reader for — so the
+    prompt was silently dropped after the ack. Routing through command.dispatch
+    injects the standards-guided prompt as a normal turn instead.
+    """
+    from agent.learn_prompt import build_learn_prompt
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    arg = "create a skill from https://example.com/docs"
+    resp = server.handle_request({
+        "id": "r-learn",
+        "method": "command.dispatch",
+        "params": {"name": "learn", "arg": arg, "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == build_learn_prompt(arg)
+
+
+def test_pending_input_commands_includes_learn(server):
+    """Guard: _PENDING_INPUT_COMMANDS must list 'learn' — without it slash.exec
+    routes /learn to the slash worker, which only prints the ack and drops the
+    prompt onto the dead _pending_input queue (#51829)."""
+    assert "learn" in server._PENDING_INPUT_COMMANDS
 
 
 def test_skills_manage_search_uses_tools_hub_sources(server):
@@ -1065,6 +1744,54 @@ def test_command_dispatch_returns_skill_payload(server):
     assert result["name"] == "hermes-agent-dev"
 
 
+def test_command_dispatch_returns_custom_bundle_payload(server):
+    """command.dispatch preserves bundle arguments in a sendable agent turn."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+    fake_bundles = {
+        "/review-suite": {
+            "name": "review-suite",
+            "skills": ["source-check", "claim-audit", "enough-research"],
+        }
+    }
+    arg = "audit the migration plan"
+    fake_msg = (
+        '[IMPORTANT: The user has invoked the "review-suite" skill bundle.]\n\n'
+        f"User instruction: {arg}"
+    )
+
+    with patch("agent.skill_bundles.get_skill_bundles", return_value=fake_bundles), \
+         patch(
+             "agent.skill_bundles.build_bundle_invocation_message",
+             return_value=(
+                 fake_msg,
+                 ["source-check", "claim-audit", "enough-research"],
+                 [],
+             ),
+         ) as build_bundle, \
+         patch("agent.skill_commands.build_skill_invocation_message") as build_skill, \
+         patch.object(server, "_resolve_session_platform", return_value="tui"):
+        resp = server.handle_request({
+            "id": "r-bundle-dispatch",
+            "method": "command.dispatch",
+            "params": {"name": "review-suite", "arg": arg, "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "send",
+        "message": fake_msg,
+        "notice": "⚡ Loading bundle: review-suite (3 skills)",
+    }
+    build_bundle.assert_called_once_with(
+        "/review-suite",
+        arg,
+        task_id=sid,
+        platform="tui",
+    )
+    build_skill.assert_not_called()
+
+
 def test_command_dispatch_awaits_async_plugin_handler(server):
     async def _handler(arg):
         return f"async:{arg}"
@@ -1182,3 +1909,37 @@ def test_dispatch_unknown_long_method_still_goes_inline(server):
     resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
 
     assert resp["result"] == {"ok": True}
+
+
+@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
+def test_completion_handlers_are_pool_routed(completion_method, server):
+    """complete.path/complete.slash must run on the pool, never the reader thread.
+
+    Regression for #21123: completion ran inline, so a slow git ls-files /
+    skill-scan blocked prompt.submit and froze the TUI for the 120s RPC timeout.
+    """
+    assert completion_method in server._LONG_HANDLERS
+
+
+@pytest.mark.parametrize("completion_method", ["complete.path", "complete.slash"])
+def test_slow_completion_does_not_block_fast_handler(completion_method, server):
+    """A slow completion RPC must not block a concurrent fast handler (#21123)."""
+    released = threading.Event()
+
+    def slow_completion(rid, params):
+        released.wait(timeout=5)
+        return server._ok(rid, {"items": []})
+
+    server._methods[completion_method] = slow_completion
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": completion_method, "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {completion_method}"
+
+    released.set()

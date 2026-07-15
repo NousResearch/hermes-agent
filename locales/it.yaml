@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]una volta  |  [s]essione  |  [d]nega"
   prompt_long:     "      Scelta [o/s/a/D]: "
   prompt_short:    "      Scelta [o/s/D]: "
+  choose_smart_deny: "      [o]una volta  |  [d]nega"
+  prompt_smart_deny: "      Scelta [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Tempo scaduto — comando negato"
   allowed_once:    "      ✓ Consentito una volta"
   allowed_session: "      ✓ Consentito per questa sessione"
@@ -88,6 +92,7 @@ gateway:
     not_enough:            "Conversazione insufficiente da comprimere (servono almeno 4 messaggi)."
     no_provider:           "Nessun provider configurato — impossibile comprimere."
     nothing_to_do:         "Niente da comprimere per ora (la trascrizione è ancora tutta contesto protetto)."
+    aggressive_unsupported: "--aggressive non è supportato; usa '/compress here [N]' per conservare solo gli scambi recenti, oppure /undo per rimuovere i turni."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Generazione del riepilogo non riuscita ({error}). {count} messaggio/i storico/i sono stati rimossi e sostituiti con un segnaposto; il contesto precedente non è più recuperabile. Considera di controllare la configurazione del modello auxiliary.compression."
     aborted:               "⚠️ Compressione interrotta ({error}). Nessun messaggio è stato eliminato — la conversazione è invariata. Esegui /compress per riprovare, /reset per una nuova sessione, o controlla la configurazione del modello auxiliary.compression."
@@ -106,6 +111,8 @@ gateway:
     no_pending:            "Nessun comando in attesa da negare."
     denied_singular:       "❌ Comando negato."
     denied_plural:         "❌ Comandi negati ({count} comandi)."
+    denied_reason_singular: "❌ Comando negato. Motivo inoltrato all'agente: \"{reason}\""
+    denied_reason_plural:  "❌ Comandi negati ({count} comandi). Motivo inoltrato all'agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast è disponibile solo per i modelli OpenAI che supportano Priority Processing."
@@ -149,6 +156,15 @@ gateway:
     subscribed_suffix:     "(iscritto — riceverai notifica quando {task_id} verrà completato o si bloccherà)"
     truncated_suffix:      "… (troncato; usa `hermes kanban …` nel terminale per l'output completo)"
     no_output:             "(nessun output)"
+    wake:
+      completed:           "completed"
+      gave_up:             "gave up (retries exhausted)"
+      crashed:             "crashed (worker exited); dispatcher will retry"
+      timed_out:           "timed out; dispatcher will retry"
+      blocked:             "blocked; needs attention"
+      status_default:      "status changed"
+      status_joiner:       ", "
+      message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
 
   personality:
     none_configured:       "Nessuna personalità configurata in `{path}/config.yaml`"
@@ -219,6 +235,15 @@ gateway:
 
   resume:
     db_unavailable:        "Database delle sessioni non disponibile."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
+    blocked_not_owner:     "⚠️ /resume blocked: '**{name}**' belongs to a different user or chat. You can only resume sessions from this chat."
     no_named_sessions:     "Nessuna sessione con nome trovata.\nUsa `/title My Session` per dare un nome alla sessione attuale, poi `/resume My Session` per tornare a essa in seguito."
     list_header:           "📋 **Sessioni con nome**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,10 +276,20 @@ gateway:
 
   status:
     header:                "📊 **Stato del Gateway Hermes**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**ID sessione:** `{session_id}`"
     title:                 "**Titolo:** {title}"
     created:               "**Creata:** {timestamp}"
     last_activity:         "**Ultima attività:** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Token:** {tokens}"
     agent_running:         "**Agente in esecuzione:** {state}"
     state_yes:             "Sì ⚡"
@@ -314,11 +349,26 @@ gateway:
     label_cost_included:      "Costo: incluso"
     label_context:            "Contesto: {used} / {total} ({pct}%)"
     label_compressions:       "Compressioni: {count}"
+    breakdown_header: "🧩 **Suddivisione del contesto** _(stimata)_"
+    breakdown_line: "• {label}: ~{count} ({pct}%)"
+    breakdown_cat_system_prompt: "Prompt di sistema"
+    breakdown_cat_tool_definitions: "Definizioni degli strumenti"
+    breakdown_cat_rules: "Regole"
+    breakdown_cat_skills: "Competenze"
+    breakdown_cat_mcp: "MCP"
+    breakdown_cat_subagent_definitions: "Definizioni dei subagenti"
+    breakdown_cat_memory: "Memoria"
+    breakdown_cat_conversation: "Conversazione"
     header_session_info:      "📊 **Info sessione**"
     label_messages:           "Messaggi: {count}"
     label_estimated_context:  "Contesto stimato: ~{count} token"
     detailed_after_first:     "_(L'uso dettagliato sarà disponibile dopo la prima risposta dell'agente)_"
     no_data:                  "Nessun dato di utilizzo disponibile per questa sessione."
+    unknown_subcommand:       "Sottocomando /usage sconosciuto: `{args}`. Prova `/usage` o `/usage reset [--force]`."
+    reset_wrong_provider:     "I reset dei limiti accumulati sono disponibili solo con il provider openai-codex. Cambia prima con `/model`."
+
+  credits:
+    not_logged_in:            "Non hai effettuato l'accesso a Nous Portal. Accedi per vedere il saldo dei crediti e ricaricare."
 
   verbose:
     not_enabled:           "Il comando `/verbose` non è abilitato per le piattaforme di messaggistica.\n\nAbilitalo in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
@@ -326,6 +376,7 @@ gateway:
     mode_new:              "⚙️ Progresso strumenti: **NEW** — mostrato quando lo strumento cambia (lunghezza anteprima: `display.tool_preview_length`, predefinito 40)."
     mode_all:              "⚙️ Progresso strumenti: **ALL** — ogni chiamata a uno strumento viene mostrata (lunghezza anteprima: `display.tool_preview_length`, predefinito 40)."
     mode_verbose:          "⚙️ Progresso strumenti: **VERBOSE** — ogni chiamata a uno strumento con argomenti completi."
+    mode_log:              "⚙️ Progresso strumenti: **LOG** — silenzioso in chat; le chiamate agli strumenti vengono scritte in ~/.hermes/logs/tool_calls.log."
     saved_suffix:          "_(salvato per **{platform}** — verrà applicato al prossimo messaggio)_"
     save_failed:           "_(impossibile salvare nella configurazione: {error})_"
 
@@ -343,6 +394,8 @@ gateway:
     label_off:             "Off (solo testo)"
     label_voice_only:      "On (risposta vocale ai messaggi vocali)"
     label_all:             "TTS (risposta vocale a tutti i messaggi)"
+    help:                  "{toggle}\n\n**Come funziona /voice**\n• `/voice on` — risposta vocale quando invii un messaggio vocale\n• `/voice tts` — risposta vocale a *ogni* messaggio\n• `/voice off` — torna alle risposte solo testo\n• `/voice status` — mostra la modalità attuale\n• `/voice` (senza argomento) — alterna rapidamente tra attivo e disattivo{channels}"
+    help_channels:         "\n\n**Canali vocali dal vivo (Discord)**\n• Entra prima in un canale vocale, poi `/voice channel` — mi unisco, ascolto e parlo le mie risposte\n• `/voice leave` — disconnetti dal canale vocale"
 
   yolo:
     disabled:                   "⚠️ Modalità YOLO **OFF** per questa sessione — i comandi pericolosi richiederanno approvazione."

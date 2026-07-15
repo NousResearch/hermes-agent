@@ -9,6 +9,7 @@ import type { DOMElement } from '../dom.js'
 import { EventEmitter } from '../events/emitter.js'
 import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
+import instances from '../instances.js'
 import {
   INITIAL_STATE,
   type ParsedInput,
@@ -309,6 +310,21 @@ export default class App extends PureComponent<Props, State> {
             }
           })
         })
+
+        // Re-assert mouse tracking on raw-mode re-entry. <AlternateScreen>
+        // owns the initial enable, but its effect only re-runs on a
+        // mode/writeRaw change — NOT on a raw-mode bounce (count 1→0→1, e.g.
+        // an overlay that briefly drops the last useInput consumer). The
+        // teardown above now DISABLE_MOUSE_TRACKING's to stop the cooked-echo
+        // leak, so without this the terminal would be left with tracking off
+        // and the mouse silently dead until the next stdin-gap/resize
+        // re-assert. reassertTerminalModes() is gated on altScreenActive and
+        // idempotent, so it's a no-op when there's nothing to restore.
+        // Deferred (same setImmediate discipline as the XTVERSION probe) so it
+        // lands after any alt-screen enable writes in this render cycle.
+        setImmediate(() => {
+          instances.get(this.props.stdout)?.reassertTerminalModes()
+        })
       }
 
       this.rawModeEnabledCount++
@@ -324,6 +340,15 @@ export default class App extends PureComponent<Props, State> {
       this.props.stdout.write(DFE)
       // Disable bracketed paste mode
       this.props.stdout.write(DBP)
+      // Disable mouse tracking. Tracking is asserted by <AlternateScreen> /
+      // the Ink instance, NOT here — but dropping raw mode + detaching the
+      // readable listener while DEC 1003 hover stays on means the terminal
+      // falls back to cooked-mode echo and every mouse move leaks as text
+      // (`35;col;row M` shards over the prompt). Same hazard handleSuspend()
+      // already guards against; this teardown path missed it. Idempotent
+      // (no-op if tracking was never on), and re-enabling raw mode below
+      // re-asserts tracking so a transient drop→re-add round-trips cleanly.
+      this.props.stdout.write(DISABLE_MOUSE_TRACKING)
       stdin.setRawMode(false)
       stdin.removeListener('readable', this.handleReadable)
       stdin.unref()
@@ -431,6 +456,19 @@ export default class App extends PureComponent<Props, State> {
           level: 'warn'
         })
         stdin.addListener('readable', this.handleReadable)
+      }
+
+      // Issue #31486: even after re-attaching, any bytes already buffered
+      // when the loop threw are stranded because Node only fires 'readable'
+      // on buffer transitions, not for data the consumer already saw. Schedule
+      // one drain on the next macrotask so the handler runs against a fresh
+      // try/catch and clears whatever is left.
+      if (this.rawModeEnabledCount > 0 && stdin.readableLength > 0) {
+        setImmediate(() => {
+          if (this.rawModeEnabledCount > 0 && this.props.stdin.readableLength > 0) {
+            this.handleReadable()
+          }
+        })
       }
     }
   }

@@ -1,3 +1,5 @@
+import { escapeCurrencyDollars, normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
+
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
@@ -8,7 +10,14 @@ const FENCE_LINE_RE = /^([ \t]*)(`{3,}|~{3,})([^\n]*)$/
 const EMPTY_FENCE_BLOCK_RE = /(^|\n)[ \t]*(?:`{3,}|~{3,})[^\n]*\n[ \t]*(?:`{3,}|~{3,})[ \t]*(?=\n|$)/g
 const CODE_FENCE_SPLIT_RE = /((?:```|~~~)[\s\S]*?(?:```|~~~))/g
 const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
-const RAW_URL_RE = /https?:\/\/[^\s<>"'`]+[^\s<>"'`.,;:!?]/g
+// Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
+// abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
+// a very common LLM pattern) doesn't swallow the trailing `**` into the href.
+// `*` is never meaningful in a real URL path, and GFM's own autolink extension
+// likewise strips trailing emphasis/punctuation — so dropping it here is safe
+// and keeps the emphasis run intact. Other trailing punctuation is still peeled
+// off by the final `[^\s<>"'`*.,;:!?]` class.
+const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
@@ -144,12 +153,18 @@ function normalizeVisibleProse(text: string): string {
     .join('')
 }
 
+function extend(out: string[], lines: string[]) {
+  for (const line of lines) {
+    out.push(line)
+  }
+}
+
 function pushProseFence(out: string[], indent: string, info: string, lines: string[]) {
   if (info) {
     out.push(`${indent}${info}`.trimEnd())
   }
 
-  out.push(...lines)
+  extend(out, lines)
 }
 
 function findClosingFence(lines: string[], start: number, marker: string): number {
@@ -234,7 +249,7 @@ function normalizeFenceBlocks(text: string): string {
     }
 
     if (closeIndex !== -1 && isUrlOnlyBlock(bodyLines)) {
-      out.push(...bodyLines)
+      extend(out, bodyLines)
       index = closeIndex + 1
 
       continue
@@ -257,10 +272,10 @@ function normalizeFenceBlocks(text: string): string {
         // any literal `$$` characters in the body don't collide with
         // an outer math wrapper. No close emitted yet — streaming.
         out.push(`${indent}${marker}math`)
-        out.push(...bodyLines)
+        extend(out, bodyLines)
       } else {
         out.push(`${indent}${marker}${language}`)
-        out.push(...bodyLines)
+        extend(out, bodyLines)
       }
 
       break
@@ -281,7 +296,7 @@ function normalizeFenceBlocks(text: string): string {
       // colliding with our wrapper. Without this rewrite the block
       // would render as a syntax-highlighted "latex" code listing.
       out.push(`${indent}${marker}math`)
-      out.push(...bodyLines)
+      extend(out, bodyLines)
       out.push(`${indent}${marker}`)
       index = closeIndex + 1
 
@@ -289,47 +304,12 @@ function normalizeFenceBlocks(text: string): string {
     }
 
     out.push(`${indent}${marker}${language}`)
-    out.push(...bodyLines)
+    extend(out, bodyLines)
     out.push(`${indent}${marker}`)
     index = closeIndex + 1
   }
 
   return out.join('\n')
-}
-
-// Convert LaTeX bracket delimiters to remark-math's dollar-sign syntax.
-// Models often emit `\(...\)` for inline math and `\[...\]` for display
-// math (the standard LaTeX convention) instead of `$...$` / `$$...$$`.
-// remark-math only natively recognizes the dollar form, so we rewrite at
-// preprocess time. Done with simple non-greedy matches keyed on the
-// escaped-bracket sequences — these are rare enough in non-math content
-// (you'd have to write a literal `\(` followed eventually by a literal
-// `\)` with NO interleaving newline-paragraph-break) that false positives
-// are extremely unlikely.
-const LATEX_INLINE_RE = /\\\(([^\n]+?)\\\)/g
-const LATEX_DISPLAY_RE = /\\\[([\s\S]+?)\\\]/g
-
-function rewriteLatexBracketDelimiters(text: string): string {
-  return text
-    .replace(LATEX_INLINE_RE, (_, body: string) => `$${body}$`)
-    .replace(LATEX_DISPLAY_RE, (_, body: string) => `$$${body}$$`)
-}
-
-// Escape `$<digit>` patterns so they don't get eaten as math delimiters.
-// Models commonly write currency amounts ($5, $19.99, $1,299) in prose.
-// With `singleDollarTextMath: true`, remark-math is greedy and matches
-// EVERY pair of `$`s — including the open of `$5` to the next `$10`,
-// rendering "5 in my pocket and you have " as italicized math text.
-// The de-facto convention across math-supporting LLM UIs is to treat
-// `$` followed by a digit as currency rather than math, since math
-// expressions almost always start with a letter or `\command`. Trade-
-// off: a math expression like `$5x = 10$` would have its leading 5
-// escaped — annoying but rare. The escape `\$` survives to render as
-// a literal `$` in the final output.
-const CURRENCY_DOLLAR_RE = /(^|[^\\])\$(?=\d)/g
-
-function escapeCurrencyDollars(text: string): string {
-  return text.replace(CURRENCY_DOLLAR_RE, '$1\\$')
 }
 
 export function preprocessMarkdown(text: string): string {
@@ -364,12 +344,10 @@ export function preprocessMarkdown(text: string): string {
       const leading = part.match(/^\s*/)?.[0] ?? ''
       const trailing = part.match(/\s*$/)?.[0] ?? ''
 
-      // rewriteLatexBracketDelimiters runs only on prose segments so
-      // we don't accidentally touch `\(` inside a code block.
-      // escapeCurrencyDollars likewise only runs on prose, so legit
-      // `$5` literals inside fenced code stay intact.
+      // Run only on prose segments so `$5` literals and `\(` inside code
+      // blocks stay intact.
       const transformed = normalizeVisibleProse(
-        stripPreviewTargets(rewriteLatexBracketDelimiters(escapeCurrencyDollars(part)))
+        stripPreviewTargets(normalizeMathDelimiters(escapeCurrencyDollars(part)))
       )
 
       return leading + transformed + trailing

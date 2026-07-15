@@ -30,13 +30,14 @@ import re
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, ClassVar
 from pathlib import Path
 from tools.binary_extensions import BINARY_EXTENSIONS
 
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
+    get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -241,21 +242,70 @@ class SearchResult:
     counts: Dict[str, int] = field(default_factory=dict)
     total_count: int = 0
     truncated: bool = False
+    limit_reason: Optional[str] = None
+    warning: Optional[str] = None
     error: Optional[str] = None
     
-    def to_dict(self) -> dict:
-        result = {"total_count": self.total_count}
+    # Densify content-mode matches into a path-grouped text block above this
+    # many matches. Below it, the verbose array is already compact enough that
+    # the path-grouping header costs more than it saves.
+    _DENSIFY_MIN_MATCHES: ClassVar[int] = 5
+
+    def _densify_matches(self) -> Optional[str]:
+        """Render content-mode matches as a compact, path-grouped text block.
+
+        The verbose form repeats the ``{"path","line","content"}`` keys and the
+        full path string for every match. This groups consecutive matches by
+        path (path printed once, then ``  <line>: <content>`` rows), which is
+        lossless — every path, line number, and content byte is preserved — and
+        readable by the model without any decode step.
+
+        Returns ``None`` when densification is not worthwhile (too few matches),
+        so the caller falls back to the verbose array.
+        """
+        if len(self.matches) < self._DENSIFY_MIN_MATCHES:
+            return None
+        # ripgrep emits matches path-ordered (all hits in a file are
+        # consecutive), so grouping on path change collapses each file to a
+        # single header without reordering results.
+        lines: list[str] = []
+        current_path: Optional[str] = None
+        for m in self.matches:
+            if m.path != current_path:
+                lines.append(m.path)
+                current_path = m.path
+            # rstrip trailing whitespace only; leading indentation in code is
+            # meaningful and preserved verbatim after the "<line>: " prefix.
+            lines.append(f"  {m.line_number}: {m.content.rstrip()}")
+        return "\n".join(lines)
+
+    def to_dict(self, densify: bool = False) -> dict:
+        result: dict[str, object] = {"total_count": self.total_count}
         if self.matches:
-            result["matches"] = [
-                {"path": m.path, "line": m.line_number, "content": m.content}
-                for m in self.matches
-            ]
+            dense = self._densify_matches() if densify else None
+            if dense is not None:
+                # Self-describing: the format key tells the model how to read
+                # the block so it never has to guess the shape.
+                result["matches_format"] = (
+                    "path-grouped: each file path on its own line, followed by "
+                    "indented '<line>: <content>' rows for matches in that file"
+                )
+                result["matches_text"] = dense
+            else:
+                result["matches"] = [
+                    {"path": m.path, "line": m.line_number, "content": m.content}
+                    for m in self.matches
+                ]
         if self.files:
             result["files"] = self.files
         if self.counts:
             result["counts"] = self.counts
         if self.truncated:
             result["truncated"] = True
+        if self.limit_reason:
+            result["limit_reason"] = self.limit_reason
+        if self.warning:
+            result["warning"] = self.warning
         if self.error:
             result["error"] = self.error
         return result
@@ -283,6 +333,73 @@ class ExecuteResult:
     """Result from executing a shell command."""
     stdout: str = ""
     exit_code: int = 0
+
+
+_SEARCH_TIMEOUT_MARKER_RE = re.compile(r"\n?\[Command timed out after \d+s\]\s*$")
+
+
+def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]:
+    """Return stdout cleaned for parsing and a limit reason for search timeouts."""
+    if result.exit_code == 124:
+        return _SEARCH_TIMEOUT_MARKER_RE.sub("", result.stdout), "search_timeout"
+    return result.stdout, None
+
+
+def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+    """Separate rg/grep diagnostic lines from real match output.
+
+    ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
+    warning text from ``rg``/``grep`` is interleaved with match lines in a
+    single stream. Diagnostics must not be parsed as matches, and on a hard
+    failure they are the error message to surface.
+
+    Returns ``(diagnostics, payload)`` where ``payload`` contains only lines
+    that look like real search output — a match line (``file:line:content``),
+    a files-only path, a count line, or a context line/separator. Everything
+    else (tool-prefixed errors, rg's multi-line ``regex parse error`` block
+    with its indented carets, blank lines) is folded into ``diagnostics``.
+
+    Classifying by *shape* rather than by error prefix is what lets the
+    exit-2 guard distinguish a pure failure (no usable payload → surface the
+    error) from a partial failure (some files matched, one was unreadable →
+    keep the matches). It also means error text can never be mis-parsed as a
+    match, a latent bug that predates the exit-code fix.
+    """
+    diagnostics: list[str] = []
+    payload: list[str] = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        # Tool diagnostics always carry the "<tool>: " prefix (e.g.
+        # "rg: <file>: Permission denied", "grep: Invalid regular
+        # expression", "rg: regex parse error:"). Check this first: a real
+        # match path can legitimately contain "-<digit>" (e.g. a tmp dir like
+        # ".../pytest-686/..."), which the shape regex would otherwise treat
+        # as a match line.
+        stripped = line.lstrip()
+        if stripped.startswith("rg: ") or stripped.startswith("grep: "):
+            diagnostics.append(line)
+            continue
+        # Otherwise classify by output shape. rg's regex-parse-error block
+        # also emits an indented caret line and a trailing "error: ..." line
+        # with no tool prefix; neither matches a search-output shape, so they
+        # fall through to diagnostics.
+        #   match / count : "<path>:<...>"   (has a colon; rg -c uses path:count)
+        #   files_only    : "<path>"         (no whitespace, no leading colon)
+        #   context line  : "<path>-<line>-" or the "--" group separator
+        if line == "--" or _SEARCH_OUTPUT_RE.match(line):
+            payload.append(line)
+        else:
+            diagnostics.append(line)
+    return '\n'.join(diagnostics), '\n'.join(payload)
+
+
+# A real rg/grep output line starts with a path token and is followed by a
+# ``:`` (match/count), a ``-`` (context), or nothing (files_only). Tool
+# diagnostics ("rg: ...", "grep: ...", "error: ...", indented carets) never
+# match because the path token forbids whitespace and a leading tool prefix
+# like "rg" is followed by ": " (space) which the negated class rejects.
+_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
 
 
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
@@ -498,6 +615,18 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
     """In-process YAML syntax check.  Returns (ok, error_message).
 
     Skipped gracefully if PyYAML isn't installed — YAML parsing is optional.
+
+    Deliberately a *syntax-only* scan (``yaml.parse``), not ``safe_load``:
+    loading rejects perfectly valid YAML that merely isn't a single plain
+    document — multi-document streams (``---``-separated Kubernetes
+    manifests raise ``ComposerError``) and application-defined tags
+    (CloudFormation ``!Sub``/``!Ref``, Ansible ``!vault`` raise
+    ``ConstructorError``).  Those are content conventions for whatever
+    consumes the file, not syntax errors, and this linter's verdict is
+    used as a fail-closed WRITE gate in ``write_file`` — a false positive
+    here refuses a legitimate write outright.  ``yaml.parse`` still
+    catches real scanner/parser failures (unclosed quotes, bad
+    indentation, tab-mangled block maps).
     """
     try:
         import yaml as _yaml
@@ -505,7 +634,8 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
         # PyYAML not available — skip silently, caller treats as no linter.
         return True, "__SKIP__"
     try:
-        _yaml.safe_load(content)
+        for _event in _yaml.parse(content):
+            pass
         return True, ""
     except _yaml.YAMLError as e:
         return False, f"YAMLError: {e}"
@@ -561,6 +691,21 @@ LINTERS_INPROC = {
     '.toml': _lint_toml_inproc,
 }
 
+# Subset of LINTERS_INPROC that the pre-write fail-closed gate in
+# ``write_file`` (see below) refuses on, rather than merely reporting.
+# Deliberately excludes ``.py``: unlike JSON/YAML/TOML (atomic structured
+# data blobs where "doesn't parse" always means "corrupt"), ``.py`` is
+# used throughout this codebase's own test fixtures as a generic
+# stand-in extension for arbitrary non-Python text content (e.g.
+# ``tests/tools/test_file_operations.py``'s
+# ``TestPatchReplacePostWriteVerification`` writes "hello world" /
+# "hi world" through a ``*.py`` path purely to exercise write-mechanics,
+# not Python validity). Hard-refusing on invalid Python would treat that
+# established, exercised pattern as an error and break it. Python source
+# keeps the existing (unchanged) post-write lint-delta *report* — still
+# visible to the caller, just not a write-blocking refusal.
+_FAIL_CLOSED_INPROC_EXTS = frozenset({'.json', '.yaml', '.yml', '.toml'})
+
 # Max limits for read operations
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
@@ -604,6 +749,45 @@ def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
     normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
     normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
     return normalized_offset, normalized_limit
+
+
+_REGEX_NEWLINE_ESCAPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\\n")
+
+
+def _pattern_has_regex_newline(pattern: str) -> bool:
+    """Return True when a content-search regex tries to match a newline.
+
+    ``search_files`` runs rg/grep in line-oriented mode, not rg
+    ``-U``/``--multiline`` mode, so newline regexes cannot match across
+    lines.  Detect both a literal newline already decoded into the tool
+    argument and a regex ``\n`` escape (odd number of backslashes before
+    ``n``).  Even backslashes, e.g. ``\\n``, mean a literal backslash+n
+    search and should not warn.
+    """
+    return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
+
+
+def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
+    """Return True for rg's hard error when multiline mode is required."""
+    if not error:
+        return False
+    return "literal \"\\n\" is not allowed" in error and "--multiline" in error
+
+
+def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str) -> SearchResult:
+    """Attach a newline-regex warning only when search found no usable results."""
+    if result.total_count != 0 or not _pattern_has_regex_newline(pattern):
+        return result
+    if result.error and not _is_line_oriented_newline_error(result.error):
+        return result
+    result.error = None
+    result.warning = (
+        "0 results found. Note: search_files content search is line-oriented "
+        "and does not run ripgrep with -U/--multiline, so `\\n` in the regex "
+        "does not match line breaks. Use context=N to inspect neighboring "
+        "lines, or escape as `\\\\n` when searching for a literal backslash+n."
+    )
+    return result
 
 
 class ShellFileOperations(FileOperations):
@@ -775,7 +959,19 @@ class ShellFileOperations(FileOperations):
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
-        """Escape a string for safe use in shell commands."""
+        """Escape a string for safe use in shell commands.
+
+        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
+        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
+        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
+        backslashes and MSYS otherwise mangles drive paths into the
+        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
+        the env-layer translator so shell file ops and the terminal ``cd``
+        agree on the path form. No-op off Windows and for plain POSIX paths.
+        """
+        from tools.environments.local import _bash_safe_path
+
+        arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
@@ -1094,8 +1290,9 @@ class ShellFileOperations(FileOperations):
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
-        if _is_write_denied(path):
-            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        denied = get_write_denied_error(path, verb="Delete")
+        if denied:
+            return WriteResult(error=denied)
 
         # We can't shell out to ``rm`` here — it doesn't exist on Windows
         # ``cmd.exe`` or PowerShell, so this code path is what's left when
@@ -1140,8 +1337,9 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            if _is_write_denied(p):
-                return WriteResult(error=f"Move denied: {p} is a protected path")
+            denied = get_write_denied_error(p, verb="Move")
+            if denied:
+                return WriteResult(error=denied)
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )
@@ -1161,12 +1359,21 @@ class ShellFileOperations(FileOperations):
         files. The content never appears in the shell command string —
         only the file path does.
 
-        After the write, runs a post-first / pre-lazy lint check via
-        ``_check_lint_delta()``.  If the new content is clean, the lint
-        call is O(one parse).  If the new content has errors, the pre-write
-        content is linted too and only errors newly introduced by this
-        write are surfaced — pre-existing problems are filtered out so
-        the agent isn't distracted chasing them.
+        Before anything touches disk, a fail-closed syntax gate runs
+        against the CANDIDATE content: if ``path``'s extension is in
+        ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/YAML/TOML — structured data
+        formats where a parse failure always means corruption) and the
+        candidate content doesn't parse, the write is refused outright.
+        No temp file, no rename, nothing on disk changes.
+
+        After a write that clears the gate, runs a post-first / pre-lazy
+        lint check via ``_check_lint_delta()``.  If the new content is
+        clean, the lint call is O(one parse).  If the new content has
+        errors the gate didn't already catch (i.e. errors from a linter
+        outside ``_FAIL_CLOSED_INPROC_EXTS``, such as Python), the
+        pre-write content is linted too and only errors newly introduced
+        by this write are surfaced — pre-existing problems are filtered
+        out so the agent isn't distracted chasing them.
 
         Args:
             path: File path to write
@@ -1179,8 +1386,47 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = get_write_denied_error(path)
+        if denied:
+            return WriteResult(error=denied)
+
+        # ── Fail-closed pre-write syntax gate ───────────────────────────
+        # Validate the CANDIDATE content BEFORE any bytes touch disk —
+        # previously this only ran as a post-write lint *report* that the
+        # caller could ignore (or that ``files_modified`` gating wouldn't
+        # catch, since a lint failure never set the top-level ``error``
+        # key). A structured-format write that doesn't even parse (mashed
+        # quotes, truncated generation, wrong indentation dialect) is a
+        # corrupt write, not a style nit — refuse it outright instead of
+        # writing first and reporting the damage afterward.
+        #
+        # Scope: only extensions in ``_FAIL_CLOSED_INPROC_EXTS`` (JSON/
+        # YAML/TOML). ``.py`` deliberately keeps its pre-existing,
+        # non-blocking lint-delta *report* instead of a hard refusal — see
+        # ``_FAIL_CLOSED_INPROC_EXTS``'s docstring above for why. Extensions
+        # with no in-process linter at all (including ones only covered by
+        # a shell linter) are completely unaffected — this gate never runs
+        # for them, so behavior there is unchanged.
+        #
+        # Checked against the raw ``content`` argument, before the
+        # BOM/CRLF preservation shims below run. Those shims exist purely
+        # to match the on-disk file's existing conventions; linting
+        # post-shim would false-positive a JSONDecodeError on a
+        # legitimately BOM-marked JSON file purely because this method
+        # re-adds the marker the read layer strips — see
+        # ``_file_has_bom``/``_UTF8_BOM`` below.
+        ext = os.path.splitext(path)[1].lower()
+        inproc_linter = LINTERS_INPROC.get(ext) if ext in _FAIL_CLOSED_INPROC_EXTS else None
+        if inproc_linter is not None:
+            _ok, _lint_err = inproc_linter(content)
+            if not _ok and _lint_err != "__SKIP__":
+                return WriteResult(
+                    error=(
+                        f"Refusing to write '{path}': candidate content fails "
+                        f"{ext} syntax validation ({_lint_err}). The file was "
+                        "NOT created or modified. Fix the content and retry."
+                    )
+                )
 
         # Capture pre-write content.  Two consumers want it:
         #
@@ -1197,7 +1443,6 @@ class ShellFileOperations(FileOperations):
         # the UNION of in-process lint coverage and LSP coverage.  For
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
-        ext = os.path.splitext(path)[1].lower()
         pre_content: Optional[str] = None
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:
@@ -1325,8 +1570,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = get_write_denied_error(path)
+        if denied:
+            return PatchResult(error=denied)
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
@@ -1910,15 +2156,17 @@ class ShellFileOperations(FileOperations):
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
 
-        if not result.stdout.strip():
+        if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
+            stdout, limit_reason = _search_stdout_and_limit(result)
 
         files = []
-        for line in result.stdout.strip().split('\n'):
+        for line in stdout.strip().split('\n'):
             if not line:
                 continue
             parts = line.split(' ', 1)
@@ -1946,7 +2194,9 @@ class ShellFileOperations(FileOperations):
 
         return SearchResult(
             files=files,
-            total_count=len(files)
+            total_count=len(files),
+            truncated=bool(limit_reason),
+            limit_reason=limit_reason,
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
@@ -1972,9 +2222,10 @@ class ShellFileOperations(FileOperations):
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
-        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        stdout, limit_reason = _search_stdout_and_limit(result)
+        all_files = [f for f in stdout.strip().split('\n') if f]
 
-        if not all_files:
+        if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
@@ -1982,14 +2233,16 @@ class ShellFileOperations(FileOperations):
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            stdout, limit_reason = _search_stdout_and_limit(result)
+            all_files = [f for f in stdout.strip().split('\n') if f]
 
         page = all_files[offset:offset + limit]
 
         return SearchResult(
             files=page,
             total_count=len(all_files),
-            truncated=len(all_files) >= fetch_limit,
+            truncated=len(all_files) >= fetch_limit or bool(limit_reason),
+            limit_reason=limit_reason,
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1997,17 +2250,19 @@ class ShellFileOperations(FileOperations):
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
-            return self._search_with_rg(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
-        elif self._has_command('grep'):
-            return self._search_with_grep(pattern, path, file_glob, limit, offset,
+            result = self._search_with_rg(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
+        elif self._has_command('grep'):
+            result = self._search_with_grep(pattern, path, file_glob, limit, offset,
+                                            output_mode, context)
         else:
             # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
+
+        return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
@@ -2038,24 +2293,46 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so rg's exit status propagates through `| head`.
+        # Without it the pipeline reports head's status (0), masking rg's
+        # error code (2) and making the guard below unreachable. rg handles a
+        # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
+        # introduce false errors on a successful-but-truncated search.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # rg exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+        stdout, limit_reason = _search_stdout_and_limit(result)
+
+        # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
+        # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
+        # are interleaved with match output. Split them out: diagnostics must
+        # not be parsed as matches, and on a hard error they ARE the message.
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+
+        # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
+        # even on partial errors (e.g. one unreadable file in a tree that
+        # otherwise matched), so only surface an error when exit==2 AND no
+        # usable match payload remains. Otherwise we keep the real matches.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        # Parse the diagnostic-free payload so error text never becomes a match.
+        stdout = payload
         # Parse results based on output mode
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
-            return SearchResult(files=page, total_count=total)
+            return SearchResult(
+                files=page,
+                total_count=total,
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -2063,7 +2340,12 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
-            return SearchResult(counts=counts, total_count=sum(counts.values()))
+            return SearchResult(
+                counts=counts,
+                total_count=sum(counts.values()),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         else:
             # Parse content matches and context lines.
@@ -2074,7 +2356,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
@@ -2104,7 +2386,8 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit
+                truncated=total > offset + limit or bool(limit_reason),
+                limit_reason=limit_reason,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
@@ -2138,23 +2421,44 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so grep's exit status propagates through `| head`
+        # (without it the pipeline reports head's 0, masking grep's error 2).
+        # A truncating head makes grep exit 141 (SIGPIPE) on an otherwise
+        # successful search; the strict `== 2` guard below ignores that, so
+        # pipefail does not turn truncated results into false errors.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # grep exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+        stdout, limit_reason = _search_stdout_and_limit(result)
+
+        # _exec merges stderr into stdout, so grep's diagnostic lines
+        # ("grep: <file>: <error>") are interleaved with matches. Split them
+        # out so they're never parsed as matches and so a hard error has a
+        # clean message.
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+
+        # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
+        # returns 2 on partial errors (e.g. an unreadable file) even when
+        # other files matched, so only surface an error when exit==2 AND no
+        # usable match payload remains.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        stdout = payload
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
-            return SearchResult(files=page, total_count=total)
+            return SearchResult(
+                files=page,
+                total_count=total,
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -2162,7 +2466,12 @@ class ShellFileOperations(FileOperations):
                             counts[parts[0]] = int(parts[1])
                         except ValueError:
                             pass
-            return SearchResult(counts=counts, total_count=sum(counts.values()))
+            return SearchResult(
+                counts=counts,
+                total_count=sum(counts.values()),
+                truncated=bool(limit_reason),
+                limit_reason=limit_reason,
+            )
         
         else:
             # grep match lines:   "file:lineno:content" (colon)
@@ -2172,7 +2481,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
@@ -2200,5 +2509,6 @@ class ShellFileOperations(FileOperations):
             return SearchResult(
                 matches=page,
                 total_count=total,
-                truncated=total > offset + limit
+                truncated=total > offset + limit or bool(limit_reason),
+                limit_reason=limit_reason,
             )

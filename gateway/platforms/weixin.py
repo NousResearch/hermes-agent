@@ -1138,6 +1138,9 @@ async def qr_login(
 class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
+    supports_code_blocks = True  # Weixin renders fenced code blocks
+    splits_long_messages = True  # send() chunks via _split_text()
+
     MAX_MESSAGE_LENGTH = 2000
 
     # WeChat does not support editing sent messages — streaming must use the
@@ -1172,7 +1175,25 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
         )
-        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
+        self._send_text_gate = asyncio.Lock()
+        self._rate_limit_circuit_threshold = max(
+            1,
+            int(
+                extra.get("rate_limit_circuit_threshold")
+                or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_THRESHOLD", "1")
+            ),
+        )
+        self._rate_limit_circuit_window_seconds = float(
+            extra.get("rate_limit_circuit_window_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_WINDOW_SECONDS", "30.0")
+        )
+        self._rate_limit_circuit_open_seconds = float(
+            extra.get("rate_limit_circuit_open_seconds")
+            or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_OPEN_SECONDS", "30.0")
+        )
+        self._rate_limit_circuit_until = 0.0
+        self._rate_limit_events: List[float] = []
+        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "pairing")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
         if allow_from is None:
@@ -1240,7 +1261,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return [str(item).strip() for item in value if str(item).strip()]
         return [str(value).strip()] if str(value).strip() else []
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_weixin_requirements():
             message = "Weixin startup failed: aiohttp and cryptography are required"
             self._set_fatal_error("weixin_missing_dependency", message, retryable=False)
@@ -1406,7 +1427,9 @@ class WeixinAdapter(BasePlatformAdapter):
                 return
             if self._group_policy == "allowlist" and effective_chat_id not in self._group_allow_from:
                 return
-        elif not self._is_dm_allowed(sender_id):
+            if self._group_policy == "pairing":
+                return
+        elif not self._is_dm_intake_allowed(sender_id):
             return
 
         context_token = str(message.get("context_token") or "").strip()
@@ -1449,12 +1472,30 @@ class WeixinAdapter(BasePlatformAdapter):
         else:
             await self.handle_message(event)
 
+    def _open_dm_opted_in(self) -> bool:
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        return os.getenv("WEIXIN_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+
     def _is_dm_allowed(self, sender_id: str) -> bool:
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
             return sender_id in self._allow_from
-        return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
+
+    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
+        if self._dm_policy == "disabled":
+            return False
+        if self._dm_policy == "allowlist":
+            return sender_id in self._allow_from
+        if self._dm_policy == "pairing":
+            return True
+        if self._dm_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     @property
     def enforces_own_access_policy(self) -> bool:
@@ -1645,6 +1686,37 @@ class WeixinAdapter(BasePlatformAdapter):
             content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages,
         )
 
+    def _rate_limit_cooldown_remaining(self) -> float:
+        return max(0.0, self._rate_limit_circuit_until - time.monotonic())
+
+    def _rate_limit_error(self) -> RuntimeError:
+        return RuntimeError(
+            f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s"
+        )
+
+    def _open_rate_limit_circuit(self) -> None:
+        if self._rate_limit_circuit_open_seconds <= 0:
+            return
+        self._rate_limit_circuit_until = max(
+            self._rate_limit_circuit_until,
+            time.monotonic() + self._rate_limit_circuit_open_seconds,
+        )
+
+    def _record_rate_limit_event(self) -> bool:
+        """Record a genuine iLink rate limit and return True if breaker opened."""
+        now = time.monotonic()
+        window_start = now - self._rate_limit_circuit_window_seconds
+        self._rate_limit_events = [ts for ts in self._rate_limit_events if ts >= window_start]
+        self._rate_limit_events.append(now)
+        if len(self._rate_limit_events) >= self._rate_limit_circuit_threshold:
+            self._open_rate_limit_circuit()
+            return self._rate_limit_cooldown_remaining() > 0
+        return False
+
+    def _reset_rate_limit_circuit(self) -> None:
+        self._rate_limit_events.clear()
+        self._rate_limit_circuit_until = 0.0
+
     async def _send_text_chunk(
         self,
         *,
@@ -1660,9 +1732,28 @@ class WeixinAdapter(BasePlatformAdapter):
         degraded fallback, which keeps cron-initiated push messages working
         even when no user message has refreshed the session recently.
         """
+        async with self._send_text_gate:
+            await self._send_text_chunk_locked(
+                chat_id=chat_id,
+                chunk=chunk,
+                context_token=context_token,
+                client_id=client_id,
+            )
+
+    async def _send_text_chunk_locked(
+        self,
+        *,
+        chat_id: str,
+        chunk: str,
+        context_token: Optional[str],
+        client_id: str,
+    ) -> None:
+        """Send a text chunk while holding the adapter-wide outbound text gate."""
         last_error: Optional[Exception] = None
         retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
+            if self._rate_limit_cooldown_remaining() > 0:
+                raise self._rate_limit_error()
             try:
                 resp = await _send_message(
                     self._send_session,
@@ -1708,6 +1799,9 @@ class WeixinAdapter(BasePlatformAdapter):
                             last_error = RuntimeError(
                                 f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
                             )
+                            if self._record_rate_limit_event():
+                                last_error = self._rate_limit_error()
+                                break
                             if attempt >= self._send_chunk_retries:
                                 break
                             wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
@@ -1721,6 +1815,7 @@ class WeixinAdapter(BasePlatformAdapter):
                         raise RuntimeError(
                             f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
                         )
+                self._reset_rate_limit_circuit()
                 return
             except Exception as exc:
                 last_error = exc
@@ -1808,10 +1903,47 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
 
+    async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
+        """Return a valid typing ticket, refreshing from getConfig if expired.
+
+        The iLink typing ticket has a 600-second TTL.  When a long-running
+        session exceeds that window the cached ticket evicts, and both
+        ``send_typing`` and ``stop_typing`` silently no-op — leaving the
+        WeChat client stuck showing the typing indicator forever.  This
+        method transparently refreshes the ticket so the stop signal can
+        always be delivered.
+        """
+        ticket = self._typing_cache.get(chat_id)
+        if ticket:
+            return ticket
+        if not self._send_session or not self._token:
+            return None
+        # Ticket expired or never fetched — refresh via getConfig.
+        # Use the most recent context_token for this peer if available.
+        context_token = self._token_store.get(self._account_id, chat_id)
+        try:
+            response = await _get_config(
+                self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                user_id=chat_id,
+                context_token=context_token,
+            )
+            typing_ticket = str(response.get("typing_ticket") or "")
+            if typing_ticket:
+                self._typing_cache.set(chat_id, typing_ticket)
+                return typing_ticket
+        except Exception as exc:
+            logger.debug(
+                "[%s] typing ticket refresh failed for %s: %s",
+                self.name, _safe_id(chat_id), exc,
+            )
+        return None
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:
@@ -1829,7 +1961,7 @@ class WeixinAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         if not self._send_session or not self._token:
             return
-        typing_ticket = self._typing_cache.get(chat_id)
+        typing_ticket = await self._ensure_typing_ticket(chat_id)
         if not typing_ticket:
             return
         try:

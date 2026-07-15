@@ -5,9 +5,46 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  noteSessionActivity,
+  onSessionWatchdogClear,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentPersonality,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier,
+  setSessionAttention,
+  setSessionWorking,
+  setTurnStartedAt,
+  setYoloActive
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
+
+// Shallow per-message identity check. When a flush carries no transcript
+// changes, `preserveLocalAssistantErrors` returns the same message objects in
+// the same order, so reference equality per slot is enough to detect "nothing
+// to publish" and avoid a needless `$messages` churn.
+function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
+  if (a === b) {
+    return true
+  }
+
+  if (a.length !== b.length) {
+    return false
+  }
+
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) {
+      return false
+    }
+  }
+
+  return true
+}
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null
@@ -16,6 +53,16 @@ interface SessionStateCacheOptions {
   setAwaitingResponse: (awaiting: boolean) => void
   setBusy: (busy: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+}
+
+function syncRuntimeMetadataToView(state: ClientSessionState) {
+  setCurrentModel(state.model ?? '')
+  setCurrentProvider(state.provider ?? '')
+  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  setCurrentServiceTier(state.serviceTier ?? '')
+  setCurrentFastMode(state.fast ?? false)
+  setYoloActive(state.yolo ?? false)
+  setCurrentPersonality(state.personality ?? '')
 }
 
 export function useSessionStateCache({
@@ -33,6 +80,9 @@ export function useSessionStateCache({
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
+  // Runtime id whose transcript currently occupies `$messages` — lets the
+  // flush below tell a same-session refresh from a thread switch.
+  const viewSessionIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId
@@ -80,6 +130,18 @@ export function useSessionStateCache({
     return created
   }, [])
 
+  const resetViewSync = useCallback(() => {
+    // Drop any RAF-pending transcript stage so a backgrounded turn cannot
+    // repaint over the chat the user just switched to (#47709 / #47743).
+    pendingViewStateRef.current = null
+    viewSessionIdRef.current = null
+
+    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(viewSyncRafRef.current)
+      viewSyncRafRef.current = null
+    }
+  }, [])
+
   const flushPendingViewState = useCallback(() => {
     const pending = pendingViewStateRef.current
     pendingViewStateRef.current = null
@@ -88,10 +150,39 @@ export function useSessionStateCache({
       return
     }
 
-    setMessages(preserveLocalAssistantErrors(pending.state.messages, $messages.get()))
+    // `preserveLocalAssistantErrors` always returns a fresh array, so publishing
+    // it unconditionally puts a new `$messages` reference on the store every
+    // flush — including the periodic `session.info` heartbeats that don't touch
+    // the transcript. That churns ChatView → runtimeMessageRepository → the
+    // assistant-ui runtime → the virtualizer, which re-measures and visibly
+    // jerks the scroll position while the user is reading. Skip the publish when
+    // the merged result is content-identical to what's already on screen.
+    const currentMessages = $messages.get()
+
+    // On a thread switch `$messages` still holds the *previous* thread, so
+    // preserving its local errors would graft that thread's failed turn (e.g.
+    // an out-of-funds error) onto this one — then cascade it everywhere as the
+    // polluted view becomes the next switch's baseline. Only carry errors
+    // across a same-session refresh; our cached state already keeps its own.
+    const nextMessages =
+      viewSessionIdRef.current === pending.sessionId
+        ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+        : pending.state.messages
+
+    if (!sameMessageList(nextMessages, currentMessages)) {
+      setMessages(nextMessages)
+    }
+
+    viewSessionIdRef.current = pending.sessionId
+
+    syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
+    // Mirror the focused session's per-session turn clock into the global
+    // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
+    // time intact on focus instead of zeroing it (the "timer restarts" bug).
+    setTurnStartedAt(pending.state.turnStartedAt)
   }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
@@ -109,7 +200,31 @@ export function useSessionStateCache({
         return
       }
 
+      syncRuntimeMetadataToView(state)
       pendingViewStateRef.current = { sessionId, state }
+
+      // Terminal / attention transitions (turn finished, error, or the agent is
+      // now waiting on the user) MUST reach the view immediately. Electron
+      // throttles `requestAnimationFrame` to ~0 while the window is
+      // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
+      // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
+      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
+      // (cancelling any in-flight RAF, since we're about to publish the latest
+      // state anyway). The plain busy heartbeat stays RAF-batched: that
+      // coalescing exists only to keep periodic `session.info` updates from
+      // churning `$messages` and jerking the scroll position while reading.
+      const isCriticalTransition = !state.busy || state.needsInput
+
+      if (isCriticalTransition) {
+        if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+          window.cancelAnimationFrame(viewSyncRafRef.current)
+          viewSyncRafRef.current = null
+        }
+
+        flushPendingViewState()
+
+        return
+      }
 
       if (viewSyncRafRef.current !== null) {
         return
@@ -175,9 +290,35 @@ export function useSessionStateCache({
     [ensureSessionState, syncSessionStateToView]
   )
 
+  // When the store watchdog force-clears a stuck session (8 min of stream
+  // silence — a hung or looping turn that never delivered its terminal event),
+  // also drop that session's busy/awaiting flags here. Clearing the sidebar dot
+  // alone leaves the composer wedged on "Thinking"/Stop; updateSessionState
+  // re-syncs `$busy` when the healed session is the one on screen.
+  useEffect(
+    () =>
+      onSessionWatchdogClear(storedSessionId => {
+        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+
+        if (!runtimeId || !state?.busy) {
+          return
+        }
+
+        updateSessionState(runtimeId, current => ({
+          ...current,
+          awaitingResponse: false,
+          busy: false,
+          needsInput: false
+        }))
+      }),
+    [updateSessionState]
+  )
+
   return {
     activeSessionIdRef,
     ensureSessionState,
+    resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef,

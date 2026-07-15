@@ -2,18 +2,24 @@ import { useEffect, useState } from 'react'
 
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import type { ProfileInfo } from '@/types/hermes'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
-
-export const PROFILE_NAME_HINT =
-  'Lowercase letters, digits, hyphens, and underscores. Must start with a letter or digit.'
 
 export function isValidProfileName(name: string): boolean {
   return PROFILE_NAME_RE.test(name.trim())
@@ -25,14 +31,18 @@ export function isValidProfileName(name: string): boolean {
 export function CreateProfileDialog({
   onClose,
   onCreated,
-  open
+  open,
+  profiles = []
 }: {
   onClose: () => void
   onCreated?: (name: string) => Promise<void> | void
   open: boolean
+  profiles?: ProfileInfo[]
 }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const [name, setName] = useState('')
-  const [cloneFromDefault, setCloneFromDefault] = useState(true)
+  const [cloneFrom, setCloneFrom] = useState<null | string>('default')
   const [soul, setSoul] = useState('')
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
@@ -43,7 +53,7 @@ export function CreateProfileDialog({
     }
 
     setName('')
-    setCloneFromDefault(true)
+    setCloneFrom('default')
     setSoul('')
     setError(null)
     setStatus('idle')
@@ -57,7 +67,7 @@ export function CreateProfileDialog({
     event.preventDefault()
 
     if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
+      setError(invalid ? p.invalidName(p.nameHint) : p.nameRequired)
 
       return
     }
@@ -66,7 +76,7 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      await createProfile({ name: trimmed, clone_from_default: cloneFromDefault })
+      await createProfile({ name: trimmed, clone_from: cloneFrom })
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)
@@ -77,7 +87,7 @@ export function CreateProfileDialog({
       window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
-      setError(err instanceof Error ? err.message : 'Failed to create profile')
+      setError(err instanceof Error ? err.message : p.failedCreate)
     }
   }
 
@@ -85,16 +95,14 @@ export function CreateProfileDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New profile</DialogTitle>
-          <DialogDescription>
-            Profiles are independent Hermes environments: separate config, skills, and SOUL.md.
-          </DialogDescription>
+          <DialogTitle>{p.newProfile}</DialogTitle>
+          <DialogDescription>{p.createDesc}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-name">
-              Name
+              {p.nameLabel}
             </label>
             <Input
               aria-invalid={invalid}
@@ -105,33 +113,42 @@ export function CreateProfileDialog({
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
+              {p.nameHint}
             </p>
           </div>
 
-          <label className="flex cursor-pointer select-none items-start gap-2.5 px-0.5 py-1">
-            <Checkbox
-              checked={cloneFromDefault}
-              className="mt-0.5 shrink-0"
-              onCheckedChange={checked => setCloneFromDefault(checked === true)}
-            />
-            <span className="grid gap-0.5 leading-snug">
-              <span className="text-sm font-medium">Clone from default</span>
-              <span className="text-xs text-muted-foreground">
-                Copy config, skills, and SOUL.md from your default profile.
-              </span>
-            </span>
-          </label>
+          <div className="grid gap-1.5">
+            <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
+              {p.cloneFrom}
+            </label>
+            <Select
+              onValueChange={value => setCloneFrom(value === '__none__' ? null : value)}
+              value={cloneFrom ?? '__none__'}
+            >
+              <SelectTrigger className="h-9 rounded-md" id="new-profile-clone-from">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__none__">{p.cloneFromNone}</SelectItem>
+                {profiles.map(profile => (
+                  <SelectItem key={profile.name} value={profile.name}>
+                    {profile.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
+          </div>
 
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-soul">
-              SOUL.md <span className="font-normal text-muted-foreground">— optional</span>
+              SOUL.md <span className="font-normal text-muted-foreground">- {p.soulOptional}</span>
             </label>
             <Textarea
               className="min-h-28 font-mono text-xs leading-5"
               id="new-profile-soul"
               onChange={event => setSoul(event.target.value)}
-              placeholder={`The system prompt / persona for this profile.\nLeave blank to keep the ${cloneFromDefault ? 'cloned' : 'empty'} default.`}
+              placeholder={p.soulPlaceholder(cloneFrom ? p.soulPlaceholderCloned : p.soulPlaceholderEmpty)}
               value={soul}
             />
           </div>
@@ -145,10 +162,10 @@ export function CreateProfileDialog({
 
           <DialogFooter>
             <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
-              Cancel
+              {t.common.cancel}
             </Button>
             <Button disabled={busy || !trimmed || invalid} type="submit">
-              <ActionStatus busy="Creating…" done="Created" idle="Create profile" state={status} />
+              <ActionStatus busy={p.creating} done={p.created} idle={p.createAction} state={status} />
             </Button>
           </DialogFooter>
         </form>

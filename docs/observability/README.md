@@ -6,7 +6,7 @@ contract supports trace, metrics, audit, replay, and export integrations such
 as Langfuse, OpenTelemetry-style collectors, and NeMo Relay.
 
 For deployments that need independent provider-routing receipts outside Hermes,
-see [OpenAI-compatible audit gateways](openai-compatible-audit-gateways.md).
+see the published [OpenAI-compatible audit gateway guide](../../website/docs/integrations/openai-compatible-audit-gateways.md).
 
 Observer hooks are intentionally backend-neutral. They expose stable lifecycle
 events, correlation IDs, sanitized payloads, timing, status, and error fields.

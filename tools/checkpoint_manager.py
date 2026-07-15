@@ -816,32 +816,61 @@ class CheckpointManager:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
-        # Take a pre-rollback snapshot so you can undo the undo.
-        self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
+        # Resolve the target tree and reason before taking the pre-rollback
+        # snapshot.  That snapshot may cross max_snapshots and trigger _prune,
+        # which rebuilds the retained commit chain, expires reflogs, and runs
+        # gc --prune=now.  Pin the tree with a temporary ref so it remains
+        # reachable until the restore finishes.
+        ok_tree, target_tree, tree_err = _run_git(
+            ["rev-parse", "--verify", f"{commit_hash}^{{tree}}"], store, abs_dir,
+        )
+        if not ok_tree or not target_tree:
+            return {"success": False, "error": f"Checkpoint '{commit_hash}' has no readable tree",
+                    "debug": tree_err or None}
+        ok_reason, reason_out, _ = _run_git(
+            ["log", "--format=%s", "-1", commit_hash], store, abs_dir,
+        )
+        target_reason = reason_out if ok_reason else "unknown"
 
         dir_hash = _project_hash(abs_dir)
         index_file = _index_path(store, dir_hash)
-
-        restore_target = file_path if file_path else "."
-        ok, stdout, err = _run_git(
-            ["checkout", commit_hash, "--", restore_target],
-            store, abs_dir, timeout=_GIT_TIMEOUT * 2,
-            index_file=index_file,
+        restore_ref = f"refs/hermes-restore/{dir_hash}-{os.getpid()}-{time.time_ns()}"
+        ok_pin, _, pin_err = _run_git(
+            ["update-ref", restore_ref, target_tree], store, abs_dir,
         )
+        if not ok_pin:
+            return {"success": False, "error": "Could not pin checkpoint tree for restore",
+                    "debug": pin_err or None}
 
-        if not ok:
-            return {"success": False, "error": f"Restore failed: {err}",
-                    "debug": err or None}
+        try:
+            # Take a pre-rollback snapshot so you can undo the undo.
+            self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
-        ok2, reason_out, _ = _run_git(
-            ["log", "--format=%s", "-1", commit_hash], store, abs_dir,
-        )
-        reason = reason_out if ok2 else "unknown"
+            if file_path:
+                restore_args = ["checkout", restore_ref, "--", file_path]
+            else:
+                # ``git checkout <commit> -- .`` updates paths present in the
+                # target tree but leaves behind files added after the checkpoint.
+                # The per-project index currently represents the pre-rollback
+                # snapshot, so read-tree's reset+update mode can reconcile the
+                # complete tracked tree, including removing those added paths,
+                # without touching excluded files.
+                restore_args = ["read-tree", "--reset", "-u", restore_ref]
+            ok, stdout, err = _run_git(
+                restore_args, store, abs_dir, timeout=_GIT_TIMEOUT * 2,
+                index_file=index_file,
+            )
+
+            if not ok:
+                return {"success": False, "error": f"Restore failed: {err}",
+                        "debug": err or None}
+        finally:
+            _run_git(["update-ref", "-d", restore_ref], store, abs_dir)
 
         result = {
             "success": True,
             "restored_to": commit_hash[:8],
-            "reason": reason,
+            "reason": target_reason,
             "directory": abs_dir,
         }
         if file_path:

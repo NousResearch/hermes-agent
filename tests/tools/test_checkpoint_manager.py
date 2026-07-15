@@ -353,6 +353,17 @@ class TestRestore:
         assert result["success"] is True
         assert (work_dir / "main.py").read_text() == "original\n"
 
+    def test_restore_removes_file_added_after_checkpoint(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "original state")
+        added = work_dir / "added-after-checkpoint.txt"
+        added.write_text("temporary\n")
+
+        cps = mgr.list_checkpoints(str(work_dir))
+        result = mgr.restore(str(work_dir), cps[0]["hash"])
+
+        assert result["success"] is True
+        assert not added.exists()
+
     def test_restore_invalid_hash(self, mgr, work_dir):
         mgr.ensure_checkpoint(str(work_dir), "initial")
         result = mgr.restore(str(work_dir), "deadbeef1234")
@@ -374,6 +385,70 @@ class TestRestore:
         all_cps = mgr.list_checkpoints(str(work_dir))
         assert len(all_cps) >= 2
         assert "pre-rollback" in all_cps[0]["reason"]
+
+    def test_restore_preserves_excluded_files(self, mgr, work_dir):
+        (work_dir / "main.py").write_text("v1\n")
+        mgr.ensure_checkpoint(str(work_dir), "v1")
+        mgr.new_turn()
+
+        excluded = work_dir / "node_modules" / "package" / "index.js"
+        excluded.parent.mkdir(parents=True)
+        excluded.write_text("keep me\n")
+        (work_dir / "main.py").write_text("v2\n")
+
+        cps = mgr.list_checkpoints(str(work_dir))
+        result = mgr.restore(str(work_dir), cps[0]["hash"])
+
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "v1\n"
+        assert excluded.read_text() == "keep me\n"
+
+    def test_restore_survives_retention_rewriting_target_hash(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=True, max_snapshots=2)
+
+        (work_dir / "main.py").write_text("v1\n")
+        assert m.ensure_checkpoint(str(work_dir), "v1") is True
+        m.new_turn()
+        (work_dir / "main.py").write_text("v2\n")
+        assert m.ensure_checkpoint(str(work_dir), "v2") is True
+        m.new_turn()
+
+        target_hash = m.list_checkpoints(str(work_dir))[-1]["hash"]
+        (work_dir / "main.py").write_text("v3\n")
+
+        result = m.restore(str(work_dir), target_hash)
+
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "v1\n"
+
+    def test_file_restore_survives_retention_rewriting_target_hash(
+        self, work_dir, checkpoint_base, monkeypatch,
+    ):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        m = CheckpointManager(enabled=True, max_snapshots=2)
+
+        (work_dir / "main.py").write_text("v1\n")
+        (work_dir / "other.py").write_text("other-v1\n")
+        assert m.ensure_checkpoint(str(work_dir), "v1") is True
+        m.new_turn()
+        (work_dir / "main.py").write_text("v2\n")
+        (work_dir / "other.py").write_text("other-v2\n")
+        assert m.ensure_checkpoint(str(work_dir), "v2") is True
+        m.new_turn()
+
+        target_hash = m.list_checkpoints(str(work_dir))[-1]["hash"]
+        (work_dir / "main.py").write_text("v3\n")
+        (work_dir / "other.py").write_text("other-v3\n")
+
+        result = m.restore(str(work_dir), target_hash, file_path="main.py")
+
+        assert result["success"] is True
+        assert result["file"] == "main.py"
+        assert (work_dir / "main.py").read_text() == "v1\n"
+        assert (work_dir / "other.py").read_text() == "other-v3\n"
 
     def test_tilde_path_supports_diff_and_restore_flow(
         self, checkpoint_base, fake_home, monkeypatch,

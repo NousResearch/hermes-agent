@@ -2955,8 +2955,8 @@ class MCPServerTask:
                             parked = await self._wait_for_reconnect_or_shutdown(
                                 timeout=_PARKED_RETRY_INTERVAL
                             )
-                        except GeneratorExit:
-                            parked = "shutdown"  # ponytail: GeneratorExit hits await, inner catch unreached
+                        except (GeneratorExit, RuntimeError):
+                            parked = "shutdown"  # ponytail: loop closed, GeneratorExit or RuntimeError on await
                         if parked == "shutdown":
                             return
                         logger.info(
@@ -3021,7 +3021,7 @@ class MCPServerTask:
                         parked = await self._wait_for_reconnect_or_shutdown(
                             timeout=_PARKED_RETRY_INTERVAL
                         )
-                    except GeneratorExit:
+                    except (GeneratorExit, RuntimeError):
                         parked = "shutdown"
                     if parked == "shutdown":
                         return

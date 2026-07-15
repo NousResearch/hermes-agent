@@ -5896,7 +5896,9 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
   const savedMode = key ? scoped?.mode : config.mode
   const ssh = savedMode === 'ssh' ? normalizeSshConfig(block) : null
-  const savedSsh = savedMode === 'local' && key ? savedProfileSsh(config, key) : null
+  const savedSsh = savedMode === 'local'
+    ? key ? savedProfileSsh(config, key) : normalizeSshConfig(block)
+    : null
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
@@ -6388,7 +6390,9 @@ async function resolveRemoteBackend(profile) {
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
 
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(
+      override.url, override.authMode, token, 'profile', undefined, config.profiles?.[connectionScopeKey(profile)]?.mode === 'cloud' ? 'cloud' : 'url'
+    )
   }
 
   // 2. Env override (global, token-auth only).
@@ -6422,7 +6426,9 @@ async function resolveRemoteBackend(profile) {
   const authMode = normAuthMode(config.remote?.authMode)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
 
-  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+  return buildRemoteConnection(
+    config.remote?.url, authMode, token, 'settings', undefined, config.mode === 'cloud' ? 'cloud' : 'url'
+  )
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local

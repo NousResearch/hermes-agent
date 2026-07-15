@@ -7,7 +7,8 @@ import {
   isRemoteConfig,
   isRemoteReauthError,
   isRemoteReauthFailure,
-  signInLabel
+  signInLabel,
+  sshFailureMessage
 } from './boot-failure-reauth'
 
 function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnectionConfig {
@@ -21,6 +22,11 @@ function config(overrides: Partial<DesktopConnectionConfig> = {}): DesktopConnec
     remoteTokenSet: false,
     remoteUrl: 'https://box:9119',
     cloudOrg: '',
+    sshHost: '',
+    sshUser: '',
+    sshPort: null,
+    sshKeyPath: '',
+    sshRemoteHermesPath: '',
     ...overrides
   }
 }
@@ -101,6 +107,16 @@ describe('isRemoteReauthError', () => {
   it('ignores non-auth boot errors and nullish', () => {
     expect(isRemoteReauthError('Hermes background process exited during startup.')).toBe(false)
     expect(isRemoteReauthError(null)).toBe(false)
+  })
+})
+
+describe('sshFailureMessage', () => {
+  it('localizes SSH failures without changing non-SSH errors', () => {
+    const copy = { sshErrAuth: 'localized auth', sshErrUnknown: 'localized unknown' }
+    const ssh = config({ mode: 'ssh', sshHost: 'box', remoteUrl: '' })
+    expect(sshFailureMessage(ssh, 'SSH authentication failed', copy)).toBe('localized auth')
+    expect(sshFailureMessage(ssh, 'unexpected failure', copy)).toBe('localized unknown')
+    expect(sshFailureMessage(config(), 'raw remote error', copy)).toBe('raw remote error')
   })
 })
 

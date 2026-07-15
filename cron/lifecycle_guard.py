@@ -57,6 +57,17 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # gateway identifier prevents blocking unrelated hermes services (e.g.
     # `launchctl unload ai.hermes.update-checker.plist`).
     r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\bhermes[.\-]?gateway)"
+    # Branch B2: launchctl bootstrap/submit of the gateway label or a
+    # restart-helper job. Registering a one-shot "restart the gateway"
+    # helper from inside the gateway is the loop-seeding move the other
+    # branches exist to block — the helper survives the gateway's death and
+    # kicks it over again (observed as self-perpetuating restart loops).
+    r"|(?:launchctl\s+(?:bootstrap|submit)\b[^\n]*(?:\bai\.hermes\.gateway|\brestart-(?:default|hermes)-gateway))"
+    # Branch B3: launchctl bootout of the PRIMARY gateway label/plist.
+    # Deliberately anchored so `ai.hermes.gateway.delayed-restart.<ts>`
+    # does NOT match: removing a runaway one-shot restart helper is the
+    # safe recovery path from chat while the gateway itself stays alive.
+    r"|(?:launchctl\s+bootout\b[^\n]*\bai\.hermes\.gateway(?:\.plist)?(?:\s|$))"
     # Branch C: systemctl ops on a hermes-gateway unit.
     r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
     # Branch D: pkill / kill targeting the hermes gateway process. Both

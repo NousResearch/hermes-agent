@@ -1274,15 +1274,11 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
 def _anthropic_oauth_disabled() -> bool:
     """Whether the user turned off subscription-OAuth Anthropic inference.
 
-    Controlled by the ``HERMES_ANTHROPIC_DISABLE_OAUTH`` env var or the
-    ``model.anthropic_disable_oauth`` config flag (the desktop provider card's
-    "Use for inference" switch writes the latter when turned off). When set,
-    only the metered ``ANTHROPIC_API_KEY`` is used — the Claude Code / OAuth
+    Controlled by the ``model.anthropic_disable_oauth`` config flag (the desktop
+    provider card's "Use for inference" switch writes it when turned off). When
+    set, only the metered ``ANTHROPIC_API_KEY`` is used — the Claude Code / OAuth
     sources are skipped.
     """
-    env = os.getenv("HERMES_ANTHROPIC_DISABLE_OAUTH", "").strip().lower()
-    if env in ("1", "true", "yes", "on"):
-        return True
     try:
         from hermes_cli.config import load_config_readonly, cfg_get
 

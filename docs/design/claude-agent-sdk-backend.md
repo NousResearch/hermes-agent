@@ -67,7 +67,7 @@ Set `mode: auto`/`off`/blank, or `enabled: false`, to disable.
 |------|--------------------|-------|-------|
 | **`inference`** (default) | **Hermes** | Hermes' own tools, executed by Hermes | Single SDK model call per turn (`max_turns=1`, no SDK tools). The SDK is a pure transport-to-Anthropic + OAuth. **Tool-calling turns are not routed through this path** — see limitation below. |
 | **`delegate`** | **SDK** | SDK built-ins (Read/Edit/Bash/Grep/…) | "Run Claude Code inside Hermes." Distinct trust surface; defaults to `permission_mode: bypassPermissions`. |
-| **`hybrid`** (experimental) | **SDK** | **Hermes'** tools via an in-process MCP server | SDK loop + Hermes capabilities. Agent-level tools that need live agent state (todo/memory/clarify/delegate_task/read_terminal/session_search) are **not** exposed. Results are wrapped with the same `<untrusted_tool_result>` promptware defense as the native path. |
+| **`hybrid`** (experimental) | **SDK** | **Hermes'** tools via an in-process MCP server | SDK loop + Hermes capabilities. Every tool the agent carries is routed through the unified `invoke_tool` entry, so agent-level tools that need live agent state (todo/memory/clarify/delegate_task/read_terminal/session_search) **are** exposed — the handlers run in-process and reach the live agent (see [Not yet shared: codex statefulness](#not-yet-shared-codex-statefulness)). Results are wrapped with the same `<untrusted_tool_result>` promptware defense as the native path. |
 
 Cross-turn context is preserved through the SDK's own session (`resume`) — the
 session id is stored on the agent and replayed on the next turn.

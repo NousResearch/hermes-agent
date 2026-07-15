@@ -12,9 +12,7 @@ describe('summarizeShellCommand', () => {
   })
 
   it('keeps flags on the surviving command', () => {
-    expect(summarizeShellCommand('cd /x && pnpm run preview --port 4317 2>&1')).toBe(
-      'pnpm run preview --port 4317'
-    )
+    expect(summarizeShellCommand('cd /x && pnpm run preview --port 4317 2>&1')).toBe('pnpm run preview --port 4317')
   })
 
   it('drops a source/activate prefix', () => {
@@ -61,7 +59,9 @@ describe('summarizeShellCommand', () => {
 
   it('drops a leading echo banner around a single command', () => {
     expect(
-      summarizeShellCommand('echo "--- proto pnpm direct ---"; ~/.proto/tools/node/24.11.0/bin/pnpm --version 2>&1 | tail -3')
+      summarizeShellCommand(
+        'echo "--- proto pnpm direct ---"; ~/.proto/tools/node/24.11.0/bin/pnpm --version 2>&1 | tail -3'
+      )
     ).toBe('~/.proto/tools/node/24.11.0/bin/pnpm --version')
   })
 

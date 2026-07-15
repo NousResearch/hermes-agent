@@ -35,7 +35,7 @@ class _StubAdapter(BasePlatformAdapter):
         self._send_calls.append((chat_id, content))
         return self._next_result()
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:

@@ -2177,6 +2177,19 @@ class TestStaleFallbackCandidateSkip:
         return _AuxStreamTimeoutError(
             "Codex auxiliary Responses stream exceeded 120.0s total timeout")
 
+    def _gemini_invalid_key_err(self):
+        err = Exception(
+            "Gemini HTTP 400 (INVALID_ARGUMENT): API key not valid. "
+            "Please pass a valid API key."
+        )
+        err.status_code = 400
+        return err
+
+    def test_gemini_invalid_api_key_400_is_auth_error(self):
+        from agent.auxiliary_client import _is_auth_error
+
+        assert _is_auth_error(self._gemini_invalid_key_err()) is True
+
     def test_stale_anthropic_fallback_refreshes_and_retries(self, monkeypatch):
         """401 from the fallback candidate → refresh its creds → retry succeeds."""
         primary_client = MagicMock()
@@ -2261,6 +2274,112 @@ class TestStaleFallbackCandidateSkip:
         mock_mark.assert_called_once_with("anthropic")
         assert stale_fb.chat.completions.create.call_count == 1
         assert healthy_fb.chat.completions.create.call_count == 1
+
+    def test_invalid_gemini_api_key_candidate_is_skipped_sync(self, monkeypatch):
+        """Timeout -> invalid Gemini key -> next candidate succeeds."""
+        from agent.auxiliary_client import _is_provider_unhealthy
+
+        primary_client = MagicMock()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_client.chat.completions.create.side_effect = self._timeout_err()
+
+        gemini_client = MagicMock()
+        gemini_client.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        gemini_client._hermes_aux_provider_label = "gemini"
+        gemini_client.chat.completions.create.side_effect = self._gemini_invalid_key_err()
+
+        healthy_client = MagicMock()
+        healthy_client.base_url = "https://openrouter.ai/api/v1"
+        healthy_client.chat.completions.create.return_value = _DummyResponse("recovered")
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   side_effect=[
+                       (gemini_client, "gemini-2.5-flash", "api-key"),
+                       (healthy_client, "fallback-model", "openrouter"),
+                   ]) as mock_fallback, \
+             patch("agent.auxiliary_client._refresh_provider_credentials",
+                   return_value=False):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "recovered"
+        assert mock_fallback.call_count == 2
+        assert gemini_client.chat.completions.create.call_count == 1
+        assert healthy_client.chat.completions.create.call_count == 1
+        assert _is_provider_unhealthy("gemini") is True
+        assert _is_provider_unhealthy("api-key") is False
+
+    @pytest.mark.asyncio
+    async def test_invalid_gemini_api_key_candidate_is_skipped_async(self, monkeypatch):
+        """Async fallback preserves Gemini identity and continues the chain."""
+        from agent.auxiliary_client import _is_provider_unhealthy
+
+        primary_async = MagicMock()
+        primary_async.base_url = "https://chatgpt.com/backend-api/codex"
+        primary_async.chat.completions.create = AsyncMock(side_effect=self._timeout_err())
+
+        gemini_sync = MagicMock()
+        gemini_sync.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        gemini_sync._hermes_aux_provider_label = "gemini"
+        gemini_async = MagicMock()
+        gemini_async.base_url = gemini_sync.base_url
+        gemini_async._hermes_aux_provider_label = "gemini"
+        gemini_async.chat.completions.create = AsyncMock(
+            side_effect=self._gemini_invalid_key_err())
+
+        healthy_sync = MagicMock()
+        healthy_sync.base_url = "https://openrouter.ai/api/v1"
+        healthy_async = MagicMock()
+        healthy_async.base_url = healthy_sync.base_url
+        healthy_async.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("async-recovered"))
+
+        async_clients = {
+            id(gemini_sync): gemini_async,
+            id(healthy_sync): healthy_async,
+        }
+
+        def to_async(client, model, is_vision=False):
+            return async_clients[id(client)], model
+
+        with patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_async, "gpt-5.5")), \
+             patch("agent.auxiliary_client._to_async_client",
+                   side_effect=to_async), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                   side_effect=[
+                       (gemini_sync, "gemini-2.5-flash", "api-key"),
+                       (healthy_sync, "fallback-model", "openrouter"),
+                   ]) as mock_fallback, \
+             patch("agent.auxiliary_client._refresh_provider_credentials",
+                   return_value=False):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert result.choices[0].message.content == "async-recovered"
+        assert mock_fallback.call_count == 2
+        assert gemini_async.chat.completions.create.await_count == 1
+        assert healthy_async.chat.completions.create.await_count == 1
+        assert _is_provider_unhealthy("gemini") is True
+        assert _is_provider_unhealthy("api-key") is False
 
     def test_non_auth_fallback_error_still_raises(self, monkeypatch):
         """A non-auth error from the fallback candidate propagates unchanged."""

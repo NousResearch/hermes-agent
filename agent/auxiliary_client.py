@@ -186,6 +186,17 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 
+def _tag_auxiliary_client(client: Any, provider: str) -> Any:
+    """Attach the resolved provider identity when the client permits it."""
+    if client is None:
+        return None
+    try:
+        setattr(client, "_hermes_aux_provider_label", _normalize_chain_label(provider))
+    except Exception:
+        pass
+    return client
+
+
 # ── Interrupt protection for atomic auxiliary tasks ──────────────────────
 # Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
 # (e.g. an incoming user message while the agent is busy). Context
@@ -1913,7 +1924,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
                 if is_native_gemini_base_url(base_url):
-                    return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                    return _tag_auxiliary_client(
+                        GeminiNativeClient(api_key=api_key, base_url=base_url),
+                        provider_id,
+                    ), model
             extra = {}
             if base_url_host_matches(base_url, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -1936,7 +1950,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 extra["default_headers"] = _merged_aux
             _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
             _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
-            return _client, model
+            return _tag_auxiliary_client(_client, provider_id), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
         api_key = str(creds.get("api_key", "")).strip()
@@ -1953,7 +1967,10 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 
             if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                return _tag_auxiliary_client(
+                    GeminiNativeClient(api_key=api_key, base_url=base_url),
+                    provider_id,
+                ), model
         extra = {}
         if base_url_host_matches(base_url, "api.kimi.com"):
             extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
@@ -1976,7 +1993,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             extra["default_headers"] = _merged_aux2
         _client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
         _client = _maybe_wrap_anthropic(_client, model, api_key, raw_base_url)
-        return _client, model
+        return _tag_auxiliary_client(_client, provider_id), model
 
     return None, None
 
@@ -3084,6 +3101,14 @@ def _is_auth_error(exc: Exception) -> bool:
     err_lower = str(exc).lower()
     if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
         return True
+    if status == 400 and any(phrase in err_lower for phrase in (
+        "api key not valid",
+        "invalid api key",
+        "invalid_api_key",
+        "api key is invalid",
+        "provided api key is invalid",
+    )):
+        return True
     # xAI returns HTTP 403 with "unauthenticated:bad-credentials" when an OAuth2
     # access token has expired or is invalid — semantically a 401 auth failure,
     # even though the status code is 403 (PermissionDenied).
@@ -3341,8 +3366,11 @@ def _recoverable_pool_provider(
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
+    tagged = getattr(client, "_hermes_aux_provider_label", None)
+    if isinstance(tagged, str) and tagged.strip():
+        return tagged.strip()
     normalized = _normalize_aux_provider(resolved_provider)
-    if normalized not in {"", "auto", "custom"}:
+    if normalized not in {"", "auto", "custom", "api-key"}:
         return normalized
     base = str(getattr(client, "base_url", "") or "")
     if base_url_host_matches(base, "chatgpt.com"):
@@ -3357,6 +3385,8 @@ def _recoverable_pool_provider(
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
+    if base_url_host_matches(base, "generativelanguage.googleapis.com"):
+        return "gemini"
     if base_url_host_matches(base, "api.x.ai"):
         return "xai-oauth"
     # For api_key providers not in the hardcoded list (e.g. opencode-go), match
@@ -3631,7 +3661,7 @@ def _auth_refresh_provider_for_route(
     Copilot/Codex/Anthropic/Nous routes too. (#20832)
     """
     normalized = _normalize_aux_provider(resolved_provider)
-    if normalized and normalized != "auto":
+    if normalized and normalized not in {"auto", "api-key"}:
         return normalized
     if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
         return "copilot"
@@ -3641,6 +3671,8 @@ def _auth_refresh_provider_for_route(
         return "anthropic"
     if base_url_host_matches(client_base_url, "inference-api.nousresearch.com"):
         return "nous"
+    if base_url_host_matches(client_base_url, "generativelanguage.googleapis.com"):
+        return "gemini"
     return normalized
 
 
@@ -3686,7 +3718,10 @@ def _call_fallback_candidate_sync(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)
+        fb_provider = (
+            _recoverable_pool_provider(fb_label, fb_client)
+            or _auth_refresh_provider_for_route(fb_label, fb_base)
+        )
         if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
             retry_client, retry_model = _get_cached_client(fb_provider, fb_model)
             if retry_client is not None:
@@ -3744,7 +3779,10 @@ async def _call_fallback_candidate_async(
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             raise
-        fb_provider = _auth_refresh_provider_for_route(fb_label, fb_base)
+        fb_provider = (
+            _recoverable_pool_provider(fb_label, fb_client)
+            or _auth_refresh_provider_for_route(fb_label, fb_base)
+        )
         if fb_provider not in {"auto", "", None} and _refresh_provider_credentials(fb_provider):
             retry_client, retry_model = _get_cached_client(
                 fb_provider, fb_model, async_mode=True)
@@ -4368,23 +4406,30 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """
     from openai import AsyncOpenAI
 
+    provider_label = getattr(sync_client, "_hermes_aux_provider_label", None)
+
+    def _with_provider_label(client: Any) -> Tuple[Any, str]:
+        if isinstance(provider_label, str) and provider_label.strip():
+            _tag_auxiliary_client(client, provider_label)
+        return client, model
+
     if isinstance(sync_client, CodexAuxiliaryClient):
-        return AsyncCodexAuxiliaryClient(sync_client), model
+        return _with_provider_label(AsyncCodexAuxiliaryClient(sync_client))
     if isinstance(sync_client, AnthropicAuxiliaryClient):
-        return AsyncAnthropicAuxiliaryClient(sync_client), model
+        return _with_provider_label(AsyncAnthropicAuxiliaryClient(sync_client))
     if isinstance(sync_client, BedrockAuxiliaryClient):
-        return AsyncBedrockAuxiliaryClient(sync_client), model
+        return _with_provider_label(AsyncBedrockAuxiliaryClient(sync_client))
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
         if isinstance(sync_client, GeminiNativeClient):
-            return AsyncGeminiNativeClient(sync_client), model
+            return _with_provider_label(AsyncGeminiNativeClient(sync_client))
     except ImportError:
         pass
     try:
         from agent.copilot_acp_client import CopilotACPClient
         if isinstance(sync_client, CopilotACPClient):
-            return sync_client, model
+            return _with_provider_label(sync_client)
     except ImportError:
         pass
 
@@ -4429,7 +4474,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # See _create_openai_client: disable SDK-internal retries so Hermes owns
     # the auxiliary retry/timeout budget (issue #54465).
     async_kwargs.setdefault("max_retries", 0)
-    return AsyncOpenAI(**async_kwargs), model
+    return _with_provider_label(AsyncOpenAI(**async_kwargs))
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:

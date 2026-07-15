@@ -8784,7 +8784,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                # Name the author when the adapter resolved one, so the agent
+                # knows *whose* message is being referenced, not just its text.
+                reply_author = (
+                    getattr(event, "reply_to_author_name", None)
+                    or getattr(event, "reply_to_author_id", None)
+                )
+                if reply_author:
+                    message_text = (
+                        f'[Replying to {reply_author}: "{reply_snippet}"]\n\n'
+                        f"{message_text}"
+                    )
+                else:
+                    message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:

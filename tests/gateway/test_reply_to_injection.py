@@ -100,7 +100,43 @@ async def test_reply_prefix_still_injected_when_text_in_history():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("author_name", "author_id", "expected_author"),
+    [
+        ("Bob", "@bob:example.org", "Bob"),
+        (None, "@bob:example.org", "@bob:example.org"),
+    ],
+)
+async def test_reply_prefix_names_the_author(author_name, author_id, expected_author):
+    """A reply to another user's message names that user in the prefix,
+    preferring the display name and falling back to the platform id."""
+    runner = _make_runner()
+    source = _source()
+    quoted = "The meeting is at 3pm."
+    event = MessageEvent(
+        text="which room?",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text=quoted,
+        reply_to_author_id=author_id,
+        reply_to_author_name=author_name,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(f'[Replying to {expected_author}: "{quoted}"]')
+    assert result.endswith("which room?")
+
+
+@pytest.mark.asyncio
 async def test_own_message_reply_prefix_marks_assistant_message():
+    """A reply to the bot's own message says so, even when author fields
+    are populated — 'your previous message' beats naming the bot."""
     runner = _make_runner()
     source = _source()
     event = MessageEvent(
@@ -108,6 +144,8 @@ async def test_own_message_reply_prefix_marks_assistant_message():
         source=source,
         reply_to_message_id="42",
         reply_to_text="Use the direct train.",
+        reply_to_author_id="@bot:example.org",
+        reply_to_author_name="Hermes",
         reply_to_is_own_message=True,
     )
 

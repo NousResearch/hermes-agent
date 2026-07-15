@@ -1,6 +1,7 @@
-# PEP 639 SPDX license expression (`license = "MIT"` below) requires
-# setuptools>=77. Keep this floor in lockstep with the `license` form in
-# [project]; an older build backend rejects the string form.
+# PEP 639 SPDX license expression — setuptools>=77 requires the dict form
+# `license = { text = "MIT" }` (the bare string `license = "MIT"` is rejected
+# by setuptools 77–82). Keep this form aligned with setuptools>=77 in
+# [build-system]; see #64710.
 [build-system]
 requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
@@ -19,7 +20,7 @@ readme = "README.md"
 # build. Raise the ceiling once our Rust transitives ship cp314 wheels.
 requires-python = ">=3.11,<3.14"
 authors = [{ name = "Nous Research" }]
-license = "MIT"
+license = { text = "MIT" }
 license-files = ["LICENSE"]
 dependencies = [
   # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).

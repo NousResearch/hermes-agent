@@ -2100,6 +2100,9 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
     - Exact match: ``anthropic/claude-opus-4.6`` → as-is
     - Bare name: ``deepseek-chat`` → ``deepseek/deepseek-chat``
     - Bare name: ``claude-opus-4.6`` → ``anthropic/claude-opus-4.6``
+    - Punctuation-flexible match: ``claude-opus-4-8`` → ``anthropic/claude-opus-4.8``
+      (last-resort alnum-only compare; avoids dash<->dot rewrites that would
+      collapse legitimate word-separator dashes like ``deepseek-chat``.)
     """
     name_lower = model_name.strip().lower()
     if not name_lower:
@@ -2116,6 +2119,20 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
             _, model_part = mid.split("/", 1)
             if name_lower == model_part.lower():
                 return mid
+
+    # Last resort: punctuation-insensitive compare on the model part only.
+    # Strips every non-alphanumeric char so a dash-only input like
+    # ``claude-opus-4-8`` matches the dotted ``claude-opus-4.8`` catalog
+    # entry. Word-separator dashes (``deepseek-chat``) remain distinct from
+    # bare-catalog entries because we still require the catalog entry to
+    # carry a provider/ prefix.
+    name_alnum = re.sub(r"[^a-z0-9]", "", name_lower)
+    if name_alnum:
+        for mid in model_ids():
+            if "/" in mid:
+                _, model_part = mid.split("/", 1)
+                if re.sub(r"[^a-z0-9]", "", model_part.lower()) == name_alnum:
+                    return mid
 
     return None
 

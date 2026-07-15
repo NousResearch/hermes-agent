@@ -242,6 +242,40 @@ class TestFindOpenrouterSlug:
         with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
             assert _find_openrouter_slug("totally-fake-model-xyz") is None
 
+    def test_dash_matches_dotted_catalog_entry(self):
+        """Anthropic-curated dash IDs (e.g. ``claude-opus-4-6``) should resolve
+        to the dotted OpenRouter catalog entry via alnum-only last-resort
+        matching — closes #65152."""
+        from hermes_cli.models import _find_openrouter_slug
+        catalog = LIVE_OPENROUTER_MODELS + [
+            ("anthropic/claude-opus-4.8", "recommended"),
+        ]
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=catalog):
+            assert _find_openrouter_slug("claude-opus-4-8") == "anthropic/claude-opus-4.8"
+
+    def test_dash_match_does_not_collapse_word_separator_dashes(self):
+        """Word-separator dashes (``deepseek-chat``) must remain distinct
+        from a hypothetical bare-catalog entry — the alnum compare only runs
+        against the post-/ model part, so a bare catalog hit still requires
+        a provider/ prefix on the catalog side."""
+        from hermes_cli.models import _find_openrouter_slug
+        catalog = [
+            ("deepseek/deepseek-chat", ""),
+            ("deepseek/deepseek-chat-v3", ""),
+        ]
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=catalog):
+            # Both dash inputs resolve to their dotted catalog entry.
+            assert _find_openrouter_slug("deepseek-chat") == "deepseek/deepseek-chat"
+            assert (
+                _find_openrouter_slug("deepseek-chat-v3")
+                == "deepseek/deepseek-chat-v3"
+            )
+
+    def test_dash_match_still_unknown_when_no_catalog_match(self):
+        from hermes_cli.models import _find_openrouter_slug
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            assert _find_openrouter_slug("completely-bogus-name-12345") is None
+
 
 class TestDetectProviderForModel:
     def test_anthropic_model_detected(self):

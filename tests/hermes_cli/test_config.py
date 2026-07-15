@@ -1332,6 +1332,10 @@ class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
 
+    def test_default_config_includes_discord_force_thread_channels(self):
+        assert "force_thread_channels" in DEFAULT_CONFIG["discord"]
+        assert DEFAULT_CONFIG["discord"]["force_thread_channels"] == ""
+
     def test_migrate_does_not_expand_discord_channel_prompts_default(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text(

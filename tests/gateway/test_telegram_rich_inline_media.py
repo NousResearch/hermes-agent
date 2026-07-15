@@ -76,6 +76,24 @@ async def test_new_rich_report_embeds_local_photo_in_single_send(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rich_inline_media_honors_disabled_link_previews(tmp_path):
+    adapter = _adapter(extra={"disable_link_previews": True})
+    photo = tmp_path / "chart.png"
+    photo.write_bytes(b"png")
+
+    with patch("telegram.InputFile", _FakeInputFile):
+        result = await adapter.send_rich_media(
+            "12345",
+            f"{RICH_REPORT}\n\nhttps://example.com/report",
+            [(str(photo), False)],
+        )
+
+    assert result is not None and result.success is True
+    payload = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    assert payload["link_preview_options"] == {"is_disabled": True}
+
+
+@pytest.mark.asyncio
 async def test_streamed_report_can_be_edited_to_add_inline_media(tmp_path):
     adapter = _adapter()
     video = tmp_path / "proof.mp4"
@@ -99,6 +117,25 @@ async def test_streamed_report_can_be_edited_to_add_inline_media(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rich_inline_media_edit_honors_disabled_link_previews(tmp_path):
+    adapter = _adapter(extra={"disable_link_previews": True})
+    video = tmp_path / "proof.mp4"
+    video.write_bytes(b"mp4")
+
+    with patch("telegram.InputFile", _FakeInputFile):
+        result = await adapter.edit_rich_media(
+            "12345",
+            "777",
+            f"{RICH_REPORT}\n\nhttps://example.com/report",
+            [(str(video), False)],
+        )
+
+    assert result is not None and result.success is True
+    payload = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    assert payload["link_preview_options"] == {"is_disabled": True}
+
+
+@pytest.mark.asyncio
 async def test_rich_inline_media_opt_out_or_unsupported_file_falls_back(tmp_path):
     photo = tmp_path / "chart.png"
     photo.write_bytes(b"png")
@@ -118,6 +155,24 @@ async def test_rich_inline_media_opt_out_or_unsupported_file_falls_back(tmp_path
         is None
     )
     enabled._bot.do_api_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_media_references_cannot_push_rich_message_past_text_limit(tmp_path):
+    adapter = _adapter()
+    photo = tmp_path / "chart.png"
+    photo.write_bytes(b"png")
+    content_at_limit = "x" * adapter.RICH_MESSAGE_MAX_CHARS
+
+    with patch("telegram.InputFile", _FakeInputFile):
+        result = await adapter.send_rich_media(
+            "12345",
+            content_at_limit,
+            [(str(photo), False)],
+        )
+
+    assert result is None
+    adapter._bot.do_api_request.assert_not_called()
 
 
 @pytest.mark.asyncio

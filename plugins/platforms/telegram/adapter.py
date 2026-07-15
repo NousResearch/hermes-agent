@@ -1491,7 +1491,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         kwargs: Dict[str, Any] = {"receiver_user_id": receiver_user_id}
         received_at = (metadata or {}).get("telegram_ephemeral_received_at_monotonic")
-        within_reply_window = True
+        # The ephemeral reply anchor is only valid for Telegram's short reply
+        # window. Missing/corrupt timing metadata must not resurrect it.
+        within_reply_window = False
         if received_at is not None:
             try:
                 within_reply_window = (time.monotonic() - float(received_at)) < 14.0
@@ -1531,6 +1533,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 for chunk in chunks
             ]
 
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            self._metadata_thread_id(metadata),
+            metadata,
+            reply_to_message_id=None,
+            reply_to_mode=self._reply_to_mode,
+        )
+        thread_kwargs = {
+            key: value for key, value in thread_kwargs.items() if value is not None
+        }
+
         try:
             for index, chunk in enumerate(chunks):
                 if index:
@@ -1544,6 +1557,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "text": chunk,
                     "parse_mode": "MarkdownV2",
                     **private_kwargs,
+                    **thread_kwargs,
                     **notification_kwargs,
                 }
                 if getattr(self, "_disable_link_previews", False):
@@ -1833,6 +1847,8 @@ class TelegramAdapter(BasePlatformAdapter):
             + "\n\n"
             + "\n\n".join(markdown_blocks)
         )
+        if not self._content_fits_rich_limits(rich_message["markdown"]):
+            return None
         rich_message["media"] = media_entries
         return rich_message, uploads
 
@@ -1919,6 +1935,8 @@ class TelegramAdapter(BasePlatformAdapter):
             }
             payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
             payload.update(self._notification_kwargs(metadata))
+            if getattr(self, "_disable_link_previews", False):
+                payload["link_preview_options"] = {"is_disabled": True}
             if reply_to_id is not None:
                 payload["reply_parameters"] = {"message_id": reply_to_id}
             return await self._rich_media_request("sendRichMessage", payload, content)
@@ -1956,6 +1974,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 "rich_message": rich_message,
                 **uploads,
             }
+            if getattr(self, "_disable_link_previews", False):
+                payload["link_preview_options"] = {"is_disabled": True}
             return await self._rich_media_request("editMessageText", payload, content)
 
     def _is_rich_capability_error(self, exc: Exception) -> bool:

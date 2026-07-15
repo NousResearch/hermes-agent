@@ -125,9 +125,9 @@ platforms:
   `ephemeral_message_id`. Private chats and unlisted commands remain durable.
 - Hermes disables typing, streaming, and interim previews for these commands.
   If Telegram rejects private delivery, Hermes does not resend the content
-  publicly. Within Telegram's 15-second reply window Hermes anchors the reply
-  to the inbound ephemeral message; afterward it attempts an administrator-only
-  private send without the expired anchor.
+  publicly. Telegram allows the inbound ephemeral reply anchor for 15 seconds;
+  Hermes uses a 14-second local guard for transport headroom, then attempts an
+  administrator-only private send without the expired anchor.
 - Keep interactive commands that edit inline keyboards out of the list unless
   their callback flow supports ephemeral edits.
 - **Rich inline media** upgrades a final rich report containing local `MEDIA:`

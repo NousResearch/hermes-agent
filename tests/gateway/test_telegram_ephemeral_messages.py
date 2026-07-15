@@ -64,6 +64,43 @@ def _ephemeral_source():
     return source
 
 
+def test_ephemeral_delivery_metadata_is_explicit_but_wire_invisible():
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100123",
+        chat_type="group",
+        user_id="42",
+    )
+
+    assert source.delivery_metadata is None
+    source.delivery_metadata = {
+        "telegram_ephemeral_required": True,
+        "telegram_ephemeral_receiver_user_id": 42,
+    }
+    equivalent_source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100123",
+        chat_type="group",
+        user_id="42",
+    )
+
+    assert source == equivalent_source
+    assert "telegram_ephemeral" not in repr(source)
+
+    serialized = source.to_dict()
+    assert "delivery_metadata" not in serialized
+
+    restored = SessionSource.from_dict({
+        **serialized,
+        # Persisted or remote data cannot forge transient private routing.
+        "delivery_metadata": {
+            "telegram_ephemeral_required": True,
+            "telegram_ephemeral_receiver_user_id": 999,
+        },
+    })
+    assert restored.delivery_metadata is None
+
+
 def test_configured_group_command_extracts_ephemeral_delivery_metadata():
     adapter = _adapter()
 
@@ -187,6 +224,7 @@ async def test_ephemeral_text_reply_uses_botapi_10_2_fields_and_not_public_send(
         "telegram_ephemeral_required": True,
         "telegram_ephemeral_receiver_user_id": 42,
         "telegram_ephemeral_message_id": "in-eph-1",
+        "telegram_ephemeral_received_at_monotonic": time.monotonic(),
         "notify": True,
     }
 
@@ -204,6 +242,25 @@ async def test_ephemeral_text_reply_uses_botapi_10_2_fields_and_not_public_send(
     assert payload["reply_parameters"] == {"ephemeral_message_id": "in-eph-1"}
     assert payload["parse_mode"] == "MarkdownV2"
     assert payload.get("disable_notification", False) is False
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_text_preserves_forum_thread_target():
+    adapter = _adapter()
+    metadata = {
+        "telegram_ephemeral_required": True,
+        "telegram_ephemeral_receiver_user_id": 42,
+        "telegram_ephemeral_message_id": "in-eph-1",
+        "telegram_ephemeral_received_at_monotonic": time.monotonic(),
+        "message_thread_id": 7,
+    }
+
+    result = await adapter.send("-100123", "private status", metadata=metadata)
+
+    assert result.success is True
+    payload = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]
+    assert payload["message_thread_id"] == 7
+    adapter._bot.send_message.assert_not_called()
 
 
 def test_expired_reply_window_drops_anchor_but_keeps_admin_private_target():
@@ -225,6 +282,18 @@ def test_expired_reply_window_drops_anchor_but_keeps_admin_private_target():
     )
 
 
+def test_missing_receipt_timestamp_drops_ephemeral_reply_anchor():
+    adapter = _adapter()
+
+    kwargs = adapter._ephemeral_send_api_kwargs({
+        "telegram_ephemeral_required": True,
+        "telegram_ephemeral_receiver_user_id": 42,
+        "telegram_ephemeral_message_id": "in-eph-1",
+    })
+
+    assert kwargs == {"receiver_user_id": 42}
+
+
 @pytest.mark.asyncio
 async def test_ephemeral_markdown_fallback_remains_private():
     adapter = _adapter()
@@ -235,6 +304,7 @@ async def test_ephemeral_markdown_fallback_remains_private():
         "telegram_ephemeral_required": True,
         "telegram_ephemeral_receiver_user_id": 42,
         "telegram_ephemeral_message_id": "in-eph-1",
+        "telegram_ephemeral_received_at_monotonic": time.monotonic(),
     }
 
     result = await adapter.send("-100123", "broken _ markdown", metadata=metadata)
@@ -280,6 +350,7 @@ async def test_ephemeral_image_uses_private_api_kwargs(tmp_path):
         "telegram_ephemeral_required": True,
         "telegram_ephemeral_receiver_user_id": 42,
         "telegram_ephemeral_message_id": "in-eph-1",
+        "telegram_ephemeral_received_at_monotonic": time.monotonic(),
     }
 
     result = await adapter.send_image_file("-100123", str(image), metadata=metadata)

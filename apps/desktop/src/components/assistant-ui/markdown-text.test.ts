@@ -173,6 +173,29 @@ describe('preprocessMarkdown', () => {
     )
   })
 
+  it('preserves fenced loopback URLs so preview cleanup cannot erase them', () => {
+    const input = '```text\nhttp://127.0.0.1:8318/v1/responses\n```'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('preserves fenced loopback URLs with authority-level queries', () => {
+    const input = '```text\nhttp://localhost:8318?health=1\n```'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('preserves a multi-URL fence when any line targets loopback', () => {
+    const input = [
+      '```text',
+      'https://example.com/docs',
+      'http://127.0.0.1:8318/v1/responses',
+      '```'
+    ].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
   it('does not swallow trailing emphasis asterisks into an autolinked url', () => {
     const input = '**PR opened: https://github.com/NousResearch/hermes-agent/pull/12345**'
 

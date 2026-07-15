@@ -71,6 +71,45 @@ def _budget_for_agent(agent) -> BudgetConfig:
     except Exception:
         return DEFAULT_BUDGET
 
+
+def _per_agent_tool_budget(agent):
+    """Return the optional core budget without changing legacy agents."""
+    return getattr(agent, "tool_budget", None)
+
+
+def _tool_budget_skip_result(budget) -> str:
+    reason = getattr(budget, "exhaustion_reason", None) or "limit"
+    return f"Tool call skipped: per-agent tool budget exhausted ({reason})."
+
+
+def _truncate_per_agent_tool_output(agent, content):
+    """Apply the optional per-agent output cap before message insertion."""
+    budget = _per_agent_tool_budget(agent)
+    if budget is None:
+        return content
+    return budget.truncate_output(content)
+
+
+def _has_finite_per_agent_output_budget(agent) -> bool:
+    budget = _per_agent_tool_budget(agent)
+    return budget is not None and getattr(budget, "max_output_chars", None) is not None
+
+
+def _append_budget_skip_result(agent, messages: list, tool_call, budget) -> None:
+    """Close a budget-denied model call with a protocol-safe tool result."""
+    messages.append(
+        make_tool_result_message(
+            tool_call.function.name,
+            _tool_budget_skip_result(budget),
+            tool_call.id,
+        )
+    )
+    _flush_session_db_after_tool_progress(
+        agent,
+        messages,
+        stage=f"budget-skipped tool result {tool_call.function.name}",
+    )
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
@@ -354,6 +393,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+
+        # Reserve the call before middleware, guardrails, checkpoints, or
+        # dispatch. The reservation is atomic on ToolBudget, so concurrent
+        # parsing/dispatch cannot oversubscribe max_calls.
+        _agent_budget = _per_agent_tool_budget(agent)
+        if _agent_budget is not None and not _agent_budget.reserve_call():
+            parsed_calls.append(
+                (
+                    tool_call,
+                    function_name,
+                    function_args,
+                    [],
+                    _tool_budget_skip_result(_agent_budget),
+                    False,
+                )
+            )
+            continue
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -924,13 +980,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        if not (_has_finite_per_agent_output_budget(agent) and not blocked):
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=name,
+                tool_use_id=tc.id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -940,6 +997,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        # Allocate after all ordinary result shaping, immediately before the
+        # protocol message is created. Synthetic results consume the same
+        # context budget as executed-tool results.
+        function_result = _truncate_per_agent_tool_output(agent, function_result)
 
         # Unwrap _multimodal dicts to an OpenAI-style content list so any
         # vision-capable provider receives [{type:text},{type:image_url}]
@@ -1012,6 +1074,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             function_args = {}
         if not isinstance(function_args, dict):
             function_args = {}
+
+        # Reserve before any middleware, guardrail, checkpoint, or dispatch.
+        # A failed reservation still receives a tool result below, preserving
+        # the provider's assistant-tool-call protocol sequence.
+        _agent_budget = _per_agent_tool_budget(agent)
+        if _agent_budget is not None and not _agent_budget.reserve_call():
+            for skipped_tc in assistant_message.tool_calls[i - 1:]:
+                _append_budget_skip_result(agent, messages, skipped_tc, _agent_budget)
+            break
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
@@ -1580,13 +1651,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
+        if not (_has_finite_per_agent_output_budget(agent) and not _execution_blocked):
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=function_name,
+                tool_use_id=tool_call.id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -1595,6 +1667,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 _append_subdir_hint_to_multimodal(function_result, subdir_hints)
             else:
                 function_result += subdir_hints
+
+        function_result = _truncate_per_agent_tool_output(agent, function_result)
 
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.

@@ -53,6 +53,9 @@ def finalize_turn(
     if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
+    ) and not (
+        getattr(agent, "tool_budget", None) is not None
+        and getattr(agent.tool_budget, "exhausted", False)
     ):
         # Budget exhausted — ask the model for a summary via one extra
         # API call with tools stripped.  _handle_max_iterations injects a
@@ -126,6 +129,7 @@ def finalize_turn(
     completed = (
         final_response is not None
         and not failed
+        and not str(_turn_exit_reason).startswith("tool_budget_exhausted")
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
@@ -428,6 +432,12 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    if getattr(agent, "tool_budget", None) is not None:
+        try:
+            result["tool_budget"] = agent.tool_budget.to_dict()
+        except Exception:
+            # Keep result assembly best-effort for duck-typed consumers.
+            result["tool_budget"] = getattr(agent.tool_budget, "usage", None)
     # Surface any post-loop cleanup failures so the caller can distinguish a
     # clean turn from one whose trajectory/session/resource teardown raised
     # (the response is still returned either way — #8049).

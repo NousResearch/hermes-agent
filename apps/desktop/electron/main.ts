@@ -1,4 +1,3 @@
-
 import { execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -65,7 +64,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -84,7 +82,14 @@ import {
   reviewUnstage
 } from './git-review-ops'
 import { gitRootForIpc } from './git-root'
-import { addWorktree, listBaseBranches, listBranches, listWorktrees, removeWorktree, switchBranch } from './git-worktree-ops'
+import {
+  addWorktree,
+  listBaseBranches,
+  listBranches,
+  listWorktrees,
+  removeWorktree,
+  switchBranch
+} from './git-worktree-ops'
 import {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -127,10 +132,16 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
-import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, resolveVenvHermesCommand } from './windows-hermes-path'
+import {
+  buildPathExtCandidates,
+  chooseUpdaterArgs,
+  getVenvSitePackagesEntries,
+  resolveVenvHermesCommand
+} from './windows-hermes-path'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -3597,9 +3608,35 @@ async function ensureRuntime(backend) {
   return backend
 }
 
+// Assemble a single-file multipart/form-data body (FastAPI `UploadFile`
+// endpoints, e.g. kanban attachments). Hand-rolled because node's http has no
+// FormData and the payload is one file — a dependency would be overkill.
+function multipartBody(upload) {
+  const boundary = `----hermes-${crypto.randomBytes(12).toString('hex')}`
+  const filename = String(upload.filename || 'file').replace(/["\r\n]/g, '_')
+
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+        `Content-Type: ${upload.contentType || 'application/octet-stream'}\r\n\r\n`
+    ),
+    Buffer.from(upload.bytes),
+    Buffer.from(`\r\n--${boundary}--\r\n`)
+  ])
+
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
 function fetchJson(url, token, options: any = {}) {
   return new Promise((resolve, reject) => {
-    const body = options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body))
+    const { body, contentType } = options.upload
+      ? multipartBody(options.upload)
+      : {
+          body: options.body === undefined ? undefined : Buffer.from(JSON.stringify(options.body)),
+          contentType: 'application/json'
+        }
+
     const parsed = new URL(url)
     const client = parsed.protocol === 'https:' ? https : http
     const timeoutMs = resolveTimeoutMs(options.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
@@ -3615,7 +3652,7 @@ function fetchJson(url, token, options: any = {}) {
       {
         method: options.method || 'GET',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': contentType,
           'X-Hermes-Session-Token': token,
           ...(body ? { 'Content-Length': String(body.length) } : {})
         }
@@ -4576,14 +4613,13 @@ function buildApplicationMenu() {
     submenu: [
       IS_MAC
         ? {
-            accelerator: 'CommandOrControl+W',
-            click: () => {
-              if (previewShortcutActive) {
-                sendClosePreviewRequested()
-              } else {
-                mainWindow?.close()
-              }
-            },
+            // NO accelerator: on macOS a registered ⌘W is consumed by the OS
+            // menu before the web contents ever sees it (and registerAccelerator
+            // false is a no-op on mac — electron#18295). Leaving it off lets the
+            // `before-input-event` handler below intercept ⌘W and route it to the
+            // renderer's close-active-tab. Clicking the item still closes the tab
+            // (or window) via the same request.
+            click: () => sendClosePreviewRequested(),
             label: 'Close'
           }
         : { role: 'quit' }
@@ -4689,9 +4725,12 @@ function installDevToolsShortcut(window) {
 function installPreviewShortcut(window) {
   window.webContents.on('before-input-event', (event, input) => {
     const key = String(input.key || '').toLowerCase()
-    const isPreviewCloseShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
+    const isCloseTabShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
 
-    if (!isPreviewCloseShortcut || !previewShortcutActive) {
+    // Always claim ⌘W here (the File>Close item deliberately has no
+    // accelerator, so nothing else does). The renderer decides tab-vs-window
+    // — no `previewShortcutActive` gate, so it works for every closeable tab.
+    if (!isCloseTabShortcut) {
       return
     }
 
@@ -5457,6 +5496,7 @@ function openPortalLoginWindow() {
       if (settled) {
         return
       }
+
       settled = true
 
       if (pollTimer) {
@@ -5543,6 +5583,7 @@ async function discoverCloudAgents(org?: string) {
     const err = new Error(
       'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
     ) as any
+
     err.needsCloudLogin = true
     throw err
   }
@@ -5911,6 +5952,7 @@ function buildRemoteBlock(remoteUrl, authMode, token, org?: string) {
     authMode,
     token
   }
+
   const orgValue = typeof org === 'string' ? org.trim() : ''
 
   if (orgValue) {
@@ -6906,6 +6948,7 @@ async function startHermes() {
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
+
   if (zoom) {
     installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore (Windows drops webContents zoom on
@@ -6913,6 +6956,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
     win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
   }
+
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
@@ -7870,6 +7914,12 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   // session so the cookie attaches automatically. Token/local modes keep using
   // the static session-token header.
   if (connection.authMode === 'oauth') {
+    // The OAuth path rides electron.net with JSON headers; multipart isn't
+    // wired there. Fail loudly rather than corrupting the upload.
+    if (request?.upload) {
+      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+    }
+
     return fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
@@ -7880,6 +7930,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   return fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
+    upload: request?.upload,
     timeoutMs
   })
 })
@@ -8380,6 +8431,28 @@ ipcMain.handle('hermes:fs:reveal', async (_event, targetPath) => {
   }
 })
 
+// Open a DIRECTORY in the OS file manager, creating it first if needed. Unlike
+// `reveal` (which selects an existing item and silently no-ops on a missing
+// path — the "Open plugins folder" Windows bug), this is for the plugins door,
+// which often doesn't exist on first use. `shell.openPath` returns '' on
+// success or an error string; both mkdir + openPath failures are surfaced.
+ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
+  const dir = String(dirPath || '').trim()
+
+  if (!dir) {
+    return { ok: false, error: 'no path' }
+  }
+
+  try {
+    await fs.promises.mkdir(dir, { recursive: true })
+    const error = await shell.openPath(path.normalize(dir))
+
+    return error ? { ok: false, error } : { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
 // Rename a file/folder in place. The renderer passes the existing path + a new
 // base name; the destination is resolved in the SAME parent dir so a rename can
 // never move the item elsewhere or traverse out. Rejects on a name collision.
@@ -8466,9 +8539,7 @@ ipcMain.handle('hermes:git:branchSwitch', async (_event, repoPath, branch) =>
 
 ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches(repoPath, resolveGitBinary()))
 
-ipcMain.handle('hermes:git:baseBranchList', async (_event, repoPath) =>
-  listBaseBranches(repoPath, resolveGitBinary())
-)
+ipcMain.handle('hermes:git:baseBranchList', async (_event, repoPath) => listBaseBranches(repoPath, resolveGitBinary()))
 
 // Compact repo status (branch, ahead/behind, change counts + files) for the
 // composer coding rail. Returns null on a non-repo / remote backend so the rail

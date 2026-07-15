@@ -1440,6 +1440,7 @@ class TestExportImport:
         assert not any("x11-dev" in n for n in names)
         assert not any("libXi.so" in n for n in names)
 
+    @pytest.mark.require_symlinks
     def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
         """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
 

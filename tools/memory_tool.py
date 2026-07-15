@@ -997,6 +997,14 @@ def memory_tool(
         return json.dumps(result, ensure_ascii=False)
 
     # --- Single-op path ---------------------------------------------------
+    if not action:
+        return tool_error(
+            "action is required when operations is not provided. "
+            "Use 'add', 'replace', or 'remove' for single-op, "
+            "or the 'operations' array for batch writes.",
+            success=False,
+        )
+
     # Validate required params BEFORE the gate so an invalid write is rejected
     # immediately instead of being staged and only failing at approve time.
     if action == "add" and not content:

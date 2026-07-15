@@ -1,11 +1,15 @@
 """Tests for _query_local_context_length and the local server fallback in
 get_model_context_length.
 
-All tests use synthetic inputs — no filesystem or live server required.
+Most tests use synthetic inputs. The llama.cpp regression also exercises the
+real HTTP probe path against an in-process server.
 """
 
+import json
 import sys
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -256,6 +260,124 @@ class TestQueryLocalContextLengthModelsList:
         with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
              patch("httpx.Client", return_value=client_mock):
             result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
+
+        assert result is None
+
+    def test_single_llama_cpp_model_uses_runtime_meta_context(self):
+        """A single llama.cpp model is authoritative despite an alias mismatch."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [{
+                "id": "/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+                "meta": {"n_ctx": 256000, "n_ctx_train": 262144},
+            }]
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = [detail_resp, list_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen3.6-35b-a3b", "http://localhost:8080/v1"
+            )
+
+        assert result == 256000
+
+    def test_single_llama_cpp_model_uses_meta_context_over_real_http(self):
+        """The live llama.cpp probe resolves a GGUF-path model alias end-to-end."""
+        from agent.model_metadata import _query_local_context_length
+
+        class LlamaCppHandler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - stdlib HTTP handler API
+                if self.path == "/v1/props":
+                    status, body = 200, {"default_generation_settings": {}}
+                elif self.path == "/v1/models/qwen3.6-35b-a3b":
+                    status, body = 404, {}
+                elif self.path == "/v1/models":
+                    status, body = 200, {
+                        "data": [{
+                            "id": "/models/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+                            "meta": {"n_ctx": 256000, "n_ctx_train": 262144},
+                        }]
+                    }
+                else:
+                    status, body = 404, {}
+                encoded = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, *args):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), LlamaCppHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = _query_local_context_length(
+                "qwen3.6-35b-a3b", f"http://127.0.0.1:{server.server_port}/v1"
+            )
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
+        assert result == 256000
+
+    def test_models_list_prefers_runtime_meta_context_over_training_limit(self):
+        """llama.cpp's configured n_ctx wins over its larger training limit."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [{
+                "id": "qwen3.6-35b-a3b",
+                "meta": {"n_ctx": 128000, "n_ctx_train": 262144},
+            }]
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = [detail_resp, list_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen3.6-35b-a3b", "http://localhost:8080/v1"
+            )
+
+        assert result == 128000
+
+    def test_multiple_unmatched_models_do_not_use_arbitrary_meta_context(self):
+        """Alias fallback stays limited to endpoints with exactly one model."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {"id": "/models/first.gguf", "meta": {"n_ctx": 128000}},
+                {"id": "/models/second.gguf", "meta": {"n_ctx": 256000}},
+            ]
+        })
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.side_effect = [detail_resp, list_resp]
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen3.6-35b-a3b", "http://localhost:8080/v1"
+            )
 
         assert result is None
 

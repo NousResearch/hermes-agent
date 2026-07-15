@@ -123,7 +123,14 @@ export function useComposerVoice({
   }, [conversation, disabled, voiceConversationActive])
 
   useEffect(() => onComposerVoiceToggleRequest(toggleVoiceConversation), [toggleVoiceConversation])
-  useEffect(() => onComposerDictationToggleRequest(dictate), [dictate])
+  const toggleDictation = useCallback(() => {
+    if (disabled) {
+      return
+    }
+    dictate()
+  }, [dictate, disabled])
+
+  useEffect(() => onComposerDictationToggleRequest(toggleDictation), [toggleDictation])
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).

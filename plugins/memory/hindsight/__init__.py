@@ -731,7 +731,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Prefetch join timeout (seconds). How long prefetch() waits for the
         # background recall thread to complete before returning empty.
         # Configurable via config.json "prefetch_join_timeout". Default: 5.0s.
-        self._prefetch_join_timeout = 5.0
+        self._prefetch_join_timeout = _DEFAULT_PREFETCH_JOIN_TIMEOUT
 
         # Bank
         self._bank_mission = ""

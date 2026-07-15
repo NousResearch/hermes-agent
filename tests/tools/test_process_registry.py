@@ -316,6 +316,70 @@ class TestOrphanedPipeReconciliation:
         except (ProcessLookupError, PermissionError):
             pass
 
+    @pytest.mark.live_system_guard_bypass
+    def test_poll_returns_while_reader_holds_stdout_lock(self, registry):
+        """poll() must not read from stdout while the reader owns its lock."""
+        proc = subprocess.Popen(
+            ["sh", "-c", "( sleep 30 ) & disown; exit 0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+
+        process_group = os.getpgid(proc.pid)
+        poller = None
+        reader = None
+        result = {}
+        returned_quickly = False
+
+        try:
+            s = _make_session(sid="proc_reader_lock")
+            s.process = proc
+            s.pid = proc.pid
+            registry._running[s.id] = s
+
+            reader = threading.Thread(
+                target=registry._reader_loop,
+                args=(s,),
+                daemon=True,
+                name="proc-reader-lock-test",
+            )
+            s._reader_thread = reader
+            reader.start()
+
+            assert _wait_until(lambda: proc.poll() is not None, timeout=5.0)
+            assert reader.is_alive(), "Descendant should keep the reader blocked"
+
+            poller = threading.Thread(
+                target=lambda: result.setdefault("value", registry.poll(s.id)),
+                daemon=True,
+            )
+            poller.start()
+            poller.join(timeout=1.0)
+            returned_quickly = not poller.is_alive()
+        finally:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+            if poller is not None:
+                poller.join(timeout=5.0)
+            if reader is not None:
+                reader.join(timeout=5.0)
+
+        assert poller is not None and not poller.is_alive(), (
+            "poll() did not finish after cleanup"
+        )
+        assert reader is not None and not reader.is_alive(), (
+            "Reader thread did not finish after cleanup"
+        )
+        assert returned_quickly, (
+            "poll() blocked on the BufferedReader lock held by _reader_loop"
+        )
+        assert result["value"]["status"] == "exited"
+
     def test_reconcile_noop_when_child_still_running(self, registry):
         """Reconcile must NOT flip exited when the direct child is alive."""
         proc = _spawn_python_sleep(5.0)

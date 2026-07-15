@@ -1249,10 +1249,10 @@ class ProcessRegistry:
         7 minutes on Feishu).
 
         This helper closes that window: when `session.exited` is still False
-        but the direct child's `Popen.poll()` reports an exit code, drain any
-        readable bytes non-blocking and flip `session.exited`. The orphaned
-        reader thread remains stuck on its blocking `read()` but is a daemon
-        thread and will be reaped with the process.
+        but the direct child's `Popen.poll()` reports an exit code, flip
+        `session.exited`. If no reader thread is active, also drain any readable
+        bytes non-blocking. An active reader already owns the buffered stdout
+        stream and attempting a second read can block on its internal lock.
 
         Safe no-op on sessions without a local `Popen` (env/PTY), already-
         exited sessions, and detached-recovered sessions.
@@ -1269,13 +1269,14 @@ class ProcessRegistry:
         if rc is None:
             return  # Direct child still running — reader block is legitimate.
 
-        # Direct child exited. Try to drain any bytes the reader hasn't
-        # consumed yet. This is best-effort: if the pipe is held open by a
-        # descendant, the non-blocking read returns what's immediately
-        # available and we stop.
+        # Direct child exited. Drain only when no reader thread is active.
+        # Concurrent reads through the same BufferedReader can block on its
+        # internal lock even after the file descriptor is made non-blocking.
         drained = ""
         stdout = getattr(proc, "stdout", None)
-        if stdout is not None and not _IS_WINDOWS:
+        reader = getattr(session, "_reader_thread", None)
+        reader_is_active = reader is not None and reader.is_alive()
+        if stdout is not None and not _IS_WINDOWS and not reader_is_active:
             try:
                 import fcntl
                 fd = stdout.fileno()

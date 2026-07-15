@@ -2118,11 +2118,12 @@ def _resolve_model() -> str:
     if isinstance(m, str) and m:
         return m.strip()
     # No env seed and no config preference: fall back to the cost-safe silent
-    # default, never an expensive Anthropic flagship the user didn't pick.
+    # default (catalog-labeled, cache-only read), never an expensive Anthropic
+    # flagship the user didn't pick.
     try:
-        from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
+        from hermes_cli.models import get_preferred_silent_default_model
 
-        return PREFERRED_SILENT_DEFAULT_MODEL
+        return get_preferred_silent_default_model()
     except Exception:
         return "z-ai/glm-5.2"
 

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-09T18:38:59Z",
+  "updated_at": "2026-07-15T04:51:12Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -9,7 +9,7 @@
     "openrouter": {
       "metadata": {
         "display_name": "OpenRouter",
-        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing."
+        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
         {
@@ -118,7 +118,8 @@
         },
         {
           "id": "z-ai/glm-5.2",
-          "description": ""
+          "description": "default",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.1",
@@ -177,7 +178,7 @@
     "nous": {
       "metadata": {
         "display_name": "Nous Portal",
-        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest."
+        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest. The entry labeled \"default\": true is the model Hermes silently lands on when the user never picked one."
       },
       "models": [
         {
@@ -256,7 +257,8 @@
           "id": "minimax/minimax-m3"
         },
         {
-          "id": "z-ai/glm-5.2"
+          "id": "z-ai/glm-5.2",
+          "default": true
         },
         {
           "id": "z-ai/glm-5.1"

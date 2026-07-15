@@ -484,13 +484,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.upArrow && !cState.inputBuf.length) {
-      const inputSel = getInputSelection()
-      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
-
-      const noLineAbove =
-        !cState.input || (cursor !== null && cState.input.lastIndexOf('\n', Math.max(0, cursor - 1)) < 0)
-
-      if (noLineAbove) {
+      // Only cycle history when the input is empty.  When the user has typed
+      // text, up-arrow should navigate the cursor (handled by TextInput) or
+      // be a no-op — never silently replace the user's draft.
+      if (!cState.input) {
         cycleQueue(1) || cycleHistory(-1)
 
         return
@@ -498,11 +495,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.downArrow && !cState.inputBuf.length) {
-      const inputSel = getInputSelection()
-      const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
-      const noLineBelow = !cState.input || (cursor !== null && cState.input.indexOf('\n', cursor) < 0)
+      const noLineBelow = !cState.input || cState.input.indexOf('\n', cState.input.length - 1) < 0
 
-      if (noLineBelow || cState.historyIdx !== null) {
+      // Down-arrow cycles history only when already browsing history or when
+      // the input is entirely single-line with no line below.
+      if (cState.historyIdx !== null || (noLineBelow && !cState.input)) {
         cycleQueue(-1) || cycleHistory(1)
 
         return

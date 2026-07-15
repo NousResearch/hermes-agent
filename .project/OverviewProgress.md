@@ -5,6 +5,11 @@
 อัปเดตล่าสุด: 2026-07-15 (MW-P4 จบจริง + MW-P6 Flow Enforcement · เจ้าของทดสอบรับงาน 5/5 · ประกาศทีมแล้ว) · branch งานถัดไป: แตกใหม่จาก `main` · ป้าย: [fact] เว้นแต่ระบุ
 
 ## สถานะล่าสุด
+- **2026-07-15 (แชท Fable · branch `task/nat/DSU-P1-I1-ds-standard-hardening`): แผน DSU — ยกมาตรฐาน Design System หลังพบใช้จริงได้ ~15-20% · P0-P2 จบ · P3 ปิดงานกำลังเดิน** [fact]
+  - ราก 3 ข้อที่พิสูจน์แล้ว: (1) **version drift** — ทะเบียนบอก v2.5 แต่ไฟล์ prompt จริง 2 สำเนา = v2.4 (grep "ชั้น U/S1/92" = 0) ทุกโปรเจกต์เลยรัน flow เก่าข้ามชั้นแบรนด์ (2) ชั้น H/U/F เป็นตัวหนังสือ ไม่มีเครื่องบังคับ (3) ฝั่งแอดมินครอบคลุม ~15-25% เทียบ global
+  - แก้ครบ: prompt → **v3.0** (2 สำเนา + คลัง commit `a8b8ff6`) · เช็กลิสต์ → **v3.1 = 109 หัวข้อ** (F7 Mood&Tone + D14-D17 ด่านวินัยงาน + B18-B20/C17 + ขยาย B2/B4/A18 + **Pack Admin-Pro 8 ข้อ** เทียบ Carbon/Polaris/Ant/Cloudscape/Atlassian ทุกข้อมีที่มา+วิธีตรวจ) · เครื่องตรวจใหม่ **`ds-gate.py`** (H/U/F ต้องผ่านก่อนด่านสี · fail-closed · pytest 5/5) · ทะเบียน registry อัปแล้ว (คลัง commit `faa8545`)
+  - ผู้เขียน = Codex CLI ตรง (relay portal token ไม่มีบนเครื่องนี้ — ปักธงงานซ่อมแยกแล้ว) · ผู้ตรวจ = Grok/ต่างค่าย (P3) · commit ทีละชิ้น 5 ก้อน
+  - เหลือ P3: รีวิวต่างค่าย + push + เปิด **1 PR** (เจ้าของกด merge)
 - **2026-07-15 (แชท Opus→Fable · merged main แล้ว 2 PR): `Use Migrate Web` พร้อมทีมใช้จริง — MW-P4 จบ + MW-P6 Flow Enforcement + เจ้าของทดสอบรับงานผ่าน 5/5 + ประกาศทีมส่งแล้ว** [fact]
   - **MW-P4 จบจริง**: `mw-backend-check` รันจริงกับ RSF site 78 บน VPS (อ่าน 3/3 PASS + negative 2/2 FAIL ถูกต้อง) + **วงจรฟอร์มจริง PASS** (`POST /api/v1/contact` 201 → DB → เทียบค่าตรง · **prefix API จริง = `/api/v1` ไม่ใช่ `/api`**) · ข้อมูลทดสอบ TEST-MW ลบเกลี้ยง (ตรวจซ้ำ = 0) · config ตัวอย่างอยู่ `/home/linux-nat/mw-p4/` บน VPS
   - **เหตุการณ์สำคัญ: AI (Opus) ข้าม flow เองกลางแชท** — เดา workflow 6 ขั้นแทนการเปิดไฟล์ flow13 → เจ้าของสั่ง "แก้ต้นเหตุ" → เกิด **MW-P6**

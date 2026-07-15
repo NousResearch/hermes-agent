@@ -70,8 +70,10 @@ This behavior applies to the s6-based image only. Earlier (tini-based) images st
 See the [Where the logs go](#where-the-logs-go) section below for the full routing map (per-profile gateways, dashboard, boot reconciler, container-wide `docker logs`).
 :::
 
-:::note Tool-loop hard stops for unattended gateways
-The `tool_loop_guardrails.hard_stop_enabled` setting defaults to `false`, which is reasonable for interactive CLI and TUI sessions where a person can see repeated tool-call warnings. In unattended gateway or server deployments, warnings alone may not stop an agent that gets stuck in a repeated tool-call loop. Operators who want circuit-breaker behavior should explicitly enable hard stops in the profile's `config.yaml`:
+:::note Tool-loop guardrails for unattended gateways
+By default, repeated exact failures and idempotent no-progress calls are soft-blocked: Hermes skips the repeated call, gives the model recovery guidance, and continues the turn. Set `tool_loop_guardrails.block_enabled: false` only when warning-only behavior is desired.
+
+`hard_stop_enabled` is a stronger circuit breaker that ends the turn, and it defaults to `false`. Operators of unattended gateway or server deployments can explicitly enable it in the profile's `config.yaml`:
 
 ```yaml
 tool_loop_guardrails:

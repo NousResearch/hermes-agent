@@ -287,6 +287,36 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert completed_events[0][1] == "web_search"
 
 
+def test_default_concurrent_path_soft_blocks_without_halting_and_preserves_result_order():
+    agent = _make_agent("web_search")
+    blocked_args = {"query": "blocked"}
+    allowed_args = {"query": "allowed"}
+    _seed_exact_failures(agent, "web_search", blocked_args, count=5)
+    starts = []
+    agent.tool_start_callback = lambda tool_call_id, name, args: starts.append((tool_call_id, name, args))
+    calls = [
+        _mock_tool_call("web_search", json.dumps(blocked_args), "c-softblock"),
+        _mock_tool_call("web_search", json.dumps(allowed_args), "c-allow"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+    executed = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        executed.append((name, args, kwargs["tool_call_id"]))
+        return json.dumps({"ok": args["query"]})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert executed == [("web_search", allowed_args, "c-allow")]
+    assert starts == [("c-allow", "web_search", allowed_args)]
+    assert [m["tool_call_id"] for m in messages] == ["c-softblock", "c-allow"]
+    assert "repeated_exact_failure_block" in messages[0]["content"]
+    assert json.loads(messages[1]["content"]) == {"ok": "allowed"}
+    assert agent._tool_guardrail_halt_decision is None
+
+
 def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     agent = _make_agent("web_search")
     args = {"query": "same"}

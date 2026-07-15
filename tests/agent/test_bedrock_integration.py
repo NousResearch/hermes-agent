@@ -94,6 +94,26 @@ class TestModelCatalog:
         models = _PROVIDER_MODELS.get("bedrock", [])
         assert "openai.gpt-5.5" in models
 
+    def test_bedrock_models_include_openai_gpt56_family(self):
+        """The GPT-5.6 family (Sol/Terra/Luna, GA 2026-07-13) is Mantle-only
+        like GPT-5.5 and must be surfaced in the static Bedrock list."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        models = _PROVIDER_MODELS.get("bedrock", [])
+        for model_id in ("openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna"):
+            assert model_id in models
+
+    def test_bedrock_openai_context_length_is_272k(self):
+        """AWS model cards list a 272K context window for the GPT-5.5/5.6
+        Mantle models; make sure we do not fall back to the 128K default."""
+        from agent.bedrock_adapter import get_bedrock_context_length
+        for model_id in (
+            "openai.gpt-5.5",
+            "openai.gpt-5.6-sol",
+            "openai.gpt-5.6-terra",
+            "openai.gpt-5.6-luna",
+        ):
+            assert get_bedrock_context_length(model_id) == 272_000
+
 
 class TestResolveProvider:
     """Verify resolve_provider() handles bedrock correctly."""
@@ -234,6 +254,28 @@ class TestRuntimeProvider:
         assert result["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
         assert result["api_key"] == "aws-sdk"
         assert result["bedrock_openai"] is True
+
+    def test_bedrock_openai_gpt56_family_routes_to_mantle_responses(self, monkeypatch):
+        """Every GPT-5.6 variant (Sol/Terra/Luna) must take the same Mantle
+        Responses route as GPT-5.5 — none of them are Converse models."""
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-2")
+
+        for model_id in ("openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna"):
+            with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+                 patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                     "provider": "bedrock",
+                     "default": model_id,
+                 }):
+                result = resolve_runtime_provider(requested="bedrock")
+
+            assert result["api_mode"] == "codex_responses", model_id
+            assert result["model"] == model_id
+            assert result["base_url"] == "https://bedrock-mantle.us-east-2.api.aws/openai/v1"
+            assert result["bedrock_openai"] is True, model_id
 
 
 # ---------------------------------------------------------------------------

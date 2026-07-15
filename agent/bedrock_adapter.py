@@ -67,6 +67,13 @@ _bedrock_control_client_cache: Dict[str, Any] = {}
 # Converse-capable continue to use the native Bedrock path.
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
     "openai.gpt-5.5",
+    # GPT-5.6 family (GA on Bedrock 2026-07-13): Sol (frontier), Terra
+    # (balanced), Luna (fast/affordable). All are Mantle-only — the model
+    # cards list bedrock-runtime/Converse as unsupported.
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    "openai.gpt-5.6-sol",
+    "openai.gpt-5.6-terra",
+    "openai.gpt-5.6-luna",
 )
 _BEDROCK_OPENAI_HOST_RE = re.compile(
     r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE
@@ -1481,6 +1488,12 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     "mistral.mistral-large":         128_000,
     # DeepSeek
     "deepseek.v3":                   128_000,
+    # OpenAI on Bedrock (Mantle/Responses route)
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
+    "openai.gpt-5.5":                272_000,
+    "openai.gpt-5.6-sol":            272_000,
+    "openai.gpt-5.6-terra":          272_000,
+    "openai.gpt-5.6-luna":           272_000,
 }
 
 # Default for unknown Bedrock models

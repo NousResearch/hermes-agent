@@ -20,6 +20,11 @@ from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+
+_MANTLE_MODELS = list(BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
+_MANTLE_SET = {m.lower() for m in _MANTLE_MODELS}
+
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +80,9 @@ class TestProviderModelIdsBedrock:
 
         assert "eu.anthropic.claude-sonnet-4-6-20250514-v1:0" in result
         assert "eu.anthropic.claude-haiku-4-5-20251015-v1:0" in result
-        assert "openai.gpt-5.5" in result
-        assert len(result) == len(_EU_MODELS) + 1
+        for _m in _MANTLE_MODELS:
+            assert _m in result
+        assert len(result) == len(_EU_MODELS) + len(_MANTLE_MODELS)
 
     def test_region_determines_model_ids(self, monkeypatch):
         """Different regions produce different model ID prefixes (eu.* vs us.*)."""
@@ -88,10 +94,11 @@ class TestProviderModelIdsBedrock:
             with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
                 us_result = provider_model_ids("bedrock")
 
-        assert all(m.startswith("eu.") or m == "openai.gpt-5.5" for m in eu_result)
-        assert all(m.startswith("us.") or m == "openai.gpt-5.5" for m in us_result)
-        assert "openai.gpt-5.5" in eu_result
-        assert "openai.gpt-5.5" in us_result
+        assert all(m.startswith("eu.") or m.lower() in _MANTLE_SET for m in eu_result)
+        assert all(m.startswith("us.") or m.lower() in _MANTLE_SET for m in us_result)
+        for _m in _MANTLE_MODELS:
+            assert _m in eu_result
+            assert _m in us_result
         assert eu_result != us_result
 
     def test_falls_back_to_static_list_when_discovery_empty(self, monkeypatch):
@@ -127,7 +134,7 @@ class TestProviderModelIdsBedrock:
              patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
             for alias in ("aws", "aws-bedrock", "amazon-bedrock"):
                 result = provider_model_ids(alias)
-                assert result == _expected_ids + ["openai.gpt-5.5"], \
+                assert result == _expected_ids + _MANTLE_MODELS, \
                     f"alias {alias!r} should return live-discovered US model IDs, got {result!r}"
 
 
@@ -168,9 +175,10 @@ class TestListAuthenticatedProvidersBedrock:
         assert bedrock is not None
 
         # All returned model IDs should have eu.* prefix — live discovery result
-        assert "openai.gpt-5.5" in bedrock["models"]
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
         for model_id in bedrock["models"]:
-            assert model_id.startswith("eu.") or model_id == "openai.gpt-5.5", \
+            assert model_id.startswith("eu.") or model_id.lower() in _MANTLE_SET, \
                 f"Expected eu.* or Bedrock OpenAI model ID from live discovery, got {model_id!r}"
 
     def test_bedrock_total_models_matches_discovery(self, monkeypatch):
@@ -186,7 +194,7 @@ class TestListAuthenticatedProvidersBedrock:
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is not None
-        assert bedrock["total_models"] == len(_EU_MODELS) + 1
+        assert bedrock["total_models"] == len(_EU_MODELS) + len(_MANTLE_MODELS)
 
     def test_bedrock_is_current_when_selected(self, monkeypatch):
         """is_current=True when current_provider matches bedrock."""
@@ -298,9 +306,10 @@ class TestBedrockRegionRouting:
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is not None
-        assert "openai.gpt-5.5" in bedrock["models"]
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
         for model_id in bedrock["models"]:
-            assert model_id.startswith("eu.") or model_id == "openai.gpt-5.5", \
+            assert model_id.startswith("eu.") or model_id.lower() in _MANTLE_SET, \
                 f"Expected eu.* or Bedrock OpenAI model ID from eu-central-1 profile, got {model_id!r}"
 
     def test_us_region_from_env_var_yields_us_models(self, monkeypatch):
@@ -315,9 +324,10 @@ class TestBedrockRegionRouting:
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is not None
-        assert "openai.gpt-5.5" in bedrock["models"]
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
         for model_id in bedrock["models"]:
-            assert model_id.startswith("us.") or model_id == "openai.gpt-5.5", \
+            assert model_id.startswith("us.") or model_id.lower() in _MANTLE_SET, \
                 f"Expected us.* or Bedrock OpenAI model ID from us-east-1, got {model_id!r}"
 
     def test_env_var_takes_priority_over_botocore_profile(self, monkeypatch):

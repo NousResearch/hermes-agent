@@ -350,7 +350,25 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           const cnt = typeof payload?.count === 'number' ? payload.count : undefined
           const header = idx && cnt ? `◇ Reference ${idx}/${cnt} — ${label}` : `◇ Reference — ${label}`
           const body = coerceThinkingText(payload?.text)
-          appendReasoningDelta(sessionId, `${header}\n${body}\n\n`, true)
+          const text = `${header}\n${body}\n\n`
+          if (idx === undefined || idx <= 1) {
+            // First reference: clear any stale reasoning left over from
+            // before this turn's references start, same as before.
+            appendReasoningDelta(sessionId, text, true)
+          } else {
+            // Later references must accumulate, not replace — otherwise
+            // each new reference wipes out the ones already shown (#64658).
+            // Queue-then-flush (rather than the streamed/batched queue path)
+            // applies it immediately, since each reference arrives as one
+            // complete block rather than incremental tokens. reasoning.delta
+            // cannot be mid-flight here: MoAChatCompletions.reference_callback
+            // (agent/moa_loop.py) fires "moa.reference" once per reference's
+            // already-complete text, with no concurrent token stream for the
+            // reference-gathering phase, so there is no in-flight delta to
+            // collide with in the shared queue bucket.
+            appendReasoningDelta(sessionId, text, false)
+            flushQueuedDeltas(sessionId)
+          }
         }
 
         if (isActiveEvent) {

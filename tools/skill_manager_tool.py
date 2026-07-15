@@ -1352,6 +1352,21 @@ def skill_manage(
         return gate_result
 
     if action == "create":
+        # Config gate: skills.allow_create (default true, backward-compatible)
+        try:
+            _allow_create = is_truthy_value(
+                cfg_get(load_config(), "skills", "allow_create"),
+                default=True,
+            )
+            if not _allow_create:
+                return tool_error(
+                    "skill_manage(action='create') is disabled by config "
+                    "(skills.allow_create = false). Use patch/edit to modify "
+                    "existing skills instead.",
+                    success=False,
+                )
+        except Exception as e:
+            logger.warning("skills.allow_create lookup failed, skipping gate: %s", e)
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
         result = _create_skill(name, content, category)

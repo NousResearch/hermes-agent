@@ -514,6 +514,130 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
+    def prefetch_all_scored(
+        self,
+        intent_context: Any,
+        *,
+        session_id: str = "",
+        builtin_entries: Optional[List[str]] = None,
+        memory_store: Optional[Any] = None,
+    ) -> List[Dict[str, Any]]:
+        """Collect scored memory candidates from all providers + builtin store.
+
+        Stage 2-4 of the relevance pipeline:
+          1. Each provider returns scored candidates via ``prefetch_with_intent``
+          2. If builtin_entries provided, score them against the intent context
+          3. Fuse all candidates (dedup + trust weighting + score threshold)
+
+        Returns a deduplicated, threshold-filtered, score-ranked list of
+        candidate dicts ready for gating + injection formatting.
+
+        Empty list means nothing worth injecting.
+        """
+        from agent.memory.fusion import fuse, apply_score_threshold
+        from agent.memory.gating import _DEFAULT_MIN_RELEVANCE
+
+        all_candidates: List[Dict[str, Any]] = []
+
+        # Stage 2a: External providers (structured scoring)
+        for provider in self._providers:
+            if provider.name == "builtin":
+                continue
+            try:
+                candidates = provider.prefetch_with_intent(
+                    intent_context, session_id=session_id,
+                )
+                if candidates:
+                    all_candidates.extend(candidates)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' prefetch_with_intent failed: %s",
+                    provider.name, e,
+                )
+
+        # Stage 2b: Builtin store — score raw entries against intent
+        if builtin_entries:
+            # Prefer instance method (FTS5+embedding) if MemoryStore available,
+            # fall back to static classmethod (heuristic only).
+            if memory_store is not None and hasattr(memory_store, "scored_prefetch_instance"):
+                try:
+                    builtin_candidates = memory_store.scored_prefetch_instance(
+                        task_type=intent_context.task_type,
+                        task_confidence=intent_context.task_confidence,
+                        keywords=intent_context.keywords,
+                        expanded_query=intent_context.expanded_query,
+                    )
+                    if builtin_candidates:
+                        all_candidates.extend(builtin_candidates)
+                except Exception as e:
+                    logger.debug("Builtin scored_prefetch_instance failed: %s", e)
+            else:
+                from tools.memory_tool import MemoryStore
+                try:
+                    builtin_candidates = MemoryStore.scored_prefetch(
+                        builtin_entries,
+                        task_type=intent_context.task_type,
+                        task_confidence=intent_context.task_confidence,
+                        keywords=intent_context.keywords,
+                        expanded_query=intent_context.expanded_query,
+                    )
+                    if builtin_candidates:
+                        all_candidates.extend(builtin_candidates)
+                except Exception as e:
+                    logger.debug("Builtin scored_prefetch failed: %s", e)
+
+        if not all_candidates:
+            return []
+
+        # Stage 3: Cross-provider fusion (dedup + trust weighting)
+        from agent.memory.scored_memory import ScoredMemory
+
+        # Convert dicts to ScoredMemory objects for fusion
+        scored_objects = []
+        for c in all_candidates:
+            sm = ScoredMemory(
+                content=c.get("content", ""),
+                provider=c.get("provider", "unknown"),
+                score=c.get("score", 0.0),
+                context_tag=c.get("context_tag"),
+                signal_strength=c.get("signal_strength", 0.5),
+                score_semantic=c.get("score_semantic", 0.0),
+                score_keyword=c.get("score_keyword", 0.0),
+                score_context=c.get("score_context", 0.0),
+                score_entity=c.get("score_entity", 0.0),
+                score_temporal=c.get("score_temporal", 1.0),
+                score_signal=c.get("score_signal", 0.5),
+                source_file=c.get("source_file"),
+                entry_index=c.get("entry_index"),
+            )
+            scored_objects.append(sm)
+
+        fused = fuse(scored_objects)
+
+        # Stage 4: Apply score threshold
+        passed = apply_score_threshold(fused, _DEFAULT_MIN_RELEVANCE)
+
+        # Convert back to dicts for the caller
+        result = []
+        for sm in passed:
+            result.append({
+                "content": sm.content,
+                "score": sm.score,
+                "provider": sm.provider,
+                "context_tag": sm.context_tag,
+                "signal_strength": sm.signal_strength,
+                "source_file": sm.source_file,
+                "entry_index": sm.entry_index,
+                "score_semantic": sm.score_semantic,
+                "score_keyword": sm.score_keyword,
+                "score_context": sm.score_context,
+                "score_entity": sm.score_entity,
+                "score_temporal": sm.score_temporal,
+                "score_signal": sm.score_signal,
+            })
+
+        return result
+
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
 

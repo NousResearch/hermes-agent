@@ -5968,6 +5968,14 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+    auto_unblocked: list[str] = field(default_factory=list)
+    """Task ids that were auto-unblocked by the sticky-block resolver
+    phase during this tick — the blocking condition cleared and the
+    task was released back to ``ready`` for dispatch."""
+    auto_completed: list[str] = field(default_factory=list)
+    """Task ids that were auto-completed by the sticky-block resolver
+    phase during this tick — the task's external deliverable (e.g. a
+    merged PR) was confirmed and the task was closed automatically."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7325,6 +7333,82 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Auto-resolution of sticky-blocked tasks
+# ---------------------------------------------------------------------------
+
+def _resolve_sticky_blocks(
+    conn: sqlite3.Connection,
+    *,
+    failure_limit: Optional[int] = None,
+) -> tuple[list[str], list[str]]:
+    """Attempt auto-resolution of sticky-blocked tasks.
+
+    Called during each dispatcher tick, after crash detection and before
+    ``recompute_ready``. Only touches tasks where ``_has_sticky_block`` is
+    True (i.e. a worker or operator called ``kanban_block``).
+
+    Returns ``(auto_unblocked, auto_completed)`` — task ids that were
+    unblocked or completed by this pass.
+
+    Resolution rules by ``block_kind``:
+
+    * ``transient`` — If ``consecutive_failures < failure_limit``, the
+      task is unblocked (moved to ``ready`` via ``unblock_task``). These
+      are infra-crash blocks that should self-recover when the daemon is
+      healthy. Tasks that have blown through the failure limit stay
+      blocked for human triage.
+
+    * ``dependency`` — Handled by ``recompute_ready`` for non-sticky
+      parents. Sticky dependency blocks are kept (the worker deliberately
+      blocked, not the parent watcher).
+
+    * ``needs_input`` / ``capability`` — Not auto-resolved in this phase.
+      These require external integration checks (credential stores,
+      GitHub PR status) that Phase 2+ will add to this function.
+
+    * ``None`` — No block_kind set. ``recompute_ready`` handles these if
+      they are non-sticky; sticky ones with no kind are left alone.
+    """
+    if failure_limit is None:
+        failure_limit = DEFAULT_FAILURE_LIMIT
+
+    auto_unblocked: list[str] = []
+    auto_completed: list[str] = []
+
+    # Read all blocked tasks with their failure counters and kind.
+    blocked_rows = conn.execute(
+        "SELECT id, consecutive_failures, max_retries, block_kind "
+        "FROM tasks WHERE status = 'blocked'"
+    ).fetchall()
+
+    for row in blocked_rows:
+        task_id = row["id"]
+        kind = row["block_kind"]
+
+        # Only resolve sticky blocks (worker/operator kanban_block calls).
+        # Circuit-breaker blocks are already handled by recompute_ready.
+        if not _has_sticky_block(conn, task_id):
+            continue
+
+        if kind == "transient":
+            # Transient failure: if the circuit breaker has not tripped
+            # yet, release back to ready. The dispatcher retries with a
+            # fresh worker. If it keeps failing the breaker re-blocks.
+            failures = int(row["consecutive_failures"] or 0)
+            task_limit = row["max_retries"]
+            effective_limit = (
+                int(task_limit) if task_limit is not None
+                else int(failure_limit)
+            )
+            if failures < effective_limit:
+                if unblock_task(conn, task_id):
+                    auto_unblocked.append(task_id)
+            # else: blown through failure limit — keep blocked for triage.
+
+    return auto_unblocked, auto_completed
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -7460,6 +7544,20 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
+
+    # Auto-resolve sticky-blocked tasks whose blocking condition has
+    # cleared (e.g. transient infra failures that the circuit breaker
+    # blocked but the daemon is now healthy). Runs after crash detection
+    # so transient failures from dead workers are resolved before we
+    # try to promote or spawn them.
+    _resolved_unblocked, _resolved_completed = _resolve_sticky_blocks(
+        conn, failure_limit=failure_limit,
+    )
+    if _resolved_unblocked:
+        result.auto_unblocked = list(_resolved_unblocked)
+    if _resolved_completed:
+        result.auto_completed = list(_resolved_completed)
+
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

@@ -153,7 +153,11 @@ def _sanitize_loaded_credentials() -> None:
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        # utf-8-sig strips a leading UTF-8 BOM if present (PowerShell 5.1
+        # Set-Content -Encoding UTF8 / Notepad) and is a no-op for BOM-less
+        # UTF-8. Plain "utf-8" would keep U+FEFF on the first key name and
+        # silently drop it from os.environ under its canonical name.
+        load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
     except UnicodeDecodeError:
         load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
     # Strip non-ASCII characters from credential env vars that were just

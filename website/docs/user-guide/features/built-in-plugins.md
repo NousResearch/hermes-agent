@@ -261,9 +261,9 @@ or agent builder.
 | `GET /tuning` | Tuning-focused read model with score details and operational evidence |
 
 **Privacy:** Olympus is read-only. It scans `.env` variable names, not values,
-and redacts secret-like strings in diagnostics. Set
-`OLYMPUS_EXPOSE_LOCAL_LABELS=1` only on a private machine if you want local
-session titles, task titles, and route labels to appear.
+and redacts secret-like strings in diagnostics. Local session titles, task
+titles, and route labels stay hidden unless you opt in on a private machine by
+setting `dashboard.olympus.expose_local_labels: true` in `~/.hermes/config.yaml`.
 
 **Enabling:** Nothing to enable — `olympus` is a dashboard-only bundled plugin
 with no model-visible tools. It auto-registers as the **Olympus** tab in

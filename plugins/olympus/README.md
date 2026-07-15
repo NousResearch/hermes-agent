@@ -36,10 +36,14 @@ gateways, routes, memory, credentials, or config.
   text, base URLs, API keys, env values, or local paths.
 - API responses are read-only and redact secret-like strings before returning
   diagnostics.
-- Richer local labels require an explicit private-machine opt-in:
+- Richer local labels require an explicit private-machine opt-in in
+  `~/.hermes/config.yaml` (default false; applies on the next request, no
+  restart needed):
 
-```bash
-OLYMPUS_EXPOSE_LOCAL_LABELS=1 hermes dashboard --no-open --skip-build
+```yaml
+dashboard:
+  olympus:
+    expose_local_labels: true
 ```
 
 ## Dashboard API

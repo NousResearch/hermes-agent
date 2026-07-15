@@ -58,7 +58,11 @@ SKILLS_SH_AUDIT_CHECKS = ("agent-trust-hub", "socket", "snyk")
 SKILLS_SH_AUDIT_OK = {"pass", "passed", "ok", "clean"}
 SKILLS_SH_AUDIT_WARN = {"warn", "warning", "review"}
 SKILLS_SH_AUDIT_FAIL = {"fail", "failed", "error", "critical", "block"}
-EXPOSE_LOCAL_LABELS = os.environ.get("OLYMPUS_EXPOSE_LOCAL_LABELS", "").strip().lower() in {"1", "true", "yes", "on"}
+# Behavioral settings belong in config.yaml, not env vars, so the
+# private-machine label opt-in lives at dashboard.olympus.expose_local_labels.
+# Refreshed at the start of every request; fails closed (labels hidden) when
+# the config cannot be read.
+EXPOSE_LOCAL_LABELS = False
 REDACTION_PATTERNS = [
     re.compile(r"(?i)['\"]?(?:api[_-]?key|token|secret|password|passwd)['\"]?\s*[:=]\s*['\"]?[^'\"\s,}]+['\"]?"),
     re.compile(r"(?i)(api[_-]?key|token|secret|password|passwd)\s*[:=]\s*['\"]?[^'\"\s]+"),
@@ -87,6 +91,26 @@ LOG_ERROR_PATTERNS = [
     ("failure", re.compile(r"\bfailed to\b|\bfailure\b")),
     ("critical", re.compile(r"\bcritical\b")),
 ]
+
+
+def refresh_expose_local_labels() -> bool:
+    global EXPOSE_LOCAL_LABELS
+    try:
+        try:
+            from hermes_cli.config import load_config_readonly
+            cfg: Any = load_config_readonly() or {}
+        except ImportError:
+            # Standalone loads (plugin unit tests) run without hermes_cli on
+            # sys.path; read the active HERMES_HOME config directly.
+            cfg = read_yaml(get_hermes_home() / "config.yaml")
+        dashboard_cfg = cfg.get("dashboard") if isinstance(cfg, dict) else None
+        olympus_cfg = dashboard_cfg.get("olympus") if isinstance(dashboard_cfg, dict) else None
+        value = bool(olympus_cfg.get("expose_local_labels", False)) if isinstance(olympus_cfg, dict) else False
+    except Exception as exc:
+        log_read_warning("expose_local_labels config read failed", exc)
+        value = False
+    EXPOSE_LOCAL_LABELS = value
+    return value
 
 
 def now_iso() -> str:
@@ -3942,6 +3966,7 @@ def build_tuning(profiles: List[Dict[str, Any]], gateways: List[Dict[str, Any]],
 
 @router.get("/health")
 async def health() -> Dict[str, Any]:
+    refresh_expose_local_labels()
     profiles = collect_profiles()
     cron = collect_cron(profiles)
     h = collect_health(profiles, cron)
@@ -3950,6 +3975,7 @@ async def health() -> Dict[str, Any]:
 
 @router.get("/overview")
 async def overview() -> Dict[str, Any]:
+    refresh_expose_local_labels()
     started_at = time.perf_counter()
     profiles = collect_profiles()
     cron = collect_cron(profiles)
@@ -4015,6 +4041,7 @@ async def overview() -> Dict[str, Any]:
 
 @router.get("/tuning")
 async def tuning() -> Dict[str, Any]:
+    refresh_expose_local_labels()
     started_at = time.perf_counter()
     profiles = collect_profiles()
     cron = collect_cron(profiles)

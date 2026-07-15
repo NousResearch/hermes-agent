@@ -27,7 +27,36 @@ class PrivacyContractTest(unittest.TestCase):
             os.environ.pop("HERMES_KANBAN_HOME", None)
         else:
             os.environ["HERMES_KANBAN_HOME"] = self.old_kanban
+        plugin_api.EXPOSE_LOCAL_LABELS = False
         self.tmp.cleanup()
+
+    def test_expose_local_labels_defaults_to_false_without_config(self):
+        self.assertFalse(plugin_api.refresh_expose_local_labels())
+        self.assertFalse(plugin_api.EXPOSE_LOCAL_LABELS)
+
+    def test_expose_local_labels_config_opt_in_returns_raw_cron_labels(self):
+        (self.home / "config.yaml").write_text(
+            "dashboard:\n"
+            "  olympus:\n"
+            "    expose_local_labels: true\n"
+        )
+        cron_dir = self.home / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text(json.dumps({
+            "jobs": [{
+                "id": "raw-cron-job-123",
+                "name": "private cron name",
+                "enabled": True,
+                "profile": "default",
+            }]
+        }))
+
+        self.assertTrue(plugin_api.refresh_expose_local_labels())
+        payload = plugin_api.collect_cron([])
+        serialized = json.dumps(payload)
+
+        self.assertIn("raw-cron-job-123", serialized)
+        self.assertIn("private cron name", serialized)
 
     def test_cron_ids_are_public_refs_when_local_labels_are_hidden(self):
         cron_dir = self.home / "cron"

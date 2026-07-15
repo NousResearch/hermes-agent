@@ -1127,6 +1127,13 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         _interrupt_async_delegations(reason="CLI shutdown")
     except Exception:
         pass
+    # Stop async delegated producers first, then give observer daemon workers a
+    # bounded chance to consume every result accepted during their unwind.
+    try:
+        from hermes_cli.plugins import shutdown_observer_hooks
+        shutdown_observer_hooks(timeout=0.5, drain=True)
+    except BaseException:
+        pass
     try:
         _cleanup_all_browsers()
     except Exception:

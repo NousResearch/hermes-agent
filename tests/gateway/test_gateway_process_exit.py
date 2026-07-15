@@ -152,11 +152,14 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     runtime lock, or those early paths (#51228 fatal-config) would leak them.
     Both releases are idempotent, so this is safe on every exit path."""
     from gateway import status as gateway_status
+    from hermes_cli import plugins as plugin_runtime
 
     remove_pid = Mock()
     release_lock = Mock()
+    shutdown_observers = Mock()
     monkeypatch.setattr(gateway_status, "remove_pid_file", remove_pid)
     monkeypatch.setattr(gateway_status, "release_gateway_runtime_lock", release_lock)
+    monkeypatch.setattr(plugin_runtime, "shutdown_observer_hooks", shutdown_observers)
     monkeypatch.setattr(gateway_run.os, "_exit", _raise_exit)
     monkeypatch.setattr(gateway_run.sys, "stdout", SimpleNamespace(flush=Mock()))
     monkeypatch.setattr(gateway_run.sys, "stderr", SimpleNamespace(flush=Mock()))
@@ -167,3 +170,4 @@ def test_exit_backstop_releases_pid_file_and_runtime_lock(monkeypatch):
     assert exc_info.value.code == 78
     remove_pid.assert_called_once_with()
     release_lock.assert_called_once_with()
+    shutdown_observers.assert_called_once_with(timeout=0.5, drain=True)

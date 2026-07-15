@@ -834,6 +834,18 @@ def _shutdown_sessions() -> None:
         sids = list(_sessions)
     for sid in sids:
         _close_session_by_id(sid, end_reason="tui_shutdown")
+    # The TUI gateway is a process owner for plugin result observers (it runs
+    # live AIAgent turns): after the last session closed, give accepted
+    # final-result observations a bounded chance to deliver before process
+    # exit kills the daemon workers (mirrors cli.py's atexit cleanup and the
+    # messaging gateway's graceful-exit drain). No-op without a plugin
+    # manager or listener.
+    try:
+        from hermes_cli.plugins import shutdown_observer_hooks
+
+        shutdown_observer_hooks(timeout=0.5, drain=True)
+    except BaseException:
+        pass
 
 
 # Last-resort net for any disconnect path that slips past the WS finally. TTL is

@@ -241,7 +241,11 @@ def register_from_config(
 
     registered: List[ShellHookSpec] = []
 
-    # Import lazily — avoids circular imports at module-load time.
+    # Import lazily — avoids circular imports at module-load time. The
+    # observer-hook allowlist comes from its owning leaf module rather than
+    # through ``hermes_cli.plugins`` so callers that stub the plugin manager
+    # module (tests, embedders) only need to provide the manager surface.
+    from hermes_cli.observer_hooks import ASYNC_OBSERVER_HOOKS
     from hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
@@ -273,7 +277,18 @@ def register_from_config(
         with _registered_lock:
             if key in _registered:
                 continue
-            manager._hooks.setdefault(spec.event, []).append(_make_callback(spec))
+            callback = _make_callback(spec)
+            if (
+                spec.event in ASYNC_OBSERVER_HOOKS
+                and not manager._register_observer_callback(spec.event, callback)
+            ):
+                logger.warning(
+                    "shell hook for %s (%s) could not start its observer worker",
+                    spec.event,
+                    spec.command,
+                )
+                continue
+            manager._hooks.setdefault(spec.event, []).append(callback)
             _registered.add(key)
             registered.append(spec)
             logger.info(

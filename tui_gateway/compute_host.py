@@ -142,6 +142,8 @@ class ComputeHost:
         self._progress_lock = threading.Lock()
         self._turn_futures: set[concurrent.futures.Future] = set()
         self._turn_futures_lock = threading.Lock()
+        self._observer_drain_lock = threading.Lock()
+        self._observer_drain_done = threading.Event()
         self._transport = _HostTransport(self.emit)
         self._heartbeat_secs = (
             float(heartbeat_secs)
@@ -172,7 +174,47 @@ class ComputeHost:
             if not pending:
                 break
             time.sleep(0.05)
+        self._drain_result_observers()
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _drain_result_observers(self, wait: float = 2.0) -> None:
+        """Bounded, fail-open delivery window for accepted observer events.
+
+        This child owns live AIAgent turns, so it is a process owner for
+        plugin result observers: every exit path — SIGTERM/orphan durability
+        flush AND the explicit supervisor ``shutdown`` frame whose reader
+        hard-exits with ``os._exit`` — must give accepted final-result
+        observations a bounded chance to deliver before the daemon workers
+        die with the process (mirrors cli.py / gateway shutdown). No-op when
+        no plugin manager or listener exists in this process; never creates
+        plugin state.
+
+        Concurrency-coordinated: shutdown paths race here by design — the
+        parent-guard/SIGTERM ``shutdown()`` sets ``_closed``, which wakes
+        ``run_host``'s main loop into its own finally-``shutdown()``. The
+        underlying runtime lets only the first caller detach-and-wait on the
+        listener generation; a later caller would see it empty and return
+        instantly, and if that later caller is a hard-exit path (the guard's
+        ``os._exit``), it would kill the process while the owning drain is
+        still delivering. So every caller either performs the drain itself
+        or boundedly waits for the owner to finish before returning.
+        """
+        if self._observer_drain_lock.acquire(blocking=False):
+            try:
+                if not self._observer_drain_done.is_set():
+                    try:
+                        from hermes_cli.plugins import shutdown_observer_hooks
+
+                        shutdown_observer_hooks(timeout=0.5, drain=True)
+                    except BaseException:
+                        pass
+                    self._observer_drain_done.set()
+            finally:
+                self._observer_drain_lock.release()
+        else:
+            # Another shutdown path owns the drain; hold this (potentially
+            # hard-exit-bound) caller until the owner finishes, boundedly.
+            self._observer_drain_done.wait(timeout=max(0.0, wait))
 
     def flush_all_sessions(self, *, reason: str = "shutdown") -> None:
         try:
@@ -200,7 +242,20 @@ class ComputeHost:
         elif kind == "shutdown":
             self.emit({"type": "shutdown.ack", "request_id": frame.get("request_id")})
             # Explicit supervisor/test shutdown is a clean child-process close;
-            # SIGTERM and orphan paths are the durability flush paths.
+            # SIGTERM and orphan paths are the durability flush paths. The
+            # reader hard-exits with os._exit right after this frame returns —
+            # bypassing shutdown()/atexit — so accepted observer deliveries
+            # get their bounded window here, before that hard exit.
+            #
+            # Ordering is load-bearing: the drain must complete BEFORE
+            # ``_closed`` is signaled. Setting ``_closed`` first wakes
+            # ``run_host``'s main loop, whose shutdown() runs a concurrent
+            # drain; whichever caller detaches the listener generation first
+            # owns the bounded wait, the other returns immediately — and the
+            # non-owner (main-loop return or this reader's os._exit) can then
+            # kill the process while the owner is still delivering. Draining
+            # first serializes ownership on this frame path.
+            self._drain_result_observers()
             self._closed.set()
             self._executor.shutdown(wait=False, cancel_futures=True)
         else:

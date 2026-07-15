@@ -1935,6 +1935,9 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        # This autonomous maintenance fork is not a user-visible root or
+        # delegated worker result.
+        setattr(review_agent, "_result_observer_exempt", True)
         # Tag this fork as autonomous background curation so skill_manage's
         # background-review write guard fires. Without this the fork inherits
         # the default "assistant_tool" origin, is_background_review() is False,

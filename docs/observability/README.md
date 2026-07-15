@@ -98,14 +98,16 @@ Common fields include `session_id`, `completed`, `interrupted`, `reason`,
 boundary for a chat identity. Use `on_session_finalize` and `on_session_reset`
 for lifecycle cleanup that must happen once per session identity.
 
-### Turn-Scoped LLM Hooks
+### Turn- and Result-Scoped Agent Hooks
 
-These hooks frame the user turn, not individual provider API attempts:
+These hooks frame the user turn or its final agent-core exit, not individual
+provider API attempts:
 
 | Hook | When it fires |
 | --- | --- |
 | `pre_llm_call` | Before the tool loop begins for a user turn. |
 | `post_llm_call` | After the turn completes with final assistant output. |
+| `post_agent_result` | When any root or native-subagent `run_conversation` returns or raises. |
 
 Common `pre_llm_call` fields include `session_id`, `turn_id`,
 `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`,
@@ -117,6 +119,48 @@ Common `post_llm_call` fields include `session_id`, `turn_id`,
 
 Use request-scoped API hooks for LLM span telemetry. Use `pre_llm_call` and
 `post_llm_call` for turn-level context, compatibility, and final turn summary.
+
+`post_agent_result` is the exhaustive externally meaningful agent-core exit
+observer. It receives one allowlisted, capped `event` mapping. Each listener
+has an independent daemon queue of at most 256 pending events, so a slow or
+hung callback cannot delay or mutate the result or head-of-line block another
+listener. Full queues drop that listener's newest copy instead of applying
+backpressure. Callback return values are ignored.
+
+It covers transformed, partial, interrupted, failed, and raised exits from root
+agents and native delegated subagents. Persistence-isolated internal forks,
+including curator/background-review agents, do not emit because their output is
+not a root or delegated worker result. The event exposes no prompts, history,
+transcripts, reasoning, or tool calls. It is not a platform delivery receipt:
+adapter-added output, gateway-synthetic errors, and delegation-wrapper timeouts
+that return before a stuck child exits occur outside this boundary.
+
+Registration is transactional per plugin load: if a plugin's `register()`
+raises after subscribing, that load's observer callbacks are removed and their
+workers retired boundedly, so a plugin reported as failed/disabled never keeps
+receiving results. Other plugins' listeners are unaffected.
+
+Observer workers are bound to the plugin-load generation. Forced reload or
+safe-mode disable detaches that generation and purges its queued events within
+a bounded shutdown window. Callback execution is atomically claimed just
+before invocation: a claimed/in-flight daemon may finish after reload, but
+queued or dequeued-yet-unclaimed work cannot start afterward and is purged.
+The result path never awaits a callback. The CLI and gateway perform a bounded
+observer shutdown before process exit; other process owners and tests can use
+`PluginManager.drain_observer_hooks()` or
+`PluginManager.shutdown_observer_hooks()` for the same explicit lifecycle.
+`hermes_cli.plugins.observer_health()` reports content-free queue depth plus
+sticky, process-lifetime drop, drain-timeout, and callback-failure evidence.
+
+Identity strings are bounded previews. `identity_complete` reports whether any
+preview was truncated, `identity_truncated_fields` names the affected fields,
+and `lineage_sha256` binds the lineage hash input. That input includes each raw
+identity in full up to 1,024 characters per field; larger fields use a bounded
+head/tail excerpt plus their original length.
+`lineage_hash_input_complete` and
+`lineage_hash_input_truncated_fields` disclose that separate hash-input loss.
+These fields support observation correlation; a behavior-changing consumer
+must not use them alone as exact task/turn delivery authority.
 
 ### Request-Scoped API Hooks
 

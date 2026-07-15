@@ -548,6 +548,41 @@ class TestIdempotentRegistration:
         mgr = plugins.get_plugin_manager()
         assert len(mgr._hooks.get("on_session_start", [])) == 1
 
+    def test_failed_observer_worker_is_not_reported_registered(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path,
+            "observer.sh",
+            "#!/usr/bin/env bash\nprintf '{}\\n'\n",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+
+        def _fail_start(_thread):
+            raise RuntimeError("thread unavailable")
+
+        monkeypatch.setattr(
+            "hermes_cli.observer_hooks.threading.Thread.start",
+            _fail_start,
+        )
+        cfg = {
+            "hooks": {
+                "post_agent_result": [{"command": str(script)}],
+            },
+        }
+
+        registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
+
+        manager = plugins.get_plugin_manager()
+        assert registered == []
+        assert manager._hooks.get("post_agent_result", []) == []
+        assert manager.has_active_observer_hook("post_agent_result") is False
+        assert manager.observer_health()["registration_failure"] is True
+
     def test_same_command_different_matcher_registers_both(
         self, tmp_path, monkeypatch,
     ):

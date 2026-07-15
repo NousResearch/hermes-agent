@@ -6189,6 +6189,17 @@ class AIAgent:
             reset_conversation_context,
             set_conversation_context,
         )
+        from agent.result_observer import (
+            observe_agent_result,
+            result_observer_enabled,
+        )
+
+        observer_enabled = result_observer_enabled(self)
+        previous_turn_id = (
+            getattr(self, "_current_turn_id", "") or ""
+            if observer_enabled
+            else ""
+        )
         # Publish the conversation id for ambient Nous Portal tagging. Every
         # LLM call made inside this turn — main loop, compression, vision,
         # web_extract, session_search, MoA slots, background-review forks
@@ -6210,7 +6221,7 @@ class AIAgent:
         # which may be observed from another thread.
         with scoped_runtime_main({}):
             try:
-                return run_conversation(
+                result = run_conversation(
                     self,
                     user_message,
                     system_message,
@@ -6221,6 +6232,24 @@ class AIAgent:
                     persist_user_timestamp=persist_user_timestamp,
                     moa_config=moa_config,
                 )
+            except BaseException as exc:
+                if observer_enabled:
+                    observe_agent_result(
+                        self,
+                        exception=exc,
+                        previous_turn_id=previous_turn_id,
+                        requested_task_id=task_id,
+                    )
+                raise
+            else:
+                if observer_enabled:
+                    observe_agent_result(
+                        self,
+                        result=result,
+                        previous_turn_id=previous_turn_id,
+                        requested_task_id=task_id,
+                    )
+                return result
             finally:
                 reset_accounting_context(acct_token)
                 reset_conversation_context(token)

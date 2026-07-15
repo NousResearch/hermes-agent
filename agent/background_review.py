@@ -728,6 +728,9 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # This autonomous review fork is not a user-visible root or
+            # delegated worker result.
+            setattr(review_agent, "_result_observer_exempt", True)
             # The review fork pins the parent's cached system prompt and keeps
             # ``tools[]`` byte-identical to the parent so its outbound request
             # hits the same provider cache prefix (see the toolset-parity note

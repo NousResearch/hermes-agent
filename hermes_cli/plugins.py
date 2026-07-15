@@ -50,6 +50,12 @@ from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
+from hermes_cli.observer_hooks import (
+    ASYNC_OBSERVER_HOOKS,
+    OBSERVER_QUEUE_MAX as _OBSERVER_QUEUE_MAX,
+    OBSERVER_RELOAD_RETIRE_SECONDS as _OBSERVER_RELOAD_RETIRE_SECONDS,
+    ObserverHookRuntime,
+)
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -163,6 +169,12 @@ VALID_HOOKS: Set[str] = {
     "on_session_reset",
     "subagent_start",
     "subagent_stop",
+    # Final agent-result observation. Unlike ordinary lifecycle hooks this is
+    # dispatched through independently bounded daemon queues: callbacks never
+    # run on the agent thread, return values are ignored, and one slow listener
+    # cannot delay a completed turn or another listener. The callback receives
+    # one allowlisted, bounded ``event`` mapping; see agent.result_observer.
+    "post_agent_result",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:
@@ -344,6 +356,11 @@ class PluginContext:
         self._manager = manager
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
+        # Observer registrations made through this context, as
+        # ``(hook_name, callback, worker)`` triples. ``_load_plugin`` rolls
+        # these back when the plugin's ``register()`` raises, so a failed
+        # load can never leave a live observer worker behind.
+        self._observer_registrations: List[tuple] = []
 
     # -- host-owned LLM access ----------------------------------------------
 
@@ -1169,6 +1186,16 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
+        if hook_name in ASYNC_OBSERVER_HOOKS:
+            worker = self._manager._register_observer_callback(hook_name, callback)
+            if worker is None:
+                logger.warning(
+                    "Plugin '%s' observer hook '%s' was not registered",
+                    self.manifest.name,
+                    hook_name,
+                )
+                return
+            self._observer_registrations.append((hook_name, callback, worker))
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
@@ -1271,6 +1298,11 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Observer delivery stays out of this central discovery manager; the
+        # focused runtime owns its copy-on-write generations and bounded queues.
+        self._observer_runtime = ObserverHookRuntime(
+            queue_max=_OBSERVER_QUEUE_MAX
+        )
 
     # -----------------------------------------------------------------------
     # Public
@@ -1286,10 +1318,25 @@ class PluginManager:
         if self._discovered and not force:
             return
         if env_var_enabled("HERMES_SAFE_MODE"):
+            if force:
+                # Preserve the established safe-mode contract for ordinary
+                # plugin registries while immediately detaching observer-only
+                # callbacks that could otherwise receive new results.
+                self.shutdown_observer_hooks(
+                    timeout=_OBSERVER_RELOAD_RETIRE_SECONDS,
+                    drain=False,
+                )
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
             return
         if force:
+            # Detach and purge the previous generation before loading
+            # replacements. A reloaded plugin must not receive observations
+            # that were queued under its old generation.
+            self.shutdown_observer_hooks(
+                timeout=_OBSERVER_RELOAD_RETIRE_SECONDS,
+                drain=False,
+            )
             self._plugins.clear()
             self._hooks.clear()
             self._middleware.clear()
@@ -1312,6 +1359,15 @@ class PluginManager:
             self._discover_and_load_inner()
         except BaseException:
             self._discovered = False
+            # A failed sweep must not leave a partially registered observer
+            # generation live. Retire it boundedly; ordinary legacy hook
+            # failure behavior remains unchanged.
+            self.shutdown_observer_hooks(
+                timeout=_OBSERVER_RELOAD_RETIRE_SECONDS,
+                drain=False,
+            )
+            for hook_name in ASYNC_OBSERVER_HOOKS:
+                self._hooks.pop(hook_name, None)
             raise
 
     def _discover_and_load_inner(self) -> None:
@@ -1760,6 +1816,7 @@ class PluginManager:
             f"{_NS_PARENT}.{_slug}",
             PluginContext(manifest, self)._tool_override_allowed(""),
         )
+        ctx: Optional[PluginContext] = None
         try:
             if manifest.source in {"user", "project", "bundled"}:
                 module = self._load_directory_module(manifest)
@@ -1823,6 +1880,21 @@ class PluginManager:
 
         except Exception as exc:
             loaded.error = str(exc)
+            # A plugin that failed to load must not keep observing results:
+            # retire the observer registrations this load already made (its
+            # dedicated workers included) so the disabled state and the live
+            # listener set can never disagree. Other plugins' listeners and
+            # the reload generation are untouched.
+            if ctx is not None:
+                try:
+                    self._rollback_observer_registrations(
+                        ctx._observer_registrations
+                    )
+                except Exception:
+                    logger.warning(
+                        "Observer rollback for failed plugin '%s' did not complete",
+                        manifest.name, exc_info=True,
+                    )
             logger.warning(
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
@@ -1909,6 +1981,11 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        if hook_name in ASYNC_OBSERVER_HOOKS:
+            event = kwargs.get("event")
+            if isinstance(event, dict):
+                self.emit_observer_hook(hook_name, event)
+            return []
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
@@ -1925,6 +2002,81 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    def _register_observer_callback(self, hook_name: str, callback: Callable):
+        """Prestart one isolated observer worker during plugin registration.
+
+        Returns the started worker handle (truthy) or ``None`` — callers that
+        only need success/failure can keep treating the result as a boolean.
+        """
+        return self._observer_runtime.register(hook_name, callback)
+
+    def _rollback_observer_registrations(self, registrations) -> None:
+        """Undo one failed plugin load's observer registrations.
+
+        Removes exactly the recorded callbacks from the hook lists (identity
+        match, one instance per registration) and boundedly retires their
+        dedicated workers. Listeners registered by other plugins — including
+        earlier in the same discovery sweep — are untouched, and the plugin
+        reload generation is not advanced.
+        """
+        if not registrations:
+            return
+        for hook_name, callback, _worker in registrations:
+            callbacks = self._hooks.get(hook_name)
+            if not callbacks:
+                continue
+            for index, existing in enumerate(callbacks):
+                if existing is callback:
+                    del callbacks[index]
+                    break
+            if not callbacks:
+                self._hooks.pop(hook_name, None)
+        self._observer_runtime.retire_workers(
+            [worker for _, _, worker in registrations],
+            timeout=_OBSERVER_RELOAD_RETIRE_SECONDS,
+        )
+
+    def drain_observer_hooks(self, timeout: float = 0.25) -> bool:
+        """Wait at most *timeout* seconds for currently accepted events.
+
+        This lifecycle helper is never called by the agent result path. It does
+        not retire listeners or stop concurrent emitters; ``True`` means the
+        snapshotted listener queues were idle before the shared deadline.
+        """
+        return self._observer_runtime.drain(timeout)
+
+    def shutdown_observer_hooks(
+        self, timeout: float = 0.25, *, drain: bool = True
+    ) -> bool:
+        """Detach one generation, then drain-or-purge and retire it boundedly.
+
+        Reloads use ``drain=False`` so disabled callbacks cannot run queued old
+        events. Process/tests may request a bounded drain. An already-running
+        hung callback cannot be killed safely; its daemon is abandoned after
+        the deadline. A callback atomically claimed before retirement is
+        already in flight and may finish afterward; every unclaimed queued or
+        dequeued entry is purged, and future emissions target only the new
+        generation.
+        """
+        return self._observer_runtime.shutdown(timeout, drain=drain)
+
+    def emit_observer_hook(self, hook_name: str, event: Dict[str, Any]) -> bool:
+        """Enqueue one observer event without waiting for any callback.
+
+        Returns ``True`` when at least one listener accepts the event. A full
+        or retired listener queue drops only that listener's copy. Observer
+        return values are ignored.
+        """
+        return self._observer_runtime.emit(hook_name, event)
+
+    def has_active_observer_hook(self, hook_name: str) -> bool:
+        """Return whether a prestarted worker can currently accept events."""
+        return self._observer_runtime.has_active(hook_name)
+
+    def observer_health(self) -> dict[str, Any]:
+        """Expose content-free queue health for bounded coverage proofs."""
+        return self._observer_runtime.health()
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
@@ -2052,6 +2204,64 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def has_observer_hook(hook_name: str) -> bool:
+    """Check an async observer hook without creating plugin state.
+
+    Plugin discovery happens before agent execution on normal entrypoints. A
+    result path with no PluginManager must remain a true no-op rather than
+    instantiating one after the turn has already completed.
+    """
+    manager = _plugin_manager
+    return bool(
+        hook_name in ASYNC_OBSERVER_HOOKS
+        and manager is not None
+        and manager.has_active_observer_hook(hook_name)
+    )
+
+
+def emit_observer_hook(hook_name: str, event: Dict[str, Any]) -> bool:
+    """Best-effort enqueue for an already-loaded async observer hook."""
+    manager = _plugin_manager
+    if manager is None:
+        return False
+    return manager.emit_observer_hook(hook_name, event)
+
+
+def drain_observer_hooks(timeout: float = 0.25) -> bool:
+    """Boundedly drain an existing observer runtime without creating one."""
+    manager = _plugin_manager
+    if manager is None:
+        return True
+    return manager.drain_observer_hooks(timeout)
+
+
+def shutdown_observer_hooks(
+    timeout: float = 0.25, *, drain: bool = True
+) -> bool:
+    """Boundedly retire an existing observer runtime without creating one."""
+    manager = _plugin_manager
+    if manager is None:
+        return True
+    return manager.shutdown_observer_hooks(timeout, drain=drain)
+
+
+def observer_health() -> Dict[str, Any]:
+    """Return content-free observer queue health without creating state."""
+    manager = _plugin_manager
+    if manager is None:
+        return {
+            "generation": 0,
+            "degraded": False,
+            "registration_failure": False,
+            "drain_timeout_observed": False,
+            "drop_observed": False,
+            "callback_failure_observed": False,
+            "retired_generation_degraded": False,
+            "listeners": {},
+        }
+    return manager.observer_health()
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:

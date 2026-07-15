@@ -363,16 +363,17 @@ def register(ctx):
     ctx.register_hook("post_tool_call", my_tool_logger)
     ctx.register_hook("pre_llm_call", my_memory_callback)
     ctx.register_hook("post_llm_call", my_sync_callback)
+    ctx.register_hook("post_agent_result", my_result_observer)
     ctx.register_hook("on_session_start", my_init_callback)
     ctx.register_hook("on_session_end", my_cleanup_callback)
 ```
 
 **General rules for all hooks:**
 
-- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
+- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin. The exception is [`post_agent_result`](#post_agent_result), whose sole keyword is one stable, allowlisted `event` mapping.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
 - Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
-- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
+- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format. `post_agent_result` carries that version inside `event["schema_version"]` instead.
 
 ### Quick reference
 
@@ -382,6 +383,7 @@ def register(ctx):
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`post_agent_result`](#post_agent_result) | Every externally meaningful root or native-subagent `run_conversation` result or raised error | ignored; dispatched asynchronously on one bounded queue per listener |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -650,6 +652,59 @@ def log_response_length(session_id, assistant_response, model, **kwargs):
 def register(ctx):
     ctx.register_hook("post_llm_call", log_response_length)
 ```
+
+---
+
+### `post_agent_result`
+
+Fires for **every externally meaningful `AIAgent.run_conversation()` exit**: successful, transformed, partial, interrupted, failed, or raised. Because it is attached to the universal agent forwarder, the same contract covers root agents and native `delegate_task` subagents, including early-return runtimes that bypass normal turn finalization. Persistence-isolated internal forks, including curator/background-review agents, do not emit because their output is not a root or delegated worker result.
+
+This hook is observer-only and intentionally weaker than the synchronous lifecycle hooks: Hermes enqueues one bounded event without waiting for a callback. Each listener has an independent process-local daemon queue holding at most 256 pending events. A slow or hung callback cannot delay or replace the live result or head-of-line block another listener. Overload drops only that listener's newest copy instead of applying backpressure. Return values are always ignored.
+
+Registration is transactional per plugin load: when a plugin's `register()` raises after subscribing, that load's observer registrations are rolled back — callbacks removed, dedicated workers retired boundedly — so a failed/disabled plugin never keeps receiving results, and listeners from other plugins are untouched. Listeners are bound to their plugin-load generation. A forced reload or safe-mode disable detaches the old generation and purges its queued copies within a bounded shutdown window. Callback execution is atomically claimed immediately before invocation: a claimed/in-flight daemon may finish after reload, but queued or dequeued-yet-unclaimed work cannot start afterward and is purged. The result path never waits for a callback. The CLI and gateway perform a bounded observer shutdown before process exit; other process owners and tests can explicitly call `PluginManager.drain_observer_hooks()` or `PluginManager.shutdown_observer_hooks()`. `hermes_cli.plugins.observer_health()` exposes content-free generation, queue-depth, in-flight callback count, and sticky process-lifetime drop, drain-timeout, and callback-failure evidence without creating plugin state.
+
+**Callback signature:**
+
+```python
+def my_callback(*, event: dict):
+```
+
+The `event` mapping contains only capped primitives:
+
+| Field group | Fields |
+|-------------|--------|
+| Schema | `schema_version`, `event` (`"agent.result"`) |
+| Actor lineage | `actor`, `role`, `session_id`, `task_id`, `turn_id`, `turn_started`, `subagent_id`, `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `platform`, `identity_complete`, `identity_truncated_fields`, `lineage_sha256`, `lineage_hash_input_complete`, `lineage_hash_input_truncated_fields` |
+| Result flags | `result_kind` (`"returned"` or `"raised"`), `completed`, `failed`, `partial`, `interrupted`, `response_transformed`, `exception_type` |
+| Bounded content | `output`, `output_type`, `output_chars`, `output_truncated`, `output_excerpt_sha256`, `error`, `error_chars`, `error_truncated` |
+
+`output` is the complete final text up to 32,768 characters. Longer text becomes a head/tail excerpt; the digest is for that excerpt, not the omitted full output. `error` is capped at 2,048 characters, and identity strings at 256 (`role` and `platform` at 64). `identity_complete` reports whether any identity preview was truncated, and `identity_truncated_fields` names affected fields. `lineage_sha256` binds a separately bounded lineage-hash input: each raw identity is included in full up to 1,024 characters, while a larger field contributes only a capped head/tail excerpt and its original character length. `lineage_hash_input_complete` and `lineage_hash_input_truncated_fields` explicitly disclose that separate loss. These are observation-correlation fields, not exact authority for steering or delivering behavior into a task; a mutating consumer must validate the owning runtime's full task/turn identity separately. Hermes never includes the user prompt, conversation history, transcript, reasoning, tool calls, or the mutable result object.
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+
+def observe_result(*, event):
+    logger.info(
+        "RESULT actor=%s session=%s task=%s turn=%s kind=%s chars=%d",
+        event["actor"],
+        event["session_id"],
+        event["task_id"],
+        event["turn_id"],
+        event["result_kind"],
+        event["output_chars"],
+    )
+
+def register(ctx):
+    ctx.register_hook("post_agent_result", observe_result)
+```
+
+:::note
+This is an **agent-result** boundary, not a messaging-delivery receipt. Platform adapters may add formatting, media, footers, or their own synthetic errors after the agent returns; observe those at the platform layer when exact delivered bytes matter.
+
+A delegation wrapper can likewise report a synthetic timeout before a stuck child's `run_conversation()` exits. The child exit is observed if it later occurs; the wrapper's earlier timeout result belongs to the tool-result boundary.
+:::
 
 ---
 

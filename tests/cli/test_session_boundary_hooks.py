@@ -36,18 +36,29 @@ def test_session_finalize_on_reset(mock_invoke_hook):
     )
 
 
+@patch("hermes_cli.plugins.shutdown_observer_hooks")
 @patch("hermes_cli.plugins.invoke_hook")
-def test_session_finalize_on_cleanup(mock_invoke_hook):
+def test_session_finalize_on_cleanup(mock_invoke_hook, mock_shutdown_observers):
     """Verify on_session_finalize fires during CLI exit cleanup."""
     import cli as cli_mod
 
     mock_agent = MagicMock()
     mock_agent.session_id = "cleanup-session-id"
-    cli_mod._active_agent_ref = mock_agent
+    setattr(cli_mod, "_active_agent_ref", mock_agent)
     cli_mod._cleanup_done = False
+    cleanup_order = []
+    mock_shutdown_observers.side_effect = lambda **kwargs: cleanup_order.append(
+        "observers"
+    )
 
-    cli_mod._run_cleanup()
+    with patch(
+        "tools.async_delegation.interrupt_all",
+        side_effect=lambda **kwargs: cleanup_order.append("delegations"),
+    ):
+        cli_mod._run_cleanup()
 
+    mock_shutdown_observers.assert_called_once_with(timeout=0.5, drain=True)
+    assert cleanup_order == ["delegations", "observers"]
     assert any(
         c.args == ("on_session_finalize",)
         and c.kwargs["session_id"] == "cleanup-session-id"

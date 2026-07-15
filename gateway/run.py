@@ -21848,8 +21848,10 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     released — so this is a no-op on the normal shutdown path and the actual
     cleanup on the early-exit paths.
 
-    Logging IS drained here: the rotating file handlers are driven by an
-    async ``QueueListener`` on a dedicated thread (see
+    Observer callbacks and logging ARE drained here. Observer callbacks run on
+    daemon workers, so they need a bounded process-owner shutdown before the
+    hard exit. The rotating file handlers are driven by an async
+    ``QueueListener`` on a dedicated thread (see
     ``hermes_logging._register_queued_handler``), so records emitted right
     before shutdown may still be sitting in the in-memory queue. ``os._exit``
     below bypasses ``atexit``, so the ``atexit``-registered listener drain
@@ -21871,6 +21873,14 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
         remove_pid_file()
         release_gateway_runtime_lock()
     except Exception:
+        pass
+    # Give accepted final-result observations a bounded chance to complete
+    # before os._exit kills their daemon workers. Do this before draining logs
+    # so callback diagnostics are included in the final log flush.
+    try:
+        from hermes_cli.plugins import shutdown_observer_hooks
+        shutdown_observer_hooks(timeout=0.5, drain=True)
+    except BaseException:
         pass
     # Drain the async log queue: os._exit bypasses atexit, so the listener's
     # atexit drain won't fire. Use drain_log_queue() (bounded, no restart), NOT

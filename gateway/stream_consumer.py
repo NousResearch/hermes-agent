@@ -228,6 +228,18 @@ class GatewayStreamConsumer:
         # frame resets the counter so one transient hiccup can't kill drafts for
         # the entire session.
         self._draft_failures = 0
+        # monotonic() deadline until which draft frames are skipped outright
+        # after a long flood-control wait (SendResult.retry_after) — sending
+        # another draft frame (or, worse, falling through to a real
+        # send/edit) before the platform's own cooldown elapses just repeats
+        # the flood-control hit. None when not cooling down.
+        self._draft_cooldown_until: Optional[float] = None
+        # Set by _send_draft_frame on every call: True iff the most recent
+        # miss was a flood-control cooldown (skipped outright or a fresh
+        # retryable result), as opposed to an ordinary draft rejection.
+        # _send_or_edit reads this to decide whether a failed frame should
+        # wait for the next tick or fall through to a real send/edit.
+        self._last_draft_retryable = False
         self._before_finalize_notified = False
 
     def _metadata_for_send(
@@ -1344,12 +1356,31 @@ class GatewayStreamConsumer:
         run.  A single transient failure (short flood-control wait, temporary
         Bot API hiccup) should not cascade into edit-mode flood control for the
         entire remaining response.  Consecutive successes reset the failure count.
+
+        A long flood-control wait (``SendResult.retry_after``) sets
+        ``_draft_cooldown_until`` instead of counting a failure: frames are
+        skipped outright until the deadline passes. ``_last_draft_retryable``
+        tells ``_send_or_edit`` this miss was a cooldown, not a decision to
+        give up on drafts, so it should wait rather than fall through to a
+        real send/edit for this tick — falling through would spend another
+        call in the same flood-control window (or worse, create a real
+        message the very next tick would have made redundant). Ordinary
+        (non-retryable) misses are unaffected and still fall through
+        immediately, same as always.
         """
+        self._last_draft_retryable = False
         if self._draft_id is None:
             # Defensive: should never happen — _use_draft_streaming gate is
             # set in tandem with _draft_id in run().  Disable to be safe.
             self._use_draft_streaming = False
             return False
+        if (
+            self._draft_cooldown_until is not None
+            and time.monotonic() < self._draft_cooldown_until
+        ):
+            self._last_draft_retryable = True
+            return False
+        self._draft_cooldown_until = None
         try:
             result = await self.adapter.send_draft(
                 chat_id=self.chat_id,
@@ -1372,7 +1403,14 @@ class GatewayStreamConsumer:
             # adapter) don't count toward the permanent-disable threshold —
             # they're transient and the next frame will likely succeed.
             if getattr(result, "retryable", False):
-                logger.debug("send_draft retryable failure (not counted): %s", error)
+                self._last_draft_retryable = True
+                retry_after = getattr(result, "retry_after", None)
+                if retry_after is not None and retry_after > 0:
+                    self._draft_cooldown_until = time.monotonic() + float(retry_after)
+                logger.debug(
+                    "send_draft retryable failure (not counted), cooldown=%s: %s",
+                    retry_after, error,
+                )
                 return False
             logger.debug(
                 "send_draft success=False (failure %d/%d): %s",
@@ -1748,8 +1786,18 @@ class GatewayStreamConsumer:
                 # final-send path and we still need that to fire so the
                 # user gets a real message (drafts have no message_id).
                 return True
-            # Failure already disabled drafts for this run; fall through to
-            # the regular edit/send path below.
+            if self._last_draft_retryable:
+                # Flood-control cooldown, not a decision to give up on
+                # drafts.  Treat this tick as handled with nothing new to
+                # show rather than falling through to a real send/edit,
+                # which would spend another call in the same flood-control
+                # window (or create a real message the very next tick would
+                # have made redundant).  Ordinary draft misses fall through
+                # below exactly as before.
+                return True
+            # Ordinary (non-retryable) draft miss — fall through to the
+            # regular edit/send path below so the user gets a real message
+            # rather than silence, same as always.
         self._last_edit_overflowed = False
         try:
             if self._message_id is not None:

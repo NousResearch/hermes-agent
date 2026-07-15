@@ -13,6 +13,7 @@ isinstance(BasePlatformAdapter) gate excludes plain MagicMocks.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -272,6 +273,73 @@ class TestDraftFallbackOnFailure:
 
         assert consumer._draft_failures == 0
         assert consumer._use_draft_streaming is True
+
+    @pytest.mark.asyncio
+    async def test_long_retryable_failure_does_not_fall_through_to_send_or_edit(self):
+        """A long flood-control RetryAfter on send_draft must not fall
+        through to adapter.send()/edit_message() for this tick — that would
+        spend another call in the same flood-control window instead of just
+        waiting for the cooldown to clear. (#54275 / hermes-sweeper review
+        of PR #53865: the retryable branch previously skipped counting the
+        failure but the caller still treated any False from
+        _send_draft_frame as "fall through to the regular edit/send path".)
+        """
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(
+                success=False, error="flood_control:280", retryable=True, retry_after=280.0,
+            )
+        )
+
+        handled = await consumer._send_or_edit("partial text", finalize=False)
+
+        assert handled is True
+        adapter.send.assert_not_awaited()
+        adapter.edit_message.assert_not_awaited()
+        assert consumer._use_draft_streaming is True
+        assert consumer._message_id is None
+
+    @pytest.mark.asyncio
+    async def test_retryable_cooldown_skips_subsequent_send_draft_calls(self):
+        """Once a long RetryAfter sets a cooldown, further ticks must not
+        call send_draft again until the deadline passes — otherwise every
+        tick during the wait repeats the same flood-control hit."""
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(
+                success=False, error="flood_control:280", retryable=True, retry_after=280.0,
+            )
+        )
+
+        first = await consumer._send_draft_frame("frame1")
+        assert first is False
+        assert adapter.send_draft.await_count == 1
+        assert consumer._draft_cooldown_until is not None
+
+        second = await consumer._send_draft_frame("frame2")
+        assert second is False
+        assert consumer._last_draft_retryable is True
+        # Still cooling down — must not call send_draft again.
+        assert adapter.send_draft.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_expired_cooldown_resumes_calling_send_draft(self):
+        from gateway.platforms.base import SendResult
+
+        consumer, adapter = self._make_consumer_for_direct_call()
+        adapter.send_draft = AsyncMock(
+            return_value=SendResult(success=True, message_id=None)
+        )
+        consumer._draft_cooldown_until = time.monotonic() - 0.01  # already expired
+
+        ok = await consumer._send_draft_frame("frame")
+
+        assert ok is True
+        adapter.send_draft.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_draft_failure_falls_back_and_delivers_final_via_send(self):

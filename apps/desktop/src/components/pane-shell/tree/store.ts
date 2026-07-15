@@ -574,8 +574,26 @@ export function revealTreePane(paneId: string) {
   const tree = $layoutTree.get()
   const group = tree ? findGroupOfPane(tree, paneId) : null
 
-  if (tree && group && group.active !== paneId) {
-    commit(setActivePaneOp(tree, group.id, paneId))
+  if (tree && group) {
+    // A minimized zone must be restored — "reveal" means show the pane, not
+    // just front its tab behind a collapsed rail. Without this, a tool panel
+    // (terminal/logs) in a shared zone stays minimized after its toggle opens
+    // it: setPaneCollapsed's shared-zone branch calls revealTreePane instead
+    // of toggleTreeGroupMinimized, so the zone never un-minimizes and the
+    // pane appears to "close but not open" on ctrl-` / tab click.
+    let next = tree
+
+    if (group.minimized) {
+      next = setGroupMinimized(next, group.id, false)
+    }
+
+    if (group.active !== paneId) {
+      next = setActivePaneOp(next, group.id, paneId)
+    }
+
+    if (next !== tree) {
+      commit(next)
+    }
   }
 }
 

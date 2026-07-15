@@ -58,6 +58,18 @@ class TestScanSkillCommands:
         assert "/my-skill" in result
         assert result["/my-skill"]["name"] == "my-skill"
 
+    def test_registers_frontmatter_aliases(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "brainstorming",
+                frontmatter_extra="aliases: [brainstorm]\n",
+            )
+            result = scan_skill_commands()
+        assert "/brainstorming" in result
+        assert "/brainstorm" in result
+        assert result["/brainstorm"] is result["/brainstorming"]
+
     def test_empty_dir(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             result = scan_skill_commands()
@@ -396,6 +408,16 @@ class TestResolveSkillCommandKey:
             _make_skill(tmp_path, "claude-code")
             scan_skill_commands()
             assert resolve_skill_command_key("claude_code") == "/claude-code"
+
+    def test_alias_command_resolves(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "brainstorming",
+                frontmatter_extra="aliases: [brainstorm]\n",
+            )
+            scan_skill_commands()
+            assert resolve_skill_command_key("brainstorm") == "/brainstorm"
 
     def test_single_word_command_resolves(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

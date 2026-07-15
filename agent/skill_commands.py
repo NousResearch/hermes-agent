@@ -26,6 +26,16 @@ _skill_commands_platform: Optional[str] = None
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
+
+def _normalize_skill_command_slug(value: Any) -> str:
+    """Normalize a skill name/alias into the slash-command slug form."""
+    raw = str(value or "").strip().lstrip("/")
+    if not raw:
+        return ""
+    slug = raw.lower().replace(" ", "-").replace("_", "-")
+    slug = _SKILL_INVALID_CHARS.sub("", slug)
+    return _SKILL_MULTI_HYPHEN.sub("-", slug).strip("-")
+
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
 #
@@ -369,17 +379,29 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # Normalize to hyphen-separated slug, stripping
                     # non-alnum chars (e.g. +, /) to avoid invalid
                     # Telegram command names downstream.
-                    cmd_name = name.lower().replace(' ', '-').replace('_', '-')
-                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
-                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                    cmd_name = _normalize_skill_command_slug(name)
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    skill_command_info = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }
+                    _skill_commands[f"/{cmd_name}"] = skill_command_info
+
+                    aliases = frontmatter.get("aliases") or frontmatter.get("slash_aliases") or []
+                    if isinstance(aliases, str):
+                        aliases = [aliases]
+                    if isinstance(aliases, (list, tuple, set)):
+                        for alias in aliases:
+                            alias_name = _normalize_skill_command_slug(alias)
+                            if not alias_name or alias_name == cmd_name:
+                                continue
+                            alias_key = f"/{alias_name}"
+                            # First skill wins on collisions for deterministic
+                            # behavior; canonical names are inserted before aliases.
+                            _skill_commands.setdefault(alias_key, skill_command_info)
                 except Exception:
                     continue
     except Exception:
@@ -482,7 +504,10 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
+    normalized = _normalize_skill_command_slug(command)
+    if not normalized:
+        return None
+    cmd_key = f"/{normalized}"
     return cmd_key if cmd_key in get_skill_commands() else None
 
 

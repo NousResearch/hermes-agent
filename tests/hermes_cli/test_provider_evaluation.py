@@ -13,15 +13,75 @@ from hermes_cli import provider_validate as pv
 def _manifest() -> dict:
     return {
         "schema_version": "candidate-stack-manifest.v1",
-        "weights": {"model_id": "fake-model", "revision": "weights-rev", "quantization": "fp16"},
-        "runtime": {"provider_id": "fake", "model": "fake-model", "endpoint_class": "local", "runtime_name": "fake-provider", "server_version": "1", "protocol": "chat-completions"},
-        "template_and_parser": {"chat_template_sha256": "a" * 64, "tool_call_template_sha256": "b" * 64, "parser_name": "fake", "parser_version": "1", "parser_mode": "json"},
-        "decoding": {"temperature": 0, "top_p": 1, "max_output_tokens": 256, "seed_policy": "fixed"},
-        "context": {"model_context_length": 32768, "hermes_context_setting": "default", "compression_enabled": True, "system_prompt_sha256": "c" * 64, "tool_schema_sha256": "d" * 64},
-        "hermes": {"revision": "hermes-rev", "dirty_tree": False, "package_lock_sha256": "e" * 64, "profile": "evaluation", "config_sha256": "f" * 64, "source_tag": "test", "rules": [], "skills": [], "memory": {"source": "local"}, "toolsets": ["hermes-cli"], "disabled_toolsets": [], "mcp_catalog_digest": "0" * 64},
-        "hardware": {"host_class": "test", "os": "linux", "python": "3", "accelerator_family": "cpu", "device_count": 1, "driver_major": "0"},
-        "lane": {"lane_id": "cli-full-v1", "suite_id": "full-hermes-cli-v1", "suite_version": 1, "external_network": False, "filesystem_scope": "fixture-only", "approval_policy": "configured"},
-        "rollback": {"current_route_id": "route-1", "recipe": "restore incumbent", "owner": "operator", "artifact_sha256": "1" * 64},
+        "weights": {
+            "model_id": "fake-model",
+            "revision": "weights-rev",
+            "quantization": "fp16",
+        },
+        "runtime": {
+            "provider_id": "fake",
+            "model": "fake-model",
+            "endpoint_class": "local",
+            "runtime_name": "fake-provider",
+            "server_version": "1",
+            "protocol": "chat-completions",
+        },
+        "template_and_parser": {
+            "chat_template_sha256": "a" * 64,
+            "tool_call_template_sha256": "b" * 64,
+            "parser_name": "fake",
+            "parser_version": "1",
+            "parser_mode": "json",
+        },
+        "decoding": {
+            "temperature": 0,
+            "top_p": 1,
+            "max_output_tokens": 256,
+            "seed_policy": "fixed",
+        },
+        "context": {
+            "model_context_length": 32768,
+            "hermes_context_setting": "default",
+            "compression_enabled": True,
+            "system_prompt_sha256": "c" * 64,
+            "tool_schema_sha256": "d" * 64,
+        },
+        "hermes": {
+            "revision": "hermes-rev",
+            "dirty_tree": False,
+            "package_lock_sha256": "e" * 64,
+            "profile": "evaluation",
+            "config_sha256": "f" * 64,
+            "source_tag": "test",
+            "rules": [],
+            "skills": [],
+            "memory": {"source": "local"},
+            "toolsets": ["hermes-cli"],
+            "disabled_toolsets": [],
+            "mcp_catalog_digest": "0" * 64,
+        },
+        "hardware": {
+            "host_class": "test",
+            "os": "linux",
+            "python": "3",
+            "accelerator_family": "cpu",
+            "device_count": 1,
+            "driver_major": "0",
+        },
+        "lane": {
+            "lane_id": "cli-full-v1",
+            "suite_id": "full-hermes-cli-v1",
+            "suite_version": 1,
+            "external_network": False,
+            "filesystem_scope": "fixture-only",
+            "approval_policy": "configured",
+        },
+        "rollback": {
+            "current_route_id": "route-1",
+            "recipe": "restore incumbent",
+            "owner": "operator",
+            "artifact_sha256": "1" * 64,
+        },
     }
 
 
@@ -125,20 +185,30 @@ def test_checked_in_schema_documents_pass_stdlib_structural_validation():
         assert schema["$id"].endswith(".v1")
 
 
-def test_manifest_redacts_secret_and_hashes_resolved_tool_schema(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_manifest_redacts_secret_and_hashes_resolved_tool_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     import model_tools
 
     monkeypatch.setattr(
         model_tools,
         "get_tool_definitions",
-        lambda **_kwargs: [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}],
+        lambda **_kwargs: [
+            {
+                "type": "function",
+                "function": {"name": "read_file", "parameters": {"type": "object"}},
+            }
+        ],
     )
     value = _manifest()
     value["runtime"]["url"] = "https://user:password@example.test/v1?token=secret"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     loaded = pe.load_manifest(path, capture_tools=True)
-    assert loaded["runtime"]["url"] == "https://[REDACTED]@example.test/v1?token=[REDACTED]"
+    assert (
+        loaded["runtime"]["url"]
+        == "https://[REDACTED]@example.test/v1?token=[REDACTED]"
+    )
     assert loaded["hermes"]["resolved_tool_schema"]["tools"][0]["name"] == "read_file"
     assert len(loaded["hermes"]["resolved_tool_schema_sha256"]) == 64
     assert len(loaded["manifest_id"]) == 64
@@ -154,14 +224,25 @@ def test_manifest_rejects_file_toolset_and_dirty_revision(tmp_path: Path):
 
 
 def test_receipt_writer_hashes_payload_and_tampering_is_detectable(tmp_path: Path):
-    receipt = pe._write_receipt(tmp_path / "receipt.json", {"schema_version": "candidate-evaluation-receipt.v1", "value": 1})
-    assert receipt["receipt_sha256"] == pe.scoring.canonical_hash({"schema_version": receipt["schema_version"], "value": 1})
+    receipt = pe._write_receipt(
+        tmp_path / "receipt.json",
+        {"schema_version": "candidate-evaluation-receipt.v1", "value": 1},
+    )
+    assert receipt["receipt_sha256"] == pe.scoring.canonical_hash({
+        "schema_version": receipt["schema_version"],
+        "value": 1,
+    })
     altered = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
     altered["value"] = 2
-    assert altered["receipt_sha256"] != pe.scoring.canonical_hash({"schema_version": altered["schema_version"], "value": altered["value"]})
+    assert altered["receipt_sha256"] != pe.scoring.canonical_hash({
+        "schema_version": altered["schema_version"],
+        "value": altered["value"],
+    })
 
 
-def test_evaluate_dry_run_requires_readiness_but_never_runs_a_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_evaluate_dry_run_requires_readiness_but_never_runs_a_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     config_path = _config(tmp_path)
     (tmp_path / "rollback.json").write_text('{"route":"incumbent"}\n', encoding="utf-8")
     raw_candidate = _manifest()
@@ -175,7 +256,11 @@ def test_evaluate_dry_run_requires_readiness_but_never_runs_a_child(tmp_path: Pa
     monkeypatch.setattr(
         pe,
         "capture_tool_schema_fingerprint",
-        lambda _toolsets, _disabled: {"tools": [{"name": "read_file", "schema_sha256": "a", "available": True}], "schema_sha256": "b", "resolved_tool_schema_sha256": "b"},
+        lambda _toolsets, _disabled: {
+            "tools": [{"name": "read_file", "schema_sha256": "a", "available": True}],
+            "schema_sha256": "b",
+            "resolved_tool_schema_sha256": "b",
+        },
     )
     args = SimpleNamespace(
         evaluation_config=str(config_path),
@@ -203,12 +288,18 @@ def test_evaluate_dry_run_requires_readiness_but_never_runs_a_child(tmp_path: Pa
 def test_offline_score_marks_checksum_tampering_as_gate_failure(tmp_path: Path):
     root = tmp_path / "run"
     root.mkdir()
-    (root / "run.json").write_text(json.dumps({"seed": 20260715, "repetitions": 3}), encoding="utf-8")
+    (root / "run.json").write_text(
+        json.dumps({"seed": 20260715, "repetitions": 3}), encoding="utf-8"
+    )
     (root / "schedule.json").write_text("[]", encoding="utf-8")
     (root / "receipts.jsonl").write_text("", encoding="utf-8")
     pe._write_checksums(root)
-    (root / "run.json").write_text(json.dumps({"seed": 1, "repetitions": 3}), encoding="utf-8")
+    (root / "run.json").write_text(
+        json.dumps({"seed": 1, "repetitions": 3}), encoding="utf-8"
+    )
     code, summary = pe.score_run(root)
     assert code == 1
     assert summary["status"] == "GATE-FAILED"
-    assert any(item.startswith("tampered:run.json") for item in summary["hard_gate_failures"])
+    assert any(
+        item.startswith("tampered:run.json") for item in summary["hard_gate_failures"]
+    )

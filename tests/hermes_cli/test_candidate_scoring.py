@@ -64,7 +64,9 @@ def test_repetitions_average_inside_case_before_dimension_mean():
             }
             for repetition, candidate in ((1, 100), (2, 0), (3, 100))
         )
-    summary = score_evaluation(rows, repetitions=3, expected_case_ids=DIMENSIONS, replicates=16)
+    summary = score_evaluation(
+        rows, repetitions=3, expected_case_ids=DIMENSIONS, replicates=16
+    )
     assert summary["candidate"]["dimensions"]["correctness"] == 66.667
     assert summary["candidate"]["hfs"] == 66.667
     assert summary["dimensions"]["correctness"]["n_pair"] == 1
@@ -74,7 +76,9 @@ def test_incomplete_pair_is_gate_failed_and_not_counted_as_win():
     rows = _one_per_dimension()
     rows[0]["complete"] = False
     rows[0]["candidate_valid"] = False
-    summary = score_evaluation(rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=8)
+    summary = score_evaluation(
+        rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=8
+    )
     assert summary["status"] == "GATE-FAILED"
     assert summary["counts"]["incomplete"] == 1
     assert summary["counts"]["wins"] == 6
@@ -83,15 +87,21 @@ def test_incomplete_pair_is_gate_failed_and_not_counted_as_win():
 
 def test_tie_epsilon_and_screening_vocabulary():
     rows = _one_per_dimension(candidate=100, incumbent=99.5)
-    summary = score_evaluation(rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=8)
+    summary = score_evaluation(
+        rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=8
+    )
     assert summary["counts"]["ties"] == 7
     assert summary["status"] == "SCREEN-PASS"
     assert "PROMOTE-CANDIDATE" not in summary["status"]
 
 
 def test_counter_rng_is_reproducible_and_seeded_without_global_state():
-    first = deterministic_indices(7, 12, seed=20260715, metric="golden", dimension="correctness", level="case")
-    second = deterministic_indices(7, 12, seed=20260715, metric="golden", dimension="correctness", level="case")
+    first = deterministic_indices(
+        7, 12, seed=20260715, metric="golden", dimension="correctness", level="case"
+    )
+    second = deterministic_indices(
+        7, 12, seed=20260715, metric="golden", dimension="correctness", level="case"
+    )
     assert first == second
     assert first == [6, 5, 5, 0, 3, 2, 2, 1, 1, 2, 4, 2]
 
@@ -134,36 +144,39 @@ def test_aa_acceptance_requires_exact_81_pairs_and_zero_including_intervals():
 
 
 def test_archive_requires_exact_equivalence_key_and_is_informational():
-    key = archive_equivalence_key(
-        {
-            "lane_id": "cli-full-v1",
-            "suite_id": "full-hermes-cli-v1",
-            "suite_version": 1,
-            "case_catalog_digest": "catalog",
-            "scorer_id": "hermes-fitness-v1",
-            "scorer_version": 1,
-            "weights_version": "cli-full-v1",
-            "hard_gate_policy_version": 1,
-            "pairing_policy_version": 1,
-            "hermes_revision": "rev",
-            "config_policy_digest": "cfg",
-            "tool_schema_policy_digest": "tools",
-            "compression_mode": "session-split",
-            "external_network": False,
-            "filesystem_scope": "fixture-only",
-            "approval_policy": "configured",
-            "hardware_class": "cpu",
-            "accelerator_family": "none",
-            "device_count": 1,
-            "driver_major": "0",
-            "runtime_major": "1",
-        }
-    )
+    key = archive_equivalence_key({
+        "lane_id": "cli-full-v1",
+        "suite_id": "full-hermes-cli-v1",
+        "suite_version": 1,
+        "case_catalog_digest": "catalog",
+        "scorer_id": "hermes-fitness-v1",
+        "scorer_version": 1,
+        "weights_version": "cli-full-v1",
+        "hard_gate_policy_version": 1,
+        "pairing_policy_version": 1,
+        "hermes_revision": "rev",
+        "config_policy_digest": "cfg",
+        "tool_schema_policy_digest": "tools",
+        "compression_mode": "session-split",
+        "external_network": False,
+        "filesystem_scope": "fixture-only",
+        "approval_policy": "configured",
+        "hardware_class": "cpu",
+        "accelerator_family": "none",
+        "device_count": 1,
+        "driver_major": "0",
+        "runtime_major": "1",
+    })
     digest = archive_policy_digest(key)
     entries = [
         {"entry_id": "a", "hfs": 80, "equivalence_key": key, "policy_digest": digest},
         {"entry_id": "b", "hfs": 90, "equivalence_key": key, "policy_digest": digest},
-        {"entry_id": "wrong", "hfs": 100, "equivalence_key": {**key, "hardware_class": "gpu"}, "policy_digest": digest},
+        {
+            "entry_id": "wrong",
+            "hfs": 100,
+            "equivalence_key": {**key, "hardware_class": "gpu"},
+            "policy_digest": digest,
+        },
     ]
     ranked = archive_rank(85, entries, equivalence_key=key, policy_digest=digest)
     assert ranked["rank"] == 2
@@ -203,6 +216,10 @@ def test_golden_vector_reduces_to_exact_pinned_values():
 
 def test_online_and_offline_scorer_payloads_have_exact_parity():
     rows = _one_per_dimension(candidate=97, incumbent=96)
-    online = score_evaluation(rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=16)
-    offline = score_evaluation(rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=16)
+    online = score_evaluation(
+        rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=16
+    )
+    offline = score_evaluation(
+        rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=16
+    )
     assert verify_score_parity(online, offline)

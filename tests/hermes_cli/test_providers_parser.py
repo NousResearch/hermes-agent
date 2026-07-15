@@ -19,24 +19,22 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def test_validate_parser_uses_current_dispatch_shape():
-    namespace = _build_parser().parse_args(
-        [
-            "providers",
-            "validate",
-            "--provider",
-            "custom:local",
-            "--model",
-            "model-a",
-            "--toolsets",
-            "file",
-            "--suite",
-            "agent-readiness",
-            "--out",
-            "/tmp/receipts",
-            "--timeout",
-            "7",
-        ]
-    )
+    namespace = _build_parser().parse_args([
+        "providers",
+        "validate",
+        "--provider",
+        "custom:local",
+        "--model",
+        "model-a",
+        "--toolsets",
+        "file",
+        "--suite",
+        "agent-readiness",
+        "--out",
+        "/tmp/receipts",
+        "--timeout",
+        "7",
+    ])
 
     assert namespace.command == "providers"
     assert namespace.providers_command == "validate"
@@ -59,23 +57,21 @@ def test_provider_help_labels_compatibility_and_not_qualification(capsys):
 
 
 def test_provider_parser_exposes_paired_evaluation_surface():
-    namespace = _build_parser().parse_args(
-        [
-            "providers",
-            "evaluate",
-            "--candidate-manifest",
-            "candidate.json",
-            "--incumbent-manifest",
-            "incumbent.json",
-            "--evaluation-config",
-            "evaluation.yaml",
-            "--out",
-            "/tmp/run",
-            "--execute",
-            "--seed",
-            "7",
-        ]
-    )
+    namespace = _build_parser().parse_args([
+        "providers",
+        "evaluate",
+        "--candidate-manifest",
+        "candidate.json",
+        "--incumbent-manifest",
+        "incumbent.json",
+        "--evaluation-config",
+        "evaluation.yaml",
+        "--out",
+        "/tmp/run",
+        "--execute",
+        "--seed",
+        "7",
+    ])
     assert namespace.providers_command == "evaluate"
     assert namespace.candidate_manifest == "candidate.json"
     assert namespace.incumbent_manifest == "incumbent.json"

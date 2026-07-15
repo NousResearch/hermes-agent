@@ -91,7 +91,9 @@ def redact_secrets(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [redact_secrets(item) for item in value]
     if isinstance(value, str):
-        value = re.sub(r"(?i)(https?://)([^/@\s]+):([^/@\s]+)@", r"\1[REDACTED]@", value)
+        value = re.sub(
+            r"(?i)(https?://)([^/@\s]+):([^/@\s]+)@", r"\1[REDACTED]@", value
+        )
         return re.sub(
             r"(?i)([?&](?:token|key|secret|password)=)[^&\s]+",
             r"\1[REDACTED]",
@@ -339,21 +341,27 @@ def _case_records(
             for row in complete_reps
             if row.candidate_valid and row.incumbent_valid
         ]
-        complete = len(complete_reps) == len(required) and len(paired_values) == len(required)
-        cases.append(
-            {
-                "case_id": case_id,
-                "primary_dimension": dimension,
-                "candidate_values": candidate_values,
-                "incumbent_values": incumbent_values,
-                "paired_values": paired_values,
-                "candidate_mean": _mean(candidate_values) if len(candidate_values) == len(required) else None,
-                "incumbent_mean": _mean(incumbent_values) if len(incumbent_values) == len(required) else None,
-                "complete": complete,
-                "arm_order": rows[0].arm_order if rows else "candidate-first",
-                "hard_gate_failures": sorted({failure for row in rows for failure in row.hard_gate_failures}),
-            }
+        complete = len(complete_reps) == len(required) and len(paired_values) == len(
+            required
         )
+        cases.append({
+            "case_id": case_id,
+            "primary_dimension": dimension,
+            "candidate_values": candidate_values,
+            "incumbent_values": incumbent_values,
+            "paired_values": paired_values,
+            "candidate_mean": _mean(candidate_values)
+            if len(candidate_values) == len(required)
+            else None,
+            "incumbent_mean": _mean(incumbent_values)
+            if len(incumbent_values) == len(required)
+            else None,
+            "complete": complete,
+            "arm_order": rows[0].arm_order if rows else "candidate-first",
+            "hard_gate_failures": sorted({
+                failure for row in rows for failure in row.hard_gate_failures
+            }),
+        })
     return cases, duplicate_cases
 
 
@@ -399,7 +407,10 @@ def _bootstrap_case_values(
                 dimension=dimension,
                 level=f"repetition:{case['case_id']}:{replicate}",
             )
-            selected.append(_mean([_fraction(values[index]) for index in repetition_indices]) or Fraction())
+            selected.append(
+                _mean([_fraction(values[index]) for index in repetition_indices])
+                or Fraction()
+            )
         result.append(_mean(selected) or Fraction())
     return result
 
@@ -422,10 +433,13 @@ def _interval(values: Sequence[Fraction], *, replicates: int) -> dict[str, Any] 
 def _hfs(means: Mapping[str, Fraction | None]) -> Fraction | None:
     if any(means.get(dimension) is None for dimension in DIMENSIONS):
         return None
-    return sum(
-        (means[dimension] or Fraction()) * DIMENSION_WEIGHTS[dimension]
-        for dimension in DIMENSIONS
-    ) / 100
+    return (
+        sum(
+            (means[dimension] or Fraction()) * DIMENSION_WEIGHTS[dimension]
+            for dimension in DIMENSIONS
+        )
+        / 100
+    )
 
 
 def _screening_status(
@@ -442,7 +456,12 @@ def _screening_status(
         return "GATE-FAILED"
     if aa is not None and not aa.get("accepted", False):
         return "GATE-FAILED"
-    if not eligible or candidate_hfs is None or incumbent_hfs is None or hfs_delta is None:
+    if (
+        not eligible
+        or candidate_hfs is None
+        or incumbent_hfs is None
+        or hfs_delta is None
+    ):
         return "HOLD"
     if candidate_hfs >= incumbent_hfs:
         return "SCREEN-PASS"
@@ -462,7 +481,9 @@ def score_evaluation(
     """Score paired observations without trusting a precomputed summary."""
 
     records = [
-        item if isinstance(item, PairObservation) else PairObservation.from_mapping(item)
+        item
+        if isinstance(item, PairObservation)
+        else PairObservation.from_mapping(item)
         for item in observations
     ]
     cases, duplicate_cases = _case_records(records, repetitions=repetitions)
@@ -504,8 +525,7 @@ def score_evaluation(
         incumbent_dimensions[dimension] = _mean(arm_incumbent)  # type: ignore[arg-type]
         paired_dimension_values[dimension] = paired
         delta_values = [
-            case["candidate_mean"] - case["incumbent_mean"]
-            for case in paired
+            case["candidate_mean"] - case["incumbent_mean"] for case in paired
         ]
         delta_bootstrap = _bootstrap_case_values(
             paired,
@@ -543,11 +563,14 @@ def score_evaluation(
     }
     hfs_bootstrap = [
         sum(
-            (dimension_bootstraps[dimension][index] * DIMENSION_WEIGHTS[dimension]
-             for dimension in DIMENSIONS
-             if index < len(dimension_bootstraps[dimension])),
+            (
+                dimension_bootstraps[dimension][index] * DIMENSION_WEIGHTS[dimension]
+                for dimension in DIMENSIONS
+                if index < len(dimension_bootstraps[dimension])
+            ),
             Fraction(),
-        ) / 100
+        )
+        / 100
         for index in range(replicates)
         if all(index < len(dimension_bootstraps[dimension]) for dimension in DIMENSIONS)
     ]
@@ -598,11 +621,17 @@ def score_evaluation(
             aa=aa,
         ),
         "candidate": {
-            "dimensions": {dimension: _public(value) for dimension, value in candidate_dimensions.items()},
+            "dimensions": {
+                dimension: _public(value)
+                for dimension, value in candidate_dimensions.items()
+            },
             "hfs": _public(candidate_hfs),
         },
         "incumbent": {
-            "dimensions": {dimension: _public(value) for dimension, value in incumbent_dimensions.items()},
+            "dimensions": {
+                dimension: _public(value)
+                for dimension, value in incumbent_dimensions.items()
+            },
             "hfs": _public(incumbent_hfs),
         },
         "dimensions": dimension_cards,
@@ -618,7 +647,9 @@ def score_evaluation(
                 for dimension in DIMENSIONS
             },
         },
-        "n_pair": {dimension: dimension_cards[dimension]["n_pair"] for dimension in DIMENSIONS},
+        "n_pair": {
+            dimension: dimension_cards[dimension]["n_pair"] for dimension in DIMENSIONS
+        },
         "missing_cases": missing_cases,
         "missing_dimensions": missing_dimensions,
         "hard_gate_failures": gates,
@@ -634,10 +665,20 @@ def _bootstrap_difference(
     values: list[Fraction] = []
     for replicate in range(replicates):
         first_indexes = deterministic_indices(
-            len(first), len(first), seed=seed, metric="aa_order", dimension="first", level=f"case-bootstrap:{replicate}"
+            len(first),
+            len(first),
+            seed=seed,
+            metric="aa_order",
+            dimension="first",
+            level=f"case-bootstrap:{replicate}",
         )
         second_indexes = deterministic_indices(
-            len(second), len(second), seed=seed, metric="aa_order", dimension="second", level=f"case-bootstrap:{replicate}"
+            len(second),
+            len(second),
+            seed=seed,
+            metric="aa_order",
+            dimension="second",
+            level=f"case-bootstrap:{replicate}",
         )
         values.append(
             (_mean([first[index] for index in first_indexes]) or Fraction())
@@ -657,7 +698,9 @@ def aa_acceptance(
     """Apply the preregistered 81-pair incumbent-vs-incumbent harness gate."""
 
     records = [
-        item if isinstance(item, PairObservation) else PairObservation.from_mapping(item)
+        item
+        if isinstance(item, PairObservation)
+        else PairObservation.from_mapping(item)
         for item in observations
     ]
     deltas = [
@@ -667,7 +710,11 @@ def aa_acceptance(
     ]
     false_non_ties = sum(abs(delta) > TIE_EPSILON for delta in deltas)
     mean_ci = deterministic_bootstrap_ci(
-        deltas, seed=seed, metric="aa_mean_delta", dimension="all", replicates=replicates
+        deltas,
+        seed=seed,
+        metric="aa_mean_delta",
+        dimension="all",
+        replicates=replicates,
     )
     first = [
         _fraction(item.candidate_score) - _fraction(item.incumbent_score)
@@ -679,15 +726,29 @@ def aa_acceptance(
         for item in records
         if item.complete and item.arm_order == "incumbent-first"
     ]
-    order_values = _bootstrap_difference(first, second, seed=seed, replicates=replicates) if first and second else []
-    order_mean = (_mean(first) or Fraction()) - (_mean(second) or Fraction()) if first and second else None
+    order_values = (
+        _bootstrap_difference(first, second, seed=seed, replicates=replicates)
+        if first and second
+        else []
+    )
+    order_mean = (
+        (_mean(first) or Fraction()) - (_mean(second) or Fraction())
+        if first and second
+        else None
+    )
     order_ci = _interval(order_values, replicates=replicates) if order_values else None
     criteria = {
         "receipt_integrity": len(records) == 81 and receipt_integrity_rate == 1.0,
         "scorer_disagreement": len(records) == 81 and scorer_disagreement_count == 0,
-        "false_non_tie_rate": len(records) == 81 and false_non_ties <= 4 and false_non_ties / 81 <= 0.05,
-        "mean_delta": bool(mean_ci) and abs(float(mean_ci["mean"])) <= 1.0 and _includes_zero(mean_ci),
-        "order_effect": bool(order_ci) and abs(float(order_mean or 0)) <= 1.0 and _includes_zero(order_ci),
+        "false_non_tie_rate": len(records) == 81
+        and false_non_ties <= 4
+        and false_non_ties / 81 <= 0.05,
+        "mean_delta": bool(mean_ci)
+        and abs(float(mean_ci["mean"])) <= 1.0
+        and _includes_zero(mean_ci),
+        "order_effect": bool(order_ci)
+        and abs(float(order_mean or 0)) <= 1.0
+        and _includes_zero(order_ci),
     }
     return {
         "accepted": all(criteria.values()),
@@ -772,10 +833,17 @@ def archive_rank(
             continue
         if dict(entry_key) != expected or entry.get("policy_digest") != policy_digest:
             continue
-        if isinstance(entry.get("hfs"), (int, float)) and not isinstance(entry.get("hfs"), bool):
+        if isinstance(entry.get("hfs"), (int, float)) and not isinstance(
+            entry.get("hfs"), bool
+        ):
             compatible.append(entry)
     if not compatible:
-        return {"rank": None, "percentile": None, "n": 0, "reason": "no-compatible-archive"}
+        return {
+            "rank": None,
+            "percentile": None,
+            "n": 0,
+            "reason": "no-compatible-archive",
+        }
     ordered = sorted(
         compatible,
         key=lambda item: (-float(item["hfs"]), str(item.get("entry_id", ""))),
@@ -787,7 +855,11 @@ def archive_rank(
         "percentile": 100 * (rank - 0.5) / n,
         "n": n,
         "reason": None,
-        "label": "provisional" if 20 <= n < 30 else "useful" if n >= 30 else "raw-rank-only",
+        "label": "provisional"
+        if 20 <= n < 30
+        else "useful"
+        if n >= 30
+        else "raw-rank-only",
     }
 
 
@@ -803,6 +875,6 @@ def verify_score_parity(online: Mapping[str, Any], offline: Mapping[str, Any]) -
         "warning",
         "aa_pilot",
     }
-    return canonical_json({k: v for k, v in online.items() if k not in ignored}) == canonical_json(
-        {k: v for k, v in offline.items() if k not in ignored}
-    )
+    return canonical_json({
+        k: v for k, v in online.items() if k not in ignored
+    }) == canonical_json({k: v for k, v in offline.items() if k not in ignored})

@@ -680,6 +680,7 @@ export const ToolTrail = memo(function ToolTrail({
   outcome = '',
   reasoningActive = false,
   reasoning = '',
+  reasoningAlwaysVisible = false,
   reasoningTokens,
   reasoningStreaming = false,
   sections,
@@ -696,6 +697,10 @@ export const ToolTrail = memo(function ToolTrail({
   outcome?: string
   reasoningActive?: boolean
   reasoning?: string
+  // MoA reference blocks (see Msg.isMoaReference) stay visible even when
+  // `visible.thinking === 'hidden'` — they're the mixture-of-agents process
+  // the user opted into, not private model reasoning (#64657).
+  reasoningAlwaysVisible?: boolean
   reasoningTokens?: number
   reasoningStreaming?: boolean
   sections?: SectionVisibility
@@ -724,7 +729,13 @@ export const ToolTrail = memo(function ToolTrail({
   // `visible.X === 'expanded'` at render time — that locks the panel open
   // and silently breaks manual chevron clicks for default-expanded
   // sections (regression caught after #14968).
-  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded')
+  // A MoA reference panel (reasoningAlwaysVisible) opens by default on
+  // mount even under `thinking: hidden` — the user opted into MoA and
+  // should see the reference immediately, not a collapsed "Thinking"
+  // label. This only affects the initial mount value; the re-sync effect
+  // below deliberately does NOT re-apply it, so a manual collapse still
+  // sticks (see the no-OR-at-effect-time warning above, #14968).
+  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded' || reasoningAlwaysVisible)
   const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
@@ -915,6 +926,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   const allHidden =
     visible.thinking === 'hidden' &&
+    !reasoningAlwaysVisible &&
     visible.tools === 'hidden' &&
     visible.subagents === 'hidden' &&
     visible.activity === 'hidden'
@@ -939,7 +951,7 @@ export const ToolTrail = memo(function ToolTrail({
   // hidden sections stay hidden so the override is honoured.
 
   const expandAll = () => {
-    if (visible.thinking !== 'hidden') {
+    if (visible.thinking !== 'hidden' || reasoningAlwaysVisible) {
       setOpenThinking(true)
     }
 
@@ -986,7 +998,7 @@ export const ToolTrail = memo(function ToolTrail({
     render: (rails: boolean[]) => ReactNode
   }[] = []
 
-  if (hasThinking && visible.thinking !== 'hidden') {
+  if (hasThinking && (visible.thinking !== 'hidden' || reasoningAlwaysVisible)) {
     panels.push({
       header: (
         <Box

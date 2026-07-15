@@ -75,12 +75,13 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
-    return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
+    return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) ? (
       <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
           reasoning={thinking}
+          reasoningAlwaysVisible={msg.isMoaReference}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
@@ -241,6 +242,18 @@ export const MessageLine = memo(function MessageLine({
 
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
+
+// A MoA reference block (msg.isMoaReference) is the user-facing
+// mixture-of-agents process the user opted into, not private model
+// reasoning — it must stay visible even when every other trail section is
+// hidden (#64657).
+export const shouldShowThinkingTrail = (
+  msg: Msg,
+  thinkingMode: DetailsMode,
+  toolsMode: DetailsMode,
+  activityMode: DetailsMode
+): boolean =>
+  Boolean(msg.isMoaReference) || thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden'
 
 interface MessageLineProps {
   cols: number

@@ -718,6 +718,7 @@ class TurnController {
       role: 'system',
       text: '',
       thinking,
+      isMoaReference: true,
       thinkingTokens: estimateTokensRough(thinking)
     })
     patchTurnState({ streamSegments: this.segmentMessages })

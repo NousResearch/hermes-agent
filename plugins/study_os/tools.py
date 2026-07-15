@@ -11,6 +11,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from plugins.study_os.contract_models import (
+    study_project_tool_properties,
+    study_schedule_json_schema,
+)
 from plugins.study_os.domain_packs import domain_pack_for
 from plugins.study_os.notes import (
     _append_text,
@@ -1935,6 +1939,30 @@ def _schedule_template(project: dict[str, Any]) -> dict[str, Any]:
     return domain_pack_for(project).schedule_template(project)
 
 
+def _schedule_relationship_errors(
+    project: dict[str, Any],
+    schedule: dict[str, Any],
+) -> list[str]:
+    from plugins.study_os.application import StudyOSApplication
+
+    return StudyOSApplication.validate_schedule_relationships(project, schedule)
+
+
+def _validate_schedule_for_project(
+    data: Any,
+    project: dict[str, Any],
+) -> tuple[bool, dict[str, Any] | list[str]]:
+    ok, validated = validate_study_schedule(data)
+    if not ok or not isinstance(validated, dict):
+        return ok, validated
+    relationship_errors = _schedule_relationship_errors(project, validated)
+    return (
+        (False, relationship_errors)
+        if relationship_errors
+        else (True, validated)
+    )
+
+
 def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
     try:
         vault = resolve_vault_path(args.get("vault_path"))
@@ -1945,7 +1973,7 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
         if action == "validate":
             project = _read_project_manifest(vault, args.get("project_id") or (args.get("data") or {}).get("project_id"))
             data = args.get("data")
-            ok, validated = validate_study_schedule(data, project=project)
+            ok, validated = _validate_schedule_for_project(data, project)
             if not ok:
                 return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
             return _ok({"schedule": validated})
@@ -1954,7 +1982,7 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
             if not isinstance(data, dict):
                 return _err("VALIDATION_FAILED", "data must be a JSON object")
             project = _read_project_manifest(vault, args.get("project_id") or data.get("project_id"))
-            ok, validated = validate_study_schedule(data, project=project)
+            ok, validated = _validate_schedule_for_project(data, project)
             if not ok:
                 return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
             if not isinstance(validated, dict):
@@ -1978,7 +2006,10 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
             catalog = StudyWorkspace(
                 vault=vault,
                 source="explicit",
-            ).discover_schedules(args.get("project_id"))
+            ).discover_schedules(
+                args.get("project_id"),
+                relationship_validator=_schedule_relationship_errors,
+            )
             schedules = []
             for artifact in catalog.schedules:
                 schedule = artifact.schedule
@@ -2010,7 +2041,7 @@ def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
             if not path.exists():
                 return _err("SCHEDULE_NOT_FOUND", f"StudyOS schedule not found: {schedule_id}")
             data = _read_json_file(path)
-            ok, validated = validate_study_schedule(data, project=project)
+            ok, validated = _validate_schedule_for_project(data, project)
             if not ok:
                 return _err("VALIDATION_FAILED", "; ".join(validated), {"errors": validated})
             return _ok({"schedule": validated, "path": path.relative_to(vault).as_posix()})
@@ -2399,30 +2430,30 @@ STUDY_PROJECT_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
+            **{
+                name: schema
+                for name, schema in study_project_tool_properties().items()
+                if name
+                in {
+                    "schema_version",
+                    "project_id",
+                    "title",
+                    "domain",
+                    "exam_type",
+                    "exam_date",
+                    "timezone",
+                    "phase",
+                    "domain_pack",
+                    "workspace_type",
+                    "artifact_policy",
+                    "subjects",
+                    "tracks",
+                    "objectives",
+                    "deadline",
+                }
+            },
             "vault_path": _VAULT_PROP,
             "action": {"type": "string", "enum": ["init", "select", "status", "update_prompt_summary"]},
-            "schema_version": {
-                "type": "string",
-                "enum": ["study_project.v1", "study_project.v2"],
-                "description": "Use study_project.v2 for domain-neutral projects with observable objectives.",
-            },
-            "project_id": {"type": "string", "description": "StudyOS project id, e.g. kaoyan-2027."},
-            "title": {"type": "string"},
-            "domain": {"type": "string"},
-            "exam_type": {"type": "string"},
-            "exam_date": {"type": "string"},
-            "timezone": {"type": "string"},
-            "phase": {"type": "string"},
-            "domain_pack": {"type": "string"},
-            "workspace_type": {
-                "type": "string",
-                "description": "Learning workspace shape, e.g. exam-vault, engineering-repo, skill-vault, or hybrid.",
-            },
-            "artifact_policy": {"type": "string", "description": "Persistence style such as lightweight or full."},
-            "subjects": {"type": "array", "items": {"type": "object"}},
-            "tracks": {"type": "array", "items": {"type": "object"}},
-            "objectives": {"type": "array", "items": {"type": "object"}},
-            "deadline": {"type": "string", "description": "Optional ISO date for a v2 learning project."},
             "summary": {"type": "string", "description": "Prompt summary markdown for update_prompt_summary."},
         },
         "required": ["action"],
@@ -2502,7 +2533,7 @@ STUDY_SCHEDULE_SCHEMA = {
             "project_id": {"type": "string"},
             "schedule_id": {"type": "string"},
             "data": {
-                "type": "object",
+                **study_schedule_json_schema(),
                 "description": "study_schedule.v1 artifact for validate/save; long-term plans may use phases with an empty events array.",
             },
         },

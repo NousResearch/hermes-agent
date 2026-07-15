@@ -396,7 +396,7 @@ def test_study_schedule_schema_accepts_kaoyan_schedule():
     schedule = _valid_study_schedule()
     schedule["unknown_future_field"] = "kept"
 
-    ok, data_or_errors = validate_study_schedule(schedule, project=_valid_study_project())
+    ok, data_or_errors = validate_study_schedule(schedule)
 
     assert ok is True
     assert data_or_errors is schedule
@@ -417,16 +417,13 @@ def test_study_schedule_phase_supports_aggregate_effort_and_details():
         }
     )
 
-    ok, validated = validate_study_schedule(
-        schedule,
-        project=_valid_study_project(),
-    )
+    ok, validated = validate_study_schedule(schedule)
 
     assert ok is True
     assert validated is schedule
 
     phase["effort_minutes"] = 0
-    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+    ok, errors = validate_study_schedule(schedule)
 
     assert ok is False
     assert "phases[0].effort_minutes must be a positive integer" in errors
@@ -438,7 +435,7 @@ def test_study_schedule_schema_rejects_datetime_without_timezone():
     schedule = _valid_study_schedule()
     schedule["events"][0]["start"] = "2026-07-01T19:00:00"
 
-    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+    ok, errors = validate_study_schedule(schedule)
 
     assert ok is False
     assert "events[0].start must include timezone offset" in errors
@@ -452,7 +449,7 @@ def test_study_schedule_schema_rejects_mismatched_cross_midnight_duration():
     schedule["events"][0]["end"] = "2026-07-02T00:15:00+08:00"
     schedule["events"][0]["duration_minutes"] = 120
 
-    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+    ok, errors = validate_study_schedule(schedule)
 
     assert ok is False
     assert "events[0].duration_minutes does not match start/end" in errors
@@ -470,7 +467,7 @@ def test_study_schedule_schema_guides_long_ranges_to_phases():
         }
     )
 
-    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+    ok, errors = validate_study_schedule(schedule)
 
     assert ok is False
     assert (
@@ -480,14 +477,19 @@ def test_study_schedule_schema_guides_long_ranges_to_phases():
 
 
 def test_study_schedule_schema_rejects_unknown_project_subject():
+    from plugins.study_os.application import StudyOSApplication
     from plugins.study_os.schemas import validate_study_schedule
 
     schedule = _valid_study_schedule()
     schedule["events"][0]["subject_id"] = "physics"
 
-    ok, errors = validate_study_schedule(schedule, project=_valid_study_project())
+    ok, validated = validate_study_schedule(schedule)
+    assert ok is True
+    assert isinstance(validated, dict)
+    errors = StudyOSApplication.validate_schedule_relationships(
+        _valid_study_project(), validated
+    )
 
-    assert ok is False
     assert "events[0].subject_id must exist in project subjects" in errors
 
 

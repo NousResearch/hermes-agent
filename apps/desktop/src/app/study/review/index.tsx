@@ -3,13 +3,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import {
-  getStudyProfile,
-  getStudyReviewDue,
-  getStudyReviewQueue,
-  getStudyReviewStats,
-  updateStudyProfile
-} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $studySelectedProjectId } from '@/store/study'
@@ -29,6 +22,8 @@ import {
   resetReviewState
 } from '@/store/study-review'
 import type { StudyLearningItem, StudyReviewItem } from '@/types/hermes'
+
+import { httpStudyClient, type StudyClient } from '../client'
 
 import { ReviewRunner } from './review-runner'
 
@@ -217,10 +212,11 @@ function StatsBar({ label, count, max, color }: { label: string; count: number; 
 }
 
 interface ReviewViewProps {
+  client?: StudyClient
   onStartAgentReview?: (prompt: string) => void | Promise<void>
 }
 
-export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
+export function ReviewView({ client = httpStudyClient, onStartAgentReview }: ReviewViewProps) {
   const { t } = useI18n()
   const dueItems = useStore($reviewDueItems)
   const filteredItems = useStore($filteredDueItems)
@@ -252,12 +248,12 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
 
     try {
       const [dueRes, statsRes, profileRes] = await Promise.all([
-        getStudyReviewDue({
+        client.getReviewDue({
           subject: subjectFilter ?? undefined,
           level: levelFilter ?? undefined
         }),
-        getStudyReviewStats(),
-        getStudyProfile()
+        client.getReviewStats(),
+        client.getProfile()
       ])
 
       $reviewDueItems.set(dueRes.due)
@@ -269,16 +265,16 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
       $reviewError.set(err instanceof Error ? err.message : String(err))
       $reviewLoadState.set('error')
     }
-  }, [subjectFilter, levelFilter])
+  }, [client, subjectFilter, levelFilter])
 
   const loadQueue = useCallback(async () => {
     try {
-      const q = await getStudyReviewQueue()
+      const q = await client.getReviewQueue()
       setQueue({ newConcepts: q.new_concepts, newExamples: q.new_examples })
     } catch {
       // queue is non-critical, silently fail
     }
-  }, [])
+  }, [client])
 
   useEffect(() => {
     void loadData()
@@ -311,7 +307,7 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
 
     if (Number.isFinite(value) && value >= 1 && value <= 200) {
       try {
-        await updateStudyProfile({ daily_review_limit: value })
+        await client.updateProfile({ daily_review_limit: value })
         await loadData()
       } catch {
         // keep current value on failure
@@ -319,7 +315,7 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
     }
 
     setEditingQuota(false)
-  }, [quotaInput, loadData])
+  }, [client, quotaInput, loadData])
 
   const handleQuotaKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -601,6 +597,7 @@ export function ReviewView({ onStartAgentReview }: ReviewViewProps) {
               {runnerItem ? (
                 <ReviewRunner
                   allItems={dueItems}
+                  client={client}
                   initialItem={runnerItem}
                   items={filteredItems}
                   onClose={() => setRunnerItem(null)}

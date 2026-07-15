@@ -1,23 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect } from 'react'
 
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { getStudyOverview, getStudyReviewDetail, getStudyReviewStats, submitStudyReviewAttempt } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $studyOverview } from '@/store/study'
-import { $reviewCompletedToday, $reviewDueItems, $reviewStats } from '@/store/study-review'
-import type {
-  StudyReviewDetail,
-  StudyReviewItem,
-  StudyReviewResult,
-  StudyReviewSubmissionResponse
-} from '@/types/hermes'
+import type { StudyReviewItem, StudyReviewResult } from '@/types/hermes'
+
+import type { StudyClient } from '../client'
+
+import {
+  $reviewSession,
+  answerReview,
+  cancelReviewSession,
+  openReviewItem,
+  revealReviewAnswer,
+  setReviewConfidence,
+  startReviewSession,
+  submitReviewResult,
+  tickReviewSession
+} from './session'
 
 interface ReviewRunnerProps {
   allItems: StudyReviewItem[]
+  client: StudyClient
   initialItem: StudyReviewItem
   items: StudyReviewItem[]
   onClose: () => void
@@ -33,6 +41,7 @@ function formatElapsed(seconds: number): string {
 
 export function ReviewRunner({
   allItems,
+  client,
   initialItem,
   items,
   onClose,
@@ -40,112 +49,47 @@ export function ReviewRunner({
   projectId
 }: ReviewRunnerProps) {
   const { t } = useI18n()
-  const [activeItem, setActiveItem] = useState(initialItem)
-  const [detail, setDetail] = useState<null | StudyReviewDetail>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-  const [response, setResponse] = useState('')
-  const [confidence, setConfidence] = useState<null | number>(null)
-  const [answerRevealed, setAnswerRevealed] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
-  const [lastResult, setLastResult] = useState<null | StudyReviewSubmissionResponse>(null)
-  const startedAtRef = useRef<null | number>(null)
-  const sessionIdRef = useRef(`desktop-review-${Date.now()}`)
+  const session = useStore($reviewSession)
+  const { activeItem, confidence, detail, elapsedSeconds, error, lastResult, response, status } = session
 
-  const openItem = useCallback(async (item: StudyReviewItem) => {
-    setLoading(true)
-    setError(null)
+  const answerRevealed =
+    status === 'revealed' ||
+    status === 'submitting' ||
+    status === 'completed' ||
+    (status === 'error' && session.resumeStatus === 'revealed')
 
-    try {
-      const nextDetail = await getStudyReviewDetail(item.path)
-      setActiveItem(item)
-      setDetail(nextDetail)
-      setResponse('')
-      setConfidence(null)
-      setAnswerRevealed(false)
-      setElapsedSeconds(0)
-      startedAtRef.current = Date.now()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const submitting = status === 'submitting'
 
   useEffect(() => {
-    void openItem(initialItem)
-  }, [initialItem, openItem])
+    void startReviewSession(client, initialItem)
+
+    return cancelReviewSession
+  }, [client, initialItem])
 
   useEffect(() => {
-    if (startedAtRef.current === null) {
+    if (session.startedAt === null || (status !== 'answering' && status !== 'revealed')) {
       return
     }
 
-    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAtRef.current!) / 1000)))
-    update()
-    const timer = window.setInterval(update, 1000)
+    tickReviewSession()
+    const timer = window.setInterval(tickReviewSession, 1000)
 
     return () => window.clearInterval(timer)
-  }, [activeItem])
+  }, [session.startedAt, status])
 
-  const submitResult = useCallback(
-    async (result: StudyReviewResult) => {
-      if (!projectId || !response.trim() || confidence === null) {
-        return
-      }
+  const submitResult = async (result: StudyReviewResult) => {
+    if (!projectId) {
+      return
+    }
 
-      setSubmitting(true)
-      setError(null)
+    const completed = await submitReviewResult(client, { allItems, items, projectId, result })
 
-      try {
-        const submitted = await submitStudyReviewAttempt({
-          project_id: projectId,
-          note: activeItem.path,
-          response: response.trim(),
-          result,
-          duration_seconds: Math.max(1, elapsedSeconds),
-          self_confidence: confidence,
-          transfer_level: 'execution',
-          diagnoses: [],
-          evaluator: { kind: 'self', id: 'desktop-review' },
-          assistance: { level: 'independent', hints_used: 0 },
-          session_id: sessionIdRef.current
-        })
+    if (completed !== null) {
+      onSessionComplete(completed)
+    }
+  }
 
-        const remaining = items.filter(item => item.path !== activeItem.path)
-        const remainingAll = allItems.filter(item => item.path !== activeItem.path)
-        const nextCompleted = submitted.completed_today
-        $reviewDueItems.set(remainingAll)
-        $reviewCompletedToday.set(nextCompleted)
-        void getStudyReviewStats()
-          .then(nextStats => $reviewStats.set(nextStats))
-          .catch(() => undefined)
-        void getStudyOverview(projectId)
-          .then(nextOverview => {
-            $studyOverview.set(nextOverview)
-            $reviewCompletedToday.set(nextOverview.completed_today)
-          })
-          .catch(() => undefined)
-        setLastResult(submitted)
-
-        if (remaining[0]) {
-          await openItem(remaining[0])
-          setLastResult(submitted)
-        } else {
-          startedAtRef.current = null
-          onSessionComplete(nextCompleted)
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setSubmitting(false)
-      }
-    },
-    [activeItem.path, allItems, confidence, elapsedSeconds, items, onSessionComplete, openItem, projectId, response]
-  )
-
-  if (loading) {
+  if (status === 'loading') {
     return (
       <div>
         <PageLoader label={t.study.loadingReview} />
@@ -153,7 +97,7 @@ export function ReviewRunner({
     )
   }
 
-  if (!detail) {
+  if (!detail || !activeItem) {
     return (
       <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-5 text-sm">
         <div>{error || t.study.loadingReview}</div>
@@ -181,8 +125,9 @@ export function ReviewRunner({
               'w-full min-w-0 rounded-xl border p-3 text-left text-sm transition-colors hover:bg-accent/60',
               item.path === activeItem.path && 'border-primary/50 bg-primary/10'
             )}
+            disabled={submitting}
             key={item.path}
-            onClick={() => void openItem(item)}
+            onClick={() => void openReviewItem(client, item)}
             type="button"
           >
             <div className="line-clamp-2 break-words font-semibold leading-snug">{item.title}</div>
@@ -230,7 +175,7 @@ export function ReviewRunner({
             className="mt-2 min-h-36 resize-y"
             disabled={answerRevealed || submitting}
             id="study-review-response"
-            onChange={event => setResponse(event.target.value)}
+            onChange={event => answerReview(event.target.value)}
             placeholder={t.study.answerPlaceholder}
             value={response}
           />
@@ -249,7 +194,7 @@ export function ReviewRunner({
                 )}
                 disabled={answerRevealed || submitting}
                 key={value}
-                onClick={() => setConfidence(value)}
+                onClick={() => setReviewConfidence(value)}
                 type="button"
               >
                 {value}
@@ -262,7 +207,7 @@ export function ReviewRunner({
           <Button
             className="mt-5"
             disabled={!projectId || !response.trim() || confidence === null}
-            onClick={() => setAnswerRevealed(true)}
+            onClick={revealReviewAnswer}
           >
             {t.study.revealAnswer}
           </Button>

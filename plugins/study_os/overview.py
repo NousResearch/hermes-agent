@@ -6,7 +6,7 @@ import json
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from plugins.study_os.interventions import InterventionOrchestrator, parse_as_of
@@ -48,9 +48,16 @@ def _today_events(
     workspace: StudyWorkspace,
     project: dict[str, Any],
     clock: datetime,
+    relationship_validator: Callable[
+        [dict[str, Any], dict[str, Any]], list[str]
+    ]
+    | None,
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    catalog = workspace.discover_schedules(str(project["project_id"]))
+    catalog = workspace.discover_schedules(
+        str(project["project_id"]),
+        relationship_validator=relationship_validator,
+    )
     for artifact in catalog.schedules:
         schedule = artifact.schedule
         for event in schedule.get("events", []):
@@ -151,6 +158,10 @@ def build_study_overview(
     as_of: str | None = None,
     review_limit: int = 10,
     intervention_limit: int = 5,
+    schedule_relationship_validator: Callable[
+        [dict[str, Any], dict[str, Any]], list[str]
+    ]
+    | None = None,
 ) -> dict[str, Any]:
     """Build one bounded, side-effect-free projection for today's StudyOS UI."""
 
@@ -173,7 +184,12 @@ def build_study_overview(
         "project": project,
         "as_of": clock.isoformat(timespec="seconds"),
         "today": clock.date().isoformat(),
-        "today_events": _today_events(workspace, project, clock),
+        "today_events": _today_events(
+            workspace,
+            project,
+            clock,
+            schedule_relationship_validator,
+        ),
         "due_reviews": _due_reviews(
             workspace.vault,
             clock,

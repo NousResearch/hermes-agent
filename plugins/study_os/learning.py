@@ -15,6 +15,7 @@ from typing import Any, Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from plugins.study_os.contract_models import study_project_id_json_schema
 from plugins.study_os.activities import activity_adapter_for
 from plugins.study_os import tools as legacy
 from plugins.study_os.interventions import InterventionOrchestrator, parse_as_of
@@ -1179,7 +1180,7 @@ STUDY_ACTIVITY_SCHEMA = {
             },
             "action": {"type": "string", "description": "Resource action, e.g. attempt.record/list/read, schedule.template/validate/save/list/read, review.due/submit/stats, concept.graph/queue/update_state, or project.init/status."},
             "vault_path": {"type": "string"},
-            "project_id": {"type": "string"},
+            "project_id": study_project_id_json_schema(),
             "data": {
                 "type": "object",
                 "description": "Payload for the selected resource action. For schedule.validate/save, put the complete Schedule directly here: data={schema_version, schedule_id, project_id, ...}. Use phases (optionally phase.effort_minutes) for long-term ranges and events only for concrete sessions. Do not nest it under data.schedule or a second data.",
@@ -1201,7 +1202,7 @@ STUDY_COACH_SCHEMA = {
             "action": {"type": "string", "enum": ["start", "advance", "snapshot", "finish", "diagnose", "summarize", "recommend", "prioritize", "propose_plan", "generate_probe", "propose_pattern"]},
             "scope": {"type": "string", "enum": ["session", "concept", "week", "project"]},
             "vault_path": {"type": "string"},
-            "project_id": {"type": "string"},
+            "project_id": study_project_id_json_schema(),
             "data": {
                 "type": "object",
                 "description": "For lifecycle actions: session_id plus contract (start) or evaluated observation (advance). For evidence analysis: concept, pattern, item_id, result, start_date, or end_date filters. For prioritize/propose_plan: optional timezone-aware as_of and max_items (1-20).",

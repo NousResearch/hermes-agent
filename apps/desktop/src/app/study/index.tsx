@@ -1,17 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import {
-  decideStudyPlanProposal,
-  getStudyOverview,
-  getStudyProjects,
-  getStudySchedule,
-  getStudySchedules,
-  setStudyActiveProject,
-  updateStudySettings
-} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { validateStudySchedule } from '@/lib/study-schemas'
 import { cn } from '@/lib/utils'
@@ -29,17 +20,21 @@ import {
   $studySelectedScheduleId,
   $studyVaultPath
 } from '@/store/study'
-import { $reviewCompletedToday } from '@/store/study-review'
-import type {
-  StudyProject,
-  StudyScheduleEvent,
-  StudySchedulePhase,
-  StudyScheduleSummary
-} from '@/types/hermes'
+import type { StudyProject, StudyScheduleEvent, StudySchedulePhase, StudyScheduleSummary } from '@/types/hermes'
 
 import { OverlayMain, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import {
+  cancelStudyActions,
+  decideProposal,
+  loadWorkspace,
+  saveSettings,
+  selectProject,
+  selectSchedule,
+  setStudyMessage
+} from './actions'
+import { httpStudyClient, type StudyClient } from './client'
 import { StudyInbox } from './inbox'
 import { StudySetup } from './setup'
 import { StudyToday } from './today'
@@ -47,6 +42,7 @@ import { StudyToday } from './today'
 const ReviewView = lazy(async () => ({ default: (await import('./review')).ReviewView }))
 
 interface StudyViewProps {
+  client?: StudyClient
   onClose?: () => void
   onStartAgentReview?: (prompt: string) => void | Promise<void>
 }
@@ -167,7 +163,7 @@ function ScheduleButton({
   )
 }
 
-export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
+export function StudyView({ client = httpStudyClient, onClose, onStartAgentReview }: StudyViewProps) {
   const { t } = useI18n()
   const projects = useStore($studyProjects)
   const schedules = useStore($studySchedules)
@@ -182,116 +178,20 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
   const overview = useStore($studyOverview)
   const vaultPath = useStore($studyVaultPath)
   const selectedProject = projects.find(project => project.project_id === selectedProjectId)
-  const scheduleValidation = selectedSchedule ? validateStudySchedule(selectedSchedule, selectedProject) : null
+  const scheduleValidation = selectedSchedule ? validateStudySchedule(selectedSchedule) : null
   const [activeTab, setActiveTab] = useState<'today' | 'calendar' | 'review' | 'inbox' | 'settings'>('today')
 
-  const loadProjectData = useCallback(async (projectId: string) => {
-    const [scheduleResponse, nextOverview] = await Promise.all([
-      getStudySchedules(projectId),
-      getStudyOverview(projectId)
-    ])
-    $studySchedules.set(scheduleResponse.schedules)
-    $studyInvalidSchedules.set(scheduleResponse.invalid_schedules ?? [])
-    $studyOverview.set(nextOverview)
-    $reviewCompletedToday.set(nextOverview.completed_today)
-    const nextScheduleId = scheduleResponse.schedules[0]?.schedule_id ?? null
-    $studySelectedScheduleId.set(nextScheduleId)
-    $studySelectedSchedule.set(nextScheduleId ? await getStudySchedule(projectId, nextScheduleId) : null)
-  }, [])
-
-  const loadProjects = useCallback(async () => {
-    $studyLoadState.set('loading')
-    $studyError.set(null)
-    try {
-      const response = await getStudyProjects()
-      $studyConfigured.set(response.configured)
-      $studyMessage.set(response.message ?? null)
-      $studyProjects.set(response.projects)
-      $studyVaultPath.set(response.vault_path ?? null)
-      const nextProjectId = response.projects.some(project => project.project_id === response.active_project_id)
-        ? (response.active_project_id ?? null)
-        : null
-      $studySelectedProjectId.set(nextProjectId)
-      if (!response.configured || !nextProjectId) {
-        $studySchedules.set([])
-        $studyInvalidSchedules.set([])
-        $studySelectedScheduleId.set(null)
-        $studySelectedSchedule.set(null)
-        $studyOverview.set(null)
-        $studyLoadState.set('ready')
-        return
-      }
-      await loadProjectData(nextProjectId)
-      $studyLoadState.set('ready')
-    } catch (err) {
-      $studyError.set(err instanceof Error ? err.message : String(err))
-      $studyLoadState.set('error')
-    }
-  }, [loadProjectData])
-
-  const selectProject = useCallback(
-    async (projectId: string) => {
-      $studyLoadState.set('loading')
-      $studyError.set(null)
-      try {
-        await setStudyActiveProject(projectId)
-        $studySelectedProjectId.set(projectId)
-        await loadProjectData(projectId)
-        $studyLoadState.set('ready')
-      } catch (err) {
-        $studyError.set(err instanceof Error ? err.message : String(err))
-        $studyLoadState.set('error')
-      }
-    },
-    [loadProjectData]
-  )
-
-  const saveSettings = useCallback(
-    async (nextVaultPath: string) => {
-      const result = await updateStudySettings(nextVaultPath)
-      await loadProjects()
-      $studyMessage.set(result.requires_new_session ? t.study.newSessionRequired : t.study.settingsSaved)
-      setActiveTab('today')
-      return result
-    },
-    [loadProjects, t.study.newSessionRequired, t.study.settingsSaved]
-  )
-
-  const decideProposal = useCallback(
-    async (proposalId: string, action: 'accept' | 'reject') => {
-      if (!selectedProjectId) {
-        return
-      }
-      await decideStudyPlanProposal(selectedProjectId, proposalId, action)
-      const nextOverview = await getStudyOverview(selectedProjectId)
-      $studyOverview.set(nextOverview)
-      $reviewCompletedToday.set(nextOverview.completed_today)
-    },
-    [selectedProjectId]
-  )
-
-  const selectSchedule = useCallback(
-    async (scheduleId: string) => {
-      if (!selectedProjectId) {
-        return
-      }
-      $studyLoadState.set('loading')
-      $studyError.set(null)
-      try {
-        $studySelectedScheduleId.set(scheduleId)
-        $studySelectedSchedule.set(await getStudySchedule(selectedProjectId, scheduleId))
-        $studyLoadState.set('ready')
-      } catch (err) {
-        $studyError.set(err instanceof Error ? err.message : String(err))
-        $studyLoadState.set('error')
-      }
-    },
-    [selectedProjectId]
-  )
-
   useEffect(() => {
-    void loadProjects()
-  }, [loadProjects])
+    void loadWorkspace(client)
+    return cancelStudyActions
+  }, [client])
+
+  const saveVaultSettings = async (nextVaultPath: string) => {
+    const result = await saveSettings(client, nextVaultPath)
+    setStudyMessage(result.requires_new_session ? t.study.newSessionRequired : t.study.settingsSaved)
+    setActiveTab('today')
+    return result
+  }
 
   return (
     <OverlayView closeLabel={t.study.close} onClose={onClose ?? (() => undefined)}>
@@ -311,7 +211,7 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
                 <ProjectButton
                   active={project.project_id === selectedProjectId}
                   key={project.project_id}
-                  onSelect={() => void selectProject(project.project_id)}
+                  onSelect={() => void selectProject(client, project.project_id)}
                   project={project}
                 />
               ))}
@@ -327,7 +227,9 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
                 <ScheduleButton
                   active={schedule.schedule_id === selectedScheduleId}
                   key={schedule.schedule_id}
-                  onSelect={() => void selectSchedule(schedule.schedule_id)}
+                  onSelect={() =>
+                    selectedProjectId && void selectSchedule(client, selectedProjectId, schedule.schedule_id)
+                  }
                   schedule={schedule}
                 />
               ))}
@@ -360,11 +262,11 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
         </OverlaySidebar>
         <OverlayMain className="overflow-y-auto p-6 pt-[calc(var(--titlebar-height)+1.5rem)]">
           {loadState === 'loading' && !selectedSchedule && <PageLoader label={t.study.loading} />}
-          {!configured && <StudySetup initialPath={vaultPath ?? ''} onSave={saveSettings} />}
+          {!configured && <StudySetup initialPath={vaultPath ?? ''} onSave={saveVaultSettings} />}
           {error && (
             <div className="rounded-2xl border border-destructive/40 bg-destructive/10 p-5 text-sm">
               <div className="font-semibold">{error}</div>
-              <Button className="mt-4" onClick={() => void loadProjects()} size="sm" variant="secondary">
+              <Button className="mt-4" onClick={() => void loadWorkspace(client)} size="sm" variant="secondary">
                 {t.study.retry}
               </Button>
             </div>
@@ -372,7 +274,9 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
           {configured && message && (
             <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm">{message}</div>
           )}
-          {configured && activeTab === 'settings' && <StudySetup initialPath={vaultPath ?? ''} onSave={saveSettings} />}
+          {configured && activeTab === 'settings' && (
+            <StudySetup initialPath={vaultPath ?? ''} onSave={saveVaultSettings} />
+          )}
           {configured && projects.length > 0 && !selectedProject && activeTab !== 'settings' && (
             <div className="rounded-2xl border border-dashed bg-card/70 p-8 text-sm text-muted-foreground">
               {t.study.selectProjectPrompt}
@@ -394,7 +298,11 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
               <div className="mt-5 grid gap-3 text-sm sm:grid-cols-3">
                 <Meta
                   label={selectedProject.schema_version === 'study_project.v2' ? t.study.deadline : t.study.examDate}
-                  value={selectedProject.deadline ?? selectedProject.exam_date ?? '—'}
+                  value={
+                    selectedProject.schema_version === 'study_project.v2'
+                      ? (selectedProject.deadline ?? '—')
+                      : selectedProject.exam_date
+                  }
                 />
                 <Meta label={t.study.phase} value={selectedProject.phase} />
                 <Meta label={t.study.timezone} value={selectedProject.timezone} />
@@ -499,11 +407,17 @@ export function StudyView({ onClose, onStartAgentReview }: StudyViewProps) {
           )}
           {activeTab === 'review' && (
             <Suspense fallback={<PageLoader label={t.study.loading} />}>
-              <ReviewView onStartAgentReview={onStartAgentReview} />
+              <ReviewView client={client} onStartAgentReview={onStartAgentReview} />
             </Suspense>
           )}
           {activeTab === 'inbox' && overview && (
-            <StudyInbox onDecide={decideProposal} onStartAgent={onStartAgentReview} overview={overview} />
+            <StudyInbox
+              onDecide={(proposalId, action) =>
+                selectedProjectId ? decideProposal(client, selectedProjectId, proposalId, action) : Promise.resolve()
+              }
+              onStartAgent={onStartAgentReview}
+              overview={overview}
+            />
           )}
         </OverlayMain>
       </OverlaySplitLayout>
@@ -519,7 +433,7 @@ function PhaseCard({ phase }: { phase: StudySchedulePhase }) {
         <div className="text-xs font-medium text-primary">
           {phase.start} → {phase.end}
         </div>
-        {phase.effort_minutes !== undefined && (
+        {phase.effort_minutes != null && (
           <div className="rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
             {formatEffort(phase.effort_minutes)}
           </div>

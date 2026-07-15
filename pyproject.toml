@@ -352,6 +352,7 @@ plugins = [
   "**/plugin.yml",
   "**/README.md",
   "**/SKILL.md",
+  "study_os/contracts/*.json",
 ]
 
 [tool.setuptools.packages.find]

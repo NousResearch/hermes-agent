@@ -12,7 +12,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from plugins.study_os.schemas import (
     PROJECT_ID_RE,
@@ -211,6 +211,11 @@ class StudyWorkspace:
     def discover_schedules(
         self,
         project_id: str | None = None,
+        *,
+        relationship_validator: Callable[
+            [dict[str, Any], dict[str, Any]], list[str]
+        ]
+        | None = None,
     ) -> StudyScheduleCatalog:
         """Discover valid schedules without silently dropping invalid files."""
 
@@ -241,7 +246,7 @@ class StudyWorkspace:
             except (OSError, ValueError) as exc:
                 errors = (str(exc),)
             else:
-                ok, validated = validate_study_schedule(raw, project=project)
+                ok, validated = validate_study_schedule(raw)
                 if not ok:
                     errors = tuple(
                         validated
@@ -250,6 +255,10 @@ class StudyWorkspace:
                     )
                 elif not isinstance(validated, dict):
                     errors = ("Schedule validator returned invalid data",)
+                elif relationship_validator and (
+                    relationship_errors := relationship_validator(project, validated)
+                ):
+                    errors = tuple(relationship_errors)
                 elif validated.get("schedule_id") != schedule_id:
                     errors = ("schedule_id must match its canonical filename",)
                 else:

@@ -1,3 +1,14 @@
+import type { StudyProject, StudyScheduleEvent } from '@/lib/generated/study-contracts'
+
+export type {
+  StudyObjective,
+  StudyProject,
+  StudySchedule,
+  StudyScheduleEvent,
+  StudySchedulePhase,
+  StudySubject
+} from '@/lib/generated/study-contracts'
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -43,95 +54,6 @@ export interface OAuthProviderStatus {
   source?: null | string
   source_label?: null | string
   token_preview?: null | string
-}
-
-export interface StudySubject {
-  id: string
-  label: string
-  target_score?: number
-}
-
-export interface StudyObjective {
-  objective_id: string
-  capability: string
-  success_criteria: string[]
-  evidence_targets: string[]
-  source_anchors?: Array<{
-    kind: string
-    ref: string
-    version?: string
-    locator?: string
-  }>
-}
-
-export interface StudyProject {
-  schema_version: 'study_project.v1' | 'study_project.v2'
-  project_id: string
-  title: string
-  domain: string
-  exam_type?: string
-  exam_date?: string
-  deadline?: string
-  timezone: string
-  phase: string
-  domain_pack: string
-  workspace_type?: string
-  artifact_policy?: string
-  subjects?: StudySubject[]
-  tracks?: StudySubject[]
-  objectives?: StudyObjective[]
-  prompt_policy: {
-    base_max_chars: number
-    intent_max_chars: number
-    domain_max_chars: number
-    project_summary_max_chars: number
-    total_max_chars: number
-    updates_apply: 'next_session'
-  }
-  created_at: string
-  updated_at: string
-  [key: string]: unknown
-}
-
-export interface StudySchedulePhase {
-  id: string
-  title: string
-  start: string
-  end: string
-  goal: string
-  effort_minutes?: number
-  goals?: string[]
-  source_curricula?: string[]
-  status?: string
-}
-
-export interface StudyScheduleEvent {
-  id: string
-  title: string
-  subject_id: string
-  type: string
-  start: string
-  end: string
-  duration_minutes: number
-  goals: string[]
-  source_curriculum?: string
-  status: string
-  [key: string]: unknown
-}
-
-export interface StudySchedule {
-  schema_version: 'study_schedule.v1'
-  schedule_id: string
-  project_id: string
-  title: string
-  timezone: string
-  range: {
-    start: string
-    end: string
-  }
-  phases: StudySchedulePhase[]
-  events: StudyScheduleEvent[]
-  [key: string]: unknown
 }
 
 export interface StudyScheduleSummary {

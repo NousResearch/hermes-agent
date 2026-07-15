@@ -100,7 +100,7 @@ def test_builtin_domain_pack_contract(
     ] == duration
     assert schedule["events"][0]["id"] == event_id
     assert validate_study_project(project)[0] is True
-    assert validate_study_schedule(schedule, project=project)[0] is True
+    assert validate_study_schedule(schedule)[0] is True
     if prompt_skill is not None:
         skill_path = _skill_path(prompt_skill)
         frontmatter, _body = parse_frontmatter(skill_path.read_text(encoding="utf-8"))

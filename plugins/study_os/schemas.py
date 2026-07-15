@@ -6,6 +6,17 @@ import re
 from datetime import date, datetime
 from typing import Any
 
+from plugins.study_os.contract_models import (
+    DATETIME_WITH_OFFSET_PATTERN,
+    DATE_PATTERN,
+    EVIDENCE_DIMENSIONS,
+    PROJECT_ID_PATTERN,
+    SCHEDULE_ID_PATTERN,
+    SOURCE_ANCHOR_KINDS,
+    validate_project_contract,
+    validate_schedule_contract,
+)
+
 
 PROJECT_SCHEMA_VERSION_V1 = "study_project.v1"
 PROJECT_SCHEMA_VERSION = "study_project.v2"
@@ -17,20 +28,12 @@ INTERVENTION_QUEUE_SCHEMA_VERSION = "study_intervention_queue.v1"
 PLAN_PROPOSAL_SCHEMA_VERSION = "study_plan_proposal.v1"
 INTERVENTION_POLICY_VERSION = "study_intervention_policy.v1"
 
-PROJECT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
-SCHEDULE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,79}$")
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-DATETIME_WITH_OFFSET_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)$")
+PROJECT_ID_RE = re.compile(PROJECT_ID_PATTERN)
+SCHEDULE_ID_RE = re.compile(SCHEDULE_ID_PATTERN)
+DATE_RE = re.compile(DATE_PATTERN)
+DATETIME_WITH_OFFSET_RE = re.compile(DATETIME_WITH_OFFSET_PATTERN)
 
 ATTEMPT_RESULTS = {"correct", "partial", "incorrect", "abandoned"}
-EVIDENCE_DIMENSIONS = (
-    "recall",
-    "recognition",
-    "execution",
-    "explanation",
-    "near_transfer",
-    "far_transfer",
-)
 TRANSFER_LEVELS = set(EVIDENCE_DIMENSIONS)
 LEARNING_MODES = {"execute", "learn", "assess", "research"}
 ASSISTANCE_LEVELS = {"direct", "guided", "hints_only", "independent"}
@@ -39,7 +42,6 @@ DIAGNOSIS_REQUIRED_FIELDS = ("kind", "evidence")
 DIAGNOSIS_OBJECT_EXAMPLE = (
     '{"kind":"condition_missed","evidence":"The required condition was not checked."}'
 )
-SOURCE_ANCHOR_KINDS = {"file", "paper", "book", "web", "dataset", "command", "commit", "note", "other"}
 INTERVENTION_KINDS = {
     "evidence_probe",
     "guided_repair",
@@ -113,53 +115,6 @@ def _parse_datetime(value: Any, path: str, errors: list[str]) -> datetime | None
         return None
 
 
-def _validate_subjects(value: Any, errors: list[str]) -> set[str]:
-    subject_ids: set[str] = set()
-    if not isinstance(value, list) or not value:
-        errors.append("subjects must be a non-empty array")
-        return subject_ids
-    for index, subject in enumerate(value):
-        path = f"subjects[{index}]"
-        if not isinstance(subject, dict):
-            errors.append(f"{path} must be an object")
-            continue
-        subject_id = subject.get("id")
-        if not isinstance(subject_id, str) or not subject_id.strip():
-            errors.append(f"{path}.id must be a non-empty string")
-        elif subject_id in subject_ids:
-            errors.append(f"{path}.id must be unique")
-        else:
-            subject_ids.add(subject_id)
-        if not isinstance(subject.get("label"), str) or not subject["label"].strip():
-            errors.append(f"{path}.label must be a non-empty string")
-        target_score = subject.get("target_score")
-        if target_score is not None and not isinstance(target_score, (int, float)):
-            errors.append(f"{path}.target_score must be a number")
-    return subject_ids
-
-
-def _validate_tracks(value: Any, errors: list[str]) -> set[str]:
-    track_ids: set[str] = set()
-    if not isinstance(value, list) or not value:
-        errors.append("tracks must be a non-empty array")
-        return track_ids
-    for index, track in enumerate(value):
-        path = f"tracks[{index}]"
-        if not isinstance(track, dict):
-            errors.append(f"{path} must be an object")
-            continue
-        track_id = track.get("id")
-        if not isinstance(track_id, str) or not track_id.strip():
-            errors.append(f"{path}.id must be a non-empty string")
-        elif track_id in track_ids:
-            errors.append(f"{path}.id must be unique")
-        else:
-            track_ids.add(track_id)
-        if not isinstance(track.get("label"), str) or not track["label"].strip():
-            errors.append(f"{path}.label must be a non-empty string")
-    return track_ids
-
-
 def _validate_string_array(value: Any, path: str, errors: list[str], *, non_empty: bool = False) -> list[str]:
     if not isinstance(value, list) or (non_empty and not value) or any(
         not isinstance(item, str) or not item.strip() for item in value
@@ -196,87 +151,10 @@ def _validate_source_anchors(value: Any, path: str, errors: list[str]) -> None:
                 errors.append(f"{item_path}.{key} must be a non-empty string when provided")
 
 
-def _validate_objectives(value: Any, errors: list[str]) -> set[str]:
-    objective_ids: set[str] = set()
-    if not isinstance(value, list) or not value:
-        errors.append("objectives must be a non-empty array")
-        return objective_ids
-    for index, objective in enumerate(value):
-        path = f"objectives[{index}]"
-        if not isinstance(objective, dict):
-            errors.append(f"{path} must be an object")
-            continue
-        objective_id = objective.get("objective_id")
-        if not isinstance(objective_id, str) or not SCHEDULE_ID_RE.match(objective_id):
-            errors.append(f"{path}.objective_id must match ^[a-z0-9][a-z0-9-]{{2,79}}$")
-        elif objective_id in objective_ids:
-            errors.append(f"{path}.objective_id must be unique")
-        else:
-            objective_ids.add(objective_id)
-        if not isinstance(objective.get("capability"), str) or not objective["capability"].strip():
-            errors.append(f"{path}.capability must be a non-empty string")
-        _validate_string_array(objective.get("success_criteria"), f"{path}.success_criteria", errors, non_empty=True)
-        _validate_evidence_targets(objective.get("evidence_targets"), f"{path}.evidence_targets", errors)
-        if "source_anchors" in objective:
-            _validate_source_anchors(objective["source_anchors"], f"{path}.source_anchors", errors)
-    return objective_ids
-
-
-def _validate_prompt_policy(value: Any, errors: list[str]) -> None:
-    policy = _require_mapping(value, "prompt_policy", errors)
-    if policy is None:
-        return
-    for key in (
-        "base_max_chars",
-        "intent_max_chars",
-        "domain_max_chars",
-        "project_summary_max_chars",
-        "total_max_chars",
-    ):
-        if not isinstance(policy.get(key), int) or policy[key] <= 0:
-            errors.append(f"prompt_policy.{key} must be a positive integer")
-    if policy.get("updates_apply") != "next_session":
-        errors.append("prompt_policy.updates_apply must be next_session")
-
-
 def validate_study_project(data: Any) -> tuple[bool, dict[str, Any] | list[str]]:
-    """Validate a backward-compatible StudyOS project manifest.
+    """Validate against the canonical generated Project contract."""
 
-    Unknown fields are intentionally preserved by returning the original mapping
-    when validation succeeds.
-    """
-
-    errors: list[str] = []
-    project = _require_mapping(data, "project", errors)
-    if project is None:
-        return False, errors
-
-    schema_version = project.get("schema_version")
-    if schema_version not in {PROJECT_SCHEMA_VERSION_V1, PROJECT_SCHEMA_VERSION}:
-        errors.append(f"schema_version must be {PROJECT_SCHEMA_VERSION_V1} or {PROJECT_SCHEMA_VERSION}")
-
-    project_id = _require_string(project, "project_id", errors)
-    if project_id and not PROJECT_ID_RE.match(project_id):
-        errors.append("project_id must match ^[a-z0-9][a-z0-9-]{2,63}$")
-
-    for key in ("title", "domain", "timezone", "phase", "domain_pack", "created_at", "updated_at"):
-        _require_string(project, key, errors)
-    if schema_version == PROJECT_SCHEMA_VERSION_V1:
-        _require_string(project, "exam_type", errors)
-        _parse_date(project.get("exam_date"), "exam_date", errors)
-        _validate_subjects(project.get("subjects"), errors)
-    elif schema_version == PROJECT_SCHEMA_VERSION:
-        for key in ("workspace_type", "artifact_policy"):
-            _require_string(project, key, errors)
-        if project.get("deadline") is not None:
-            _parse_date(project.get("deadline"), "deadline", errors)
-        _validate_tracks(project.get("tracks"), errors)
-        _validate_objectives(project.get("objectives"), errors)
-    _validate_prompt_policy(project.get("prompt_policy"), errors)
-    _parse_datetime(project.get("created_at"), "created_at", errors)
-    _parse_datetime(project.get("updated_at"), "updated_at", errors)
-
-    return (False, errors) if errors else (True, project)
+    return validate_project_contract(data)
 
 
 def validate_learning_contract(
@@ -338,42 +216,10 @@ def validate_learning_contract(
 
 def validate_study_schedule(
     data: Any,
-    *,
-    project: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any] | list[str]]:
-    """Validate a ``study_schedule.v1`` artifact."""
+    """Validate against the canonical generated Schedule contract."""
 
-    errors: list[str] = []
-    schedule = _require_mapping(data, "schedule", errors)
-    if schedule is None:
-        return False, errors
-
-    if schedule.get("schema_version") != SCHEDULE_SCHEMA_VERSION:
-        errors.append(f"schema_version must be {SCHEDULE_SCHEMA_VERSION}")
-
-    schedule_id = _require_string(schedule, "schedule_id", errors)
-    if schedule_id and not SCHEDULE_ID_RE.match(schedule_id):
-        errors.append("schedule_id must match ^[a-z0-9][a-z0-9-]{2,79}$")
-
-    project_id = _require_string(schedule, "project_id", errors)
-    if project is not None and project_id and project.get("project_id") != project_id:
-        errors.append("project_id must match project manifest")
-
-    for key in ("title", "timezone"):
-        _require_string(schedule, key, errors)
-
-    range_data = _require_mapping(schedule.get("range"), "range", errors)
-    range_start = range_end = None
-    if range_data is not None:
-        range_start = _parse_date(range_data.get("start"), "range.start", errors)
-        range_end = _parse_date(range_data.get("end"), "range.end", errors)
-        if range_start and range_end and range_end < range_start:
-            errors.append("range.end must be on or after range.start")
-
-    _validate_phases(schedule.get("phases"), errors)
-    _validate_events(schedule.get("events"), errors, range_start=range_start, range_end=range_end, project=project)
-
-    return (False, errors) if errors else (True, schedule)
+    return validate_schedule_contract(data)
 
 
 def validate_study_attempt(data: Any) -> tuple[bool, dict[str, Any] | list[str]]:
@@ -500,7 +346,6 @@ def validate_pattern_proposal(data: Any) -> tuple[bool, dict[str, Any] | list[st
         errors.append("evidence_attempt_ids must be a non-empty string array")
     _parse_datetime(proposal.get("created_at"), "created_at", errors)
     return (False, errors) if errors else (True, proposal)
-
 
 def validate_plan_proposal(data: Any) -> tuple[bool, dict[str, Any] | list[str]]:
     """Validate a durable proposal derived from an Intervention Queue.
@@ -676,110 +521,3 @@ def validate_plan_proposal(data: Any) -> tuple[bool, dict[str, Any] | list[str]]
                 errors.append("decision.note must be a non-empty string when provided")
 
     return (False, errors) if errors else (True, proposal)
-
-
-def _validate_phases(value: Any, errors: list[str]) -> None:
-    if not isinstance(value, list):
-        errors.append("phases must be an array")
-        return
-    for index, phase in enumerate(value):
-        path = f"phases[{index}]"
-        if not isinstance(phase, dict):
-            errors.append(f"{path} must be an object")
-            continue
-        for key in ("id", "title", "goal"):
-            if not isinstance(phase.get(key), str) or not phase[key].strip():
-                errors.append(f"{path}.{key} must be a non-empty string")
-        start = _parse_date(phase.get("start"), f"{path}.start", errors)
-        end = _parse_date(phase.get("end"), f"{path}.end", errors)
-        if start and end and end < start:
-            errors.append(f"{path}.end must be on or after start")
-        effort = phase.get("effort_minutes")
-        if effort is not None and (
-            not isinstance(effort, int)
-            or isinstance(effort, bool)
-            or effort < 1
-        ):
-            errors.append(f"{path}.effort_minutes must be a positive integer")
-        if "goals" in phase:
-            _validate_string_array(
-                phase.get("goals"),
-                f"{path}.goals",
-                errors,
-                non_empty=True,
-            )
-        if "source_curricula" in phase:
-            _validate_string_array(
-                phase.get("source_curricula"),
-                f"{path}.source_curricula",
-                errors,
-                non_empty=True,
-            )
-        status = phase.get("status")
-        if status is not None and (
-            not isinstance(status, str) or not status.strip()
-        ):
-            errors.append(f"{path}.status must be a non-empty string")
-
-
-def _validate_events(
-    value: Any,
-    errors: list[str],
-    *,
-    range_start: date | None,
-    range_end: date | None,
-    project: dict[str, Any] | None,
-) -> None:
-    if not isinstance(value, list):
-        errors.append("events must be an array")
-        return
-    subject_ids = _project_subject_ids(project)
-    seen_ids: set[str] = set()
-    for index, event in enumerate(value):
-        path = f"events[{index}]"
-        if not isinstance(event, dict):
-            errors.append(f"{path} must be an object")
-            continue
-        event_id = event.get("id")
-        if not isinstance(event_id, str) or not event_id.strip():
-            errors.append(f"{path}.id must be a non-empty string")
-        elif event_id in seen_ids:
-            errors.append(f"{path}.id must be unique")
-        else:
-            seen_ids.add(event_id)
-        for key in ("title", "subject_id", "type", "status"):
-            if not isinstance(event.get(key), str) or not event[key].strip():
-                errors.append(f"{path}.{key} must be a non-empty string")
-        if subject_ids is not None and isinstance(event.get("subject_id"), str) and event["subject_id"] not in subject_ids:
-            errors.append(f"{path}.subject_id must exist in project subjects")
-        start = _parse_datetime(event.get("start"), f"{path}.start", errors)
-        end = _parse_datetime(event.get("end"), f"{path}.end", errors)
-        duration = event.get("duration_minutes")
-        if not isinstance(duration, int) or not 1 <= duration <= 720:
-            errors.append(f"{path}.duration_minutes must be an integer from 1 to 720")
-        if start and end:
-            if end <= start:
-                errors.append(f"{path}.end must be after start")
-            if isinstance(duration, int):
-                actual_minutes = int((end - start).total_seconds() // 60)
-                if actual_minutes > 720:
-                    errors.append(
-                        f"{path} spans more than 720 minutes; use phases for long-term ranges "
-                        "and events only for concrete study sessions"
-                    )
-                elif actual_minutes != duration:
-                    errors.append(f"{path}.duration_minutes does not match start/end")
-            if range_start and range_end and not (range_start <= start.date() <= range_end and range_start <= end.date() <= range_end):
-                errors.append(f"{path} must fall inside range")
-        goals = event.get("goals")
-        if not isinstance(goals, list) or not all(isinstance(goal, str) and goal.strip() for goal in goals):
-            errors.append(f"{path}.goals must be an array of non-empty strings")
-
-
-def _project_subject_ids(project: dict[str, Any] | None) -> set[str] | None:
-    if project is None:
-        return None
-    subjects = project.get("tracks") if project.get("schema_version") == PROJECT_SCHEMA_VERSION else project.get("subjects")
-    if not isinstance(subjects, list):
-        return set()
-    return {subject["id"] for subject in subjects if isinstance(subject, dict) and isinstance(subject.get("id"), str)}

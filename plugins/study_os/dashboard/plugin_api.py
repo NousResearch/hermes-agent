@@ -18,6 +18,14 @@ from plugins.study_os.application import (
     StudyOSApplication,
     StudyQuery,
 )
+from plugins.study_os.contract_models import (
+    StudyActiveProjectResponse,
+    StudyOverviewResponse,
+    StudyProject,
+    StudyProjectsResponse,
+    StudySchedule,
+    StudySchedulesResponse,
+)
 
 
 router = APIRouter()
@@ -38,7 +46,11 @@ def _execute(operation: StudyCommand, **params: Any) -> dict[str, Any]:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
-@router.get("/projects")
+@router.get(
+    "/projects",
+    response_model=StudyProjectsResponse,
+    response_model_exclude_none=True,
+)
 async def list_study_projects():
     return _query(StudyQuery.PROJECTS)
 
@@ -57,12 +69,19 @@ async def put_study_settings(body: StudySettingsUpdate):
     return _execute(StudyCommand.UPDATE_SETTINGS, vault_path=body.vault_path)
 
 
-@router.put("/projects/{project_id}/active")
+@router.put(
+    "/projects/{project_id}/active",
+    response_model=StudyActiveProjectResponse,
+)
 async def put_study_active_project(project_id: str):
     return _execute(StudyCommand.SELECT_PROJECT, project_id=project_id)
 
 
-@router.get("/overview")
+@router.get(
+    "/overview",
+    response_model=StudyOverviewResponse,
+    response_model_exclude_none=True,
+)
 async def get_study_overview(
     project_id: Optional[str] = None,
     as_of: Optional[str] = None,
@@ -98,17 +117,23 @@ async def put_study_plan_proposal_decision(
     )
 
 
-@router.get("/projects/{project_id}")
+@router.get("/projects/{project_id}", response_model=StudyProject)
 async def get_study_project(project_id: str):
     return _query(StudyQuery.PROJECT, project_id=project_id)
 
 
-@router.get("/projects/{project_id}/schedules")
+@router.get(
+    "/projects/{project_id}/schedules",
+    response_model=StudySchedulesResponse,
+)
 async def list_study_schedules(project_id: str):
     return _query(StudyQuery.SCHEDULES, project_id=project_id)
 
 
-@router.get("/projects/{project_id}/schedules/{schedule_id}")
+@router.get(
+    "/projects/{project_id}/schedules/{schedule_id}",
+    response_model=StudySchedule,
+)
 async def get_study_schedule(project_id: str, schedule_id: str):
     return _query(
         StudyQuery.SCHEDULE,

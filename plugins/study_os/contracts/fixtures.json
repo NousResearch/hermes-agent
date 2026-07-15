@@ -1,0 +1,315 @@
+{
+  "cases": [
+    {
+      "name": "project-v1-valid",
+      "kind": "project",
+      "valid": true,
+      "data": {
+        "schema_version": "study_project.v1",
+        "project_id": "kaoyan-2027",
+        "title": "2027 考研学习计划",
+        "domain": "kaoyan",
+        "exam_type": "考研",
+        "exam_date": "2027-12-20",
+        "timezone": "Asia/Shanghai",
+        "phase": "foundation",
+        "domain_pack": "kaoyan.v1",
+        "subjects": [
+          {"id": "math", "label": "数学", "target_score": 120}
+        ],
+        "prompt_policy": {
+          "base_max_chars": 2000,
+          "intent_max_chars": 2500,
+          "domain_max_chars": 2000,
+          "project_summary_max_chars": 1200,
+          "total_max_chars": 6000,
+          "updates_apply": "next_session"
+        },
+        "created_at": "2026-07-01T09:00:00+08:00",
+        "updated_at": "2026-07-01T09:00:00+08:00"
+      }
+    },
+    {
+      "name": "project-v2-valid",
+      "kind": "project",
+      "valid": true,
+      "data": {
+        "schema_version": "study_project.v2",
+        "project_id": "research-agents",
+        "title": "Agent Systems Research",
+        "domain": "research",
+        "timezone": "Asia/Shanghai",
+        "phase": "replication",
+        "domain_pack": "research.v1",
+        "workspace_type": "hybrid",
+        "artifact_policy": "lightweight",
+        "deadline": "2026-12-01",
+        "tracks": [{"id": "methods", "label": "Methods"}],
+        "objectives": [
+          {
+            "objective_id": "reproduce-routing-result",
+            "capability": "Reproduce and explain one routing result.",
+            "success_criteria": ["Record the command.", "Explain one limitation."],
+            "evidence_targets": ["execution", "explanation"],
+            "source_anchors": [
+              {"kind": "paper", "ref": "doi:10.0000/example", "locator": "section 4"}
+            ]
+          }
+        ],
+        "prompt_policy": {
+          "base_max_chars": 2000,
+          "intent_max_chars": 2500,
+          "domain_max_chars": 2000,
+          "project_summary_max_chars": 1200,
+          "total_max_chars": 6000,
+          "updates_apply": "next_session"
+        },
+        "created_at": "2026-07-13T09:00:00+08:00",
+        "updated_at": "2026-07-13T09:00:00+08:00"
+      }
+    },
+    {
+      "name": "project-invalid-id",
+      "kind": "project",
+      "valid": false,
+      "data": {
+        "schema_version": "study_project.v1",
+        "project_id": "../escape",
+        "title": "Invalid",
+        "domain": "general",
+        "exam_type": "none",
+        "exam_date": "2099-12-31",
+        "timezone": "Asia/Shanghai",
+        "phase": "discovery",
+        "domain_pack": "general.v1",
+        "subjects": [{"id": "learning", "label": "Learning"}],
+        "prompt_policy": {
+          "base_max_chars": 2000,
+          "intent_max_chars": 2500,
+          "domain_max_chars": 2000,
+          "project_summary_max_chars": 1200,
+          "total_max_chars": 6000,
+          "updates_apply": "next_session"
+        },
+        "created_at": "2026-07-01T09:00:00+08:00",
+        "updated_at": "2026-07-01T09:00:00+08:00"
+      }
+    },
+    {
+      "name": "project-invalid-empty-objective-criteria",
+      "kind": "project",
+      "valid": false,
+      "data": {
+        "schema_version": "study_project.v2",
+        "project_id": "research-agents",
+        "title": "Agent Systems Research",
+        "domain": "research",
+        "timezone": "Asia/Shanghai",
+        "phase": "replication",
+        "domain_pack": "research.v1",
+        "workspace_type": "hybrid",
+        "artifact_policy": "lightweight",
+        "tracks": [{"id": "methods", "label": "Methods"}],
+        "objectives": [
+          {
+            "objective_id": "reproduce-routing-result",
+            "capability": "Reproduce one result.",
+            "success_criteria": [],
+            "evidence_targets": ["execution"]
+          }
+        ],
+        "prompt_policy": {
+          "base_max_chars": 2000,
+          "intent_max_chars": 2500,
+          "domain_max_chars": 2000,
+          "project_summary_max_chars": 1200,
+          "total_max_chars": 6000,
+          "updates_apply": "next_session"
+        },
+        "created_at": "2026-07-13T09:00:00+08:00",
+        "updated_at": "2026-07-13T09:00:00+08:00"
+      }
+    },
+    {
+      "name": "project-invalid-duplicate-track",
+      "kind": "project",
+      "valid": false,
+      "data": {
+        "schema_version": "study_project.v2",
+        "project_id": "research-agents",
+        "title": "Agent Systems Research",
+        "domain": "research",
+        "timezone": "Asia/Shanghai",
+        "phase": "replication",
+        "domain_pack": "research.v1",
+        "workspace_type": "hybrid",
+        "artifact_policy": "lightweight",
+        "tracks": [
+          {"id": "methods", "label": "Methods"},
+          {"id": "methods", "label": "Duplicate"}
+        ],
+        "objectives": [
+          {
+            "objective_id": "reproduce-routing-result",
+            "capability": "Reproduce one result.",
+            "success_criteria": ["Record the command."],
+            "evidence_targets": ["execution"]
+          }
+        ],
+        "prompt_policy": {
+          "base_max_chars": 2000,
+          "intent_max_chars": 2500,
+          "domain_max_chars": 2000,
+          "project_summary_max_chars": 1200,
+          "total_max_chars": 6000,
+          "updates_apply": "next_session"
+        },
+        "created_at": "2026-07-13T09:00:00+08:00",
+        "updated_at": "2026-07-13T09:00:00+08:00"
+      }
+    },
+    {
+      "name": "schedule-valid",
+      "kind": "schedule",
+      "valid": true,
+      "data": {
+        "schema_version": "study_schedule.v1",
+        "schedule_id": "kaoyan-2027-master-plan",
+        "project_id": "kaoyan-2027",
+        "title": "2027 考研数学基础阶段计划",
+        "timezone": "Asia/Shanghai",
+        "range": {"start": "2026-07-01", "end": "2026-07-31"},
+        "phases": [
+          {
+            "id": "foundation",
+            "title": "基础阶段",
+            "start": "2026-07-01",
+            "end": "2026-09-30",
+            "goal": "完成核心考点覆盖"
+          }
+        ],
+        "events": [
+          {
+            "id": "evt-20260701-math-derivative",
+            "title": "数学：导数定义整理",
+            "subject_id": "math",
+            "type": "learning",
+            "start": "2026-07-01T19:00:00+08:00",
+            "end": "2026-07-01T21:00:00+08:00",
+            "duration_minutes": 120,
+            "goals": ["整理导数定义例题"],
+            "status": "planned"
+          }
+        ]
+      }
+    },
+    {
+      "name": "schedule-invalid-calendar-date",
+      "kind": "schedule",
+      "valid": false,
+      "data": {
+        "schema_version": "study_schedule.v1",
+        "schedule_id": "kaoyan-2027-master-plan",
+        "project_id": "kaoyan-2027",
+        "title": "Invalid date",
+        "timezone": "Asia/Shanghai",
+        "range": {"start": "2026-02-30", "end": "2026-07-31"},
+        "phases": [],
+        "events": []
+      }
+    },
+    {
+      "name": "schedule-invalid-duration",
+      "kind": "schedule",
+      "valid": false,
+      "data": {
+        "schema_version": "study_schedule.v1",
+        "schedule_id": "kaoyan-2027-master-plan",
+        "project_id": "kaoyan-2027",
+        "title": "Invalid duration",
+        "timezone": "Asia/Shanghai",
+        "range": {"start": "2026-07-01", "end": "2026-07-31"},
+        "phases": [],
+        "events": [
+          {
+            "id": "evt-invalid-duration",
+            "title": "Invalid duration",
+            "subject_id": "math",
+            "type": "learning",
+            "start": "2026-07-01T19:00:00+08:00",
+            "end": "2026-07-01T21:00:00+08:00",
+            "duration_minutes": 90,
+            "goals": [],
+            "status": "planned"
+          }
+        ]
+      }
+    },
+    {
+      "name": "schedule-invalid-duplicate-event",
+      "kind": "schedule",
+      "valid": false,
+      "data": {
+        "schema_version": "study_schedule.v1",
+        "schedule_id": "kaoyan-2027-master-plan",
+        "project_id": "kaoyan-2027",
+        "title": "Duplicate event",
+        "timezone": "Asia/Shanghai",
+        "range": {"start": "2026-07-01", "end": "2026-07-31"},
+        "phases": [],
+        "events": [
+          {
+            "id": "evt-duplicate",
+            "title": "First",
+            "subject_id": "math",
+            "type": "learning",
+            "start": "2026-07-01T19:00:00+08:00",
+            "end": "2026-07-01T20:00:00+08:00",
+            "duration_minutes": 60,
+            "goals": [],
+            "status": "planned"
+          },
+          {
+            "id": "evt-duplicate",
+            "title": "Second",
+            "subject_id": "math",
+            "type": "learning",
+            "start": "2026-07-02T19:00:00+08:00",
+            "end": "2026-07-02T20:00:00+08:00",
+            "duration_minutes": 60,
+            "goals": [],
+            "status": "planned"
+          }
+        ]
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "name": "schedule-project-id-mismatch",
+      "valid": false,
+      "project": {
+        "schema_version": "study_project.v1",
+        "project_id": "kaoyan-2027",
+        "subjects": [{"id": "math"}]
+      },
+      "schedule": {
+        "project_id": "other-project",
+        "events": []
+      }
+    },
+    {
+      "name": "schedule-subject-mismatch",
+      "valid": false,
+      "project": {
+        "schema_version": "study_project.v1",
+        "project_id": "kaoyan-2027",
+        "subjects": [{"id": "math"}]
+      },
+      "schedule": {
+        "project_id": "kaoyan-2027",
+        "events": [{"subject_id": "physics"}]
+      }
+    }
+  ]
+}

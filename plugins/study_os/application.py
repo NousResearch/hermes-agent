@@ -65,6 +65,37 @@ _PROFILE_DEFAULTS: dict[str, Any] = {
 class StudyOSApplication:
     """Execute StudyOS queries and commands against the active profile."""
 
+    @staticmethod
+    def validate_schedule_relationships(
+        project: dict[str, Any],
+        schedule: dict[str, Any],
+    ) -> list[str]:
+        """Validate aggregate relationships excluded from structural Schema."""
+
+        errors: list[str] = []
+        if schedule.get("project_id") != project.get("project_id"):
+            errors.append("project_id must match project manifest")
+        groups = (
+            project.get("tracks")
+            if project.get("schema_version") == "study_project.v2"
+            else project.get("subjects")
+        )
+        subject_ids = {
+            str(item["id"])
+            for item in groups or []
+            if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        for index, event in enumerate(schedule.get("events") or []):
+            if (
+                isinstance(event, dict)
+                and isinstance(event.get("subject_id"), str)
+                and event["subject_id"] not in subject_ids
+            ):
+                errors.append(
+                    f"events[{index}].subject_id must exist in project subjects"
+                )
+        return errors
+
     def query(self, query: StudyQuery | str, /, **params: Any) -> dict[str, Any]:
         try:
             operation = StudyQuery(query)
@@ -223,6 +254,7 @@ class StudyOSApplication:
             as_of=params.get("as_of"),
             review_limit=int(params.get("review_limit", 10)),
             intervention_limit=int(params.get("intervention_limit", 5)),
+            schedule_relationship_validator=self.validate_schedule_relationships,
         )
 
     def _decide_plan_proposal(self, **params: Any) -> dict[str, Any]:
@@ -254,7 +286,10 @@ class StudyOSApplication:
     def _schedules(self, project_id: str) -> dict[str, Any]:
         workspace = self._workspace()
         assert workspace is not None
-        catalog = workspace.discover_schedules(project_id)
+        catalog = workspace.discover_schedules(
+            project_id,
+            relationship_validator=self.validate_schedule_relationships,
+        )
         schedules = [
             {
                 "schedule_id": artifact.schedule["schedule_id"],
@@ -278,7 +313,10 @@ class StudyOSApplication:
     def _schedule(self, project_id: str, schedule_id: str) -> dict[str, Any]:
         workspace = self._workspace()
         assert workspace is not None
-        catalog = workspace.discover_schedules(project_id)
+        catalog = workspace.discover_schedules(
+            project_id,
+            relationship_validator=self.validate_schedule_relationships,
+        )
         for artifact in catalog.schedules:
             if artifact.schedule.get("schedule_id") == schedule_id:
                 return artifact.schedule

@@ -13,6 +13,8 @@ cannot be handled at the FTS-rebuild layer. These tests verify the
 sqlite_master surgery path recovers the canonical data and self-heals on open.
 """
 import sqlite3
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -356,3 +358,74 @@ def test_select_cached_agent_history_prefers_longer_live_transcript():
     # No live transcript / not a list → no-op.
     assert _select_cached_agent_history(persisted, None) is persisted
     assert _select_cached_agent_history(persisted, "nope") is persisted
+
+def test_concurrent_repair_serialises_two_sessiondb_openers(tmp_path, monkeypatch):
+    """Two SessionDB openers against one malformed file must both succeed: the
+    winner claims the one-shot repair and performs it; the loser (whose claim
+    returns False) retries _connect_and_init until the winner's repair leaves
+    the file readable.
+
+    Coordinated regression test: the winning repair is held just after it
+    obtains the real claim, the losing initializer is started so it is already
+    inside its retry loop, then the repair is released. Both initializers must
+    open cleanly — no loop, no deadlock, no raised error.
+    """
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    # Fresh process-global guard so neither opener pre-claims.
+    monkeypatch.setattr(hermes_state, "_repair_attempted_paths", set())
+
+    # Keep the loser retrying cheaply while the winner finishes repair.
+    monkeypatch.setattr(SessionDB, "_WRITE_MAX_RETRIES", 100)
+    monkeypatch.setattr(SessionDB, "_WRITE_RETRY_MIN_S", 0.005)
+    monkeypatch.setattr(SessionDB, "_WRITE_RETRY_MAX_S", 0.01)
+
+    winner_claimed = threading.Event()
+    loser_started = threading.Event()
+    repair_calls = {"n": 0}
+
+    real_repair = hermes_state.repair_state_db_schema
+
+    def blocked_repair(path, **kw):
+        repair_calls["n"] += 1
+        winner_claimed.set()
+        loser_started.wait(timeout=5)
+        return real_repair(path, **kw)
+
+    monkeypatch.setattr(hermes_state, "repair_state_db_schema", blocked_repair)
+
+    db_winner = None
+    db_loser = None
+
+    def open_winner():
+        nonlocal db_winner
+        db_winner = SessionDB(db_path=db_path)
+
+    def open_loser():
+        nonlocal db_loser
+        loser_started.set()
+        db_loser = SessionDB(db_path=db_path)
+
+    t_winner = threading.Thread(target=open_winner)
+    t_winner.start()
+    assert winner_claimed.wait(timeout=5)
+
+    t_loser = threading.Thread(target=open_loser)
+    t_loser.start()
+
+    t_winner.join(timeout=10)
+    t_loser.join(timeout=10)
+
+    assert db_winner is not None and db_winner._conn is not None
+    assert db_loser is not None and db_loser._conn is not None
+    assert db_winner._conn.execute(
+        "SELECT COUNT(*) FROM sessions"
+    ).fetchone()[0] == 1
+    assert db_loser._conn.execute(
+        "SELECT COUNT(*) FROM sessions"
+    ).fetchone()[0] == 1
+    assert repair_calls["n"] == 1
+    db_winner.close()
+    db_loser.close()

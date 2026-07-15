@@ -1068,8 +1068,30 @@ class SessionDB:
                 # place (backup first; canonical sessions/messages preserved),
                 # then reopen once. This is what lets Desktop/Dashboard
                 # self-heal instead of silently showing "no sessions".
-                if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
+                if not is_malformed_db_error(exc):
                     raise
+                if not _claim_repair_attempt(self.db_path):
+                    # Another thread is already repairing. The claim guard is
+                    # process-local (_repair_attempted_paths is a module-level
+                    # set behind a threading.Lock), so it serialises threads
+                    # within one process only — not separate processes. Wait
+                    # for it to finish and retry, matching the jitter retry
+                    # pattern used for write contention in _execute_write().
+                    last_err = exc
+                    for attempt in range(self._WRITE_MAX_RETRIES):
+                        jitter = random.uniform(
+                            self._WRITE_RETRY_MIN_S,
+                            self._WRITE_RETRY_MAX_S,
+                        )
+                        time.sleep(jitter)
+                        try:
+                            _connect_and_init()
+                            return
+                        except sqlite3.DatabaseError as retry_exc:
+                            if not is_malformed_db_error(retry_exc) or _claim_repair_attempt(self.db_path):
+                                raise
+                            last_err = retry_exc
+                    raise last_err or exc
                 logger.error(
                     "state.db schema is malformed (%s) — attempting automatic "
                     "repair (a backup copy is made first).", exc,

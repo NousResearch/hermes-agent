@@ -118,6 +118,7 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import { spawnValidatedWindowsUpdater } from './updater-handoff'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
   computeWindowOptions,
@@ -2504,7 +2505,7 @@ async function applyUpdates(opts = {}) {
 
     // Detached so the updater outlives this process — it needs us GONE before
     // `hermes update` will run (the venv shim is locked while we live).
-    const child = spawn(updater, updaterArgs, {
+    const spawnOptions = {
       cwd: HERMES_HOME,
       env: {
         ...process.env,
@@ -2514,9 +2515,27 @@ async function applyUpdates(opts = {}) {
       detached: true,
       stdio: 'ignore',
       windowsHide: false
-    })
+    } as const
 
-    child.unref()
+    let child
+
+    if (IS_WINDOWS) {
+      try {
+        child = await spawnValidatedWindowsUpdater(updater, updaterArgs, spawnOptions)
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err)
+        const message = `Could not launch the staged Hermes updater: ${detail}`
+
+        rememberLog(`[updates] staged updater launch failed: ${updater}: ${detail}`)
+        emitUpdateProgress({ stage: 'error', message, error: 'updater-launch-failed', percent: null })
+        startHermes().catch(() => {})
+
+        return { ok: false, error: 'updater-launch-failed', message, updater }
+      }
+    } else {
+      child = spawn(updater, updaterArgs, spawnOptions)
+      child.unref()
+    }
 
     // Write the update-in-progress marker IMMEDIATELY — before the 2.5s
     // quit dwell. The Tauri updater won't write its own marker for several
@@ -2582,19 +2601,27 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   await releaseBackendLockForUpdate(updateRoot)
 
-  const child = spawn(updater, updaterArgs, {
-    cwd: HERMES_HOME,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      PATH: pathWithHermesManagedNode(venvBin)
-    },
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false
-  })
+  let child
 
-  child.unref()
+  try {
+    child = await spawnValidatedWindowsUpdater(updater, updaterArgs, {
+      cwd: HERMES_HOME,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        PATH: pathWithHermesManagedNode(venvBin)
+      },
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    })
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+
+    rememberLog(`[bootstrap] could not launch staged updater for ${reason} recovery: ${updater}: ${detail}`)
+
+    return false
+  }
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend

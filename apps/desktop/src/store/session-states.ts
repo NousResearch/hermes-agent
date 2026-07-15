@@ -19,12 +19,19 @@
 import { atom, computed } from 'nanostores'
 
 import type { ClientSessionState } from '@/app/types'
-import { findGroup } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  moveTreePane,
+  noteActiveTreeGroup,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
 // Reactive per-runtime session state (view mirror of the wiring cache).
@@ -47,7 +54,6 @@ export function dropSessionState(runtimeId: string) {
   const { [runtimeId]: _dropped, ...rest } = current
   $sessionStates.set(rest)
 }
-
 
 // ---------------------------------------------------------------------------
 // Session tiles.
@@ -135,9 +141,17 @@ const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
 
 // Runtime ids are process-scoped — never trust a persisted one, so the live
 // atom hydrates from the stored (runtime-less) tiles for the active profile.
-export const $sessionTiles = atom<SessionTile[]>([...(tilesByProfile[profileKey()] ?? [])])
+// A secondary window (single-chat pop-out) shows ONLY its routed session — no
+// tiles, and no repopulation on a profile switch.
+export const $sessionTiles = atom<SessionTile[]>(isSecondaryWindow() ? [] : [...(tilesByProfile[profileKey()] ?? [])])
 
 function persistTiles() {
+  // Shares the origin's storage; a secondary window holds no tiles, so a write
+  // back would only wipe the primary's set.
+  if (isSecondaryWindow()) {
+    return
+  }
+
   writeJson(TILES_KEY, Object.keys(tilesByProfile).length === 0 ? null : tilesByProfile)
 }
 
@@ -156,10 +170,13 @@ function saveTiles(tiles: SessionTile[]) {
 
 // Profile switch: surface the new profile's tiles with runtime ids cleared so
 // they re-resume against the now-current gateway. (Fires immediately on
-// subscribe; harmless — the init value already matches.)
-$activeGatewayProfile.subscribe(() => {
-  $sessionTiles.set([...(tilesByProfile[profileKey()] ?? [])])
-})
+// subscribe; harmless — the init value already matches.) A secondary window
+// never carries tiles, so it stays out of this entirely.
+if (!isSecondaryWindow()) {
+  $activeGatewayProfile.subscribe(() => {
+    $sessionTiles.set([...(tilesByProfile[profileKey()] ?? [])])
+  })
+}
 
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
@@ -213,12 +230,18 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
 }
 
-/** Open (or front) a tile for a stored session, docked on `dir` (default
- *  right; `center` = stack into the anchor's zone, `before` = strip slot).
- *  Idempotent — an already-open tile keeps its original placement. The
- *  session LOADED IN MAIN never opens as a tile (same transcript twice,
- *  fighting over one runtime — silly). */
-export function openSessionTile(storedSessionId: string, dir: TileDock = 'right', anchor?: string, before?: null | string) {
+/** Open a tile for a stored session, or MOVE an existing one to the new dock
+ *  (`dir`; `center` = stack into the anchor's zone, `before` = strip slot). The
+ *  move path is what lets a tile's own TAB be dragged like a sidebar row — drop
+ *  it on a zone/edge/strip and the tile goes there (drop-on-a-composer links
+ *  instead, handled by the drag resolver). The session LOADED IN MAIN never
+ *  opens as a tile (same transcript twice, fighting one runtime — silly). */
+export function openSessionTile(
+  storedSessionId: string,
+  dir: TileDock = 'right',
+  anchor?: string,
+  before?: null | string
+) {
   const tiles = $sessionTiles.get()
 
   if (storedSessionId === $selectedStoredSessionId.get()) {
@@ -227,7 +250,49 @@ export function openSessionTile(storedSessionId: string, dir: TileDock = 'right'
 
   if (!tiles.some(t => t.storedSessionId === storedSessionId)) {
     saveTiles([...tiles, { anchor, before, dir, storedSessionId }])
+
+    return
   }
+
+  // Already open: relocate the existing pane to the drop target (pane-mirror
+  // only docks on first adoption, so a re-drag must move the tree pane itself).
+  const tree = $layoutTree.get()
+  const target = tree ? findGroupOfPane(tree, anchor ?? 'workspace')?.id : null
+
+  if (target) {
+    moveTreePane(`${TILE_PANE_PREFIX}${storedSessionId}`, { before: before ?? null, groupId: target, pos: dir })
+  }
+}
+
+/** If a session is already ON SCREEN — an open tile OR the one loaded in main —
+ *  front its tab (and focus its zone) and return true. A sidebar click on an
+ *  already-open chat JUMPS to its tab instead of reloading it; `false` means the
+ *  caller must load it into main. Covers the two dead clicks: an open tile, and
+ *  the main session while focus sits on a tile (route unchanged → no reload). */
+export function focusOpenSession(storedSessionId: string): boolean {
+  if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
+    const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
+    revealTreePane(paneId) // un-dismiss + adopt + front in its group
+    const tree = $layoutTree.get()
+    const group = tree ? findGroupOfPane(tree, paneId) : null
+
+    if (group) {
+      noteActiveTreeGroup(group.id)
+    }
+
+    return true
+  }
+
+  // Already the main session: front the workspace tab and drop tile focus so
+  // the readouts + sidebar highlight come home (a no-op when main is focused).
+  if (storedSessionId === $selectedStoredSessionId.get()) {
+    revealTreePane('workspace')
+    noteActiveTreeGroup(null)
+
+    return true
+  }
+
+  return false
 }
 
 // Closed-tab stack for ⌘⇧T reopen (in-memory) — keyed PER PROFILE like the
@@ -323,8 +388,13 @@ export const $focusedSessionState = computed([$focusedRuntimeId, $sessionStates]
 
 // A PRIMARY navigation (sidebar resume, route change, new chat) moves focus
 // home to the workspace — a previously-clicked tile must not keep owning the
-// titlebar/statusbar readouts for a session switch it had no part in.
-$selectedStoredSessionId.listen(() => noteActiveTreeGroup(null))
+// titlebar/statusbar readouts for a session switch it had no part in. It also
+// FRONTS the workspace tab: the resumed chat loads in the workspace pane, so a
+// zone parked on a tile tab must switch back or the click looks dead.
+$selectedStoredSessionId.listen(() => {
+  noteActiveTreeGroup(null)
+  revealTreePane('workspace')
+})
 
 // Dev hook for automation (mirrors __HERMES_LAYOUT_TREE__).
 if (import.meta.env.DEV && typeof window !== 'undefined') {

@@ -30,6 +30,7 @@
 
 import type { PointerEvent as ReactPointerEvent } from 'react'
 
+import { createDragGhost, type DragGhost } from '@/lib/drag-ghost'
 import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
 import { reorderCommitHaptic, reorderStepHaptic } from '@/lib/reorder'
 
@@ -71,7 +72,7 @@ export function radialPosition(
     return 'center'
   }
 
-  return Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'top' : 'bottom')
+  return Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : dy < 0 ? 'top' : 'bottom'
 }
 
 /** Sub-zone drop position within the zone `groupId` (radial hit-testing). */
@@ -177,26 +178,9 @@ export interface DragSessionSpec {
   onTap?(): void
   double?: DoubleTapContext
   /** Floating chip following the pointer — for drags whose source doesn't
-   *  stay visibly "held" (a sidebar row, unlike a dimmed tab). */
+   *  stay visibly "held" (a sidebar row, unlike a dimmed tab). See
+   *  `@/lib/drag-ghost`. */
   ghost?: { label: string }
-}
-
-/** The engaged drag's ghost chip: plain DOM (no React), themed via the same
- *  tokens as DropPill, moved with a transform — trivially cheap, and removal
- *  on Esc is synchronous. */
-function createGhost(label: string): HTMLElement {
-  const ghost = document.createElement('div')
-
-  ghost.textContent = label
-  ghost.style.cssText =
-    'position:fixed;left:0;top:0;z-index:9999;pointer-events:none;max-width:16rem;overflow:hidden;' +
-    'text-overflow:ellipsis;white-space:nowrap;padding:0.25rem 0.75rem;border-radius:9999px;' +
-    'border:1px solid color-mix(in srgb,var(--dt-composer-ring) 45%,transparent);' +
-    'background:color-mix(in srgb,var(--dt-card) 92%,transparent);color:var(--ui-text-primary);' +
-    'font-size:0.75rem;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.25);will-change:transform'
-  document.body.appendChild(ghost)
-
-  return ghost
 }
 
 /** After an ENGAGED drag, the release still synthesizes a `click` on the
@@ -242,7 +226,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
   const restoreSelect = document.body.style.userSelect
   let engaged = false
   let releaseEscapeLayer: (() => void) | null = null
-  let ghost: HTMLElement | null = null
+  let ghost: DragGhost | null = null
   let cursor: string | null = null
   // rAF-coalesced move processing: the raw handler only records the latest
   // point; all hit testing happens at most once per frame.
@@ -287,7 +271,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
     releaseEscapeLayer = pushEscapeLayer(ESCAPE_PRIORITY.drag)
 
     if (spec.ghost) {
-      ghost = createGhost(spec.ghost.label)
+      ghost = createDragGhost(spec.ghost.label)
     }
 
     spec.onEngage(x, y)
@@ -302,9 +286,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
       engage(x, y)
     }
 
-    if (ghost) {
-      ghost.style.transform = `translate3d(${x + 14}px, ${y + 12}px, 0)`
-    }
+    ghost?.moveTo(x, y)
 
     const hint = spec.resolveMove(x, y, shift)
 
@@ -344,7 +326,7 @@ export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSe
 
     document.body.style.cursor = restoreCursor
     document.body.style.userSelect = restoreSelect
-    ghost?.remove()
+    ghost?.destroy()
     ghost = null
     releaseEscapeLayer?.()
     releaseEscapeLayer = null
@@ -428,13 +410,19 @@ const TEAR_OFF_SLACK_PX = 18
  * light up, the target's tab strip stacks at its divider slot, Shift extends
  * the highlight range, release drops into the ClosestCenter primary zone.
  * Esc aborts either mode.
+ *
+ * `ghostLabel` opts into the pointer-following chip (`@/lib/drag-ghost`) — the
+ * same "what am I holding" affordance sessions use. The in-strip dim only
+ * marks a tab; a header/edit-body drag or a torn-off tab has no held source
+ * near the pointer, so the chip carries the pane title along with it.
  */
 export function startPaneDrag(
   paneId: string,
   e: ReactPointerEvent<HTMLElement>,
   onTap?: () => void,
   reorder?: ReorderContext,
-  double?: DoubleTapContext
+  double?: DoubleTapContext,
+  ghostLabel?: string
 ) {
   if (e.button !== 0) {
     return
@@ -486,6 +474,7 @@ export function startPaneDrag(
 
   startDragSession(e, {
     double,
+    ghost: ghostLabel ? { label: ghostLabel } : undefined,
     onTap,
 
     onEngage(x, y) {

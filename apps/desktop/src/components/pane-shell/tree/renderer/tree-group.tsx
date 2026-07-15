@@ -15,8 +15,14 @@ import { type CSSProperties, Fragment, type ReactNode, type RefObject, useRef, u
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { DecodeText } from '@/components/ui/decode-text'
-import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS, DropPill } from '@/components/ui/drop-affordance'
-import { PANE_TAB_STRIP_LINE, PANE_TAB_STRIP_LINE_LEFT, PANE_TAB_STRIP_LINE_RIGHT, PaneTab, PaneTabLabel } from '@/components/ui/pane-tab'
+import { DROP_SHEET_BLUR_CLASS, DROP_SHEET_CLASS } from '@/components/ui/drop-affordance'
+import {
+  PANE_TAB_STRIP_LINE,
+  PANE_TAB_STRIP_LINE_LEFT,
+  PANE_TAB_STRIP_LINE_RIGHT,
+  PaneTab,
+  PaneTabLabel
+} from '@/components/ui/pane-tab'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
@@ -173,21 +179,25 @@ export function TreeGroup({
 
   // ONE header style: the app's compact pane-header. DEFAULT is contextual —
   // a single pane isn't a "tab", so its header auto-hides; a stack shows its
-  // chips. EXCEPTION: a lone TILE (closeable, placement 'main' — a session/page
-  // split) always shows its header, so it has a tab + close X — a tile in its
-  // own zone was otherwise unclosable (the "3rd tile has no tab" trap). Chrome
-  // panes (sessions/files/terminal…) and the uncloseable workspace keep the
-  // clean no-tab default. Double-click toggles it either way; a minimized
-  // group always shows its header (it IS the header).
-  const hasLoneTile = shown.some(id => {
-    const chrome = paneChrome(paneFor(id))
+  // chips. EXCEPTIONS force a lone pane to keep its header (tab + close X):
+  //  - a TILE (closeable, placement 'main' — a session/page split), else a
+  //    tile in its own zone is unclosable (the "3rd tile has no tab" trap);
+  //  - a TOOL PANEL (terminal/logs — a collapse pane) dragged out of the main
+  //    stack, else it's a dead zone with no tab to grab or ✕ to close.
+  // The uncloseable workspace and side chrome (sessions/files) keep the clean
+  // no-tab default. Double-click toggles it either way; a minimized group
+  // always shows its header (it IS the header).
+  const forceLoneHeader =
+    shown.some(id => {
+      const chrome = paneChrome(paneFor(id))
 
-    return !chrome.uncloseable && chrome.placement === 'main'
-  })
+      return !chrome.uncloseable && chrome.placement === 'main'
+    }) ||
+    (shown.length === 1 && isCollapsePane(shown[0]))
 
   // A full-page view (headerVeto) suppresses the strip while it's the active
   // pane — a page is not a tab-able surface; the bar returns with the chat.
-  const headerHidden = paneChrome(active).headerVeto || (node.headerHidden ?? (shown.length <= 1 && !hasLoneTile))
+  const headerHidden = paneChrome(active).headerVeto || (node.headerHidden ?? (shown.length <= 1 && !forceLoneHeader))
 
   // A group collapses ALONG its parent split's axis. In a row that means the
   // WIDTH collapses — a full-width horizontal header would strand a tall
@@ -362,7 +372,9 @@ export function TreeGroup({
             )}
             data-zone-tabstrip={node.id}
             onContextMenu={e => {
-              setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
+              setMenuPane(
+                (e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined
+              )
             }}
             onPointerDown={e =>
               // Tap the header to collapse to it / expand back — the DetailPane
@@ -373,7 +385,8 @@ export function TreeGroup({
                 e,
                 () => minimizable && toggleCollapse(),
                 undefined,
-                hideHeaderDoubleTap
+                hideHeaderDoubleTap,
+                active?.title ?? activeId
               )
             }
             ref={stripRef}
@@ -396,25 +409,43 @@ export function TreeGroup({
                     data-tree-tab={paneId}
                     key={paneId}
                     onClose={closeable ? () => closeTab(paneId) : undefined}
-                    onPointerDown={e =>
-                      startPaneDrag(
-                        paneId,
-                        e,
-                        () => {
-                          // Tabs ACTIVATE (restoring a collapsed group).
-                          // Minimize lives on the chevron / single-pane label
-                          // — overloading the active tab made double-click a
-                          // minimize/restore/hide lottery.
-                          if (node.minimized) {
-                            restoreTreePane(paneId)
-                          }
+                    onPointerDown={e => {
+                      // Tabs ACTIVATE (restoring a collapsed group). Minimize
+                      // lives on the chevron / single-pane label — overloading
+                      // the active tab made double-click a minimize/restore/hide
+                      // lottery.
+                      const onTap = () => {
+                        if (node.minimized) {
+                          restoreTreePane(paneId)
+                        }
 
-                          activateTreePane(node.id, paneId)
-                        },
-                        stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
-                        hideHeaderDoubleTap
-                      )
-                    }
+                        activateTreePane(node.id, paneId)
+                      }
+
+                      // Claim the press so the STRIP's own pane-drag handler
+                      // (parent onPointerDown) can't also fire. startPaneDrag
+                      // does this internally; the session drag (shared with
+                      // sidebar rows) doesn't, so do it here for both paths.
+                      if (e.button === 0) {
+                        e.preventDefault()
+                        e.stopPropagation()
+                      }
+
+                      // A pane may own its tab drag (a session tab speaks the
+                      // session drop language — link/stack/split); `false` defers
+                      // to the generic pane move (the workspace tab on a fresh
+                      // draft has no session to link).
+                      if (!chrome.tabDrag?.(e, onTap, hideHeaderDoubleTap)) {
+                        startPaneDrag(
+                          paneId,
+                          e,
+                          onTap,
+                          stripRef.current ? { groupId: node.id, strip: stripRef.current } : undefined,
+                          hideHeaderDoubleTap,
+                          title
+                        )
+                      }
+                    }}
                     role="tab"
                     style={{ cursor: 'grab' }}
                   >
@@ -472,7 +503,7 @@ export function TreeGroup({
             // barely-tinted wash; the light blur reads as "edit mode" the same
             // way the zone editor's backdrop does.
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
-            onPointerDown={e => startPaneDrag(activeId, e)}
+            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, undefined, active?.title ?? activeId)}
             style={{
               top: headerVisible ? 28 : 0,
               background:
@@ -490,7 +521,7 @@ export function TreeGroup({
 
       {/* FancyZones drop overlay — its own component so the per-frame drop
           hint re-renders only this (tiny) node, not the whole zone. */}
-      <ZoneDropOverlay isEmpty={isEmpty} node={node} />
+      <ZoneDropOverlay node={node} />
     </div>
   )
 }
@@ -565,26 +596,16 @@ const REGION: Record<DropPosition, CSSProperties> = {
   top: { bottom: '50%', left: REGION_PAD, right: REGION_PAD, top: REGION_PAD }
 }
 
-const EDGE_ARROW: Record<Exclude<DropPosition, 'center'>, string> = {
-  bottom: 'arrow-down',
-  left: 'arrow-left',
-  right: 'arrow-right',
-  top: 'arrow-up'
-}
-
 /**
  * The FancyZones drop overlay for one zone. Split out of TreeGroup so the
  * per-pointermove `$dropHint` churn re-renders only this lightweight node —
  * the zone's header, body, and menu-direction walk stay put during a drag.
  *
- * ONE dashed sheet per zone, in the attachment dropzone's design language
- * (DROP_SHEET_CLASS + DropPill — the composer drop and the zone targets speak
- * identically): a quiet outline over every eligible zone, accent-lit over the
- * target, morphing to the hovered half for an edge split. The pill names the
- * outcome; edges get their arrow.
+ * ONE dashed sheet per zone (DROP_SHEET_CLASS — the composer drop and the zone
+ * targets speak identically): a quiet outline over every eligible zone,
+ * accent-lit over the target, morphing to the hovered half for an edge split.
  */
-function ZoneDropOverlay({ isEmpty, node }: { isEmpty: boolean; node: GroupNode }) {
-  const { t } = useI18n()
+function ZoneDropOverlay({ node }: { node: GroupNode }) {
   const dragging = useStore($treeDragging)
   const hint = useStore($dropHint)
 
@@ -618,21 +639,10 @@ function ZoneDropOverlay({ isEmpty, node }: { isEmpty: boolean; node: GroupNode 
   // Sub-positions only exist for a single-zone target (a Shift-span merges).
   const pos = primary && !multi ? (hint?.pos ?? 'center') : 'center'
   // Session drag over a CHAT zone's CENTER: the "link to chat" overlay inside
-  // the surface (ChatDropOverlay — the same sheet + pill) owns that region;
-  // this sheet fades out so the two never stack. A non-chat zone's center has
-  // no chat to link, so it shows the normal stack sheet. Edges act like a tab.
+  // the surface (ChatDropOverlay — the same sheet) owns that region; this sheet
+  // fades out so the two never stack. A non-chat zone's center has no chat to
+  // link, so it shows the normal stack sheet. Edges act like a tab.
   const centerLink = sessionDrag && primary && pos === 'center' && chatZone
-
-  const pill =
-    !primary || centerLink
-      ? null
-      : multi
-        ? { icon: 'combine', label: t.zones.spanHere }
-        : pos !== 'center'
-          ? { icon: EDGE_ARROW[pos], label: sessionDrag ? t.zones.openHere : t.zones.splitHere }
-          : isDragSource
-            ? { icon: 'discard', label: t.zones.staysHere }
-            : { icon: 'layers', label: isEmpty ? t.zones.moveHere : t.zones.stackHere }
 
   return (
     <div
@@ -646,7 +656,7 @@ function ZoneDropOverlay({ isEmpty, node }: { isEmpty: boolean; node: GroupNode 
           // backdrop-filter, and a blur interpolating while the insets glide
           // re-blurs half a zone every frame — the single most expensive
           // paint in the whole drag.
-          'absolute flex items-center justify-center transition-[top,right,bottom,left,background-color,border-color,opacity] duration-150 ease-out',
+          'absolute transition-[top,right,bottom,left,background-color,border-color,opacity] duration-150 ease-out',
           // Blur only the live target — idle outlines must not fog the app.
           active && !centerLink && DROP_SHEET_BLUR_CLASS,
           centerLink && 'opacity-0'
@@ -660,9 +670,7 @@ function ZoneDropOverlay({ isEmpty, node }: { isEmpty: boolean; node: GroupNode 
             : 'color-mix(in srgb, var(--ui-accent) 5%, color-mix(in srgb, var(--dt-card) 25%, transparent))',
           borderColor: `color-mix(in srgb, var(--ui-accent) ${active ? 75 : 28}%, transparent)`
         }}
-      >
-        {pill && <DropPill icon={pill.icon}>{pill.label}</DropPill>}
-      </div>
+      />
     </div>
   )
 }

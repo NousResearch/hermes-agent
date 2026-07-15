@@ -50,9 +50,11 @@ import {
   sessionTileDelegate
 } from '@/store/session-states'
 
+import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
 import { useComposerActions } from './hooks/use-composer-actions'
 import { paneMirror } from './pane-mirror'
+import { startSessionDrag } from './session-drag'
 import { useSessionTileActions } from './session-tile-actions'
 import { type SessionView, SessionViewProvider } from './session-view'
 import { SessionContextMenu } from './sidebar/session-actions-menu'
@@ -255,6 +257,13 @@ function tileTitle(storedSessionId: string): string {
   return stored ? sessionTitle(stored) : 'Session'
 }
 
+/** The `@session` link payload for a tile tab drag — id + owning profile + title. */
+function tileDragPayload(storedSessionId: string): SessionDragPayload {
+  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+
+  return { id: storedSessionId, profile: stored?.profile ?? '', title: tileTitle(storedSessionId) }
+}
+
 // ---------------------------------------------------------------------------
 // Close confirmation — a BUSY tab (streaming, or blocked on clarify/approval
 // input) doesn't close silently.
@@ -416,5 +425,12 @@ export const watchSessionTiles = paneMirror<SessionTile>({
       {tab}
     </SessionTabMenu>
   ),
+  // A tile's tab drags like a sidebar row — stack / split / drop-to-link — with
+  // its tap (activate) + double-tap (hide bar) preserved. Always takes the drag.
+  tabDrag: (storedSessionId, event, onTap, double) => {
+    startSessionDrag(tileDragPayload(storedSessionId), event, { double, onTap })
+
+    return true
+  },
   close: requestCloseSessionTile
 })

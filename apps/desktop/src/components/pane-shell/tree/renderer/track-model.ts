@@ -14,6 +14,8 @@ import type { Contribution } from '@/contrib/types'
 import type { GroupNode, LayoutNode } from '../model'
 import { allPaneIds } from '../model'
 
+import type { DoubleTapContext } from './drag-session'
+
 export const MIN_PANE_PX = 80
 
 /** Optional CSS sizing a pane contributes (`data.width` / `data.minWidth`…).
@@ -46,6 +48,12 @@ interface PaneChrome {
    *  pin/branch/rename/archive/delete). The wrapper must render `tab` as its
    *  interactive child; the zone's own strip menu still owns non-tab space. */
   tabWrap?: (tab: React.ReactElement) => React.ReactNode
+  /** Override this pane's TAB drag (a session tab drags like a sidebar row —
+   *  stack / split / composer-link — not the generic pane move). Given the
+   *  tab's tap (activate) + double-tap (hide header) so those gestures survive.
+   *  Returns whether it took the drag; `false` (or absent) defers to
+   *  `startPaneDrag` — e.g. the workspace tab on a fresh draft, nothing to link. */
+  tabDrag?: (event: React.PointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) => boolean
   /** Suppress the zone header while THIS pane is active — full-page views
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */

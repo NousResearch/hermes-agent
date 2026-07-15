@@ -7,8 +7,9 @@
  */
 
 import type { ReadableAtom } from 'nanostores'
-import type { ReactElement, ReactNode } from 'react'
+import type { ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 'react'
 
+import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import { registerPaneCloser, removeTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import type { TileDock } from '@/store/session-states'
@@ -33,6 +34,14 @@ export interface PaneMirror<T> {
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
+  /** Override the tile's TAB drag (session drop language: stack/split/link).
+   *  Returns whether it took the drag (see PaneChrome.tabDrag). */
+  tabDrag?: (
+    key: string,
+    event: ReactPointerEvent<HTMLElement>,
+    onTap: () => void,
+    double?: DoubleTapContext
+  ) => boolean
   /** Wired as the pane's closer (tab Close). */
   close: (key: string) => void
 }
@@ -62,9 +71,17 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         area: 'panes',
         title,
         data: {
-          dock: { before: cfg.before?.(tile), pane: cfg.anchor?.(tile) ?? 'workspace', pos: cfg.dir?.(tile) ?? 'right' },
+          dock: {
+            before: cfg.before?.(tile),
+            pane: cfg.anchor?.(tile) ?? 'workspace',
+            pos: cfg.dir?.(tile) ?? 'right'
+          },
           minWidth: cfg.minWidth,
           placement: 'main',
+          tabDrag: cfg.tabDrag
+            ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) =>
+                cfg.tabDrag!(key, event, onTap, double)
+            : undefined, // returns boolean (handled) — see PaneChrome.tabDrag
           tabWrap: cfg.tabWrap ? (tab: ReactElement) => cfg.tabWrap!(key, tab) : undefined
         },
         render: () => cfg.render(key)

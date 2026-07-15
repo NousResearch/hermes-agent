@@ -54,6 +54,7 @@ import {
   setCurrentProvider,
   setMessages
 } from '@/store/session'
+import { focusOpenSession } from '@/store/session-states'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -716,7 +717,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onReload: reloadFromMessage,
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
-    onResumeSession: sessionId => navigate(sessionRoute(sessionId)),
+    // Already on screen (open tile, or the main session)? Jump to its tab;
+    // otherwise load it into main.
+    onResumeSession: sessionId => {
+      if (!focusOpenSession(sessionId)) {
+        navigate(sessionRoute(sessionId))
+      }
+    },
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSubmit: submitText,

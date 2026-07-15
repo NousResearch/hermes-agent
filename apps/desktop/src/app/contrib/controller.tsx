@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
-import type { CSSProperties, ReactElement } from 'react'
+import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } from 'react'
 
 import { PREVIEW_RAIL_MAX_WIDTH, PREVIEW_RAIL_MIN_WIDTH } from '@/app/chat/right-rail'
 import { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
@@ -8,6 +8,7 @@ import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds, group, split } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
+import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
   bindTreeSideVisibility,
@@ -52,7 +53,9 @@ import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/prev
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 
+import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
+import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
   stackSessionTilesIntoMain,
@@ -91,6 +94,35 @@ const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
 // the loaded primary session; no menu on a fresh draft).
 const wrapWorkspaceTab = (tab: ReactElement) => <WorkspaceTabMenu>{tab}</WorkspaceTabMenu>
 
+/** The `@session` payload for the workspace tab — the loaded primary session,
+ *  or null on a fresh draft / full-page view (nothing to link). */
+const workspaceDragPayload = (): SessionDragPayload | null => {
+  const selected = $selectedStoredSessionId.get()
+
+  if (!selected || $workspaceIsPage.get()) {
+    return null
+  }
+
+  const stored = $sessions.get().find(s => sessionMatchesStoredId(s, selected))
+
+  return { id: selected, profile: stored?.profile ?? '', title: stored ? storedSessionTitle(stored) : '' }
+}
+
+// The main tab drags like a session tile — drop it on a composer to link the
+// chat, on a zone/edge to stack/split. Defers (`false`) to the generic pane
+// move when there's no loaded session to carry.
+const workspaceTabDrag = (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) => {
+  const payload = workspaceDragPayload()
+
+  if (!payload) {
+    return false
+  }
+
+  startSessionDrag(payload, event, { double, onTap })
+
+  return true
+}
+
 registry.registerMany([
   {
     id: 'sessions',
@@ -115,7 +147,13 @@ registry.registerMany([
     area: 'panes',
     // Live-retitled to the loaded session by syncWorkspaceTitle below.
     title: 'New session',
-    data: { placement: 'main', minWidth: '22vw', tabWrap: wrapWorkspaceTab, uncloseable: true },
+    data: {
+      placement: 'main',
+      minWidth: '22vw',
+      tabDrag: workspaceTabDrag,
+      tabWrap: wrapWorkspaceTab,
+      uncloseable: true
+    },
     render: renderWorkspacePane
   },
   {
@@ -370,6 +408,7 @@ const syncWorkspaceTitle = () => {
       headerVeto: $workspaceIsPage.get(),
       placement: 'main',
       minWidth: '22vw',
+      tabDrag: workspaceTabDrag,
       tabWrap: wrapWorkspaceTab,
       uncloseable: true
     },

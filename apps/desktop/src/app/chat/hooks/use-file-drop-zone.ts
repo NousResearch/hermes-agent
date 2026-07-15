@@ -1,6 +1,7 @@
-import { type DragEvent as ReactDragEvent, useCallback, useRef, useState } from 'react'
+import { type DragEvent as ReactDragEvent, useCallback, useEffect, useRef, useState } from 'react'
 
 import { dragHasAttachments } from '@/app/chat/composer/inline-refs'
+import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
 
 import { type DroppedFile, extractDroppedFiles, HERMES_PATHS_MIME } from './use-composer-actions'
 
@@ -27,15 +28,47 @@ interface FileDropZoneOptions {
  * `onDrop` would fire.
  *
  * Spread `dropHandlers` onto the container; render an overlay off `dragKind`.
+ * Esc aborts an in-flight drag, matching the sidebar session drag.
  */
 export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOptions) {
   const [dragKind, setDragKind] = useState<DragKind>(null)
   const depth = useRef(0)
+  const aborted = useRef(false)
 
   const reset = useCallback(() => {
     depth.current = 0
     setDragKind(null)
   }, [])
+
+  // Esc aborts a file drag — the same "never mind" a session drag gets. Native
+  // DnD can't be cancelled at the OS level, so we drop the overlay and arm a
+  // guard that swallows the trailing drop instead. Top escape layer + capture
+  // stop so it doesn't also fire a handler behind the drag (see drag-session).
+  useEffect(() => {
+    if (dragKind === null) {
+      return
+    }
+
+    const releaseLayer = pushEscapeLayer(ESCAPE_PRIORITY.drag)
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      aborted.current = true
+      reset()
+    }
+
+    window.addEventListener('keydown', onKey, true)
+
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      releaseLayer()
+    }
+  }, [dragKind, reset])
 
   const onDragEnter = useCallback(
     (event: ReactDragEvent) => {
@@ -46,6 +79,12 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
       }
 
       event.preventDefault()
+
+      // A genuinely new drag (not a nested-child re-enter) re-arms after abort.
+      if (depth.current === 0) {
+        aborted.current = false
+      }
+
       depth.current += 1
       setDragKind(kind)
     },
@@ -78,9 +117,12 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
         return
       }
 
-      // An outer layer may have already claimed this drop via preventDefault —
-      // reset the hover state but don't ALSO act on it.
-      const claimed = event.defaultPrevented
+      // Only an Esc abort swallows the drop — NOT `event.defaultPrevented`. The
+      // file tree's app-wide react-dnd HTML5Backend preventDefaults every native
+      // file drop in the capture phase, so that flag is always set here (every
+      // Finder drop would no-op). Genuine nested targets claim via stopPropagation
+      // and never reach this bubble handler anyway.
+      const claimed = aborted.current
 
       event.preventDefault()
       reset()

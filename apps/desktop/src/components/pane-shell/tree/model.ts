@@ -220,7 +220,10 @@ export function insertAtGroup(
   pos: DropPosition,
   /** Center drops only: stack BEFORE this pane id (`null`/omitted = append) —
    *  the tab-strip insertion divider's slot. */
-  before?: null | string
+  before?: null | string,
+  /** Front the inserted pane — TRUE for a gesture (drop/reveal), FALSE for silent
+   *  adoption (logs stacking into the terminal zone must not steal its tab). */
+  activate: boolean = true
 ): LayoutNode | null {
   const walk = (n: LayoutNode): LayoutNode => {
     if (n.type === 'group') {
@@ -236,8 +239,11 @@ export function insertAtGroup(
         // a stack you can't see is a trap, and once a zone has ever stacked
         // the bar STAYS when it drops back to one tab — the auto-hide flicker
         // while dragging tabs around felt broken. Hiding is the user's call
-        // (double-click / zone menu).
-        return { ...n, panes, active: paneId, headerHidden: false }
+        // (double-click / zone menu). Active moves only on a gesture; an empty
+        // target has no prior tab, so the newcomer takes it regardless.
+        const active = activate || n.panes.length === 0 ? paneId : n.active
+
+        return { ...n, panes, active, headerHidden: false }
       }
 
       const orientation: Orientation = pos === 'left' || pos === 'right' ? 'row' : 'column'
@@ -385,9 +391,7 @@ export function adjacentGroup(
 
     const index = parent.children.indexOf(path[i + 1])
 
-    const siblings = forward
-      ? parent.children.slice(index + 1)
-      : parent.children.slice(0, index).reverse()
+    const siblings = forward ? parent.children.slice(index + 1) : parent.children.slice(0, index).reverse()
 
     for (const sibling of siblings) {
       const hit = edgeGroup(sibling, OPPOSITE_EDGE[side], viable)

@@ -1384,6 +1384,7 @@ export interface Translations {
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
+      untitledChat: (id: string) => string
       ageNow: string
       ageDay: string
       ageHour: string
@@ -1947,12 +1948,6 @@ export interface Translations {
     dirDown: string
     dirLeft: string
     dirRight: string
-    stackHere: string
-    moveHere: string
-    splitHere: string
-    openHere: string
-    spanHere: string
-    staysHere: string
     pluginDisabled: (pluginId: string) => string
     pluginDisabledBody: string
     missingPane: (paneId: string) => string

@@ -13,6 +13,7 @@ import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
@@ -55,11 +56,19 @@ function loadPersisted(): LayoutNode | null {
 }
 
 function persist(tree: LayoutNode | null) {
+  // A secondary window (single-chat pop-out) shares the origin's localStorage;
+  // writing its stripped-down DEFAULT tree back would wipe the primary's layout.
+  if (isSecondaryWindow()) {
+    return
+  }
+
   writeJson(STORAGE_KEY, tree)
 }
 
-/** The live tree (null until a default is declared). */
-export const $layoutTree = atom<LayoutNode | null>(loadPersisted())
+/** The live tree (null until a default is declared). A secondary window ignores
+ *  the persisted (primary) layout and boots to the default — nothing but its
+ *  own routed session. */
+export const $layoutTree = atom<LayoutNode | null>(isSecondaryWindow() ? null : loadPersisted())
 
 /**
  * Which layout preset the current tree came from; `'custom'` after the user
@@ -234,7 +243,9 @@ export function trackActiveTreeGroup(): () => void {
 }
 
 const isUncloseablePane = (paneId: string): boolean =>
-  Boolean((registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable)
+  Boolean(
+    (registry.getArea('panes').find(c => c.id === paneId)?.data as { uncloseable?: boolean } | undefined)?.uncloseable
+  )
 
 /** ⌘W "main tabs always": close the MAIN (workspace) zone's active tab, unless
  *  it's the uncloseable workspace itself. Returns false when there's nothing to
@@ -643,7 +654,8 @@ function adoptMissingPanes(target: LayoutNode, source: LayoutNode): LayoutNode {
     const targetId = (sibling ? findGroupOfPane(next, sibling)?.id : undefined) ?? groupLeafIds(next)[0]
 
     if (targetId) {
-      next = insertAtGroup(next, targetId, paneId, 'center') ?? next
+      // Silent adoption: don't steal the target zone's active tab (logs).
+      next = insertAtGroup(next, targetId, paneId, 'center', null, false) ?? next
       have.add(paneId)
     }
   }
@@ -742,7 +754,8 @@ function adoptContributedPanes(): void {
     const target = findGroupOfPane(next, anchor ?? '')?.id
 
     if (target) {
-      next = insertAtGroup(next, target, pane.id, dock?.pos ?? 'center', dock?.before) ?? next
+      // Silent adoption: don't front over the zone's active tab — a reveal does.
+      next = insertAtGroup(next, target, pane.id, dock?.pos ?? 'center', dock?.before, false) ?? next
 
       // An adopted pane ARRIVES with its chip showing — a surprise zone with
       // zero chrome has no obvious handle to drag or close. (Explicit reveal;
@@ -981,7 +994,34 @@ function paneGroup(paneId: string) {
 export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   const group = paneGroup(paneId)
 
-  if (group && Boolean(group.minimized) !== collapsed) {
+  if (!group) {
+    return
+  }
+
+  // SHARED zone (terminal + logs, or a tool panel stacked with the workspace):
+  // one minimized flag but per-pane toggle stores — so "collapsed" is the
+  // ZONE's. Open → reveal + front; close acts ONLY for the on-screen tab. An
+  // inactive toggle folding its visible sibling is what re-collapsed the zone
+  // on every boot (broke collapse persistence).
+  if (group.panes.length > 1) {
+    if (collapsed && group.active === paneId) {
+      if (group.panes.some(isUncloseablePane)) {
+        // Workspace can't minimize (strands the app) → tab-switch to a sibling
+        // (guaranteed to exist by length > 1).
+        const at = group.panes.indexOf(paneId)
+
+        activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
+      } else {
+        toggleTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
+      }
+    } else if (!collapsed) {
+      revealTreePane(paneId)
+    }
+
+    return
+  }
+
+  if (Boolean(group.minimized) !== collapsed) {
     toggleTreeGroupMinimized(group.id, collapsed)
 
     if (!collapsed) {

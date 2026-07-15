@@ -29,6 +29,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 
 import { findGroup } from '@/components/pane-shell/tree/model'
 import {
+  type DoubleTapContext,
   rectContains,
   slotBefore,
   snapshotStrips,
@@ -37,12 +38,18 @@ import {
   type StripSnapshot,
   subZonePosition
 } from '@/components/pane-shell/tree/renderer/drag-session'
-import { $layoutTree, $treeDragging, type DropHint, revealTreePane, SESSION_TILE_DRAG } from '@/components/pane-shell/tree/store'
+import {
+  $layoutTree,
+  $treeDragging,
+  type DropHint,
+  revealTreePane,
+  SESSION_TILE_DRAG
+} from '@/components/pane-shell/tree/store'
 import type { EngineZone, ZoneRect } from '@/components/pane-shell/tree/zones-engine'
 import { openSessionTile, type TileDock } from '@/store/session-states'
 
 import { requestComposerInsertRefs } from './composer/focus'
-import { type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
+import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './composer/inline-refs'
 
 /** A chat surface's drag-start geometry: the anchor pane id it advertises
  *  (`data-session-anchor`) and the composer a link drop routes to
@@ -77,12 +84,18 @@ function chatZonePane(groupId: string): null | string {
 }
 
 /**
- * Begin dragging a sidebar session row. Sub-threshold releases stay ordinary
- * clicks (resume / pin / open-in-window all live on the row's own handlers);
- * past the threshold the row is a drag source and the release commits a
- * stack, a split, or a composer link — Esc aborts instantly.
+ * Begin dragging a session — a sidebar row OR a tile's own tab (same drop
+ * language either way: stack, split, or composer link). Sub-threshold releases
+ * stay ordinary clicks, so `opts.onTap` (activate the tile) and `opts.double`
+ * (hide the tab bar) ride the tab's gestures; Esc aborts instantly. A stack/
+ * split commits through `openSessionTile`, which OPENS a new tile from a sidebar
+ * row and MOVES the existing one when its tab is the drag source.
  */
-export function startSessionDrag(payload: SessionDragPayload, e: ReactPointerEvent<HTMLElement>) {
+export function startSessionDrag(
+  payload: SessionDragPayload,
+  e: ReactPointerEvent<HTMLElement>,
+  opts?: { double?: DoubleTapContext; onTap?: () => void }
+) {
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
@@ -94,8 +107,17 @@ export function startSessionDrag(payload: SessionDragPayload, e: ReactPointerEve
   let split: { anchor: string; before?: null | string; pos: TileDock } | null = null
   let link: null | string = null
 
+  // The drag SOURCE (sidebar row or tile tab). Captured synchronously — React
+  // clears `currentTarget` after the pointerdown handler returns, but this runs
+  // inside it. Dimmed while lifted so the source reads as "picked up" — the
+  // same in-place feedback pane-tab drags use, replacing the old cursor chip.
+  const source = e.currentTarget
+  const restoreOpacity = source?.style.opacity ?? ''
+
   startDragSession(e, {
-    ghost: { label: payload.title || `chat ${payload.id.slice(0, 8)}` },
+    double: opts?.double,
+    ghost: { label: sessionLabel(payload) },
+    onTap: opts?.onTap,
 
     onEngage() {
       zones = snapshotZones()
@@ -103,9 +125,16 @@ export function startSessionDrag(payload: SessionDragPayload, e: ReactPointerEve
       surfaces = snapshotSurfaces()
       composers = [...document.querySelectorAll<HTMLElement>('[data-slot="composer-root"]')].map(snapRect)
       zoneHost = new Map(zones.map(zone => [zone.id, chatZonePane(zone.id)]))
+      source?.style.setProperty('opacity', '0.45')
       // The same sentinel the zone overlay + chat surfaces key off — the
       // whole drop language (sheets, pills, caret, link overlay) lights up.
       $treeDragging.set(SESSION_TILE_DRAG)
+    },
+
+    onEnd() {
+      if (source) {
+        source.style.opacity = restoreOpacity
+      }
     },
 
     resolveMove(x, y): DropHint | null {
@@ -123,7 +152,9 @@ export function startSessionDrag(payload: SessionDragPayload, e: ReactPointerEve
       const strip = strips.find(s => s.groupId === zone.id && rectContains(s.rect, x, y))
 
       if (strip) {
-        const stack = slotBefore(strip.slots, x)
+        // Exclude the tile's OWN tab from the slots so re-dropping it in its
+        // home strip reorders cleanly (a no-op for a sidebar-row drag).
+        const stack = slotBefore(strip.slots, x, `session-tile:${payload.id}`)
         split = { anchor: host, before: stack.before, pos: 'center' }
         link = null
 

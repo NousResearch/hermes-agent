@@ -1,4 +1,5 @@
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
+import { translateNow } from '@/i18n'
 import { contextPath } from '@/lib/chat-runtime'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
@@ -16,10 +17,14 @@ export interface SessionDragPayload {
   title: string
 }
 
+/** A session's friendly display label — its title, or a localized fallback. */
+export const sessionLabel = ({ id, title }: SessionDragPayload) =>
+  title || translateNow('sidebar.row.untitledChat', id.slice(0, 8))
+
 /** Build a `@session:<profile>/<id>` chip. Value carries the metadata the agent
  * needs to resolve the link (session_search); label shows the friendly title. */
-export function sessionInlineRef({ id, profile, title }: SessionDragPayload): InlineRefInput {
-  return { kind: 'session', label: title || `chat ${id.slice(0, 8)}`, value: `${profile || 'default'}/${id}` }
+export function sessionInlineRef(payload: SessionDragPayload): InlineRefInput {
+  return { kind: 'session', label: sessionLabel(payload), value: `${payload.profile || 'default'}/${payload.id}` }
 }
 
 export function dragHasAttachments(transfer: DataTransfer | null, pathsMime: string) {

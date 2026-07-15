@@ -177,3 +177,17 @@ def test_ignores_non_mapping_entries_gracefully():
     # Should not raise.
     out = build_recap(msgs)
     assert "Session recap" in out
+
+
+def test_escape_sequences_sanitized_in_previews():
+    """Recap previews must not carry raw terminal escapes (codex#31494 class)."""
+    msgs = [
+        _user("please \x1b[2J\x1b]0;pwned\x07 do the thing"),
+        _assistant("done \x9b31m with it\x07"),
+    ]
+    out = build_recap(msgs)
+    assert "\x1b" not in out
+    assert "\x9b" not in out
+    assert "\x07" not in out
+    assert "do the thing" in out
+    assert "with it" in out

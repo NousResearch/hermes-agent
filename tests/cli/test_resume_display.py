@@ -728,3 +728,47 @@ class TestResumeDisplayConfig:
 
         display = config.get("display", {})
         assert display.get("resume_display") == "full"
+
+
+class TestResumeDisplaySanitization:
+    """Stored history replayed by /resume must not carry raw terminal
+    escapes or control chars (openai/codex#31494 bug class)."""
+
+    def _capture_display(self, cli_obj):
+        buf = StringIO()
+        cli_obj.console.file = buf
+        cli_obj._display_resumed_history()
+        return buf.getvalue()
+
+    def test_escape_sequences_stripped_from_user_and_assistant(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "hi \x1b[2J\x1b]0;pwned\x07 there"},
+            {"role": "assistant", "content": "ok \x9b31m fine\x07"},
+        ]
+        output = self._capture_display(cli)
+        # Rich adds its own SGR styling escapes when force_terminal is on;
+        # what must NOT survive are the injected non-SGR sequences.
+        assert "\x1b[2J" not in output
+        assert "\x1b]0;pwned" not in output
+        assert "\x9b" not in output
+        assert "\x07" not in output
+        assert "hi" in output and "there" in output
+        assert "fine" in output
+
+    def test_multimodal_text_part_sanitized(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look \x1b[3J\x1b[H at this"},
+                    {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
+                ],
+            },
+            {"role": "assistant", "content": "sure"},
+        ]
+        output = self._capture_display(cli)
+        assert "\x1b[3J" not in output
+        assert "\x1b[H" not in output
+        assert "[image]" in output

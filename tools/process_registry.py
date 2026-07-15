@@ -42,7 +42,11 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_detach_popen_kwargs,
+    windows_hide_flags,
+)
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -766,21 +770,35 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
-        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        proc = subprocess.Popen(
-            [user_shell, "-lic", f"set +m; {command}"],
-            text=True,
-            cwd=session.cwd,
-            env=bg_env,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            **_popen_kwargs,
-        )
+        # Detach background children from the parent job/session. Restrictive
+        # Windows jobs can reject CREATE_BREAKAWAY_FROM_JOB, so mirror
+        # _spawn_detached and retry without only that bit. On POSIX, the helper
+        # supplies start_new_session=True.
+        popen_argv = [user_shell, "-lic", f"set +m; {command}"]
+        popen_common: Dict[str, Any] = {
+            "text": True,
+            "cwd": session.cwd,
+            "env": bg_env,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "stdin": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        try:
+            proc = subprocess.Popen(
+                popen_argv, **popen_common, **windows_detach_popen_kwargs()
+            )
+        except OSError:
+            if not _IS_WINDOWS:
+                raise
+            proc = subprocess.Popen(
+                popen_argv,
+                **popen_common,
+                creationflags=windows_detach_flags_without_breakaway(),
+            )
 
         session.process = proc
         session.pid = proc.pid
@@ -803,9 +821,13 @@ class ProcessRegistry:
 
             self._write_checkpoint()
         except Exception:
-            # Post-Popen setup failed — kill the orphaned subprocess (and any
-            # descendants spawned via setsid) before re-raising so they do not
-            # leak as untracked background processes.
+            # Post-Popen setup failed — terminate the child AND its descendants
+            # before re-raising so they do not leak as untracked background
+            # processes. The child now breaks away from our job object (see the
+            # spawn above), so a bare proc.kill() would only reap the shell and
+            # leave descendants running. Use POSIX process-group termination or
+            # the Windows start-time-validated tree terminator so descendants
+            # cannot escape untracked.
             try:
                 if not _IS_WINDOWS:
                     try:
@@ -814,7 +836,7 @@ class ProcessRegistry:
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
-                    proc.kill()
+                    self._terminate_host_pid(proc.pid, session.host_start_time)
             except Exception:
                 pass
             try:

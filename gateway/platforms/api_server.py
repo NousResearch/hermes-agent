@@ -1397,6 +1397,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1491,6 +1492,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if enabled_toolsets_override is not None:
+            # Authenticated proxy callers may only narrow the remote server's
+            # configured capabilities. An empty list intentionally means no tools.
+            allowed = set(enabled_toolsets)
+            enabled_toolsets = list(dict.fromkeys(
+                name for name in enabled_toolsets_override if name in allowed
+            ))
 
         max_iterations = _current_max_iterations()
 
@@ -2356,6 +2364,22 @@ class APIServerAdapter(BasePlatformAdapter):
         # with that route's model/provider instead of the global default.
         route = self._resolve_route(model_name)
 
+        # Proxy ACL: an authenticated upstream gateway may send
+        # ``hermes_enabled_toolsets`` to narrow the remote server's
+        # capabilities.  The list is validated: must be a list of strings;
+        # unknown names are silently dropped by _create_agent's intersection.
+        # An empty list means "no tools" (fail-closed by design).
+        raw_toolsets = body.get("hermes_enabled_toolsets")
+        enabled_toolsets_override: Optional[List[str]] = None
+        if raw_toolsets is not None:
+            if not isinstance(raw_toolsets, list) or not all(
+                isinstance(t, str) and t for t in raw_toolsets
+            ):
+                # Invalid payload: fail-closed → treat as "no tools".
+                enabled_toolsets_override = []
+            else:
+                enabled_toolsets_override = list(raw_toolsets)
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -2439,6 +2463,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                enabled_toolsets_override=enabled_toolsets_override,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2459,6 +2484,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                enabled_toolsets_override=enabled_toolsets_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -4206,6 +4232,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4242,6 +4269,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    enabled_toolsets_override=enabled_toolsets_override,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent

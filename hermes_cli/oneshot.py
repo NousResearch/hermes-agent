@@ -311,6 +311,7 @@ def _run_agent(
     run a single conversation.  Returns ``(final_response, run_result)``."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
+    from hermes_cli.auth import AuthError
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -372,11 +373,77 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
+
+    # A caller that pinned BOTH --model and --provider asked for that exact
+    # pair; silently running their prompt on a different provider/model would
+    # violate the contract, so auth failures propagate untouched.  Either half
+    # of the pair may come from its env var (HERMES_INFERENCE_PROVIDER /
+    # HERMES_INFERENCE_MODEL) — that is just as deliberate a pin as the flag.
+    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER", "").strip()
+    _explicit_pair = bool((provider or "").strip() or env_provider) and bool(
+        (model or "").strip() or env_model
     )
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url_from_alias,
+        )
+    except AuthError as auth_exc:
+        # Primary provider has no usable credentials (missing, revoked, or
+        # quota-exhausted). Interactive CLI (_ensure_runtime_credentials) and
+        # the cron scheduler both fall through to fallback_providers here —
+        # oneshot must match, otherwise `hermes -z` dies at bootstrap before
+        # the agent's own mid-session fallback chain ever gets a chance.
+        if _explicit_pair:
+            raise
+        runtime = None
+        for _entry in _fb:
+            _fb_kwargs = {
+                "requested": _entry["provider"],
+                # api_mode must be derived from the model this entry will
+                # actually run, not the primary's stale default.
+                "target_model": _entry["model"],
+            }
+            if _entry.get("base_url"):
+                _fb_kwargs["explicit_base_url"] = _entry["base_url"]
+            if _entry.get("api_key"):
+                _fb_kwargs["explicit_api_key"] = _entry["api_key"]
+            try:
+                runtime = resolve_runtime_provider(**_fb_kwargs)
+            except AuthError as _fb_exc:
+                # Only an auth failure means "try the next entry" — anything
+                # else (ValueError from a bad config, TypeError, ...) is a
+                # real bug and must surface, not be eaten by the walk.
+                # AuthError messages can embed credential fragments, so log
+                # only the structured provider/code fields.
+                logging.debug(
+                    "oneshot: fallback %s failed (code=%s)",
+                    _entry["provider"],
+                    getattr(_fb_exc, "code", None),
+                )
+                continue
+            logging.warning(
+                "oneshot: primary provider auth failed (provider=%s, code=%s); "
+                "using fallback %s/%s",
+                getattr(auth_exc, "provider", "") or effective_provider or "?",
+                getattr(auth_exc, "code", None),
+                _entry["provider"],
+                _entry["model"],
+            )
+            # The primary model can't run on the fallback provider — use the
+            # fallback entry's own model.
+            effective_model = _entry["model"]
+            break
+        if runtime is None:
+            # Bare raise: the original AuthError object propagates with its
+            # original traceback and attributes intact — no artificial
+            # re-raise frame, no wrapping.
+            raise
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
@@ -386,9 +453,6 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read the effective fallback chain from profile config so oneshot workers
-    # honour the same merge semantics as interactive CLI and gateway sessions.
-    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

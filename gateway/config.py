@@ -414,10 +414,17 @@ class ChannelOverride:
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
     models and personas without running separate gateway instances.
+
+    ``enabled_toolsets`` scopes the agent's tool surface for the chat:
+    ``None`` inherits the platform's toolsets, ``[]`` pins the chat to
+    conversation-only (no tools), a list replaces the platform default.
+    Besides exact chat ids, override keys may be the wildcards
+    ``"<chat_type>:*"`` (e.g. ``"group:*"``) or ``"*"``.
     """
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    enabled_toolsets: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -427,16 +434,32 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.enabled_toolsets is not None:
+            out["enabled_toolsets"] = list(self.enabled_toolsets)
         return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
         if not data:
             return cls()
+        raw_toolsets = data.get("enabled_toolsets")
+        enabled_toolsets: Optional[List[str]]
+        if raw_toolsets is None:
+            enabled_toolsets = None
+        elif isinstance(raw_toolsets, list):
+            enabled_toolsets = [str(ts) for ts in raw_toolsets]
+        elif isinstance(raw_toolsets, str):
+            enabled_toolsets = [raw_toolsets]
+        else:
+            # Malformed value — this key was meant to restrict tools, so
+            # fail closed to no tools rather than silently granting the
+            # full platform toolsets.
+            enabled_toolsets = []
         return cls(
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            enabled_toolsets=enabled_toolsets,
         )
 
 

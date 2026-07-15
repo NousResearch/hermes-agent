@@ -67,6 +67,7 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
+import { applyGatewayWsOrigin } from './gateway-ws-origin'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -9530,6 +9531,20 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
+// Present the gateway's own origin on the renderer's gateway-WS handshakes so
+// the dashboard's Host/Origin guard accepts the upgrade. Without this, a
+// renderer served from anywhere other than the gateway host (the Vite dev
+// server in `npm run dev`) is refused pre-accept with 403 and remote mode
+// surfaces the opaque "Could not connect to Hermes gateway" — while REST keeps
+// working, because main-process requests carry no Origin. The rewrite decision
+// lives in gateway-ws-origin.ts (electron-free, unit-tested); scoped to
+// ws/wss upgrades of the gateway endpoints only.
+function installGatewayWsOrigin() {
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['ws://*/*', 'wss://*/*'] }, (details, callback) => {
+    callback({ requestHeaders: applyGatewayWsOrigin(details.url, details.requestHeaders) ?? details.requestHeaders })
+  })
+}
+
 app.whenReady().then(() => {
   const systemCa = installWindowsSystemCaTrust(tls)
 
@@ -9550,6 +9565,7 @@ app.whenReady().then(() => {
   installMediaPermissions()
   registerMediaProtocol()
   installEmbedReferer()
+  installGatewayWsOrigin()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()
   configureSpellChecker()

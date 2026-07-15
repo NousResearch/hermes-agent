@@ -57,6 +57,7 @@ async function mapLimit(items, limit, fn) {
 async function scanGitRepos(roots, options: any = {}) {
   const maxDepth = Number(options.maxDepth) || DEFAULT_MAX_DEPTH
   const searchRoots = Array.isArray(roots) && roots.length > 0 ? roots : [os.homedir()]
+  const skipTccProtectedPaths = process.platform === 'darwin'
   const found = new Map()
 
   async function walk(dir, depth) {
@@ -93,11 +94,11 @@ async function scanGitRepos(roots, options: any = {}) {
         continue
       }
 
-      if (depth === 0 && MEDIA_ROOT_DIRS.has(entry.name)) {
+      if (skipTccProtectedPaths && depth === 0 && MEDIA_ROOT_DIRS.has(entry.name)) {
         continue
       }
 
-      if (isLibraryPackage(entry.name)) {
+      if (skipTccProtectedPaths && isLibraryPackage(entry.name)) {
         continue
       }
 

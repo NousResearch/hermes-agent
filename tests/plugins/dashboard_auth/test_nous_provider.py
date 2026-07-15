@@ -674,6 +674,23 @@ class TestVerifySession:
         _patched_jwks(p, rsa_keypair)
         return p
 
+    def test_jwks_client_sends_explicit_http_headers(self, provider):
+        """Constructor-contract regression: the JWKS fetch must send an
+        explicit Accept + User-Agent so it isn't blocked by the Portal WAF
+        (same fix as the self_hosted provider)."""
+        provider._jwks_client = None
+        with patch("jwt.PyJWKClient") as client_cls:
+            provider._get_jwks_client()
+        client_cls.assert_called_once_with(
+            provider._jwks_url,
+            cache_keys=True,
+            lifespan=nous_plugin._JWKS_CACHE_SECONDS,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "HermesAgent/1.0",
+            },
+        )
+
     def test_happy_path_returns_session(self, provider, rsa_keypair):
         token = _mint_token(rsa_keypair)
         session = provider.verify_session(access_token=token)

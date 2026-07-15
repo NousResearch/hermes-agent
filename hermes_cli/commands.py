@@ -212,6 +212,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                             "heartbeat", "assignees", "context", "specify", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
+    CommandDef("mcp", "Show configured MCP servers and connection status", "Tools & Skills"),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
@@ -1163,7 +1164,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - mcp: rarely-needed MCP server inspector; /hermes mcp keeps a native
+#     slot free for a hotter command (the Slack cap is 50).
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "mcp"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

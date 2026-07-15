@@ -2080,12 +2080,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         # shutil.which returns None — fall back to a clear error rather
         # than a FileNotFoundError with a confusing "[WinError 2]"
         # traceback.
-        from tools.environments.local import _find_bash
+        from tools.environments.local import _bash_safe_path, _find_bash
         try:
             _bash = _find_bash()
         except RuntimeError as e:
             return False, f"Cannot run .sh/.bash script {path.name!r}: {e}"
-        argv = [_bash, str(path)]
+        argv = [_bash, _bash_safe_path(str(path))]
     else:
         argv = [sys.executable, str(path)]
 

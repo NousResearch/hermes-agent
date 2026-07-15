@@ -316,6 +316,24 @@ class GatewayAuthorizationMixin:
 
         user_id = source.user_id
 
+        # LINE already applies its effective user/group/room policy at adapter
+        # intake. Reuse that profile-aware live adapter state here so the same
+        # configured chat allowlist also authorizes the shared, user-less source
+        # used by text-only observation mode.
+        if (
+            getattr(source.platform, "value", "") == "line"
+            and source.chat_type in {"group", "room"}
+            and source.chat_id
+        ):
+            adapter = self._authorization_adapter(source.platform, source.profile)
+            if adapter is not None:
+                allowed_attr = (
+                    "allowed_rooms" if source.chat_type == "room" else "allowed_groups"
+                )
+                allowed_chats = getattr(adapter, allowed_attr, set()) or set()
+                if getattr(adapter, "allow_all", False) or source.chat_id in allowed_chats:
+                    return True
+
         # Telegram (and similar) authorize entire group/forum/channel chats
         # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
         # That allowlist is chat-scoped, so it must work even when

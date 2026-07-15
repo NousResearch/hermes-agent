@@ -75,6 +75,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
@@ -736,6 +737,8 @@ class LineAdapter(BasePlatformAdapter):
         # button per chat at a time. Postback cache request_id keyed by chat_id.
         self._pending_buttons: Dict[str, str] = {}
 
+        self._mention_patterns = self._compile_mention_patterns()
+
     # ------------------------------------------------------------------
     # Connection lifecycle
     # ------------------------------------------------------------------
@@ -856,6 +859,193 @@ class LineAdapter(BasePlatformAdapter):
             self._lock_key = None
 
     # ------------------------------------------------------------------
+    # Mention gating + text-only observation
+    # ------------------------------------------------------------------
+
+    def _line_bool_setting(self, name: str) -> bool:
+        value = self.config.extra.get(name, False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    def _line_require_mention(self) -> bool:
+        return self._line_bool_setting("require_mention")
+
+    def _line_observe_mode_enabled(self) -> bool:
+        return self._line_require_mention() and self._line_bool_setting(
+            "observe_unmentioned_group_messages"
+        )
+
+    def _line_free_response_channels(self) -> Set[str]:
+        raw = self.config.extra.get("free_response_channels", [])
+        if isinstance(raw, str):
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        if isinstance(raw, (list, tuple, set)):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return set()
+
+    def _compile_mention_patterns(self) -> List[re.Pattern]:
+        raw = self.config.extra.get("mention_patterns", [])
+        patterns = [raw] if isinstance(raw, str) else raw
+        if not isinstance(patterns, (list, tuple)):
+            return []
+        compiled = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error:
+                logger.warning("LINE: ignoring invalid mention pattern %r", pattern)
+        return compiled
+
+    @staticmethod
+    def _is_line_group_chat(source: Dict[str, Any]) -> bool:
+        return source.get("type") in {"group", "room"}
+
+    @staticmethod
+    def _line_message_mentions_bot(event: Dict[str, Any]) -> bool:
+        message = event.get("message") or {}
+        mention = message.get("mention") or {}
+        mentionees = mention.get("mentionees") or []
+        return any(
+            isinstance(item, dict)
+            and (item.get("isSelf") or item.get("type") == "all")
+            for item in mentionees
+        )
+
+    def _line_message_matches_mention_patterns(self, text: str) -> bool:
+        return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _line_chat_is_explicitly_allowed(self, source: Dict[str, Any]) -> bool:
+        chat_id, chat_type = _resolve_chat(source)
+        allowed = self.allowed_rooms if chat_type == "room" else self.allowed_groups
+        return bool(chat_id and chat_id in allowed)
+
+    def _should_process_line_message(self, event: Dict[str, Any]) -> bool:
+        source = event.get("source") or {}
+        if not self._is_line_group_chat(source):
+            return True
+        chat_id, _ = _resolve_chat(source)
+        if chat_id in self._line_free_response_channels():
+            return True
+        if not self._line_require_mention():
+            return True
+        if self._line_message_mentions_bot(event):
+            return True
+        message = event.get("message") or {}
+        text = message.get("text", "") if message.get("type") == "text" else ""
+        return self._line_message_matches_mention_patterns(text)
+
+    def _should_clean_line_trigger(self, event: Dict[str, Any]) -> bool:
+        source = event.get("source") or {}
+        if not self._is_line_group_chat(source) or not self._line_require_mention():
+            return False
+        if self._line_message_mentions_bot(event):
+            return False
+        chat_id, _ = _resolve_chat(source)
+        if chat_id in self._line_free_response_channels():
+            return False
+        message = event.get("message") or {}
+        text = message.get("text", "") if message.get("type") == "text" else ""
+        return self._line_message_matches_mention_patterns(text)
+
+    def _should_observe_unmentioned_line_group_message(
+        self, event: Dict[str, Any]
+    ) -> bool:
+        source = event.get("source") or {}
+        message = event.get("message") or {}
+        if not self._line_observe_mode_enabled():
+            return False
+        if not self._is_line_group_chat(source) or message.get("type") != "text":
+            return False
+        chat_id, _ = _resolve_chat(source)
+        if chat_id in self._line_free_response_channels():
+            return False
+        if self._line_message_mentions_bot(event):
+            return False
+        if self._line_message_matches_mention_patterns(message.get("text", "")):
+            return False
+        return self._line_chat_is_explicitly_allowed(source)
+
+    @staticmethod
+    def _line_group_observe_shared_source(source):
+        import dataclasses
+
+        return dataclasses.replace(
+            source, user_id=None, user_name=None, user_id_alt=None
+        )
+
+    @staticmethod
+    def _line_group_observe_attributed_text(event: MessageEvent) -> str:
+        user_id = event.source.user_id or "unknown"
+        sender = event.source.user_name or user_id
+        return f"[{sender}|{user_id}]\n{event.text or ''}"
+
+    @staticmethod
+    def _line_group_observe_channel_prompt() -> str:
+        return (
+            "You are handling a LINE group chat message.\n"
+            "Treat only the current new message as addressed to you. Observed "
+            "group text is context only; do not answer it as separate requests.\n"
+            "(observed LINE group context)"
+        )
+
+    def _apply_line_group_observe_attribution(self, event: MessageEvent) -> MessageEvent:
+        source = event.source
+        raw_source = {
+            "type": source.chat_type,
+            "groupId": source.chat_id if source.chat_type == "group" else None,
+            "roomId": source.chat_id if source.chat_type == "room" else None,
+        }
+        if not self._line_observe_mode_enabled():
+            return event
+        if not self._is_line_group_chat(raw_source):
+            return event
+        if source.chat_id in self._line_free_response_channels():
+            return event
+        if not self._line_chat_is_explicitly_allowed(raw_source):
+            return event
+
+        import dataclasses
+
+        prompt = self._line_group_observe_channel_prompt()
+        channel_prompt = (
+            f"{event.channel_prompt}\n\n{prompt}" if event.channel_prompt else prompt
+        )
+        changes = {
+            "source": self._line_group_observe_shared_source(source),
+            "channel_prompt": channel_prompt,
+        }
+        if not event.is_command():
+            changes["text"] = self._line_group_observe_attributed_text(event)
+        return dataclasses.replace(event, **changes)
+
+    def _clean_line_bot_trigger_text(self, text: str) -> str:
+        for pattern in self._mention_patterns:
+            text = pattern.sub("", text)
+        return text.strip()
+
+    def _observe_unmentioned_line_group_message(self, event: MessageEvent) -> None:
+        store = getattr(self, "_session_store", None)
+        if not store or not event.text:
+            return
+        try:
+            shared_source = self._line_group_observe_shared_source(event.source)
+            session = store.get_or_create_session(shared_source)
+            entry = {
+                "role": "user",
+                "content": self._line_group_observe_attributed_text(event),
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "observed": True,
+            }
+            if event.message_id:
+                entry["message_id"] = str(event.message_id)
+            store.append_to_transcript(session.session_id, entry)
+        except Exception as exc:
+            logger.warning("LINE: failed to observe group message: %s", exc)
+
+    # ------------------------------------------------------------------
     # Webhook handlers
     # ------------------------------------------------------------------
 
@@ -938,7 +1128,26 @@ class LineAdapter(BasePlatformAdapter):
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
 
-        # Stash the reply token for outbound use.
+        if not self._should_process_line_message(event):
+            if self._should_observe_unmentioned_line_group_message(event):
+                source_obj = self.build_source(
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    user_id=user_id,
+                    user_name=user_id,
+                    chat_name=chat_id,
+                )
+                self._observe_unmentioned_line_group_message(MessageEvent(
+                    text=msg.get("text", "") or "",
+                    source=source_obj,
+                    raw_message=event,
+                    message_id=message_id,
+                ))
+            return
+
+        # Only addressed messages may provide the reply token for an outbound
+        # response. Ambient observed traffic must not overwrite the token of a
+        # concurrently running addressed turn in the same chat.
         if chat_id and reply_token:
             self._reply_tokens[chat_id] = (
                 reply_token,
@@ -990,6 +1199,10 @@ class LineAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
         )
+
+        if self._should_clean_line_trigger(event):
+            event_obj.text = self._clean_line_bot_trigger_text(event_obj.text)
+        event_obj = self._apply_line_group_observe_attribution(event_obj)
 
         await self.handle_message(event_obj)
 

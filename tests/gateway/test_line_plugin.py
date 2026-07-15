@@ -674,3 +674,339 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Mention gating + text-only observation mode
+# ---------------------------------------------------------------------------
+
+_LINE_BEHAVIOR_ENV = (
+    "LINE_ALLOWED_USERS",
+    "LINE_ALLOWED_GROUPS",
+    "LINE_ALLOWED_ROOMS",
+    "LINE_ALLOW_ALL_USERS",
+)
+
+
+def _clear_line_behavior_env(monkeypatch):
+    for name in _LINE_BEHAVIOR_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _message_event(
+    text: str = "ambient context",
+    *,
+    chat_id: str = "C1",
+    user_id: str = "U1",
+    mentioned: bool = False,
+    message_type: str = "text",
+    event_id: str = "evt-1",
+):
+    message = {"id": f"msg-{event_id}", "type": message_type}
+    if message_type == "text":
+        message["text"] = text
+    if mentioned:
+        message["mention"] = {"mentionees": [{"isSelf": True, "type": "user"}]}
+    return {
+        "type": "message",
+        "webhookEventId": event_id,
+        "replyToken": f"reply-{event_id}",
+        "source": {"type": "group", "groupId": chat_id, "userId": user_id},
+        "message": message,
+    }
+
+
+def _observation_store():
+    store = MagicMock()
+    session = MagicMock()
+    session.session_id = "line-shared-session"
+    store.get_or_create_session.return_value = session
+    return store
+
+
+class TestLineObservationIntegration:
+
+    @pytest.mark.asyncio
+    async def test_yaml_group_allowlist_reaches_observation_auth_and_history(
+        self, tmp_path, monkeypatch
+    ):
+        _clear_line_behavior_env(monkeypatch)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n"
+            "  platforms:\n"
+            "    line:\n"
+            "      enabled: true\n"
+            "      allowed_groups: [\"C1\"]\n"
+            "      require_mention: true\n"
+            "      observe_unmentioned_group_messages: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        from gateway.config import Platform, load_gateway_config
+        from gateway.run import (
+            GatewayRunner,
+            _build_gateway_agent_history,
+            _wrap_current_message_with_observed_context,
+        )
+
+        config = load_gateway_config()
+        platform = Platform("line")
+        adapter = LineAdapter(config.platforms[platform])
+        store = _observation_store()
+        adapter.set_session_store(store)
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter.handle_message = capture
+        adapter._reply_tokens["C1"] = ("active-token", 9_999_999_999.0)
+
+        await adapter._dispatch_event(_message_event(event_id="ambient"))
+
+        assert adapter.allowed_groups == {"C1"}
+        assert dispatched == []
+        assert adapter._reply_tokens["C1"] == ("active-token", 9_999_999_999.0)
+        store.append_to_transcript.assert_called_once()
+        observed_entry = store.append_to_transcript.call_args.args[1]
+        assert observed_entry["observed"] is True
+        assert "ambient context" in observed_entry["content"]
+        assert "media_urls" not in observed_entry
+        shared_source = store.get_or_create_session.call_args.args[0]
+        assert shared_source.chat_id == "C1"
+        assert shared_source.user_id is None
+        assert shared_source.user_id_alt is None
+
+        await adapter._dispatch_event(
+            _message_event("@bot answer", mentioned=True, event_id="mention")
+        )
+
+        assert len(dispatched) == 1
+        addressed = dispatched[0]
+        assert addressed.source.chat_id == "C1"
+        assert addressed.source.user_id is None
+        assert "observed LINE group context" in addressed.channel_prompt
+
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {platform: adapter}
+        runner._profile_adapters = {}
+        assert runner._is_user_authorized(addressed.source)
+
+        agent_history, observed_context = _build_gateway_agent_history(
+            [observed_entry], channel_prompt=addressed.channel_prompt
+        )
+        assert agent_history == []
+        assert "ambient context" in observed_context
+        wrapped = _wrap_current_message_with_observed_context(
+            addressed.text, observed_context
+        )
+        assert "ambient context" in wrapped
+        assert "@bot answer" in wrapped
+
+    @pytest.mark.parametrize(
+        ("chat_type", "chat_id", "allowlist_key"),
+        [("group", "C-secondary", "allowed_groups"),
+         ("room", "R-secondary", "allowed_rooms")],
+    )
+    def test_gateway_auth_uses_matching_profile_line_adapter(
+        self, monkeypatch, chat_type, chat_id, allowlist_key
+    ):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import Platform, PlatformConfig
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource
+
+        platform = Platform("line")
+        default_adapter = LineAdapter(PlatformConfig(enabled=True, extra={}))
+        secondary_adapter = LineAdapter(PlatformConfig(
+            enabled=True, extra={allowlist_key: [chat_id]}
+        ))
+        runner = object.__new__(GatewayRunner)
+        runner.adapters = {platform: default_adapter}
+        runner._profile_adapters = {"coder": {platform: secondary_adapter}}
+        source = SessionSource(
+            platform=platform,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=None,
+            profile="coder",
+        )
+
+        assert runner._is_user_authorized(source)
+        source.profile = None
+        assert not runner._is_user_authorized(source)
+
+    @pytest.mark.asyncio
+    async def test_disallowed_group_is_rejected_before_observation(self, monkeypatch):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "allowed_groups": ["C1"],
+            "require_mention": True,
+            "observe_unmentioned_group_messages": True,
+        }))
+        store = _observation_store()
+        adapter.set_session_store(store)
+        adapter.handle_message = AsyncMock()
+
+        await adapter._dispatch_event(
+            _message_event(chat_id="C2", event_id="disallowed")
+        )
+
+        store.append_to_transcript.assert_not_called()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allow_all_does_not_enable_shared_observation(self, monkeypatch):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "allow_all_users": True,
+            "require_mention": True,
+            "observe_unmentioned_group_messages": True,
+        }))
+        store = _observation_store()
+        adapter.set_session_store(store)
+        adapter.handle_message = AsyncMock()
+
+        await adapter._dispatch_event(_message_event(event_id="allow-all"))
+
+        store.append_to_transcript.assert_not_called()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_media_is_not_downloaded_or_observed(self, monkeypatch):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "allowed_groups": ["C1"],
+            "require_mention": True,
+            "observe_unmentioned_group_messages": True,
+        }))
+        store = _observation_store()
+        adapter.set_session_store(store)
+        adapter._download_media = AsyncMock(return_value="/tmp/observed.jpg")
+        adapter.handle_message = AsyncMock()
+
+        await adapter._dispatch_event(
+            _message_event(message_type="image", event_id="image")
+        )
+
+        adapter._download_media.assert_not_awaited()
+        store.append_to_transcript.assert_not_called()
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_behavior_is_unchanged(self, monkeypatch):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "allowed_users": ["U1"],
+            "require_mention": True,
+            "observe_unmentioned_group_messages": True,
+        }))
+        adapter._client = MagicMock()
+        adapter._client.loading = AsyncMock()
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter.handle_message = capture
+        event = {
+            "type": "message",
+            "webhookEventId": "dm",
+            "source": {"type": "user", "userId": "U1"},
+            "message": {"id": "msg-dm", "type": "text", "text": "hello"},
+        }
+
+        await adapter._dispatch_event(event)
+
+        assert len(dispatched) == 1
+        assert dispatched[0].text == "hello"
+        assert dispatched[0].source.user_id == "U1"
+        assert dispatched[0].source.chat_type == "dm"
+        assert dispatched[0].channel_prompt is None
+
+
+class TestLineMentionCleaning:
+
+    @pytest.mark.parametrize(
+        "mention",
+        [None, {"mentionees": None}, {"mentionees": [None, "invalid"]}],
+    )
+    def test_malformed_mention_metadata_is_not_a_bot_mention(
+        self, monkeypatch, mention
+    ):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={}))
+        event = {"message": {"type": "text", "text": "hello", "mention": mention}}
+
+        assert not adapter._line_message_mentions_bot(event)
+
+    @pytest.mark.asyncio
+    async def test_native_mention_does_not_apply_regex_cleaning(self, monkeypatch):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra={
+            "allowed_groups": ["C1"],
+            "require_mention": True,
+            "mention_patterns": ["bot"],
+        }))
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter.handle_message = capture
+        await adapter._dispatch_event(
+            _message_event("robot help", mentioned=True, event_id="native-mention")
+        )
+
+        assert len(dispatched) == 1
+        assert dispatched[0].text == "robot help"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [
+            ({"require_mention": True}, "please help"),
+            ({"require_mention": False}, "HeyBot please help"),
+            ({"require_mention": True, "free_response_channels": ["C1"]},
+             "HeyBot please help"),
+        ],
+    )
+    async def test_pattern_is_cleaned_only_when_it_wakes_the_bot(
+        self, monkeypatch, extra, expected
+    ):
+        _clear_line_behavior_env(monkeypatch)
+        from gateway.config import PlatformConfig
+
+        config_extra = {
+            "allowed_groups": ["C1"],
+            "mention_patterns": ["HeyBot"],
+            **extra,
+        }
+        adapter = LineAdapter(PlatformConfig(enabled=True, extra=config_extra))
+        dispatched = []
+
+        async def capture(event):
+            dispatched.append(event)
+
+        adapter.handle_message = capture
+        await adapter._dispatch_event(
+            _message_event("HeyBot please help", event_id=str(extra))
+        )
+
+        assert len(dispatched) == 1
+        assert dispatched[0].text == expected

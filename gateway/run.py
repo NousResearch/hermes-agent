@@ -800,22 +800,30 @@ def _build_replay_entry(
 
 
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
+_LINE_OBSERVED_CONTEXT_PROMPT_MARKER = "observed LINE group context"
+_OBSERVED_CONTEXT_PROMPT_MARKERS = (
+    _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER,
+    _LINE_OBSERVED_CONTEXT_PROMPT_MARKER,
+)
 _OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
 
 def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
-    """Return True for Telegram group turns that may include observed chatter.
+    """Return True for group turns that may include persisted observed chatter.
 
-    Telegram's observe-unmentioned mode persists skipped group chatter so a
-    later @mention can see it. Those rows must not replay as ordinary user
+    Telegram and LINE observation modes persist skipped group text so a later
+    addressed turn can see it. Those rows must not replay as ordinary user
     turns: a weak wake word like ``@bot cambio`` should not make the model treat
-    old unmentioned chatter as pending work. The Telegram adapter marks these
-    turns with a channel prompt; this helper keeps the run-path check explicit
-    and unit-testable.
+    old unmentioned chatter as pending work. Each adapter marks these turns in
+    its channel prompt; this helper keeps the run-path check explicit and
+    unit-testable.
     """
 
-    return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+    return bool(
+        channel_prompt
+        and any(marker in channel_prompt for marker in _OBSERVED_CONTEXT_PROMPT_MARKERS)
+    )
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:

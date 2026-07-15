@@ -75,6 +75,7 @@ class ToolCallGuardrailConfig:
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
+    same_tool_failure_auto_block_after: int = 5
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
@@ -116,6 +117,10 @@ class ToolCallGuardrailConfig:
             same_tool_failure_halt_after=_positive_int(
                 hard_stop_after.get("same_tool_failure", data.get("same_tool_failure_halt_after")),
                 defaults.same_tool_failure_halt_after,
+            ),
+            same_tool_failure_auto_block_after=_positive_int(
+                data.get("same_tool_failure_auto_block_after"),
+                defaults.same_tool_failure_auto_block_after,
             ),
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
@@ -309,6 +314,21 @@ class ToolCallGuardrailController:
                     code="same_tool_failure_halt",
                     message=(
                         f"Stopped {tool_name}: it failed {same_count} times this turn. "
+                        "Stop retrying the same failing tool path and choose a different approach."
+                    ),
+                    tool_name=tool_name,
+                    count=same_count,
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
+
+            if not self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_auto_block_after:
+                decision = ToolGuardrailDecision(
+                    action="halt",
+                    code="same_tool_failure_auto_block",
+                    message=(
+                        f"Auto-blocked {tool_name}: it failed {same_count} times this turn. "
                         "Stop retrying the same failing tool path and choose a different approach."
                     ),
                     tool_name=tool_name,

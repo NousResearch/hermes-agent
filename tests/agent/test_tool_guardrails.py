@@ -79,14 +79,14 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
     args = {"query": "same"}
 
     decisions = []
-    for _ in range(5):
+    for _ in range(4):
         assert controller.before_call("web_search", args).action == "allow"
         decisions.append(
             controller.after_call("web_search", args, '{"error":"boom"}', failed=True)
         )
 
     assert decisions[0].action == "allow"
-    assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn", "warn"]
+    assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn"]
     assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
     assert controller.before_call("web_search", args).action == "allow"
     assert controller.halt_decision is None
@@ -256,3 +256,107 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_same_tool_failure_auto_blocks_without_hard_stop():
+    """Default config (hard_stop_enabled=False) must still auto-block same-tool
+    failures after the auto_block threshold to prevent cost-amplification loops.
+    See #32827."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            same_tool_failure_warn_after=2,
+            same_tool_failure_auto_block_after=3,
+        )
+    )
+
+    # First three same-tool failures with varying args
+    first = controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
+    assert first.action == "allow"
+
+    second = controller.after_call("terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True)
+    assert second.action == "warn"
+    assert second.code == "same_tool_failure_warning"
+
+    third = controller.after_call("terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True)
+    assert third.action == "halt"
+    assert third.code == "same_tool_failure_auto_block"
+    assert third.count == 3
+
+    # Halt should be recorded
+    assert controller.halt_decision is not None
+    assert controller.halt_decision.code == "same_tool_failure_auto_block"
+
+
+def test_same_tool_failure_auto_block_uses_default_threshold():
+    """With the factory-default config, auto-block should trigger at the
+    built-in default threshold (5).  See #32827."""
+    controller = ToolCallGuardrailController()
+
+    decisions = []
+    for i in range(5):
+        decisions.append(
+            controller.after_call(
+                "terminal", {"command": f"cmd-{i}"}, '{"exit_code":1}', failed=True
+            )
+        )
+
+    # Default: warn_after=3, so first 2 are allow, next 2 are warn, 5th is halt
+    assert decisions[0].action == "allow"
+    assert decisions[1].action == "allow"
+    assert [d.action for d in decisions[2:4]] == ["warn", "warn"]
+    assert decisions[4].action == "halt"
+    assert decisions[4].code == "same_tool_failure_auto_block"
+    assert decisions[4].count == 5
+    assert controller.halt_decision is not None
+
+
+def test_success_resets_same_tool_auto_block_streak():
+    """A successful call after same-tool failures should reset the auto-block
+    counter.  See #32827."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            same_tool_failure_warn_after=2,
+            same_tool_failure_auto_block_after=3,
+        )
+    )
+
+    # Two failures, then a success, then two more failures
+    controller.after_call("terminal", {"command": "fail-1"}, '{"exit_code":1}', failed=True)
+    controller.after_call("terminal", {"command": "fail-2"}, '{"exit_code":1}', failed=True)
+    # Success resets
+    controller.after_call("terminal", {"command": "ok"}, '{"exit_code":0}', failed=False)
+
+    # Counter should be reset — these should start fresh
+    first = controller.after_call("terminal", {"command": "fail-3"}, '{"exit_code":1}', failed=True)
+    assert first.action == "allow"
+    second = controller.after_call("terminal", {"command": "fail-4"}, '{"exit_code":1}', failed=True)
+    assert second.action == "warn"
+    # Third after reset should still just warn (not halt, since counter was reset)
+    assert controller.halt_decision is None
+
+
+def test_hard_stop_enabled_uses_its_own_threshold_not_auto_block():
+    """When hard_stop_enabled=True, the existing same_tool_failure_halt_after
+    threshold must take precedence over the auto-block threshold.  See #32827."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            same_tool_failure_warn_after=2,
+            same_tool_failure_halt_after=4,
+            same_tool_failure_auto_block_after=3,  # lower than halt_after, ignored when hard_stop
+        )
+    )
+
+    first = controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
+    assert first.action == "allow"
+    second = controller.after_call("terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True)
+    assert second.action == "warn"
+    assert second.code == "same_tool_failure_warning"
+    # At count=3, auto_block is suppressed by hard_stop_enabled — warn continues
+    third = controller.after_call("terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True)
+    assert third.action == "warn"
+    assert third.code == "same_tool_failure_warning"
+    # At count=4, hard_stop halt fires
+    fourth = controller.after_call("terminal", {"command": "cmd-4"}, '{"exit_code":1}', failed=True)
+    assert fourth.action == "halt"
+    assert fourth.code == "same_tool_failure_halt"

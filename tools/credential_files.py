@@ -85,6 +85,9 @@ def register_credential_file(
     from tools.path_security import validate_within_dir
 
     containment_error = validate_within_dir(host_path, hermes_home, check_symlink_components=True)
+    if containment_error:
+        logger.warning(
+            "credential_files: rejected path traversal %r (%s)",
             relative_path,
             containment_error,
         )

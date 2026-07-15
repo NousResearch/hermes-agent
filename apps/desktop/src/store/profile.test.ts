@@ -18,7 +18,8 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
+const { $activeGatewayProfile, $profiles, ensureGatewayProfile, profileDisplayName, refreshProfiles } =
+  await import('./profile')
 const { $connection } = await import('./session')
 const { queryClient } = await import('@/lib/query-client')
 const { getProfiles } = await import('@/hermes')
@@ -132,5 +133,18 @@ describe('refreshProfiles shared rail list (#49289)', () => {
     await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
+  })
+})
+
+describe('profileDisplayName', () => {
+  it('shows the configured unicode label without changing the internal profile id', () => {
+    const item = { ...profile('architect'), display_name: '技术架构师' }
+
+    expect(profileDisplayName(item)).toBe('技术架构师')
+    expect(item.name).toBe('architect')
+  })
+
+  it('falls back to the internal profile id when no display name is configured', () => {
+    expect(profileDisplayName(profile('planner'))).toBe('planner')
   })
 })

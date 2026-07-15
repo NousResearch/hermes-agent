@@ -4101,6 +4101,19 @@ class TestNewEndpoints:
         assert profiles["multi-agent"]["has_env"] is True
         assert profiles["multi-agent"]["skill_count"] == 1
 
+    def test_profiles_list_includes_display_name(self):
+        from hermes_constants import get_hermes_home
+
+        profile_dir = get_hermes_home() / "profiles" / "architect"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "profile.yaml").write_text("display_name: 技术架构师\n", encoding="utf-8")
+
+        resp = self.client.get("/api/profiles")
+
+        assert resp.status_code == 200
+        profiles = {p["name"]: p for p in resp.json()["profiles"]}
+        assert profiles["architect"]["display_name"] == "技术架构师"
+
     def test_profiles_create_rename_delete_round_trip(self, monkeypatch):
         # Stub gateway service teardown so the test doesn't shell out to
         # launchctl/systemctl on the host.

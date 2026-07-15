@@ -650,6 +650,9 @@ class ProfileInfo:
     # surfaces a "review" badge in this case so the user can edit or
     # accept.
     description_auto: bool = False
+    # Optional Unicode label for UI display. ``name`` remains the stable ASCII
+    # identifier used by paths, CLI commands, routing, and persistence.
+    display_name: str = ""
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -822,18 +825,19 @@ def read_profile_meta(profile_dir: Path) -> dict:
     """
     path = _profile_yaml_path(profile_dir)
     if not path.is_file():
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "display_name": ""}
     try:
         import yaml
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "display_name": ""}
     if not isinstance(data, dict):
-        return {"description": "", "description_auto": False}
+        return {"description": "", "description_auto": False, "display_name": ""}
     return {
         "description": str(data.get("description") or "").strip(),
         "description_auto": bool(data.get("description_auto", False)),
+        "display_name": str(data.get("display_name") or "").strip(),
     }
 
 
@@ -842,6 +846,7 @@ def write_profile_meta(
     *,
     description: Optional[str] = None,
     description_auto: Optional[bool] = None,
+    display_name: Optional[str] = None,
 ) -> None:
     """Update ``<profile_dir>/profile.yaml`` in place.
 
@@ -866,6 +871,8 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
+    if display_name is not None:
+        existing["display_name"] = display_name.strip()
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
 
@@ -899,6 +906,7 @@ def list_profiles() -> List[ProfileInfo]:
             distribution_source=dist_source,
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
+            display_name=meta.get("display_name", ""),
         ))
 
     # Named profiles
@@ -941,6 +949,7 @@ def list_profiles() -> List[ProfileInfo]:
                 distribution_source=dist_source,
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
+                display_name=meta.get("display_name", ""),
             ))
 
     return profiles

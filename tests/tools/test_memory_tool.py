@@ -930,6 +930,10 @@ class TestNonUtf8Bytes:
         entries = MemoryStore._read_file(p)
         assert any("Daniel prefers tables" in e for e in entries)
         assert len(entries) == 2
+        # errors="replace" (not ignore/strict): invalid byte becomes U+FFFD
+        second = next(e for e in entries if "Likes" in e)
+        assert "\uFFFD" in second
+        assert second == "Likes \uFFFD punchy prose"
 
     def test_load_from_disk_survives_invalid_bytes(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
@@ -939,3 +943,40 @@ class TestNonUtf8Bytes:
         s.load_from_disk()  # must not raise UnicodeDecodeError
         assert any("Clean fact" in e for e in s.memory_entries)
         assert s.user_entries
+        bad_memory = next(e for e in s.memory_entries if "Bad" in e)
+        assert "\uFFFD" in bad_memory
+        assert "\uFFFD" in s.user_entries[0]
+
+    def test_replace_via_reload_target_survives_invalid_bytes(self, tmp_path, monkeypatch):
+        """replace/remove call _reload_target → _detect_external_drift + _read_file.
+
+        Both disk-read paths must use errors="replace" so a malformed file does
+        not wedge mutation (the path hermes-sweeper asked us to cover).
+        """
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        # Two tool-sized entries; second embeds invalid UTF-8 byte 0xd1.
+        (tmp_path / "MEMORY.md").write_bytes(
+            b"Keep this fact\n\xc2\xa7\nLikes \xd1 punchy prose"
+        )
+        (tmp_path / "USER.md").write_text("", encoding="utf-8")
+        s = MemoryStore()
+        result = s.replace("memory", "Likes", "Likes crisp prose")
+        assert result["success"] is True, result
+        assert "Likes crisp prose" in s.memory_entries
+        assert any("Keep this fact" in e for e in s.memory_entries)
+        # On-disk rewrite should be clean UTF-8 after replace
+        raw = (tmp_path / "MEMORY.md").read_text(encoding="utf-8")
+        assert "Likes crisp prose" in raw
+        assert "\uFFFD" not in raw
+
+    def test_remove_via_reload_target_survives_invalid_bytes(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_bytes(
+            b"Keep this fact\n\xc2\xa7\nDrop \xd1 this entry"
+        )
+        (tmp_path / "USER.md").write_text("", encoding="utf-8")
+        s = MemoryStore()
+        result = s.remove("memory", "Drop")
+        assert result["success"] is True, result
+        assert len(s.memory_entries) == 1
+        assert "Keep this fact" in s.memory_entries[0]

@@ -2,11 +2,7 @@ import { useEffect, useRef } from 'react'
 
 import { setPetActivity } from '@/store/pet'
 import { setPetScale } from '@/store/pet-gallery'
-import {
-  setPetOverlayOpenAppHandler,
-  setPetOverlayScaleHandler,
-  setPetOverlaySubmitHandler
-} from '@/store/pet-overlay'
+import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '@/store/pet-overlay'
 import { $attentionSessionIds, $sessions } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 

@@ -1047,7 +1047,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         <SelectValue placeholder={m.provider} />
                       </SelectTrigger>
                       <SelectContent>
-                        {withActive(moaSlotProviderOptions.map(p => p.slug || 'none'), slot.provider).map(slug => {
+                        {withActive(
+                          moaSlotProviderOptions.map(p => p.slug || 'none'),
+                          slot.provider
+                        ).map(slug => {
                           const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
 
                           return (
@@ -1130,7 +1133,10 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       <SelectValue placeholder={m.provider} />
                     </SelectTrigger>
                     <SelectContent>
-                      {withActive(moaSlotProviderOptions.map(p => p.slug || 'none'), currentMoaPreset.aggregator.provider).map(slug => {
+                      {withActive(
+                        moaSlotProviderOptions.map(p => p.slug || 'none'),
+                        currentMoaPreset.aggregator.provider
+                      ).map(slug => {
                         const provider = moaSlotProviderOptions.find(p => (p.slug || 'none') === slug)
 
                         return (

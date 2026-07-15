@@ -210,14 +210,19 @@ export function SidebarSessionRow({
               <SessionRowLeadDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                isUnread={isUnread}
                 isWorking={isWorking}
                 needsInput={needsInput}
-                isUnread={isUnread}
               />
             </SidebarRowGrab>
           ) : (
             <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
-              <SessionRowLeadDot branchStem={branchStem} isWorking={isWorking} needsInput={needsInput} isUnread={isUnread} />
+              <SessionRowLeadDot
+                branchStem={branchStem}
+                isUnread={isUnread}
+                isWorking={isWorking}
+                needsInput={needsInput}
+              />
             </SidebarRowLead>
           )}
           {handoffSource && handoffLabel ? (
@@ -258,7 +263,7 @@ function SessionRowLeadDot({
           {branchStem}
         </span>
       ) : null}
-      <SidebarRowDot isWorking={isWorking} needsInput={needsInput} isUnread={isUnread} />
+      <SidebarRowDot isUnread={isUnread} isWorking={isWorking} needsInput={needsInput} />
     </span>
   )
 }

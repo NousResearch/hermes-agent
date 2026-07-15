@@ -73,6 +73,7 @@ describe('resume scroll settle', () => {
     let sticky = true
     let lastManualScrollAt = 0
     const scrollToBottom = vi.fn()
+
     const cancel = scheduleResumeScrollToBottom(
       {
         current: {
@@ -101,6 +102,7 @@ describe('resume scroll settle', () => {
   it('cancels pending resume snaps', () => {
     vi.useFakeTimers()
     const scrollToBottom = vi.fn()
+
     const cancel = scheduleResumeScrollToBottom(
       {
         current: {
@@ -122,6 +124,7 @@ describe('resume scroll settle', () => {
     vi.useFakeTimers()
     let sticky = false
     const scrollToBottom = vi.fn()
+
     const cancel = scheduleResumeScrollToBottom(
       {
         current: {

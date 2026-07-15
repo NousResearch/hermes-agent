@@ -67,12 +67,15 @@ class TestOpenVikingProviderModeContract:
 
         effective = openviking_plugin._effective_provider_mode
         assert effective("read_only", "legacy_hold", "0.3.22", "v0.3.22") == "read_only"
+        assert effective("read_only", "target_clone_acceptance", "0.4.9", "v0.4.9") == "read_only"
         assert effective("native", "legacy_hold", "0.3.22", "v0.3.22") == "read_only"
         assert effective("native", "unexpected", "0.4.9", "v0.4.9") == "read_only"
         assert effective("native", "target_clone_acceptance", "", "v0.4.9") == "read_only"
         assert effective("native", "target_clone_acceptance", "0.4.9", "") == "read_only"
         assert effective("native", "target_clone_acceptance", "0.4.9", "v0.4.8") == "read_only"
         assert effective("native", "target_clone_acceptance", "0.4.9", "v0.4.9") == "native"
+        assert effective("native", "native_only", "", "v0.4.9") == "read_only"
+        assert effective("native", "native_only", "0.4.9", "v0.4.8") == "read_only"
         assert effective("native", "native_only", "0.4.9", "v0.4.9") == "native"
 
     def test_initialize_activates_native_only_after_exact_health_match(
@@ -95,7 +98,7 @@ class TestOpenVikingProviderModeContract:
                 "agent": "hermes",
             },
         )
-        monkeypatch.setenv("OPENVIKING_PROVIDER_MODE", "native")
+        monkeypatch.setenv("OPENVIKING_PROVIDER_MODE", "read_only")
         monkeypatch.setenv(
             "OPENVIKING_COMPATIBILITY_PHASE", "target_clone_acceptance"
         )
@@ -103,6 +106,12 @@ class TestOpenVikingProviderModeContract:
 
         VersionedHealthClient.raise_health_error = False
         VersionedHealthClient.observed_version = "v0.4.9"
+        requested_read_only = OpenVikingMemoryProvider()
+        requested_read_only.initialize("requested-read-only")
+        assert requested_read_only._provider_mode == "read_only"
+        requested_read_only.shutdown()
+
+        monkeypatch.setenv("OPENVIKING_PROVIDER_MODE", "native")
         matching = OpenVikingMemoryProvider()
         matching.initialize("matching")
         assert matching._provider_mode == "native"
@@ -175,7 +184,9 @@ class TestOpenVikingProviderModeContract:
         assert all(READ_ONLY_ERROR in result for result in results)
         assert client.calls == []
 
-    def test_lifecycle_callbacks_rotate_local_state_with_zero_transport(self):
+    def test_lifecycle_callbacks_rotate_local_state_with_zero_transport(
+        self, monkeypatch
+    ):
         provider = make_provider()
         client = provider._client
         provider._turn_count = 2
@@ -184,6 +195,8 @@ class TestOpenVikingProviderModeContract:
         provider._finalize_session_async = Mock(
             side_effect=AssertionError("finalizer spawned")
         )
+        thread_ctor = Mock(side_effect=AssertionError("thread spawned"))
+        monkeypatch.setattr(openviking_plugin.threading, "Thread", thread_ctor)
 
         provider.sync_turn("user", "assistant", session_id="session-old")
         provider.on_session_end([])
@@ -196,6 +209,7 @@ class TestOpenVikingProviderModeContract:
         provider._spawn_writer.assert_not_called()
         provider._drain_writers.assert_not_called()
         provider._finalize_session_async.assert_not_called()
+        thread_ctor.assert_not_called()
 
     def test_read_only_prompt_does_not_advertise_mutating_tools(self):
         provider = make_provider()

@@ -95,9 +95,14 @@ _IS_WINDOWS = os.name == "nt"
 # milliseconds; retry briefly before giving up on the atomic rename.
 _SHARING_RETRY_ATTEMPTS = 5
 _SHARING_RETRY_DELAY_S = 0.02
+_ERROR_SHARING_VIOLATION = 32
 
 
-def _is_windows_sharing_error(exc: OSError) -> bool:
+def _is_windows_sharing_error(
+    exc: OSError,
+    tmp_path: str | None = None,
+    target_path: str | None = None,
+) -> bool:
     """Return True for the Windows sharing-violation class of rename failures.
 
     CPython opens files without ``FILE_SHARE_DELETE``, so any concurrent
@@ -106,16 +111,39 @@ def _is_windows_sharing_error(exc: OSError) -> bool:
     usually transient (the reader closes within milliseconds), so they are
     worth retrying before falling back to a copy.
     """
-    return _IS_WINDOWS and (isinstance(exc, PermissionError) or exc.errno == errno.EACCES)
+    if not _IS_WINDOWS:
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror == _ERROR_SHARING_VIOLATION:
+        return True
+    # CPython/MoveFileEx may surface a delete-sharing conflict as
+    # ERROR_ACCESS_DENIED (5), including on current Windows 11. Only treat
+    # that ambiguous code as transient when both ordinary file accesses are
+    # permitted; ACL/read-only denial must still propagate.
+    return (
+        winerror == 5
+        and tmp_path is not None
+        and target_path is not None
+        and os.path.isfile(tmp_path)
+        and os.path.isfile(target_path)
+        and os.access(tmp_path, os.W_OK)
+        and os.access(target_path, os.W_OK)
+    )
 
 
-def _replace_error_allows_fallback(exc: OSError) -> bool:
+def _replace_error_allows_fallback(
+    exc: OSError,
+    tmp_path: str | None = None,
+    target_path: str | None = None,
+) -> bool:
     """Return True when a failed ``os.replace`` may use the copy fallback.
 
     ``EXDEV`` (cross-device) and ``EBUSY`` (bind-mount / busy file) on all
     platforms, plus the Windows sharing-violation class.
     """
-    return exc.errno in (errno.EXDEV, errno.EBUSY) or _is_windows_sharing_error(exc)
+    return exc.errno in (errno.EXDEV, errno.EBUSY) or _is_windows_sharing_error(
+        exc, tmp_path, target_path
+    )
 
 
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
@@ -132,7 +160,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
     ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``
-    (any platform), or ``EACCES``/``PermissionError`` on Windows — where a
+    (any platform), or Windows ``ERROR_SHARING_VIOLATION`` — where a
     concurrent reader of the target (CPython opens without
     ``FILE_SHARE_DELETE``) turns the rename into ``ERROR_SHARING_VIOLATION``.
     Those cases retry the rename briefly (sharing violations are usually
@@ -150,9 +178,9 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     try:
         os.replace(tmp_str, real_path)
     except OSError as exc:
-        if not _replace_error_allows_fallback(exc):
+        if not _replace_error_allows_fallback(exc, tmp_str, real_path):
             raise
-        if _is_windows_sharing_error(exc):
+        if _is_windows_sharing_error(exc, tmp_str, real_path):
             # EXDEV/EBUSY never clear on retry; sharing violations usually do.
             for _ in range(_SHARING_RETRY_ATTEMPTS):
                 time.sleep(_SHARING_RETRY_DELAY_S)
@@ -160,8 +188,12 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
                     os.replace(tmp_str, real_path)
                     return real_path
                 except OSError as retry_exc:
-                    if not _replace_error_allows_fallback(retry_exc):
+                    if not _replace_error_allows_fallback(
+                        retry_exc, tmp_str, real_path
+                    ):
                         raise
+                    if retry_exc.errno in (errno.EXDEV, errno.EBUSY):
+                        break
         logger.debug(
             "atomic_replace: %s -> %s failed with %s; falling back to copy",
             tmp_str,

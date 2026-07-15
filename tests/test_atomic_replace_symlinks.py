@@ -17,6 +17,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -482,12 +483,58 @@ def test_atomic_replace_sharing_violation_simulated_retry_then_copy(
 
     def always_sharing_violation(src: str, dst: str) -> None:
         attempts.append(src)
-        raise PermissionError(errno.EACCES, "sharing violation", src, None, dst)
+        exc = PermissionError(errno.EACCES, "sharing violation", src, None, dst)
+        exc.winerror = 32
+        raise exc
 
     monkeypatch.setattr("utils.os.replace", always_sharing_violation)
     monkeypatch.setattr("utils._IS_WINDOWS", True)
 
     assert Path(atomic_replace(tmp, target)) == target
     assert len(attempts) == 1 + utils_mod._SHARING_RETRY_ATTEMPTS
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not tmp.exists()
+
+
+def test_atomic_replace_windows_access_denied_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+    denied = PermissionError(errno.EACCES, "access denied", str(target))
+    denied.winerror = 5
+
+    monkeypatch.setattr("utils.os.replace", MagicMock(side_effect=denied))
+    monkeypatch.setattr("utils._IS_WINDOWS", True)
+    monkeypatch.setattr("utils.os.access", lambda *args: False)
+
+    with pytest.raises(PermissionError) as caught:
+        atomic_replace(tmp, target)
+
+    assert caught.value is denied
+    assert target.read_text(encoding="utf-8") == "old"
+    assert tmp.exists()
+
+
+@pytest.mark.parametrize("permanent_errno", [errno.EXDEV, errno.EBUSY])
+def test_atomic_replace_sharing_retry_stops_on_permanent_fallback_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fast_sharing_retries: None,
+    permanent_errno: int,
+) -> None:
+    target = tmp_path / "target.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+    sharing = PermissionError(errno.EACCES, "sharing violation", str(target))
+    sharing.winerror = 32
+    replace = MagicMock(side_effect=[sharing, OSError(permanent_errno, "permanent")])
+
+    monkeypatch.setattr("utils.os.replace", replace)
+    monkeypatch.setattr("utils._IS_WINDOWS", True)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert replace.call_count == 2
     assert target.read_text(encoding="utf-8") == "new"
     assert not tmp.exists()

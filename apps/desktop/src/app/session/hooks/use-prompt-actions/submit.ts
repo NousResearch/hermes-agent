@@ -418,9 +418,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         if (!createdBinding) {
-          // Creation can deliberately return null after the user changed
-          // context during post-create setup. That is cancellation, not a
-          // failed create, and must not surface a misleading toast.
+          // A null result can mean the create flow intentionally cancelled
+          // because the user changed context during one of its awaits. Preserve
+          // the existing silent-cancel behavior instead of reporting a create
+          // failure for a valid user action.
           if (
             activeSessionIdRef.current !== startingActiveSessionId ||
             selectedStoredSessionIdRef.current !== selectedStoredSessionId ||
@@ -456,6 +457,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         const routeAfterCreate = getRouteToken()
 
+        // Creation owns exactly one possible route transition: from the route
+        // pinned at submit entry to the created stored-session route. If some
+        // unrelated route is already visible here (for example Settings), do
+        // not adopt it as the baseline merely because the session refs match.
         if (routeAfterCreate === createdBinding.routeToken) {
           expectedRouteToken = routeAfterCreate
           pendingCreatedRouteToken = null

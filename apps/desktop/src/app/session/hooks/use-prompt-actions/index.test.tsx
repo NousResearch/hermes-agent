@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
+import { $notifications } from '@/store/notifications'
 import { $busy, $connection, $messages, $sessions, $turnStartedAt, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -192,6 +193,7 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -505,6 +507,7 @@ describe('usePromptActions desktop slash pickers', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -714,6 +717,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
 describe('usePromptActions steerPrompt', () => {
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -1732,6 +1736,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
   })
 
@@ -1747,7 +1752,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       // new-chat route before returning the runtime session id.
       activeSessionIdRef.current = createdRuntimeSessionId
       selectedStoredSessionIdRef.current = createdStoredSessionId
-      routeToken = `session:${createdStoredSessionId}`
+      routeToken = `/${createdStoredSessionId}::`
 
       return {
         routeToken: `/${createdStoredSessionId}::`,
@@ -1853,6 +1858,145 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), 1_800_000)
   })
 
+  it('aborts when create returns on an unrelated route without adopting it as the binding baseline', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new::'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      // A route-only user action (for example opening Settings) does not
+      // necessarily retarget either session ref.
+      routeToken = '/settings::'
+
+      return {
+        routeToken: `/${createdStoredSessionId}::`,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('must not submit from settings')).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+  })
+
+  it('resumes the created stored session when the first new-chat submit times out', async () => {
+    const createdStoredSessionId = 'stored-created-chat'
+    const createdRuntimeSessionId = 'rt-created-chat'
+    const recoveredRuntimeSessionId = 'rt-created-chat-recovered'
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new::'
+    let submitAttempts = 0
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = createdRuntimeSessionId
+      selectedStoredSessionIdRef.current = createdStoredSessionId
+      routeToken = `/${createdStoredSessionId}::`
+
+      return {
+        routeToken,
+        runtimeSessionId: createdRuntimeSessionId,
+        storedSessionId: createdStoredSessionId
+      }
+    })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('request timed out: prompt.submit')
+        }
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: recoveredRuntimeSessionId } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('survive the first submit timeout')).toBe(true)
+    expect(calls.find(call => call.method === 'session.resume')?.params).toMatchObject({
+      session_id: createdStoredSessionId
+    })
+    expect(calls.filter(call => call.method === 'prompt.submit')).toHaveLength(2)
+    expect(calls.filter(call => call.method === 'prompt.submit')[1]?.params).toMatchObject({
+      session_id: recoveredRuntimeSessionId
+    })
+  })
+
+  it('silently aborts when create returns null after the user changes context', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new::'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = RUNTIME_SESSION_B
+      selectedStoredSessionIdRef.current = STORED_SESSION_B
+      routeToken = `/${STORED_SESSION_B}::`
+
+      return null
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('cancel this send')).toBe(false)
+    expect($notifications.get()).toHaveLength(0)
+  })
+
   it('aborts when the user switches chats after new-session navigation but before create returns', async () => {
     const createdStoredSessionId = 'stored-created-chat'
     const createdRuntimeSessionId = 'rt-created-chat'
@@ -1864,7 +2008,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
       // The create flow first performs its expected self-navigation...
       activeSessionIdRef.current = createdRuntimeSessionId
       selectedStoredSessionIdRef.current = createdStoredSessionId
-      routeToken = `session:${createdStoredSessionId}`
+      routeToken = `/${createdStoredSessionId}::`
       // ...then the user genuinely switches to another chat during a later await.
       activeSessionIdRef.current = RUNTIME_SESSION_B
       selectedStoredSessionIdRef.current = STORED_SESSION_B
@@ -1954,7 +2098,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     const createBackendSessionForSend = vi.fn(async () => {
       activeSessionIdRef.current = createdRuntimeSessionId
       selectedStoredSessionIdRef.current = createdStoredSessionId
-      routeToken = `session:${createdStoredSessionId}`
+      routeToken = `/${createdStoredSessionId}::`
 
       return {
         routeToken: `/${createdStoredSessionId}::`,
@@ -2225,6 +2369,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
 describe('usePromptActions eager attachment upload (drop-time)', () => {
   afterEach(() => {
     cleanup()
+    $notifications.set([])
     vi.restoreAllMocks()
     $connection.set(null)
     $composerAttachments.set([])

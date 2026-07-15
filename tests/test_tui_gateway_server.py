@@ -6339,7 +6339,11 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
                 ],
             }
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    owned_db = object()
+    agent = _Agent()
+    agent._session_db = owned_db
+    server._sessions["sid"] = _session(agent=agent)
+    server._sessions["sid"]["profile_home"] = "/profile-home"
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
@@ -6357,6 +6361,7 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
 
     mock_title.assert_called_once()
     args = mock_title.call_args.args
+    assert args[0] is owned_db
     assert args[1] == "session-key"
     assert args[2] == "Tell me about Rome"
     assert args[3] == "Rome was founded in 753 BC."
@@ -7884,6 +7889,110 @@ def test_notification_poller_delivers_completion(monkeypatch):
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_notification_poller_requeues_until_ownership_transfer_succeeds(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    sid = "sid-ownership-barrier"
+    agent = types.SimpleNamespace(session_id="new-key")
+    session = _session(
+        agent=agent,
+        session_key="old-key",
+        _ownership_sync_pending="new-key",
+    )
+    server._sessions[sid] = session
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    event = {
+        "type": "watch_match",
+        "session_id": "proc-ownership-barrier",
+        "session_key": "new-key",
+        "command": "worker",
+        "pattern": "READY",
+        "output": "READY",
+    }
+    isolated_queue.put(event)
+    transfer_results = iter((False, True))
+    turns: list[str] = []
+    emitted: list[tuple] = []
+
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(
+        server,
+        "_transfer_active_session_slot",
+        lambda *_args, **_kwargs: next(transfer_results),
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    def _run(_rid, _sid, current, text):
+        turns.append(text)
+        current["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _run)
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, sid, session)
+        assert isolated_queue.qsize() == 1
+        assert turns == []
+        assert emitted == []
+        assert session["session_key"] == "old-key"
+        assert session["_ownership_sync_pending"] == "new-key"
+        assert session["running"] is False
+
+        server._notification_poller_loop(stop, sid, session)
+        assert isolated_queue.empty()
+        assert len(turns) == 1
+        assert session["session_key"] == "new-key"
+        assert "_ownership_sync_pending" not in session
+        assert session["running"] is False
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_notification_poller_claim_denied_rolls_back_running(monkeypatch):
+    import queue as _queue_mod
+
+    from tools import async_delegation
+    from tools.process_registry import process_registry
+
+    sid = "sid-claim-denied"
+    session = _session(session_key="claim-key")
+    server._sessions[sid] = session
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put({
+        "type": "watch_match",
+        "session_id": "proc-claim-denied",
+        "session_key": "claim-key",
+        "command": "worker",
+        "pattern": "READY",
+        "output": "READY",
+    })
+    turns: list[str] = []
+
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", lambda *_args: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args: None)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: turns.append(text),
+    )
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, sid, session)
+        assert turns == []
+        assert session["running"] is False
+    finally:
+        server._sessions.pop(sid, None)
 
 
 def test_notification_poller_skips_consumed(monkeypatch):

@@ -420,6 +420,11 @@ def _notify_session_boundary(
         pass
 
 
+_SESSION_OWNERSHIP_UNAVAILABLE = (
+    "Hermes could not safely reserve this session. Try again."
+)
+
+
 def _claim_active_session_slot(
     session_key: str,
     *,
@@ -427,6 +432,7 @@ def _claim_active_session_slot(
     surface: str = "tui",
     profile_home: str | Path | None = None,
 ) -> tuple[Any, str | None]:
+    track_liveness = str(surface or "").strip().lower() == "desktop"
     try:
         home_token = (
             set_hermes_home_override(str(profile_home))
@@ -446,46 +452,86 @@ def _claim_active_session_slot(
             config=config,
             metadata={"live_session_id": live_session_id},
             registry_home=profile_home,
-            track_liveness=str(surface or "").strip().lower() == "desktop",
+            track_liveness=track_liveness,
         )
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
-        return None, None
+        return (
+            (None, _SESSION_OWNERSHIP_UNAVAILABLE)
+            if track_liveness
+            else (None, None)
+        )
 
 
-def _release_active_session_slot(session: dict | None) -> None:
-    if not session:
-        return
-    lease = session.pop("active_session_lease", None)
+def _release_active_session_lease(lease) -> bool:
     if lease is None:
-        return
-    try:
-        lease.release()
-    except Exception:
-        logger.debug("Failed to release active session slot", exc_info=True)
+        return True
+    attempts = 3 if getattr(lease, "track_liveness", False) else 1
+    for attempt in range(attempts):
+        try:
+            lease.release()
+            break
+        except Exception:
+            if attempt + 1 >= attempts:
+                logger.warning("Failed to release active session slot", exc_info=True)
+                return False
+            time.sleep(0.05 * (attempt + 1))
+    return bool(lease.released or not lease.enabled)
+
+
+def _release_active_session_slot(session: dict | None) -> bool:
+    if not session:
+        return True
+    lease = session.get("active_session_lease")
+    if _release_active_session_lease(lease):
+        if session.get("active_session_lease") is lease:
+            session.pop("active_session_lease", None)
+        return True
+    return False
 
 
 @contextlib.contextmanager
 def _other_runtime_lease_guard(session_id: str, session: dict):
-    """Hold the owning profile's lease lock while checking sibling runtimes."""
-    stack = contextlib.ExitStack()
+    """Release this runtime and lock sibling ownership through the DB write."""
+    lease = session.get("active_session_lease")
     try:
-        from hermes_cli.active_sessions import active_session_liveness_guard
-
-        active = stack.enter_context(
-            active_session_liveness_guard(
-                session_id,
-                registry_home=session.get("profile_home"),
-            )
+        from hermes_cli.active_sessions import (
+            active_session_liveness_guard,
+            release_active_session_liveness_guard,
         )
-    except Exception:
-        stack.close()
+    except Exception as exc:
         logger.warning(
-            "Failed to inspect active session leases; preserving session %s",
+            "Failed to load active session ownership guard; preserving session %s: %s",
             session_id,
-            exc_info=True,
+            exc,
         )
-        # An automatic disconnect reap must prefer a ghost row over ending a
+        yield True
+        return
+
+    last_error: Exception | None = None
+    for attempt in range(3):
+        stack = contextlib.ExitStack()
+        try:
+            if lease is not None and getattr(lease, "enabled", False):
+                guard = release_active_session_liveness_guard(lease, session_id)
+            else:
+                guard = active_session_liveness_guard(
+                    session_id, registry_home=session.get("profile_home")
+                )
+            active = stack.enter_context(guard)
+            break
+        except Exception as exc:
+            stack.close()
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.05 * (attempt + 1))
+    else:
+        logger.warning(
+            "Failed to inspect active session leases; preserving session %s: %s",
+            session_id,
+            last_error,
+        )
+        # Automatic cleanup must prefer a ghost row over ending a
         # session that may still be owned by another backend.
         yield True
         return
@@ -493,6 +539,12 @@ def _other_runtime_lease_guard(session_id: str, session: dict):
         yield active
     finally:
         stack.close()
+        if (
+            lease is not None
+            and getattr(lease, "released", False)
+            and session.get("active_session_lease") is lease
+        ):
+            session.pop("active_session_lease", None)
 
 
 def _transfer_active_session_slot(
@@ -518,6 +570,9 @@ def _transfer_active_session_slot(
     except Exception:
         logger.debug("Failed to transfer active session slot", exc_info=True)
 
+    if getattr(lease, "track_liveness", False):
+        return False
+
     # Fallback: the in-place transfer could not move the lease (entry pruned /
     # pid-check transiently failed). Reserve the new slot BEFORE releasing the
     # old one, so a concurrent gateway at the session cap cannot grab the freed
@@ -532,10 +587,7 @@ def _transfer_active_session_slot(
     if new_lease is not None:
         old_lease = session.pop("active_session_lease", None)
         if old_lease is not None:
-            try:
-                old_lease.release()
-            except Exception:
-                logger.debug("Failed to release stale active session slot", exc_info=True)
+            _release_active_session_lease(old_lease)
         session["active_session_lease"] = new_lease
         return True
     # Reserve failed — retain the existing lease rather than dropping it.
@@ -559,6 +611,14 @@ def _transfer_active_session_slot(
 _NON_GATEWAY_SOURCES = frozenset({
     "", "tui", "cli", "webui", "desktop", "cron", "subagent", "test",
     "local", "acp", "webhook", "api_server", "msgraph_webhook",
+})
+
+_AUTOMATIC_SESSION_END_REASONS = frozenset({
+    "ws_orphan_reap",
+    "ws_disconnect",
+    "idle_timeout",
+    "lru_evict",
+    "tui_shutdown",
 })
 
 
@@ -598,7 +658,14 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
-    _release_active_session_slot(session)
+    _desktop_automatic_cleanup = bool(
+        end_reason in _AUTOMATIC_SESSION_END_REASONS
+        and _session_source(session).strip().lower() == "desktop"
+    )
+    # Automatic Desktop cleanup removes its lease inside the lock-held lifecycle
+    # guard below. Explicit close and non-Desktop paths keep force/end semantics.
+    if not _desktop_automatic_cleanup:
+        _release_active_session_slot(session)
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
@@ -666,22 +733,20 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Use session_id (from agent.session_id) not session_key — after compression,
     # session_key may be stale (the ended parent) while session_id is the live
     # continuation. Fix for #20001.
-    _desktop_orphan_reap = bool(
-        session_id
-        and end_reason == "ws_orphan_reap"
-        and _session_source(session).strip().lower() == "desktop"
-    )
+    if _desktop_automatic_cleanup and not session_id:
+        _release_active_session_slot(session)
     _lifecycle_guard = (
         _other_runtime_lease_guard(session_id, session)
-        if _desktop_orphan_reap and session_id
+        if _desktop_automatic_cleanup and session_id
         else contextlib.nullcontext(False)
     )
     with _lifecycle_guard as _other_runtime_owns_lifecycle:
         _tui_owns_lifecycle = not _other_runtime_owns_lifecycle
         if _other_runtime_owns_lifecycle:
             logger.info(
-                "Preserving session %s during ws_orphan_reap: another backend owns an active lease",
+                "Preserving session %s during %s: another backend owns an active lease",
                 session_id,
+                end_reason,
             )
         if session_id:
             try:
@@ -1061,6 +1126,29 @@ def _db_unavailable_error(rid, *, code: int):
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the
 # launch profile (unchanged for single-profile and per-profile-remote setups).
+def _canonical_profile_home(profile_home: str | Path | None = None) -> str:
+    """Return the stable filesystem identity for a launch or explicit profile."""
+    raw = profile_home if profile_home is not None else _hermes_home
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError):
+        resolved = Path(os.path.abspath(os.path.expanduser(str(raw))))
+    return os.path.normcase(os.path.normpath(str(resolved)))
+
+
+def _profile_session_identity(
+    session_key: str, profile_home: str | Path | None = None
+) -> tuple[str, str]:
+    return _canonical_profile_home(profile_home), str(session_key or "")
+
+
+def _profile_session_registry_key(
+    session_key: str, profile_home: str | Path | None = None
+) -> str | tuple[str, str]:
+    identity = _profile_session_identity(session_key, profile_home)
+    return identity[1] if identity[0] == _canonical_profile_home() else identity
+
+
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     name = (profile or "").strip()
@@ -1073,7 +1161,7 @@ def _profile_home(profile: str | None) -> Path | None:
     except Exception:
         return None
     # Already the launch profile? No override needed.
-    if home.resolve() == Path(_hermes_home).resolve():
+    if _canonical_profile_home(home) == _canonical_profile_home():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
 
@@ -1384,7 +1472,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
     # to a full agent mid-stream and silently kill the mirror (the mirror bails
     # once agent is set). Once the child completes, the guard lifts and the next
     # prompt/RPC builds the agent normally so the user can talk to the session.
-    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+    if session.get("lazy") and _child_run_active(
+        str(session.get("session_key") or ""),
+        session.get("profile_home"),
+    ):
         return
     lock = session.setdefault("agent_build_lock", threading.Lock())
     with lock:
@@ -1544,9 +1635,28 @@ def _start_agent_build(sid: str, session: dict) -> None:
     threading.Thread(target=_build, daemon=True).start()
 
 
+def _session_ownership_ready(sid: str, session: dict) -> bool:
+    if not session.get("_ownership_sync_pending"):
+        return True
+    try:
+        _sync_session_key_after_compress(sid, session)
+    except Exception:
+        return False
+    return not session.get("_ownership_sync_pending")
+
+
 def _sess_nowait(params, rid):
-    s = _sessions.get(params.get("session_id") or "")
-    return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+    sid = params.get("session_id") or ""
+    s = _sessions.get(sid)
+    if not s:
+        return None, _err(rid, 4001, "session not found")
+    if not _session_ownership_ready(sid, s):
+        return None, _err(
+            rid,
+            4091,
+            "Session ownership is temporarily unavailable. Try again.",
+        )
+    return s, None
 
 
 def _sess(params, rid):
@@ -3232,6 +3342,7 @@ def _sync_session_key_after_compress(
     new_session_id = getattr(agent, "session_id", None) or ""
     old_key = session.get("session_key", "") or ""
     if not new_session_id or new_session_id == old_key:
+        session.pop("_ownership_sync_pending", None)
         return
 
     lease_reanchored = _transfer_active_session_slot(
@@ -3240,12 +3351,21 @@ def _sync_session_key_after_compress(
         new_session_id=new_session_id,
     )
     if not lease_reanchored:
+        session["_ownership_sync_pending"] = new_session_id
         logger.warning(
             "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
             sid,
             old_key,
             new_session_id,
         )
+        raise RuntimeError(
+            "session ownership transfer failed; retry after the registry is available"
+        )
+    # Publish the routed key before clearing the retry barrier. Another RPC may
+    # enter as soon as the barrier disappears, so it must never observe the old
+    # key paired with the new durable lease.
+    session["session_key"] = new_session_id
+    session.pop("_ownership_sync_pending", None)
 
     try:
         from tools.approval import (
@@ -3260,7 +3380,6 @@ def _sync_session_key_after_compress(
             unregister_gateway_notify(old_key)
         except Exception:
             pass
-        session["session_key"] = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
         except Exception:
@@ -3279,10 +3398,9 @@ def _sync_session_key_after_compress(
         except Exception:
             pass
     except Exception:
-        # Even if the approval module fails to import, still anchor the
-        # session_key on the new continuation id so downstream lookups
-        # don't keep targeting the ended row.
-        session["session_key"] = new_session_id
+        # Approval routing is best-effort; the durable lease/key transfer above
+        # remains authoritative even if this optional module is unavailable.
+        pass
 
     if clear_pending_title:
         session["pending_title"] = None
@@ -3870,7 +3988,11 @@ def _on_tool_progress(
         # catch-all. The mirror keys off the child sid and is unaffected.
         if event_type != "subagent.text":
             _emit(event_type, sid, payload)
-        _mirror_subagent_to_child(event_type, payload)
+        _mirror_subagent_to_child(
+            event_type,
+            payload,
+            profile_home=(_sessions.get(sid) or {}).get("profile_home"),
+        )
 
 
 # ── Child-session live mirror ────────────────────────────────────────
@@ -3882,47 +4004,58 @@ def _on_tool_progress(
 # persists. Translate the relayed events into the native stream events the
 # window already renders — emitted on the CHILD sid, routed to its transport
 # by write_json — so the window shows a real midstream turn.
-_child_mirrors: dict[str, dict] = {}
+_child_mirrors: dict[str | tuple[str, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Stored child session ids with a delegation run currently in flight (refreshed
 # on every relayed subagent.* event, popped on subagent.complete). Lets a lazy
 # watch resume report running=true so the window shows a busy indicator even
 # while the child is silent inside a long tool call (no events for 25s+).
-_active_child_runs: dict[str, float] = {}
+_active_child_runs: dict[str | tuple[str, str], float] = {}
 # Staleness bound for the registry: entries refresh on every relayed event, so
 # anything this quiet means the completion event was lost (callback raised,
 # parent crashed) — don't let a leaked entry pin "running" forever.
 _CHILD_RUN_STALE_S = 3600.0
 
 
-def _child_run_active(child_key: str) -> bool:
-    ts = _active_child_runs.get(child_key)
+def _child_run_active(
+    child_key: str, profile_home: str | Path | None = None
+) -> bool:
+    ts = _active_child_runs.get(_profile_session_registry_key(child_key, profile_home))
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
+def _mirror_subagent_to_child(
+    event_type: str,
+    payload: dict,
+    *,
+    profile_home: str | Path | None = None,
+) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
+    child_identity = _profile_session_registry_key(child_key, profile_home)
     # Liveness registry first — it must be accurate even when no window is
     # open, so a window opened mid-run can immediately know the child is busy.
     if event_type == "subagent.complete":
-        _active_child_runs.pop(child_key, None)
+        _active_child_runs.pop(child_identity, None)
     else:
-        _active_child_runs[child_key] = time.time()
+        _active_child_runs[child_identity] = time.time()
     # Mirror only into a live watch session (keyed by session_key; its live sid
     # differs from the stored id) that has NOT been upgraded to a full agent.
     # No window / closed → nothing to mirror; an upgraded session owns a real
     # native stream and mirroring on top would interleave two turns on one sid.
     # Either way drop state so a reopened window starts a fresh synthetic turn.
-    live = _find_live_session_by_key(child_key)
+    live = _find_live_session_by_key(child_key, profile_home=profile_home)
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(child_identity, None)
         return
     csid = live[0]
     with _child_mirrors_lock:
-        st = _child_mirrors.setdefault(child_key, {"seq": 0, "open_tool": None, "started": False})
+        st = _child_mirrors.setdefault(
+            child_identity,
+            {"seq": 0, "open_tool": None, "started": False},
+        )
         if not st["started"]:
             st["started"] = True
             _emit("message.start", csid)
@@ -3958,7 +4091,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
                 _emit("tool.complete", csid, st["open_tool"])
             summary = str(payload.get("summary") or payload.get("text") or "")
             _emit("message.complete", csid, {"text": summary})
-            _child_mirrors.pop(child_key, None)
+            _child_mirrors.pop(child_identity, None)
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -4750,6 +4883,8 @@ def _init_session(
     cwd: str | None = None,
     session_db=None,
     source: str | None = None,
+    profile_home: str | Path | None = None,
+    active_session_lease=None,
 ):
     now = time.time()
     with _sessions_lock:
@@ -4763,6 +4898,7 @@ def _init_session(
             "created_at": now,
             "last_active": now,
             "running": False,
+            "active_session_lease": active_session_lease,
             "attached_images": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
@@ -4770,6 +4906,9 @@ def _init_session(
             "slash_worker": None,
             "show_reasoning": _load_show_reasoning(),
             "source": _resolve_session_source(source),
+            "profile_home": (
+                str(profile_home) if profile_home is not None else None
+            ),
             "tool_progress_mode": _load_tool_progress_mode(),
             "edit_snapshots": {},
             "tool_started_at": {},
@@ -5623,10 +5762,13 @@ def _claim_or_reuse_live(
     resume lock, or — if a concurrent resume already won — release ``lease`` and
     return the winner for the caller to reuse."""
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key)
+        live = _find_live_session_by_key(
+            session_key,
+            profile_home=record.get("profile_home"),
+        )
         if live is not None:
             if lease is not None:
-                lease.release()
+                _release_active_session_lease(lease)
             return live
         with _sessions_lock:
             _sessions[sid] = record
@@ -5678,7 +5820,9 @@ def _(rid, params: dict) -> dict:
         found = db.get_session_by_title(target)
         if found:
             target = found["id"]
-        elif is_truthy_value(params.get("lazy", False)) and _child_run_active(target):
+        elif is_truthy_value(params.get("lazy", False)) and _child_run_active(
+            target, profile_home
+        ):
             # Race: a watch window opened on a freshly-spawned subagent. The
             # child relays `subagent.start` (which carries child_session_id and
             # triggers the window) BEFORE its first run_conversation() flushes
@@ -5730,14 +5874,14 @@ def _(rid, params: dict) -> dict:
         # A lazy watch session never owns a run loop, so its payload's running
         # flag is always False — overlay the child-run registry so a reconnecting
         # watch window keeps its busy indicator while the child is still mid-run.
-        if session.get("agent") is None and _child_run_active(target):
+        if session.get("agent") is None and _child_run_active(target, profile_home):
             payload["running"] = True
             payload["status"] = "streaming"
         return payload
 
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_key(target, profile_home=profile_home)
         if live is not None:
             return _ok(rid, _reuse_live_payload(*live))
 
@@ -5766,7 +5910,7 @@ def _(rid, params: dict) -> dict:
             history = db.get_messages_as_conversation(target)
         except Exception as e:
             if lease is not None:
-                lease.release()
+                _release_active_session_lease(lease)
             return _err(rid, 5000, f"resume failed: {e}")
         cwd = profile_resume_cwd or _default_session_cwd()
         record = _deferred_session_record(
@@ -5784,7 +5928,7 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, _reuse_live_payload(*live))
         # A delegated child mid-run emits no session events of its own — report
         # its liveness from the relay registry so the window shows a busy turn.
-        child_running = _child_run_active(target)
+        child_running = _child_run_active(target, profile_home)
         messages = _history_to_messages(history)
         return _ok(
             rid,
@@ -5835,7 +5979,7 @@ def _(rid, params: dict) -> dict:
             display_history = db.get_messages_as_conversation(target, include_ancestors=True)
         except Exception as e:
             if lease is not None:
-                lease.release()
+                _release_active_session_lease(lease)
             return _err(rid, 5000, f"resume failed: {e}")
         # Display keeps the full transcript; the model-fed history drops a
         # dangling/interrupted tool-call tail so a session killed mid-loop does
@@ -5944,7 +6088,7 @@ def _(rid, params: dict) -> dict:
             _clear_session_context(tokens)
     except Exception as e:
         if lease is not None:
-            lease.release()
+            _release_active_session_lease(lease)
         return _err(rid, 5000, f"resume failed: {e}")
     finally:
         if home_token is not None:
@@ -5954,7 +6098,7 @@ def _(rid, params: dict) -> dict:
     # live session while we were building. Re-check under the lock; if it won,
     # discard our just-built agent and reuse theirs (no worker/poller wired yet).
     with _session_resume_lock:
-        live = _find_live_session_by_key(target)
+        live = _find_live_session_by_key(target, profile_home=profile_home)
         if live is not None:
             try:
                 if hasattr(agent, "close"):
@@ -5962,7 +6106,7 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 pass
             if lease is not None:
-                lease.release()
+                _release_active_session_lease(lease)
             other_sid, other_session = live
             payload = _live_session_payload(
                 other_sid,
@@ -5989,6 +6133,8 @@ def _(rid, params: dict) -> dict:
                     cwd=profile_resume_cwd,
                     session_db=db,
                     source=source,
+                    profile_home=profile_home,
+                    active_session_lease=lease,
                 )
             finally:
                 if init_home_token is not None:
@@ -5999,15 +6145,9 @@ def _(rid, params: dict) -> dict:
                         "model_override"
                     ]
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
-                # Remember the profile home so each turn re-binds HERMES_HOME (the
-                # agent persists to its own db, but mid-turn home reads — memory,
-                # skills — must resolve to the resumed profile too).
-                if profile_home is not None:
-                    _sessions[sid]["profile_home"] = str(profile_home)
-                _sessions[sid]["active_session_lease"] = lease
         except Exception as e:
             if lease is not None:
-                lease.release()
+                _release_active_session_lease(lease)
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
     return _ok(
@@ -6083,12 +6223,12 @@ def _message_preview(history: list) -> str:
 
 def _session_live_title(session: dict, key: str) -> str:
     title = str(session.get("pending_title") or "").strip()
-    db = _get_db()
-    if db is not None:
-        try:
-            title = str(db.get_session_title(key) or title or "").strip()
-        except Exception:
-            pass
+    with _session_db(session) as db:
+        if db is not None:
+            try:
+                title = str(db.get_session_title(key) or title or "").strip()
+            except Exception:
+                pass
     return title
 
 
@@ -6127,11 +6267,20 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     )
 
 
-def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+def _find_live_session_by_key(
+    session_key: str,
+    *,
+    profile_home: str | Path | None = None,
+) -> tuple[str, dict] | None:
+    expected = _profile_session_identity(session_key, profile_home)
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if _session_lookup_key(session, fallback=sid) == session_key:
+        current = _profile_session_identity(
+            _session_lookup_key(session, fallback=sid),
+            session.get("profile_home"),
+        )
+        if current == expected:
             return sid, session
     return None
 
@@ -6293,83 +6442,77 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5007)
     key = session["session_key"]
-    if "title" not in params:
-        fallback = session.get("pending_title") or ""
-        try:
-            resolved_title = db.get_session_title(key) or ""
-            if fallback:
-                if db.set_session_title(key, fallback):
-                    session["pending_title"] = None
-                    resolved_title = fallback
-                else:
-                    existing_row = db.get_session(key)
-                    existing_title = ((existing_row or {}).get("title") or "").strip()
-                    if existing_title == fallback:
+    title = None
+    if "title" in params:
+        title = (params.get("title", "") or "").strip()
+        if not title:
+            return _err(rid, 4021, "title required")
+
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        if title is None:
+            fallback = session.get("pending_title") or ""
+            try:
+                resolved_title = db.get_session_title(key) or ""
+                if fallback:
+                    if db.set_session_title(key, fallback):
                         session["pending_title"] = None
                         resolved_title = fallback
-                    elif not resolved_title:
-                        resolved_title = fallback
-            elif resolved_title:
-                session["pending_title"] = None
-        except Exception:
-            resolved_title = fallback
-        _emit_session_info_for_session(params.get("session_id", ""), session)
-        return _ok(
-            rid,
-            {
-                "title": resolved_title,
-                "session_key": key,
-            },
-        )
-    title = (params.get("title", "") or "").strip()
-    if not title:
-        return _err(rid, 4021, "title required")
-    try:
-        if db.set_session_title(key, title):
-            session["pending_title"] = None
-            _emit_session_info_for_session(params.get("session_id", ""), session)
-            return _ok(rid, {"pending": False, "title": title})
-        # rowcount == 0 can mean "same value" as well as "missing row".
-        existing_row = db.get_session(key)
-        if existing_row:
-            session["pending_title"] = None
+                    else:
+                        existing_row = db.get_session(key)
+                        existing_title = ((existing_row or {}).get("title") or "").strip()
+                        if existing_title == fallback:
+                            session["pending_title"] = None
+                            resolved_title = fallback
+                        elif not resolved_title:
+                            resolved_title = fallback
+                elif resolved_title:
+                    session["pending_title"] = None
+            except Exception:
+                resolved_title = fallback
             _emit_session_info_for_session(params.get("session_id", ""), session)
             return _ok(
                 rid,
                 {
-                    "pending": False,
-                    "title": (existing_row.get("title") or title),
+                    "title": resolved_title,
+                    "session_key": key,
                 },
             )
-        # No row yet (the DB write is deferred to the first prompt so empty
-        # drafts don't litter the sidebar). An explicit /title is clear user
-        # intent, not an abandoned draft — so persist the row NOW and set the
-        # title, mirroring the messaging gateway's _handle_title_command. The
-        # old behavior only queued pending_title and relied on the post-turn
-        # apply block; if that turn never landed under this session_key the
-        # title was silently lost and the sidebar fell back to the message
-        # preview. Creating the row up front removes that race entirely. The
-        # min-messages sidebar filter keeps a titled 0-message row hidden, so
-        # a /title'd-but-never-used draft still doesn't clutter the list.
-        _ensure_session_db_row(session)
-        with _session_db(session) as scoped_db:
-            if scoped_db is not None and scoped_db.set_session_title(key, title):
+
+        try:
+            if db.set_session_title(key, title):
                 session["pending_title"] = None
                 _emit_session_info_for_session(params.get("session_id", ""), session)
                 return _ok(rid, {"pending": False, "title": title})
-        # Row creation didn't take (DB unavailable, or a concurrent writer) —
-        # fall back to queuing so the post-turn apply block can still recover.
-        session["pending_title"] = title
-        _emit_session_info_for_session(params.get("session_id", ""), session)
-        return _ok(rid, {"pending": True, "title": title})
-    except ValueError as e:
-        return _err(rid, 4022, str(e))
-    except Exception as e:
-        return _err(rid, 5007, str(e))
+            # rowcount == 0 can mean "same value" as well as "missing row".
+            existing_row = db.get_session(key)
+            if existing_row:
+                session["pending_title"] = None
+                _emit_session_info_for_session(params.get("session_id", ""), session)
+                return _ok(
+                    rid,
+                    {
+                        "pending": False,
+                        "title": (existing_row.get("title") or title),
+                    },
+                )
+            # Persist an explicitly titled draft now; the sidebar's min-message
+            # filter still keeps an unused zero-message row hidden.
+            _ensure_session_db_row(session)
+            if db.set_session_title(key, title):
+                session["pending_title"] = None
+                _emit_session_info_for_session(params.get("session_id", ""), session)
+                return _ok(rid, {"pending": False, "title": title})
+            # Row creation did not take (DB unavailable or concurrent writer).
+            session["pending_title"] = title
+            _emit_session_info_for_session(params.get("session_id", ""), session)
+            return _ok(rid, {"pending": True, "title": title})
+        except ValueError as e:
+            return _err(rid, 4022, str(e))
+        except Exception as e:
+            return _err(rid, 5007, str(e))
 
 
 def _main_runtime_from_agent(agent) -> dict | None:
@@ -7881,15 +8024,23 @@ def _(rid, params: dict) -> dict:
 
     from hermes_constants import display_hermes_home
 
+    status_home = display_hermes_home()
+    if profile_home := session.get("profile_home"):
+        home_token = set_hermes_home_override(profile_home)
+        try:
+            status_home = display_hermes_home()
+        finally:
+            reset_hermes_home_override(home_token)
+
     key = session.get("session_key") or params.get("session_id") or ""
     agent = session.get("agent")
     meta = {}
-    db = _get_db()
-    if db and key:
-        try:
-            meta = db.get_session(key) or {}
-        except Exception:
-            meta = {}
+    with _session_db(session) as db:
+        if db and key:
+            try:
+                meta = db.get_session(key) or {}
+            except Exception:
+                meta = {}
 
     def _dt(value, fallback: datetime | None = None) -> datetime:
         if value:
@@ -7913,7 +8064,7 @@ def _(rid, params: dict) -> dict:
         "Hermes TUI Status",
         "",
         f"Session ID: {key}",
-        f"Path: {display_hermes_home()}",
+        f"Path: {status_home}",
     ]
     title = (meta.get("title") or "").strip()
     if title:
@@ -7936,14 +8087,14 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     history = list(session.get("history", []))
-    db = _get_db()
-    if db is not None and session.get("session_key"):
-        try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
-            )
-        except Exception:
-            pass
+    with _session_db(session) as db:
+        if db is not None and session.get("session_key"):
+            try:
+                history = db.get_messages_as_conversation(
+                    session["session_key"], include_ancestors=True
+                )
+            except Exception:
+                pass
     return _ok(
         rid,
         {
@@ -8149,24 +8300,49 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    db = _get_db()
-    if db is None:
-        return _db_unavailable_error(rid, code=5008)
     old_key = session["session_key"]
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
     if not history:
         return _err(rid, 4008, "nothing to branch — send a message first")
+
+    profile_home = session.get("profile_home")
+    owns_db = bool(profile_home)
+    try:
+        if owns_db:
+            from hermes_state import SessionDB
+
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+        else:
+            db = _get_db()
+    except Exception as exc:
+        return _err(rid, 5008, f"branch database unavailable: {exc}")
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+
     new_key = _new_session_key()
     new_sid = uuid.uuid4().hex[:8]
     source = _session_source(session)
-    lease, limit_message = _claim_active_session_slot(
-        new_key, live_session_id=new_sid, surface=source
+    lease = None
+    agent = None
+    phase = "persist"
+    home_token = (
+        set_hermes_home_override(str(profile_home)) if profile_home else None
     )
-    if limit_message is not None:
-        return _err(rid, 4090, limit_message)
-    branch_name = params.get("name", "")
     try:
+        lease, limit_message = _claim_active_session_slot(
+            new_key,
+            live_session_id=new_sid,
+            surface=source,
+            profile_home=profile_home,
+        )
+        if limit_message is not None:
+            if owns_db:
+                with contextlib.suppress(Exception):
+                    db.close()
+            return _err(rid, 4090, limit_message)
+
+        branch_name = params.get("name", "")
         if branch_name:
             title = branch_name
         else:
@@ -8196,17 +8372,15 @@ def _(rid, params: dict) -> dict:
                 content=msg.get("content"),
             )
         db.set_session_title(new_key, title)
-    except Exception as e:
-        if lease is not None:
-            lease.release()
-        return _err(rid, 5008, f"branch failed: {e}")
-    try:
+
+        phase = "agent"
         tokens = _set_session_context(new_key)
         try:
             agent = _make_agent(
                 new_sid,
                 new_key,
                 session_id=new_key,
+                session_db=db,
                 platform_override=source,
             )
         finally:
@@ -8217,14 +8391,27 @@ def _(rid, params: dict) -> dict:
             agent,
             list(history),
             cols=session.get("cols", 80),
+            session_db=db,
             source=source,
+            profile_home=profile_home,
+            active_session_lease=lease,
         )
-        if new_sid in _sessions:
-            _sessions[new_sid]["active_session_lease"] = lease
-    except Exception as e:
+    except Exception as exc:
         if lease is not None:
-            lease.release()
-        return _err(rid, 5000, f"agent init failed on branch: {e}")
+            _release_active_session_lease(lease)
+        if agent is not None:
+            with contextlib.suppress(Exception):
+                agent.close()
+        if owns_db:
+            with contextlib.suppress(Exception):
+                db.close()
+        code = 5008 if phase == "persist" else 5000
+        label = "branch failed" if phase == "persist" else "agent init failed on branch"
+        return _err(rid, code, f"{label}: {exc}")
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
     return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
 
 
@@ -8562,7 +8749,10 @@ def _(rid, params: dict) -> dict:
         # racing the in-flight child on the same stored session (interleaved
         # transcript, stale fork). After the run completes, submitting is fine:
         # the upgrade resumes the child's transcript as a normal conversation.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""),
+            session.get("profile_home"),
+        ):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
         if truncate_user_ordinal is not None:
             try:
@@ -8581,11 +8771,15 @@ def _(rid, params: dict) -> dict:
             truncated = history[: user_indices[ordinal]]
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
-                try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+            with _session_db(session) as db:
+                if db is not None:
+                    try:
+                        db.replace_messages(session["session_key"], truncated)
+                    except Exception as exc:
+                        print(
+                            f"[tui_gateway] prompt.submit: replace_messages failed: {exc}",
+                            file=sys.stderr,
+                        )
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -8669,9 +8863,9 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     # desktop session instead of becoming an orphan that any poller may consume.
     resolved_key = evt_key
     try:
-        db = _get_db()
-        if db is not None:
-            resolved_key = db.resolve_resume_session_id(evt_key) or evt_key
+        with _session_db(session) as db:
+            if db is not None:
+                resolved_key = db.resolve_resume_session_id(evt_key) or evt_key
     except Exception:
         resolved_key = evt_key
 
@@ -8743,10 +8937,10 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     if evt_key in current_keys:
         return True
     try:
-        db = _get_db()
-        resolved_key = (
-            db.resolve_resume_session_id(evt_key) if db is not None else evt_key
-        ) or evt_key
+        with _session_db(session) as db:
+            resolved_key = (
+                db.resolve_resume_session_id(evt_key) if db is not None else evt_key
+            ) or evt_key
     except Exception:
         resolved_key = evt_key
     return resolved_key in current_keys
@@ -8810,6 +9004,15 @@ def _notification_poller_loop(
         try:
             evt = process_registry.completion_queue.get(timeout=0.5)
         except Exception:
+            continue
+
+        # Compression rotated the durable key but the cross-process lease has
+        # not moved yet. Requeue before routing, emitting, or marking the
+        # session running; notification turns share the same admission barrier
+        # as foreground RPCs.
+        if not _session_ownership_ready(sid, session):
+            process_registry.completion_queue.put(evt)
+            time.sleep(0.25)
             continue
 
         # Multiple desktop sessions share this one process-wide queue. Only
@@ -8885,6 +9088,8 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             continue
         try:
             _emit("message.start", sid)
@@ -8909,6 +9114,9 @@ def _notification_poller_loop(
             evt = process_registry.completion_queue.get_nowait()
         except Exception:
             break
+        if not _session_ownership_ready(sid, session):
+            deferred.append(evt)
+            continue
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
@@ -8945,6 +9153,8 @@ def _notification_poller_loop(
         )
         _claim = claim_event_delivery(evt, "tui-poller")
         if _claim is None:
+            with session["history_lock"]:
+                session["running"] = False
             continue
         try:
             _emit("message.start", sid)
@@ -9351,23 +9561,23 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # Apply pending_title now that the DB row exists.
             _pending = session.get("pending_title")
             if _pending and status == "complete":
-                _pdb = _get_db()
-                if _pdb:
-                    _session_key = session.get("session_key") or sid
-                    try:
-                        if _pdb.set_session_title(_session_key, _pending):
+                with _session_db(session) as _pdb:
+                    if _pdb:
+                        _session_key = session.get("session_key") or sid
+                        try:
+                            if _pdb.set_session_title(_session_key, _pending):
+                                session["pending_title"] = None
+                        except ValueError as exc:
+                            # Invalid/duplicate title — non-retryable, drop it.
+                            # Auto-title will take over. Fix for #19029.
                             session["pending_title"] = None
-                    except ValueError as exc:
-                        # Invalid/duplicate title — non-retryable, drop it.
-                        # Auto-title will take over. Fix for #19029.
-                        session["pending_title"] = None
-                        logger.info(
-                            "Dropping pending title for session %s: %s",
-                            _session_key, exc,
-                        )
-                    except Exception:
-                        # Transient DB failure — keep pending_title for retry.
-                        pass
+                            logger.info(
+                                "Dropping pending title for session %s: %s",
+                                _session_key, exc,
+                            )
+                        except Exception:
+                            # Transient DB failure — keep pending_title for retry.
+                            pass
 
             if (
                 status == "complete"
@@ -9380,8 +9590,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     from agent.title_generator import maybe_auto_title
 
                     _title_key = session.get("session_key") or sid
+                    _title_db = getattr(agent, "_session_db", None)
+                    if _title_db is None and not session.get("profile_home"):
+                        _title_db = _get_db()
                     maybe_auto_title(
-                        _get_db(),
+                        _title_db,
                         _title_key,
                         text,
                         raw,
@@ -9449,6 +9662,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+
+        # Compression rotated the durable id but its lease could not be moved.
+        # Stay quiescent until the next RPC retries the ownership transfer.
+        if session.get("_ownership_sync_pending"):
+            return
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
@@ -12341,9 +12559,6 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /undo"
             )
-        db = _get_db()
-        if db is None:
-            return _db_unavailable_error(rid, code=5008)
         session_key = session.get("session_key", "")
         if not session_key:
             return _err(rid, 4001, "no session key for undo")
@@ -12357,28 +12572,31 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4004, f"undo: invalid count {arg_str!r} — use /undo or /undo N")
         if n < 1:
             n = 1
-        try:
-            recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
-        except Exception as e:
-            return _err(rid, 5008, f"undo: failed to load history: {e}")
-        if not recents:
-            return _err(rid, 4018, "no user messages to undo")
-        # recents[0] is the most-recent user turn; pick the Nth-from-last.
-        # If N exceeds the number of user turns, back up to the oldest.
-        target_idx = min(n - 1, len(recents) - 1)
-        target_id = recents[target_idx]["id"]
-        try:
-            result = db.rewind_to_message(session_key, target_id)
-        except ValueError as e:
-            return _err(rid, 4004, f"undo: {e}")
-        except Exception as e:
-            return _err(rid, 5008, f"undo: {e}")
-        # Reload the active-only transcript into the in-memory session
-        # history so subsequent turns see the truncated view.
-        try:
-            active = db.get_messages_as_conversation(session_key)
-        except Exception:
-            active = []
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5008)
+            try:
+                recents = db.list_recent_user_messages(session_key, limit=max(n, 10))
+            except Exception as e:
+                return _err(rid, 5008, f"undo: failed to load history: {e}")
+            if not recents:
+                return _err(rid, 4018, "no user messages to undo")
+            # recents[0] is the most-recent user turn; pick the Nth-from-last.
+            # If N exceeds the number of user turns, back up to the oldest.
+            target_idx = min(n - 1, len(recents) - 1)
+            target_id = recents[target_idx]["id"]
+            try:
+                result = db.rewind_to_message(session_key, target_id)
+            except ValueError as e:
+                return _err(rid, 4004, f"undo: {e}")
+            except Exception as e:
+                return _err(rid, 5008, f"undo: {e}")
+            # Reload the active-only transcript into the in-memory session
+            # history so subsequent turns see the truncated view.
+            try:
+                active = db.get_messages_as_conversation(session_key)
+            except Exception:
+                active = []
         with session["history_lock"]:
             session["history"] = list(active)
             session["history_version"] = int(session.get("history_version", 0)) + 1

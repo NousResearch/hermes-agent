@@ -409,6 +409,41 @@ def convert_table_to_bullets(text: str) -> str:
 class TextModelPicker:
     """Text-based interactive model picker for platforms without inline keyboards.
 
+    **DM-only.**  This picker is restricted to private (1:1) chats.  When
+    ``chat_type`` is a non-DM scope (``"group"``, ``"channel"``, ``"thread"``,
+    etc.), ``send()`` returns a failed ``SendResult`` so the gateway falls
+    back to its static text list, and ``handle_response()`` returns ``None``
+    so any plain-text reply falls through to the agent unconsumed.
+
+    Why DM-only:
+      - **Single-user state machine.**  Pickers are a private conversation
+        between the user and the bot: "pick a provider", "pick a model",
+        "confirm".  This sequence lives in memory keyed by ``session_key``,
+        and any *other* user's plain-text reply in the same chat (a "1"
+        posted while someone is picking) would be consumed by the wrong
+        session if the chat is shared.
+      - **Even with requester validation, the UX is broken.**  We do check
+        that ``requester_user_id`` matches the picker opener on every reply,
+        and that does prevent another user from *switching* the opener's
+        model.  But it does not prevent the noise: a "1" the other user
+        types in normal chat gets silently swallowed by the picker and
+        vanishes from the conversation, which is confusing and looks like
+        a bug to both parties.
+      - **Group bot etiquette already restricts this elsewhere.**  Yuanbao's
+        ``GroupAtGuardMiddleware`` requires ``@bot`` to dispatch any non-
+        owner slash command in a group, and WeChat groups are similarly
+        access-gated.  Picker-on-text is too easy to misuse accidentally in
+        that environment.
+      - **The typed escape hatch still works in groups.**  ``/model <name>
+        --provider <slug>`` is unaffected — only the interactive menu is
+        restricted.  Users who need to switch a model in a group can still
+        do so explicitly; they just don't get the drill-down menu there.
+
+    Inline-keyboard pickers (Telegram / Discord / Matrix) are not affected
+    by this restriction — they use button callbacks (``callback_query`` /
+    reaction events) that are bound to the originating ``message_id``, so
+    the multi-user cross-talk problem does not arise.
+
     Provides a multi-step drill-down flow (provider selection -> model selection
     -> optional expensive-model confirmation) that works on text-only platforms
     like WeChat and Yuanbao.  Users reply with numbers to navigate the menu.
@@ -427,11 +462,12 @@ class TextModelPicker:
         # In adapter when handling /model command:
         await self._model_picker.send(chat_id, providers, current_model,
                                       current_provider, session_key,
-                                      on_model_selected, requester_user_id)
+                                      on_model_selected, requester_user_id,
+                                      chat_type=source.chat_type)
 
         # In adapter message handler (before processing as normal message):
         result = await self._model_picker.handle_response(
-            session_key, text, requester_user_id,
+            session_key, text, requester_user_id, chat_type=source.chat_type,
         )
         if result is not None:
             return  # message consumed by picker

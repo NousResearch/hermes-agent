@@ -711,10 +711,16 @@ class TestPerSessionMigrateGuard:
     containing only <prior_memory_file> wrappers.
     """
 
-    def _make_provider_with_strategy(self, strategy, init_on_session_start=True):
-        """Create a HonchoMemoryProvider and track migrate_memory_files calls."""
+    def _make_provider_with_strategy(self, strategy, init_on_session_start=True, tmp_path=None):
+        """Create a HonchoMemoryProvider and track migrate_memory_files calls.
+
+        When *tmp_path* is provided the mock ``get_hermes_home`` returns it,
+        allowing the migration marker (``.honcho_migration_done``) to be
+        verified on disk.
+        """
         from plugins.memory.honcho.client import HonchoClientConfig
         from unittest.mock import patch, MagicMock
+        from pathlib import Path
 
         cfg = HonchoClientConfig(
             api_key="test-key",
@@ -731,10 +737,17 @@ class TestPerSessionMigrateGuard:
         mock_session.messages = []  # empty = new session → triggers migration path
         mock_manager.get_or_create.return_value = mock_session
 
+        # When tmp_path is given, make get_hermes_home() return it so the
+        # marker file lands in ``tmp_path / "memories"``.
+        hermes_home = tmp_path if tmp_path else MagicMock()
+        mem_dir = Path(tmp_path) / "memories" if tmp_path else None
+        if mem_dir:
+            mem_dir.mkdir(parents=True, exist_ok=True)
+
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
              patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
-             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+             patch("hermes_constants.get_hermes_home", return_value=hermes_home):
             provider.initialize(session_id="test-session-001")
 
         return provider, mock_manager
@@ -744,10 +757,27 @@ class TestPerSessionMigrateGuard:
         _, mock_manager = self._make_provider_with_strategy("per-session")
         mock_manager.migrate_memory_files.assert_not_called()
 
-    def test_migrate_runs_for_per_directory(self):
+    def test_migrate_runs_for_per_directory(self, tmp_path):
         """per-directory strategy with empty session SHOULD call migrate_memory_files."""
-        _, mock_manager = self._make_provider_with_strategy("per-directory")
+        _, mock_manager = self._make_provider_with_strategy("per-directory", tmp_path=tmp_path)
         mock_manager.migrate_memory_files.assert_called_once()
+
+    def test_migrate_writes_marker_file(self, tmp_path):
+        """After successful migration, a .honcho_migration_done marker is written."""
+        from pathlib import Path
+        self._make_provider_with_strategy("per-directory", tmp_path=tmp_path)
+        marker = Path(tmp_path) / "memories" / ".honcho_migration_done"
+        assert marker.exists()
+        assert "migrated=" in marker.read_text()
+
+    def test_migrate_skipped_when_marker_exists(self, tmp_path):
+        """When the marker file already exists, migration must NOT run."""
+        from pathlib import Path
+        marker = Path(tmp_path) / "memories" / ".honcho_migration_done"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("migrated=old-session\n")
+        _, mock_manager = self._make_provider_with_strategy("per-directory", tmp_path=tmp_path)
+        mock_manager.migrate_memory_files.assert_not_called()
 
 
 class TestChunkMessage:

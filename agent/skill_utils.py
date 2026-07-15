@@ -314,6 +314,47 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return _normalize_string_set(skills_cfg.get("disabled"))
 
 
+def get_platform_skill_allowlist(platform: str | None = None):
+    """Read the per-platform skills INDEX allowlist from config.yaml.
+
+    skills.platform_enabled.<platform> is a list of category names and/or
+    skill names.  When set for the resolved platform, the <available_skills>
+    index only lists entries whose category OR skill name is in the list —
+    machine platforms (cron, api_server) carry a ~10-skill index instead of
+    300+.  This gates the INDEX only: skill_view/attached skills still load
+    anything by name, so it is progressive disclosure, not access control.
+
+    Returns a set of names, or None when no allowlist applies (no config,
+    no platform resolved, or platform absent from the map) — callers must
+    treat None as "no filtering" (backward-compatible default).
+    """
+    config_path = get_config_path()
+    if not config_path.exists():
+        return None
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read skill config %s: %s", config_path, e)
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return None
+    from gateway.session_context import get_session_env
+    resolved_platform = (
+        platform
+        or os.getenv("HERMES_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
+    )
+    if not resolved_platform:
+        return None
+    enabled = (skills_cfg.get("platform_enabled") or {}).get(resolved_platform)
+    if enabled is None:
+        return None
+    return _normalize_string_set(enabled)
+
+
 def _normalize_string_set(values) -> Set[str]:
     if values is None:
         return set()

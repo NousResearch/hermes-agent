@@ -20,6 +20,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_platform_skill_allowlist,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_environment,
@@ -1085,6 +1086,7 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    platform: "str | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1110,12 +1112,17 @@ def build_skills_system_prompt(
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
     from gateway.session_context import get_session_env
+    # Explicit agent platform wins: cron deliberately does NOT seed the
+    # session-platform contextvars (delivery machinery needs the DELIVERY
+    # platform there), so env resolution alone never sees platform=cron.
     _platform_hint = (
-        os.environ.get("HERMES_PLATFORM")
+        platform
+        or os.environ.get("HERMES_PLATFORM")
         or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
     disabled = get_disabled_skill_names()
+    allowlist = get_platform_skill_allowlist(_platform_hint or None)
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1123,6 +1130,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(allowlist)) if allowlist is not None else None,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1255,6 +1263,25 @@ def build_skills_system_prompt(
                 category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
+    # Per-platform index allowlist (skills.platform_enabled.<platform>):
+    # keep a category when the category itself is allowed, else keep only
+    # its individually-allowed skills. None = no filtering. Gates the index
+    # only — skill_view / attached skills still load anything by name.
+    if allowlist is not None:
+        skills_by_category = {
+            cat: entries
+            for cat, entries in (
+                (
+                    cat,
+                    entries
+                    if cat in allowlist
+                    else [e for e in entries if e[0] in allowlist],
+                )
+                for cat, entries in skills_by_category.items()
+            )
+            if entries
+        }
 
     if not skills_by_category:
         result = ""

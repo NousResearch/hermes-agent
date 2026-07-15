@@ -143,3 +143,35 @@ def test_tool_schemas_respect_platform_toolsets(isolated_home):
     # The scoped platform's tools must be a small set — clarify + todo only
     # (plus nothing smuggled in by plugins/MCP defaults).
     assert scoped["tools"]["count"] <= 4
+
+
+def test_skills_index_platform_allowlist(isolated_home, monkeypatch):
+    """skills.platform_enabled.<platform> gates the <available_skills> index.
+
+    Machine platforms (cron) should carry a ~10-entry index, not 300+ —
+    androux-0svm6 A1. The allowlist matches categories or individual skill
+    names; absent config means no filtering.
+    """
+    from agent.prompt_builder import build_skills_system_prompt
+
+    _seed_skill(isolated_home, "keeper", "stays in the index")
+    other_dir = isolated_home / "skills" / "noise" / "dropped"
+    other_dir.mkdir(parents=True)
+    (other_dir / "SKILL.md").write_text(
+        "---\nname: dropped\ndescription: should vanish\n---\n# dropped\n",
+        encoding="utf-8",
+    )
+    (isolated_home / "config.yaml").write_text(
+        "skills:\n  platform_enabled:\n    cron:\n    - demo\n",
+        encoding="utf-8",
+    )
+
+    # Explicit platform arg — the path real cron agents use (cron never
+    # seeds the session-platform env; see build_skills_system_prompt).
+    scoped = build_skills_system_prompt(platform="cron")
+    assert "keeper" in scoped
+    assert "dropped" not in scoped
+
+    monkeypatch.setenv("HERMES_PLATFORM", "telegram")  # no allowlist for it
+    unscoped = build_skills_system_prompt()
+    assert "keeper" in unscoped and "dropped" in unscoped

@@ -6,8 +6,11 @@ dispatch, the requirements probe, the detector fire/cooldown loop, and the
 process-wide singleton lifecycle.
 """
 
+import multiprocessing
+import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -30,7 +33,7 @@ def test_config_defaults_and_clamping():
 def test_wake_surface_enabled_gate():
     # Disabled → never, regardless of surface.
     assert ww.wake_surface_enabled("cli", {"enabled": False, "surface": "cli"}) is False
-    # auto → every surface.
+    # auto → every surface is eligible; ownership still admits only one.
     for s in ("cli", "tui", "gui"):
         assert ww.wake_surface_enabled(s, {"enabled": True, "surface": "auto"}) is True
     # Pinned surface → only that one.
@@ -219,24 +222,151 @@ def test_detector_pause_resume(monkeypatch):
 # ── Singleton lifecycle ──────────────────────────────────────────────────
 
 
-def test_singleton_lifecycle(monkeypatch):
+def test_singleton_lifecycle(monkeypatch, tmp_path):
     _fake_audio(monkeypatch)
     monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    owner = object()
 
     assert ww.is_listening() is False
-    det = ww.start_listening(lambda: None, config={})
+    det = ww.start_listening(lambda: None, owner=owner, config={})
     time.sleep(0.05)
     assert ww.is_listening() is True
+    assert ww.owns_listener(owner) is True
 
     # Re-entrant start returns the same detector and re-arms it.
-    det2 = ww.start_listening(lambda: None, config={})
+    det2 = ww.start_listening(lambda: None, owner=owner, config={})
     assert det2 is det
 
-    ww.pause_listening()
+    assert ww.pause_listening(owner=owner) is True
     assert ww.is_listening() is False
-    ww.resume_listening()
+    assert ww.resume_listening(owner=owner) is True
     time.sleep(0.05)
     assert ww.is_listening() is True
 
-    ww.stop_listening()
+    assert ww.stop_listening(owner=owner) is True
     assert ww.is_listening() is False
+
+
+def test_second_owner_cannot_mutate_listener(monkeypatch, tmp_path):
+    _fake_audio(monkeypatch)
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    owner, intruder = object(), object()
+    first_callback = lambda: None
+
+    detector = ww.start_listening(first_callback, owner=owner, config={})
+    with pytest.raises(ww.WakeWordInUse):
+        ww.start_listening(lambda: None, owner=intruder, config={})
+
+    assert detector.on_wake is first_callback
+    assert ww.pause_listening(owner=intruder) is False
+    assert ww.resume_listening(owner=intruder) is False
+    assert ww.stop_listening(owner=intruder) is False
+    assert ww.owns_listener(owner) is True
+    assert ww.stop_listening(owner=owner) is True
+
+
+def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
+    streams = []
+
+    def _stream(**kw):
+        stream = _FakeStream(**kw)
+        streams.append(stream)
+        return stream
+
+    fake_sd = types.SimpleNamespace(InputStream=_stream)
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=True))
+    monkeypatch.setattr(ww, "_lock_path", lambda: tmp_path / "wake.lock")
+    owner = object()
+    paused = threading.Event()
+
+    def _on_wake():
+        if ww.pause_listening(owner=owner):
+            paused.set()
+
+    ww.start_listening(_on_wake, owner=owner, config={})
+    assert paused.wait(2)
+    assert ww.is_listening() is False
+    assert streams[0].closed is True
+    assert ww.stop_listening(owner=owner) is True
+
+
+def test_startup_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
+    class _BrokenSoundDevice:
+        @staticmethod
+        def InputStream(**_kw):
+            raise OSError("no microphone")
+
+    lock_path = tmp_path / "wake.lock"
+    monkeypatch.setattr(ww, "_import_audio", lambda: (_BrokenSoundDevice, None))
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: _FakeEngine(fire=False))
+    monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
+    owner = object()
+
+    with pytest.raises(RuntimeError, match="Failed to open"):
+        ww.start_listening(lambda: None, owner=owner, config={})
+
+    assert ww.owns_listener(owner) is False
+    handle = ww._acquire_machine_lock(lock_path)
+    ww._release_machine_lock(handle)
+
+
+def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
+    class _FailingStream(_FakeStream):
+        def read(self, _n):
+            raise OSError("device disconnected")
+
+    fake_sd = types.SimpleNamespace(InputStream=lambda **kw: _FailingStream(**kw))
+    engine = _FakeEngine(fire=False)
+    lock_path = tmp_path / "wake.lock"
+    monkeypatch.setattr(ww, "_import_audio", lambda: (fake_sd, None))
+    monkeypatch.setattr(ww, "_build_engine", lambda cfg: engine)
+    monkeypatch.setattr(ww, "_lock_path", lambda: lock_path)
+    owner = object()
+
+    ww.start_listening(lambda: None, owner=owner, config={})
+    deadline = time.time() + 2
+    while ww.owns_listener(owner) and time.time() < deadline:
+        time.sleep(0.01)
+
+    assert ww.owns_listener(owner) is False
+    assert engine.closed is True
+    handle = ww._acquire_machine_lock(lock_path)
+    ww._release_machine_lock(handle)
+
+
+def _hold_machine_lock(path: str, ready, release) -> None:
+    from tools import wake_word
+
+    handle = wake_word._acquire_machine_lock(Path(path))
+    ready.set()
+    release.wait(10)
+    assert handle is not None
+
+
+def test_machine_lock_is_released_when_owner_process_exits(tmp_path):
+    lock_path = tmp_path / "wake.lock"
+    ctx = multiprocessing.get_context("spawn")
+    ready = ctx.Event()
+    release = ctx.Event()
+    process = ctx.Process(
+        target=_hold_machine_lock,
+        args=(str(lock_path), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(10)
+        with pytest.raises(ww.WakeWordInUse):
+            ww._acquire_machine_lock(lock_path)
+        release.set()
+        process.join(10)
+        assert process.exitcode == 0
+        handle = ww._acquire_machine_lock(lock_path)
+        ww._release_machine_lock(handle)
+    finally:
+        release.set()
+        if process.is_alive():
+            process.terminate()
+        process.join(10)

@@ -27,8 +27,7 @@ export const $voiceConversationStartRequest = atom(0)
 let nextVoiceStartRequest = 0
 let handledVoiceStartRequest = 0
 
-export const requestVoiceConversationStart = (): void =>
-  $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
 
 export const takeVoiceConversationStart = (current: number): boolean => {
   if (current <= handledVoiceStartRequest) {

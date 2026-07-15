@@ -544,6 +544,26 @@ class RaftAdapter(BasePlatformAdapter):
             "--wake-channel-endpoint", endpoint,
         ]
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
+        # undici prefers ALL_PROXY, which can point to an incompatible SOCKS
+        # endpoint inherited from the gateway process.
+        for key in ("all_proxy", "ALL_PROXY"):
+            env.pop(key, None)
+
+        no_proxy_entries: list[str] = []
+        no_proxy_seen: set[str] = set()
+        for key in ("NO_PROXY", "no_proxy"):
+            for entry in env.get(key, "").split(","):
+                normalized = entry.strip()
+                if normalized:
+                    no_proxy_entries.append(normalized)
+                    no_proxy_seen.add(normalized.lower())
+        for host in ("127.0.0.1", "localhost", "api.raft.build"):
+            if host.lower() not in no_proxy_seen:
+                no_proxy_entries.append(host)
+                no_proxy_seen.add(host.lower())
+        no_proxy = ",".join(no_proxy_entries)
+        env["NO_PROXY"] = no_proxy
+        env["no_proxy"] = no_proxy
         try:
             self._bridge_process = subprocess.Popen(
                 cmd, env=env, stdin=subprocess.DEVNULL
@@ -750,10 +770,15 @@ class RaftAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _wake_prompt() -> str:
+        profile = os.environ.get("RAFT_PROFILE", "your-agent-profile")
         return (
             "Raft wake hint received. New Raft messages may be pending. "
             "If you have not read the Raft manual in this session, run "
-            "`raft manual get raft-cli-overview` before using Raft commands."
+            "`raft manual get raft-cli-overview` before using Raft commands.\n\n"
+            "CRITICAL: The Raft platform's send() is intentionally a no-op. "
+            f"You MUST use `raft --profile {profile} message send --target \"dm:@username\" <<'SLOCKMSG'` "
+            "to deliver your response. Never rely on the normal message-sending path — "
+            "it does not work for Raft."
         )
 
     def report_activity(self, event: Dict[str, Any]) -> None:
@@ -823,6 +848,7 @@ def interactive_setup() -> None:
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    profile = os.environ.get("RAFT_PROFILE", "your-agent-profile")
     ctx.register_platform(
         name="raft",
         label="Raft",
@@ -836,10 +862,14 @@ def register(ctx) -> None:
         emoji="🔔",
         platform_hint=(
             "You are connected to Raft via an external-agent channel. "
-            "Run `raft --profile {profile} profile show` to confirm which agent profile is active. "
-            "Run `raft --profile {profile} manual get raft-cli-overview` to learn available Raft commands. "
-            "Always pass `--profile {profile}` to every raft CLI call."
-        ).format(profile=os.environ.get("RAFT_PROFILE", "your-agent-profile")),
+            "IMPORTANT: the platform's send() is a no-op — your responses "
+            "are NOT automatically delivered. You MUST use the `raft` CLI to "
+            f"send messages back: `raft --profile {profile} message send "
+            "--target \"dm:@username\" <<'SLOCKMSG'` (with heredoc). "
+            f"Run `raft --profile {profile} profile show` to confirm which agent profile is active. "
+            f"Run `raft --profile {profile} manual get raft-cli-overview` to learn available Raft commands. "
+            f"Always pass `--profile {profile}` to every raft CLI call."
+        ),
     )
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("pre_llm_call", _on_pre_llm_call)

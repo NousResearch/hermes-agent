@@ -215,6 +215,69 @@ class TestRaftWakeHttp:
         assert "raft manual get" in pending.text
 
 
+class TestRaftBridgeEnvironment:
+    def test_spawn_bridge_merges_proxy_exclusions_and_removes_all_proxy(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter()
+        monkeypatch.setenv("RAFT_PROFILE", "test-profile")
+        monkeypatch.setenv("NO_PROXY", "gateway.internal,localhost")
+        monkeypatch.setenv("no_proxy", "service.local,api.raft.build")
+        monkeypatch.setenv("ALL_PROXY", "socks5://127.0.0.1:7890")
+        monkeypatch.setenv("all_proxy", "socks5://127.0.0.1:7890")
+
+        with (
+            patch("plugins.platforms.raft.adapter.shutil.which", return_value="/usr/bin/raft"),
+            patch("plugins.platforms.raft.adapter.subprocess.Popen") as popen,
+        ):
+            adapter._spawn_bridge(port=14273)
+
+        spawned_env = popen.call_args.kwargs["env"]
+        assert "ALL_PROXY" not in spawned_env
+        assert "all_proxy" not in spawned_env
+        assert spawned_env["NO_PROXY"].split(",") == [
+            "gateway.internal",
+            "localhost",
+            "service.local",
+            "api.raft.build",
+            "127.0.0.1",
+        ]
+        assert spawned_env["no_proxy"] == spawned_env["NO_PROXY"]
+
+    def test_spawn_bridge_sets_required_exclusions_when_none_are_inherited(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter()
+        monkeypatch.setenv("RAFT_PROFILE", "test-profile")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+
+        with (
+            patch("plugins.platforms.raft.adapter.shutil.which", return_value="/usr/bin/raft"),
+            patch("plugins.platforms.raft.adapter.subprocess.Popen") as popen,
+        ):
+            adapter._spawn_bridge(port=14273)
+
+        spawned_env = popen.call_args.kwargs["env"]
+        assert spawned_env["NO_PROXY"] == "127.0.0.1,localhost,api.raft.build"
+        assert spawned_env["no_proxy"] == spawned_env["NO_PROXY"]
+
+    def test_spawn_bridge_preserves_token_and_unrelated_environment(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("RAFT_PROFILE", "test-profile")
+        monkeypatch.setenv("CUSTOM_GATEWAY_SETTING", "preserve-me")
+
+        with (
+            patch("plugins.platforms.raft.adapter.shutil.which", return_value="/usr/bin/raft"),
+            patch("plugins.platforms.raft.adapter.subprocess.Popen") as popen,
+        ):
+            adapter._spawn_bridge(port=14273)
+
+        spawned_env = popen.call_args.kwargs["env"]
+        assert spawned_env["RAFT_CHANNEL_TOKEN"] == "bridge-secret"
+        assert spawned_env["CUSTOM_GATEWAY_SETTING"] == "preserve-me"
+
+
 class TestRaftActivityHttp:
     @pytest.mark.asyncio
     async def test_activity_endpoint_auth_validation_and_drain(self):
@@ -539,6 +602,8 @@ class TestRaftConfig:
         assert "profile show" in registered["platform_hint"]
         assert "manual get" in registered["platform_hint"]
         assert "--profile" in registered["platform_hint"]
+        assert "no-op" in registered["platform_hint"].lower()
+        assert "message send" in registered["platform_hint"]
         assert hooks == {
             "on_session_start": _on_session_start,
             "pre_llm_call": _on_pre_llm_call,
@@ -548,3 +613,12 @@ class TestRaftConfig:
             "on_session_end": _on_session_end,
             "on_session_finalize": _on_session_finalize,
         }
+
+    def test_wake_prompt_explains_noop_delivery_with_profile(self, monkeypatch):
+        monkeypatch.setenv("RAFT_PROFILE", "my-agent")
+
+        prompt = RaftAdapter._wake_prompt()
+
+        assert "no-op" in prompt.lower()
+        assert "--profile my-agent" in prompt
+        assert "message send" in prompt

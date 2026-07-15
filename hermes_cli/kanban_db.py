@@ -5416,6 +5416,16 @@ def decompose_triage_task(
                 (cid, task_id),
             )
 
+        # The graph is now complete, so the shared creation policy sees only
+        # persisted sibling parents. The root is a child of this graph and is
+        # deliberately not supplied as a synthetic parent.
+        for cid in child_ids:
+            apply_task_creation_subscriptions(
+                conn,
+                task_id=cid,
+                context=SubscriptionContext(),
+            )
+
         # Flip the root: triage -> todo, set assignee to the orchestrator.
         sets = ["status = 'todo'"]
         params: list[Any] = []

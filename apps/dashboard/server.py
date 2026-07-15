@@ -132,6 +132,19 @@ class FeedConfig:
             return {"topics": ["top", *self._topics.keys()],
                     "sources": {k: [dict(s) for s in v] for k, v in self._topics.items()}}
 
+    def restore(self, sources: dict) -> None:
+        """Adopt a backup snapshot's topic→sources map wholesale."""
+        with self._lock:
+            self._topics = {
+                str(k)[:40]: [
+                    {"name": str(s["name"]), "url": str(s["url"])}
+                    for s in v if isinstance(s, dict) and s.get("url")
+                ][: self.MAX_SOURCES_PER_TOPIC]
+                for k, v in list(sources.items())[: self.MAX_TOPICS]
+                if k != "top" and isinstance(v, list)
+            }
+            self._save()
+
     def add_topic(self, name: str) -> None:
         key = re.sub(r"[^a-z0-9-]", "", name.strip().lower().replace(" ", "-"))[:24]
         if not key or key == "top":
@@ -196,6 +209,7 @@ GEOCODE_TTL = 24 * 60 * 60
 WORLDSTATE_TTL = 10 * 60
 READER_TTL = 30 * 60
 ICS_TTL = 15 * 60
+BACKUP_KEEP = 20  # newest server-side snapshots retained
 
 # ---------------------------------------------------------------------------
 # "State of the world" heuristic model.
@@ -369,6 +383,15 @@ class CalendarConfig:
             self._calendars = [c for c in self._calendars if c["url"] != url]
             if len(self._calendars) == before:
                 raise ApiError(404, "no such calendar")
+            self._save()
+
+    def restore(self, calendars: list) -> None:
+        """Adopt a backup snapshot's subscription list wholesale."""
+        with self._lock:
+            self._calendars = [
+                {"name": str(c["name"])[:60], "url": str(c["url"])}
+                for c in calendars if isinstance(c, dict) and c.get("url") and c.get("name")
+            ][: self.MAX_CALENDARS]
             self._save()
 
 
@@ -1202,6 +1225,82 @@ class Api:
             raise ApiError(400, "after must be an integer") from None
         return self.automations.notifications_after(after)
 
+    # -- server-side backups -------------------------------------------------
+    @property
+    def backups_dir(self) -> Path:
+        return self.data_dir / "backups"
+
+    def backup_now(self, body: dict) -> dict:
+        synced = self.state_store.get() if self.state_store else {"rev": 0, "state": None}
+        snap = {
+            "kind": "hermes-hub-backup",
+            "created": datetime.now(timezone.utc).isoformat(),
+            "rev": synced["rev"],
+            "state": synced["state"],
+            "feeds": self.feeds.snapshot()["sources"],
+            "calendars": self.calendars.list(),
+            "automations": self.automations.list_rules(),
+            "memory": self.memory_read(),
+        }
+        self.backups_dir.mkdir(parents=True, exist_ok=True)
+        name = f"hub-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json"
+        path = self.backups_dir / name
+        path.write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+        files = sorted(self.backups_dir.glob("hub-*.json"))
+        for old in files[:-BACKUP_KEEP]:
+            old.unlink()
+        return {"name": name, "size": path.stat().st_size,
+                "count": min(len(files), BACKUP_KEEP)}
+
+    def backups_list(self, params: dict) -> dict:
+        if not self.backups_dir.is_dir():
+            return {"backups": []}
+        out = []
+        for f in sorted(self.backups_dir.glob("hub-*.json"), reverse=True):
+            stat = f.stat()
+            out.append({
+                "name": f.name,
+                "size": stat.st_size,
+                "created": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            })
+        return {"backups": out}
+
+    def backup_restore(self, body: dict) -> dict:
+        name = str(body.get("name", ""))
+        if not re.fullmatch(r"hub-[0-9-]+\.json", name):
+            raise ApiError(400, "bad backup name")
+        path = self.backups_dir / name
+        if not path.is_file():
+            raise ApiError(404, "no such backup")
+        try:
+            snap = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise ApiError(500, "backup file is unreadable") from None
+        if not isinstance(snap, dict) or snap.get("kind") != "hermes-hub-backup":
+            raise ApiError(400, "not a hermes hub backup")
+        restored: list[str] = []
+        if isinstance(snap.get("state"), dict) and self.state_store is not None:
+            self.state_store.put(snap["state"], None)  # rev advances; clients adopt
+            restored.append("state")
+        if isinstance(snap.get("feeds"), dict):
+            self.feeds.restore(snap["feeds"])
+            restored.append("feeds")
+        if isinstance(snap.get("calendars"), list):
+            self.calendars.restore(snap["calendars"])
+            restored.append("calendars")
+        if isinstance(snap.get("automations"), list):
+            self.automations.replace_rules(snap["automations"])
+            restored.append("automations")
+        if isinstance(snap.get("memory"), str) and snap["memory"].strip():
+            with self._memory_lock:
+                self.memory_path.parent.mkdir(parents=True, exist_ok=True)
+                self.memory_path.write_text(snap["memory"], encoding="utf-8")
+            restored.append("memory")
+        CACHE.clear()
+        self._ics_epoch += 1
+        return {"restored": restored,
+                "rev": self.state_store.rev() if self.state_store else 0}
+
     def assistant_chat_stream(self, body: dict, handler) -> None:
         """SSE: delta events with live text, then one done event (chat shape)."""
         generator = self.assistant.chat_stream(body)
@@ -1296,6 +1395,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/feeds": "feeds_config",
         "/api/calendars": "calendars_list",
         "/api/events": "ics_events",
+        "/api/backups": "backups_list",
     }
 
     POST_ROUTES = {
@@ -1307,6 +1407,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/automations": "automations_op",
         "/api/feeds": "feeds_op",
         "/api/calendars": "calendars_op",
+        "/api/backup": "backup_now",
+        "/api/backup/restore": "backup_restore",
     }
 
     # POST endpoints that write their own (streaming) response.

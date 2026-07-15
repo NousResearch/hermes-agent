@@ -967,5 +967,112 @@ class CalendarHttpTests(unittest.TestCase):
         self.assertRegex(data["sun"]["sunset"], r"^\d\d:\d\d$")
 
 
+class BackupTests(unittest.TestCase):
+    def setUp(self):
+        server.CACHE.clear()
+        data_dir = Path(tempfile.mkdtemp())
+        store = server.StateStore(data_dir / "hub.db")
+        self.api = server.Api(offline=True, state_store=store, data_dir=data_dir)
+
+    def test_backup_creates_snapshot_and_lists(self):
+        self.api.state_store.put({"version": 1, "layout": [], "note": "hi"}, None)
+        info = self.api.backup_now({})
+        self.assertRegex(info["name"], r"^hub-[0-9-]+\.json$")
+        self.assertGreater(info["size"], 0)
+        listed = self.api.backups_list({})["backups"]
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0]["name"], info["name"])
+
+    def test_backup_prunes_to_keep_limit(self):
+        for _ in range(server.BACKUP_KEEP + 5):
+            self.api.backup_now({})
+        self.assertEqual(len(self.api.backups_list({})["backups"]), server.BACKUP_KEEP)
+
+    def test_restore_roundtrips_state_and_config(self):
+        self.api.calendars.add("Work", "https://example.org/work.ics")
+        self.api.feeds.add_topic("gadgets")
+        self.api.feeds.add_source("gadgets", "Verge", "https://example.org/verge.xml")
+        self.api.memory_append("the dog is named Rex")
+        self.api.state_store.put({"version": 1, "layout": [], "marker": "A"}, None)
+        name = self.api.backup_now({})["name"]
+
+        # mutate everything, then restore
+        self.api.calendars.remove("https://example.org/work.ics")
+        self.api.feeds.remove_topic("gadgets")
+        self.api.state_store.put({"version": 1, "layout": [], "marker": "B"}, None)
+
+        result = self.api.backup_restore({"name": name})
+        self.assertEqual(set(result["restored"]),
+                         {"state", "feeds", "calendars", "automations", "memory"})
+        self.assertEqual(self.api.state_store.get()["state"]["marker"], "A")
+        self.assertTrue(any(c["url"] == "https://example.org/work.ics"
+                            for c in self.api.calendars.list()))
+        self.assertIn("gadgets", self.api.feeds.topics())
+        self.assertIn("Rex", self.api.memory_read())
+
+    def test_restore_rejects_bad_name_and_missing(self):
+        with self.assertRaises(server.ApiError):
+            self.api.backup_restore({"name": "../etc/passwd"})
+        with self.assertRaises(server.ApiError):
+            self.api.backup_restore({"name": "hub-does-not-exist.json"})
+
+    def test_backup_automation_action_fires(self):
+        rule = self.api.automations.create_rule({
+            "name": "Nightly backup",
+            "trigger": {"type": "daily", "time": "00:00"},
+            "action": {"type": "backup"},
+        })
+        self.api.automations._fire(rule)
+        self.assertEqual(len(self.api.backups_list({})["backups"]), 1)
+        notifs = self.api.automations.notifications_after(0)["notifications"]
+        self.assertTrue(any("Snapshot" in n["body"] for n in notifs))
+
+
+class BackupHttpTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        server.CACHE.clear()
+        data_dir = Path(tempfile.mkdtemp())
+        cls.httpd = server.make_server(
+            "127.0.0.1", 0, offline=True, data_dir=data_dir)
+        cls.port = cls.httpd.server_address[1]
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def request(self, path, payload=None):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}{path}",
+            data=json.dumps(payload).encode() if payload is not None else None,
+            headers={"Content-Type": "application/json"},
+            method="POST" if payload is not None else "GET",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            return err.code, json.loads(err.read())
+
+    def test_backup_create_list_restore_over_http(self):
+        status, _ = self.request("/api/state", {"state": {"version": 1, "layout": []}, "baseRev": None})
+        self.assertEqual(status, 200)
+        status, info = self.request("/api/backup", {})
+        self.assertEqual(status, 200)
+        status, listed = self.request("/api/backups")
+        self.assertEqual(status, 200)
+        self.assertEqual(listed["backups"][0]["name"], info["name"])
+        status, result = self.request("/api/backup/restore", {"name": info["name"]})
+        self.assertEqual(status, 200)
+        self.assertIn("state", result["restored"])
+
+    def test_restore_bad_name_400(self):
+        status, _ = self.request("/api/backup/restore", {"name": "nope.txt"})
+        self.assertEqual(status, 400)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

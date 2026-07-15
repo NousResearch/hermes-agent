@@ -31,7 +31,7 @@ MAX_RULES = 50
 
 LEVEL_RANK = {"stable": 0, "watch": 1, "elevated": 2, "critical": 3}
 VALID_TRIGGERS = ("daily", "market", "worldstate")
-VALID_ACTIONS = ("notify", "briefing")
+VALID_ACTIONS = ("notify", "briefing", "backup")
 
 
 def validate_rule(rule: dict) -> str | None:
@@ -122,6 +122,17 @@ class Automations:
             if changed:
                 self._save()
             return changed
+
+    def replace_rules(self, rules: list) -> None:
+        """Adopt a backup snapshot's stored rules wholesale (already-stored shape)."""
+        with self._lock:
+            self._data["rules"] = [
+                dict(r) for r in rules
+                if isinstance(r, dict) and r.get("trigger") and r.get("action")
+            ][:MAX_RULES]
+            self._data["next_rule"] = max(
+                [int(r.get("id", 0)) for r in self._data["rules"]] or [0]) + 1
+            self._save()
 
     def toggle_rule(self, rule_id: int) -> dict | None:
         with self._lock:
@@ -225,6 +236,13 @@ class Automations:
             if extra:
                 body = extra + "\n\n" + body
             self._notify(f"⏰ {rule['name']}", body, rule["id"])
+        elif action["type"] == "backup":
+            try:
+                info = self.api.backup_now({})
+                body = f"Snapshot {info['name']} saved ({info['count']} kept)."
+            except Exception as exc:  # keep the engine alive; report the failure
+                body = f"Backup failed: {exc}"
+            self._notify(f"💾 {rule['name']}", body, rule["id"])
         else:
             body = action.get("message", "")
             if extra:

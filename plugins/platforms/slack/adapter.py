@@ -2761,6 +2761,15 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+        # A 1:1 IM is a private conversation with a single human — mention-exempt
+        # and safe to react to unconditionally, like any DM. An MPIM (group DM)
+        # is a SHARED surface: multiple humans can see and trigger the bot, so it
+        # must obey the same operator controls as a channel (allowed_channels /
+        # require_mention / strict_mention / free_response_channels) and must not
+        # get reaction noise on messages that don't address the bot. Only the 1:1
+        # case earns the DM exemptions; session/thread scoping below still treats
+        # both as DM-style persistent conversations.
+        is_one_to_one_dm = channel_type == "im"
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -2823,7 +2832,7 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
-        if not is_dm and bot_uid:
+        if not is_one_to_one_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
@@ -3216,10 +3225,11 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=_auto_skill,
         )
 
-        # Only react when bot is directly addressed (DM or @mention).
-        # In listen-all channels (require_mention=false), reacting to every
-        # casual message would be noisy.
-        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
+        # Only react when bot is directly addressed (1:1 DM or @mention).
+        # MPIMs are shared surfaces: reacting to every group-DM message (even
+        # when unmentioned) is visible noise to the whole group, so they must
+        # be @mentioned to earn a reaction — same as any channel.
+        _should_react = (is_one_to_one_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
             self._reacting_message_ids.add(ts)
 
@@ -3234,6 +3244,8 @@ class SlackAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
 
@@ -3254,10 +3266,42 @@ class SlackAdapter(BasePlatformAdapter):
             # instead of a flat truncation that overflows once the header +
             # reason are added.
             header = ":warning: *Command Approval Required*\n"
+            if smart_denied:
+                header += "*Smart DENY:* owner override applies to this one operation only.\n"
             reason = f"Reason: {description[:500]}"
             budget = 3000 - len(header) - len(reason) - len("``````\n") - len("...")
             cmd_preview = command[:budget] + "..." if len(command) > budget else command
 
+            actions = [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Allow Once"},
+                    "style": "primary",
+                    "action_id": "hermes_approve_once",
+                    "value": session_key,
+                },
+            ]
+            if not smart_denied:
+                actions.append({
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Allow Session"},
+                    "action_id": "hermes_approve_session",
+                    "value": session_key,
+                })
+                if allow_permanent:
+                    actions.append({
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Always Allow"},
+                        "action_id": "hermes_approve_always",
+                        "value": session_key,
+                    })
+            actions.append({
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Deny"},
+                "style": "danger",
+                "action_id": "hermes_deny",
+                "value": session_key,
+            })
             blocks = [
                 {
                     "type": "section",
@@ -3266,37 +3310,7 @@ class SlackAdapter(BasePlatformAdapter):
                         "text": f"{header}```{cmd_preview}```\n{reason}",
                     },
                 },
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Once"},
-                            "style": "primary",
-                            "action_id": "hermes_approve_once",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Allow Session"},
-                            "action_id": "hermes_approve_session",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
-                            "action_id": "hermes_approve_always",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": "Deny"},
-                            "style": "danger",
-                            "action_id": "hermes_deny",
-                            "value": session_key,
-                        },
-                    ],
-                },
+                {"type": "actions", "elements": actions},
             ]
 
             kwargs: Dict[str, Any] = {

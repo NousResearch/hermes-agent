@@ -1059,3 +1059,147 @@ def test_reference_guidance_merges_into_trailing_user_in_plain_chat():
     assert len(messages) == 2
     assert messages[-1]["role"] == "user"
     assert messages[-1]["content"] == "hello\n\nREFERENCE BLOCK"
+
+
+def test_reference_messages_flattens_cache_decorated_content():
+    """Cache-decorated turns (content-part lists) must not blind the references.
+
+    conversation_loop runs apply_anthropic_cache_control BEFORE the MoA facade
+    when the preset's aggregator is a cache-honoring Claude route (post-#57675).
+    That converts string content into [{"type": "text", "text": ...,
+    "cache_control": ...}] lists. The advisory view previously read only string
+    content, so the user's ENTIRE prompt flattened to "" — Claude references
+    then 400'd ("messages: at least one message is required") while tolerant
+    models answered "no user request is present" (live incident, Jul 14 2026,
+    preset "closed", session 20260714_001520_28157b).
+    """
+    from agent.moa_loop import _reference_messages
+    from agent.prompt_caching import apply_anthropic_cache_control
+
+    plain = [
+        {"role": "system", "content": "hermes system prompt"},
+        {"role": "user", "content": "Can we get codex usage resets into hermes?"},
+    ]
+    decorated = apply_anthropic_cache_control(plain, native_anthropic=False)
+    # Premise: decoration really converts the user turn to a content-part list.
+    assert isinstance(decorated[1]["content"], list)
+
+    view = _reference_messages(decorated)
+
+    assert view == [
+        {"role": "user", "content": "Can we get codex usage resets into hermes?"}
+    ]
+    # Invariant: decorated and undecorated transcripts produce the SAME
+    # advisory view — so decoration can never change what references see,
+    # and the advisory prefix stays byte-stable for advisor prompt caching.
+    assert view == _reference_messages(plain)
+
+
+def test_reference_messages_flattens_multimodal_user_turn():
+    """Multimodal user turns (text + image parts) keep their text in the view.
+
+    Image parts carry no advisory text and are skipped; the text part must
+    survive. Previously the whole turn flattened to "".
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "what is in this screenshot?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+    ]
+
+    view = _reference_messages(messages)
+
+    assert view == [{"role": "user", "content": "what is in this screenshot?"}]
+    # No base64 payload leaks into the advisory view.
+    assert all("base64" not in m["content"] for m in view)
+
+
+def test_reference_messages_image_only_user_turn_gets_placeholder():
+    """An image-only user turn must not become an empty user message.
+
+    Anthropic rejects empty text blocks (the original 400 class) and silently
+    skipping the turn would misalign user/assistant alternation in the view —
+    so a placeholder stands in for the non-text content.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+        {"role": "assistant", "content": "I see a diagram."},
+        {"role": "user", "content": "now explain it"},
+    ]
+
+    view = _reference_messages(messages)
+
+    assert view[0]["role"] == "user"
+    assert view[0]["content"].strip(), "image-only turn must not be empty"
+    assert "non-text" in view[0]["content"]
+    assert view[-1] == {"role": "user", "content": "now explain it"}
+
+
+def test_reference_messages_flattens_structured_assistant_and_tool_content():
+    """Assistant and tool turns with content-part lists are flattened too.
+
+    Multimodal tool results (e.g. computer_use screenshots) and adapter-shaped
+    assistant turns arrive as lists; their text must reach the references and
+    their image parts must not leak.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "check the screen"},
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "taking a screenshot"}],
+            "tool_calls": [{"id": "c1", "function": {"name": "capture", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": [
+            {"type": "text", "text": "screenshot captured: login page visible"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}},
+        ]},
+    ]
+
+    view = _reference_messages(messages)
+
+    joined = "\n".join(m["content"] for m in view)
+    assert "taking a screenshot" in joined
+    assert "[called tool: capture(" in joined
+    assert "[tool result: screenshot captured: login page visible]" in joined
+    assert "BBBB" not in joined
+    assert view[-1]["role"] == "user"
+
+
+def test_reference_guidance_appends_text_part_to_decorated_trailing_user():
+    """A cache-decorated trailing user turn still receives the guidance block.
+
+    Decoration converts the trailing user turn to a content-part list; the
+    guidance must be appended as a NEW text part AFTER the cache_control-marked
+    part (cached prefix stays byte-stable, no consecutive-user-turn 400s), not
+    silently dropped and not added as a second user message.
+    """
+    from agent.moa_loop import _attach_reference_guidance
+
+    marked_part = {
+        "type": "text",
+        "text": "hello",
+        "cache_control": {"type": "ephemeral"},
+    }
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": [dict(marked_part)]},
+    ]
+    _attach_reference_guidance(messages, "REFERENCE BLOCK")
+
+    # No extra message (would break user/user alternation).
+    assert len(messages) == 2
+    content = messages[-1]["content"]
+    assert isinstance(content, list) and len(content) == 2
+    # The cache-marked part is byte-identical (prefix stability).
+    assert content[0] == marked_part
+    # The guidance rides as a trailing text part outside the cached span.
+    assert content[1] == {"type": "text", "text": "\n\nREFERENCE BLOCK"}

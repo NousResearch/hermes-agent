@@ -15,7 +15,6 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
-  useRef,
   useState
 } from 'react'
 
@@ -27,6 +26,7 @@ import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/extern
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
+  downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isRemoteGateway,
@@ -129,21 +129,50 @@ async function mediaSrc(path: string): Promise<string> {
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 }
 
-function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+function useOpenMediaFile(path: string) {
+  const [openFailed, setOpenFailed] = useState(false)
+
+  const open = () => {
+    if (window.hermesDesktop && isRemoteGateway()) {
+      setOpenFailed(false)
+      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+    } else {
+      openExternalLink(mediaExternalUrl(path))
+    }
+  }
+
+  return { open, openFailed }
+}
+
+function OpenMediaFailedNote({ name }: { name: string }) {
   return (
-    <button
-      className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
-      onClick={() => void window.hermesDesktop?.openExternal(mediaExternalUrl(path))}
-      type="button"
-    >
-      Open {kind} file
-    </button>
+    <span className="mt-1 block text-xs text-muted-foreground">
+      Couldn&apos;t fetch {name} from the gateway (missing, unreadable, or too large).
+    </span>
+  )
+}
+
+function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+  const { open, openFailed } = useOpenMediaFile(path)
+
+  return (
+    <span className="block">
+      <button
+        className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+        onClick={open}
+        type="button"
+      >
+        Open {kind} file
+      </button>
+      {openFailed && <OpenMediaFailedNote name={mediaName(path)} />}
+    </span>
   )
 }
 
 function MediaAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
+  const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
 
@@ -153,6 +182,15 @@ function MediaAttachment({ path }: { path: string }) {
 
     setFailed(false)
     setSrc('')
+
+    if (kind === 'file') {
+      setFailed(true)
+
+      return () => {
+        cancelled = true
+      }
+    }
+
     void mediaSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
@@ -178,7 +216,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [path])
+  }, [kind, path])
 
   if (kind === 'image' && src) {
     return (
@@ -214,16 +252,19 @@ function MediaAttachment({ path }: { path: string }) {
   }
 
   return (
-    <a
-      className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
-      href="#"
-      onClick={event => {
-        event.preventDefault()
-        openExternalLink(mediaExternalUrl(path))
-      }}
-    >
-      {failed ? `Open ${name}` : `Loading ${name}...`}
-    </a>
+    <span className="wrap-anywhere">
+      <a
+        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          open()
+        }}
+      >
+        {failed ? `Open ${name}` : `Loading ${name}...`}
+      </a>
+      {openFailed && <OpenMediaFailedNote name={name} />}
+    </span>
   )
 }
 
@@ -303,112 +344,6 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
       src={src}
       {...props}
     />
-  )
-}
-
-// Steady character-reveal for streaming text: decouples visible cadence from
-// bursty arrival so text flows instead of popping (cf. assistant-ui's useSmooth,
-// reimplemented for a tunable rate). Proportional drain — each frame reveals a
-// slice of the backlog so the reveal converges within ~REVEAL_DRAIN_MS whatever
-// the size; the per-frame cap stops a huge dump rendering as one slab. The loop
-// is gated on backlog, not isRunning, so a stream that completes mid-reveal
-// keeps draining its tail instead of snapping.
-const REVEAL_DRAIN_MS = 500
-const REVEAL_MAX_CHARS_PER_FRAME = 30
-// Floor between reveal commits. Each commit republishes the text context and
-// re-runs the whole Streamdown pipeline (preprocess → remend → lex → micromark
-// on the open block) over the full accumulated text — at raw rAF cadence
-// that's 60 full parses/second and was the dominant streaming cost for
-// reasoning text. ~33ms keeps the reveal visually fluid (2 frames) while
-// halving the parse work.
-const REVEAL_MIN_COMMIT_MS = 33
-
-function useSmoothReveal(text: string, isRunning: boolean): string {
-  const [displayed, setDisplayed] = useState(isRunning ? '' : text)
-  const targetRef = useRef(text)
-  const shownRef = useRef(displayed)
-  const frameRef = useRef<number | null>(null)
-  const lastTickRef = useRef(0)
-
-  shownRef.current = displayed
-  targetRef.current = text
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    // Non-extending change (regenerate / branch / history swap): restart from
-    // empty while streaming, else snap to the replacement.
-    if (!text.startsWith(shownRef.current)) {
-      shownRef.current = isRunning ? '' : text
-      setDisplayed(shownRef.current)
-    }
-
-    if (shownRef.current.length >= text.length || frameRef.current !== null) {
-      return
-    }
-
-    lastTickRef.current = performance.now()
-
-    const tick = () => {
-      const now = performance.now()
-      const dt = now - lastTickRef.current
-
-      // Skip this frame if the floor hasn't elapsed — the backlog math below
-      // is dt-proportional, so delayed commits reveal proportionally more.
-      if (dt < REVEAL_MIN_COMMIT_MS) {
-        frameRef.current = requestAnimationFrame(tick)
-
-        return
-      }
-
-      lastTickRef.current = now
-
-      const remaining = targetRef.current.length - shownRef.current.length
-
-      const add = Math.min(
-        remaining,
-        // dt-scaled so the per-commit cap stays equivalent to the old
-        // per-frame cap at any commit cadence.
-        Math.ceil((REVEAL_MAX_CHARS_PER_FRAME * dt) / 16.7),
-        Math.max(1, Math.ceil((remaining * dt) / REVEAL_DRAIN_MS))
-      )
-
-      shownRef.current = targetRef.current.slice(0, shownRef.current.length + add)
-      setDisplayed(shownRef.current)
-
-      frameRef.current = shownRef.current.length < targetRef.current.length ? requestAnimationFrame(tick) : null
-    }
-
-    frameRef.current = requestAnimationFrame(tick)
-  }, [text, isRunning])
-
-  useEffect(
-    () => () => {
-      if (frameRef.current !== null && typeof window !== 'undefined') {
-        cancelAnimationFrame(frameRef.current)
-      }
-    },
-    []
-  )
-
-  return displayed
-}
-
-// Re-publish the part context with a smooth character-reveal, above
-// DeferStreamingText so the reveal feeds the deferred markdown pipeline. Status
-// stays running while revealing so the caret persists past the underlying part
-// settling.
-function SmoothStreamingText({ children }: { children: ReactNode }) {
-  const { text, status } = useMessagePartText()
-  const isRunning = status.type === 'running'
-  const revealed = useSmoothReveal(text, isRunning)
-
-  return (
-    <TextMessagePartProvider isRunning={isRunning || revealed !== text} text={revealed}>
-      {children}
-    </TextMessagePartProvider>
   )
 }
 
@@ -652,13 +587,14 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
+  // Same path as the assistant answer. A reasoning-only smoothing wrapper used
+  // to sit here but stalled its char-reveal at empty (the part stays running
+  // the whole message), blanking the Thinking widget.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <SmoothStreamingText>
-        <DeferStreamingText>
-          <MarkdownTextSurface {...surfaceProps} />
-        </DeferStreamingText>
-      </SmoothStreamingText>
+      <DeferStreamingText>
+        <MarkdownTextSurface {...surfaceProps} />
+      </DeferStreamingText>
     </TextMessagePartProvider>
   )
 }

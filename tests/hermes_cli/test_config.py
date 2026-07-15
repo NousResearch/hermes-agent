@@ -24,6 +24,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    set_config_value,
     write_platform_config_field,
     _sanitize_env_lines,
 )
@@ -88,6 +89,22 @@ class TestEnsureHermesHome:
             soul_path.write_text(mixed, encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == mixed
+
+    def test_existing_named_profile_still_bootstraps_subdirs(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            ensure_hermes_home()
+            assert (profile_home / "cron").is_dir()
+            assert (profile_home / "sessions").is_dir()
+            assert (profile_home / "memories").is_dir()
+
+    def test_missing_named_profile_is_not_recreated(self, tmp_path):
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+                ensure_hermes_home()
+        assert not profile_home.exists()
 
 
 class TestLoadConfigDefaults:
@@ -249,8 +266,140 @@ class TestLoadConfigParseFailure:
 
             assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
+    def test_last_known_good_retained_within_process(self, tmp_path, capsys):
+        """Port of openai/codex#31188's invariant: a parse failure must not
+        silently replace the effective config (policy included) with
+        defaults when the process already loaded a good config.
+
+        Scenario: long-running gateway, user mid-edits config.yaml into
+        broken YAML. Before this fix the next load_config() dropped every
+        override — including ``approvals.deny`` security rules. Now the
+        last successfully loaded config keeps being served until the file
+        parses again.
+        """
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text(
+                "model:\n  default: test/custom-model\n"
+                "approvals:\n  deny:\n    - 'curl*evil.com*'\n"
+            )
+
+            good = load_config()
+            assert good["model"]["default"] == "test/custom-model"
+            assert good["approvals"]["deny"] == ["curl*evil.com*"]
+            capsys.readouterr()
+
+            # Corrupt the file (mtime must change to bust the cache)
+            time.sleep(0.05)
+            cfg.write_text("approvals:\n  deny: [unclosed\n  :::bad {{{\n")
+
+            after = load_config()
+            # Last-known-good retained — NOT defaults
+            assert after["model"]["default"] == "test/custom-model"
+            assert after["approvals"]["deny"] == ["curl*evil.com*"]
+            # Warning says we kept the previous config, not defaults
+            err = capsys.readouterr().err
+            assert "previously loaded config" in err
+
+    def test_last_known_good_recovers_after_fix(self, tmp_path):
+        """Fixing the YAML picks up the new content on the next load."""
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("model:\n  default: test/first\n")
+            assert load_config()["model"]["default"] == "test/first"
+
+            time.sleep(0.05)
+            cfg.write_text("\tbroken:\n")
+            assert load_config()["model"]["default"] == "test/first"
+
+            time.sleep(0.05)
+            cfg.write_text("model:\n  default: test/second\n")
+            assert load_config()["model"]["default"] == "test/second"
+
+    def test_fresh_process_still_falls_back_to_defaults(self, tmp_path):
+        """With no last-known-good (fresh process for this path), a broken
+        config still falls back to DEFAULT_CONFIG as before."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+            # No prior good load for this path in _LAST_EXPANDED_CONFIG_BY_PATH
+            cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(
+                str(tmp_path / "config.yaml"), None
+            )
+            config = load_config()
+            assert config["model"] == DEFAULT_CONFIG["model"]
+
+    def test_last_known_good_cached_no_rewarn_spam(self, tmp_path, capsys):
+        """Repeated loads of the same broken file serve the cached LKG and
+        don't re-warn (dedup on mtime/size still applies)."""
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("model:\n  default: test/custom\n")
+            load_config()
+            time.sleep(0.05)
+            cfg.write_text("\tbroken:\n")
+
+            load_config()
+            capsys.readouterr()
+            second = load_config()
+            assert second["model"]["default"] == "test/custom"
+            assert capsys.readouterr().err == ""
+
+
+class TestEmptyConfigSections:
+    """Empty section keys (``terminal:`` with no value) parse as YAML None
+    and must not replace the default dict for that section (#58277)."""
+
+    def test_null_section_keeps_defaults_in_load_config(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n  default: test/custom\n"
+                "terminal:\n"
+                "display:\n"
+            )
+            config = load_config()
+            assert config["model"]["default"] == "test/custom"
+            assert isinstance(config["terminal"], dict)
+            assert config["terminal"] == DEFAULT_CONFIG["terminal"]
+            assert isinstance(config["display"], dict)
+
+    def test_null_override_of_non_dict_default_still_applies(self, tmp_path):
+        """None only shields dict defaults — explicit null for a scalar
+        key remains an override (unchanged behavior)."""
+        from hermes_cli.config import _deep_merge
+
+        merged = _deep_merge({"scalar": 5, "section": {"a": 1}},
+                             {"scalar": None, "section": None})
+        assert merged["scalar"] is None
+        assert merged["section"] == {"a": 1}
+
 
 class TestSaveAndLoadRoundtrip:
+    @staticmethod
+    def _deny_config_reads(config_path):
+        real_open = open
+
+        def fake_open(file, mode="r", *args, **kwargs):
+            if Path(file) == config_path and "r" in mode:
+                raise PermissionError("denied")
+            return real_open(file, mode, *args, **kwargs)
+
+        return fake_open
+
     def test_roundtrip(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             config = load_config()
@@ -265,6 +414,58 @@ class TestSaveAndLoadRoundtrip:
             saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert saved["agent"]["max_turns"] == 42
             assert "max_turns" not in saved
+
+    def test_save_config_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model: test/original\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    save_config({"model": "test/replacement"})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_config_set_refuses_to_overwrite_unreadable_existing_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+                with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                    set_config_value("model.provider", "openai")
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_atomic_config_write_refuses_unreadable_existing_config(self, tmp_path):
+        """The shared chokepoint every sibling write site routes through must
+        fail closed on an unreadable existing config.yaml — this locks in the
+        whole bug class (gateway slash commands, doctor --fix, yuanbao/telegram
+        auto-sethome, tui_gateway _save_cfg), not just the three named paths."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        original = "model:\n  provider: openrouter\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with patch("builtins.open", side_effect=self._deny_config_reads(config_path)):
+            with pytest.raises(RuntimeError, match="Refusing to overwrite"):
+                atomic_config_write(config_path, {"model": {"provider": "openai"}})
+
+        assert config_path.read_text(encoding="utf-8") == original
+
+    def test_atomic_config_write_creates_new_file(self, tmp_path):
+        """A genuinely absent config.yaml must still be created — the guard
+        only refuses to clobber an existing-but-unreadable file."""
+        from hermes_cli.config import atomic_config_write
+
+        config_path = tmp_path / "config.yaml"
+        assert not config_path.exists()
+        atomic_config_write(config_path, {"model": {"provider": "openrouter"}})
+        assert config_path.exists()
+        assert "openrouter" in config_path.read_text(encoding="utf-8")
 
     def test_save_config_normalizes_legacy_root_level_max_turns(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1528,6 +1729,61 @@ class TestVerifyOnStopMigration:
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["agent"]["verify_on_stop"] is True
 
+class TestDelegationCapUnificationMigration:
+    """v32 → v33: fold deprecated max_async_children into max_concurrent_children."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_stale_default_key_removed(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 3\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        # Default-valued (3) async cap must not shrink a raised children cap.
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_raised_async_cap_folded_into_children_cap(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 20\n"
+                "  max_concurrent_children: 5\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 20
+
+    def test_higher_children_cap_wins(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 32\ndelegation:\n  max_async_children: 8\n"
+                "  max_concurrent_children: 15\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert "max_async_children" not in raw["delegation"]
+        assert raw["delegation"]["max_concurrent_children"] == 15
+
+    def test_no_delegation_section_is_noop(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 32\nmodel:\n  provider: openrouter\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        # Migration must not materialize a delegation section it never had.
+        assert "delegation" not in raw
+
+    def test_default_config_has_no_max_async_children(self):
+        assert "max_async_children" not in DEFAULT_CONFIG["delegation"]
+
+
 class TestConfigNormalizationDoesNotOverwriteUserValues:
     """Regression tests for #27354."""
 
@@ -1645,3 +1901,30 @@ class TestConfigNormalizationDoesNotOverwriteUserValues:
 
     def test_explicit_config_paths_ignore_empty_sections(self):
         assert _explicit_config_paths({"memory": {}, "display": {}}) == set()
+
+
+class TestCodexAppServerAutoConfig:
+    """codex_app_server_auto ships a default and survives migration untouched."""
+
+    def _write(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+
+    def test_default_config_has_native_mode(self):
+        assert DEFAULT_CONFIG["compression"]["codex_app_server_auto"] == "native"
+        assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is True
+
+    def test_preserves_existing_codex_app_server_auto_value(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 31\n"
+                "compression:\n"
+                "  codex_app_server_auto: hermes\n",
+            )
+
+            migrate_config(interactive=False, quiet=True)
+
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["compression"]["codex_app_server_auto"] == "hermes"
+
+

@@ -106,9 +106,9 @@ class TestOllamaCloudReasoningEffort:
 
     def test_unknown_effort_forwarded(self, ollama_cloud_profile):
         _, top_level = ollama_cloud_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "ultra"},
+            reasoning_config={"enabled": True, "effort": "future-tier"},
         )
-        assert top_level == {"reasoning_effort": "ultra"}
+        assert top_level == {"reasoning_effort": "future-tier"}
 
 
 class TestOllamaCloudFullKwargsIntegration:

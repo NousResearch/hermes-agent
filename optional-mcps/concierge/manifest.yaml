@@ -20,6 +20,7 @@ auth:
 #   hermes mcp configure concierge
 tools:
   default_enabled:
+    - concierge_catalog
     - intel_macro
     - intel_wire
     - intel_tvl
@@ -32,10 +33,15 @@ tools:
 post_install: |
   Concierge MCP is remote HTTP — no local install.
 
-  Paid tools settle via x402 USDC (Solana / Base / Arbitrum). Options:
+  Paid tools proxy x402. Unpaid tools/call returns a live PAYMENT-REQUIRED challenge.
+  Settlement options:
     1) pay.sh — `pay setup && pay topup` then `pay curl https://conc-exe.xyz/api/...`
-    2) Hermes x402 / payments skills if installed
-    3) Pass `paymentSignature` on MCP tools/call after a 402 challenge
+    2) Retry MCP with arguments.paymentSignature after settle
+    3) Pass creditsWallet / soonHolderWallet (TCX prepaid / holder free tier)
+    4) Hermes x402 / payments skills if installed
+
+  Free MCP tools:
+    concierge_catalog · concierge_prepare_payment
 
   Free probes:
     curl -s https://conc-exe.xyz/api/mcp
@@ -44,6 +50,13 @@ post_install: |
   Skill (routes, prices, cron briefs):
     hermes skills install https://conc-exe.xyz/skills/concierge-hermes/SKILL.md
 
+  Optional agent identity (HTTP `agt_…` + ERC-8004 Identity NFT on Base):
+    Lounge: https://conc-exe.xyz/lounge#agent-identity
+    Docs: https://conc-exe.xyz/docs/api/agent-identity
+    Registration file (agentURI): /api/agent-identity-registration?id=agt_…
+    Prepare / link mint: GET|POST /api/agent-identity-erc8004
+
+  SDK: npm i @conc-exe/agent
   Docs: https://conc-exe.xyz/docs/integration/hermes
   Registry: https://registry.modelcontextprotocol.io/?search=xyz.conc-exe%2Fconcierge-intel
 

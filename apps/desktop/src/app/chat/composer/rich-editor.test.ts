@@ -260,4 +260,23 @@ describe('pastePlainTextIntoEditor', () => {
 
     editor.remove()
   })
+
+  it('falls back to insertPlainTextAtCaret when execCommand throws', () => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    document.body.append(editor)
+    focusEditor(editor)
+
+    // execCommand throws (e.g. jsdom without a stub, CSP-blocked API)
+    const execStub = installExecStub(() => {
+      throw new Error('Not supported')
+    })
+
+    pastePlainTextIntoEditor(editor, 'throwing paste')
+
+    expect(execStub).toHaveBeenCalledWith('insertText', false, 'throwing paste')
+    expect(composerPlainText(editor)).toBe('throwing paste')
+
+    editor.remove()
+  })
 })

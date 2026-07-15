@@ -337,12 +337,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_list.set_defaults(func=_cmd_list)
 
     p_del = sub.add_parser("delete", help="Delete a learned skill (archived) or memory by node id.")
-    p_del.add_argument("node", help="Node id (skill name or memory:<source>:<index>; see `journey list`).")
+    p_del.add_argument("node", help="Opaque node id from `hermes journey list`.")
     p_del.add_argument("-y", "--yes", action="store_true", help="Skip the confirmation prompt.")
     p_del.set_defaults(func=_cmd_delete)
 
     p_edit = sub.add_parser("edit", help="Edit a learned skill or memory by node id in $EDITOR.")
-    p_edit.add_argument("node", help="Node id (skill name or memory:<source>:<index>; see `journey list`).")
+    p_edit.add_argument("node", help="Opaque node id from `hermes journey list`.")
     p_edit.set_defaults(func=_cmd_edit)
 
 

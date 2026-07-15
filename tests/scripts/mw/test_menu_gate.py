@@ -175,6 +175,49 @@ def _checklist(root: Path, text: str = FULL_CHECKLIST) -> Path:
     return _write(root / ".work" / "menu-checklist.yaml", text)
 
 
+def _flow_rules(root: Path) -> Path:
+    return _write(
+        root / ".work" / "flow-rules.yaml",
+        textwrap.dedent(
+            """\
+            steps:
+              - id: M0
+                title: M0
+                outputs:
+                  - path: ".work/menus/{menu}/m0.md"
+                    min_bytes: 1
+              - id: M1
+                title: M1
+                outputs:
+                  - path: ".work/menus/{menu}/m1.md"
+                    min_bytes: 1
+              - id: M2
+                title: M2
+                outputs:
+                  - path: ".work/menus/{menu}/m2.md"
+                    min_bytes: 1
+              - id: M7
+                title: M7
+                outputs:
+                  - path: ".work/menus/{menu}/m7.md"
+                    min_bytes: 1
+              - id: M8
+                title: M8
+                outputs:
+                  - path: ".work/menus/{menu}/m8.md"
+                    min_bytes: 1
+            """
+        ),
+    )
+
+
+def _seed_flow(root: Path, menu: str, *, missing: Optional[str] = None) -> None:
+    _flow_rules(root)
+    for step in ("m0", "m1", "m2", "m7"):
+        if step.upper() != missing:
+            _write(root / ".work" / "menus" / menu / f"{step}.md", "done\n")
+
+
 def _run(
     *args: str,
     cwd: Optional[Path] = None,
@@ -224,6 +267,46 @@ def test_t1_all_pass(tmp_path: Path) -> None:
     # live counts: 6 blocking+nonblocking items (M1.1 M1.2 M2.1 M2.2 M2.3 M3.1 M4.1) = 7
     assert data["total"]["count"] == 7
     assert data["total"]["pass"] == 7
+
+
+def test_flow_gate_all_steps_before_m8_done_passes(tmp_path: Path) -> None:
+    site, menu = "SiteA", "alpha"
+    _checklist(tmp_path)
+    _seed_menu(tmp_path, site, menu)
+    _seed_flow(tmp_path, menu)
+
+    code, data = _run_json(
+        site, menu, "--menu", menu, "--root", str(tmp_path)
+    )
+
+    assert code == 0, data
+    assert data["closeable"] is True
+    assert data["flow_gate"]["status"] == "pass"
+    assert data["flow_gate"]["pending_before_m8"] == []
+
+
+def test_flow_gate_missing_m2_blocks_menu_close(tmp_path: Path) -> None:
+    site, menu = "SiteA", "alpha"
+    _checklist(tmp_path)
+    _seed_menu(tmp_path, site, menu)
+    _seed_flow(tmp_path, menu, missing="M2")
+
+    proc = _run(site, menu, "--menu", menu, "--root", str(tmp_path))
+
+    assert proc.returncode == 1
+    assert "flow-gate: FAIL" in proc.stdout
+    assert "M2" in proc.stdout
+
+
+def test_without_flow_menu_keeps_old_behavior_and_warns(tmp_path: Path) -> None:
+    site, menu = "SiteA", "alpha"
+    _checklist(tmp_path)
+    _seed_menu(tmp_path, site, menu)
+
+    proc = _run(site, menu, "--root", str(tmp_path))
+
+    assert proc.returncode == 0
+    assert "skipping the flow-gate check" in proc.stderr
 
 
 # ===========================================================================

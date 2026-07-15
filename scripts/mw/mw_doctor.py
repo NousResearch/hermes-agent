@@ -44,6 +44,9 @@ EXIT_ERR = 2
 
 DEFAULT_CONFIG_REL = Path(".work") / "mw-doctor.yaml"
 DEFAULT_TIMEOUT = 60.0
+MW_SCRIPT_DIR = Path(__file__).resolve().parent
+CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+FLOW_HOOK_INSTALL_COMMAND = "python3 team-shortcuts/install-team-hooks.py"
 
 SECTIONS = frozenset({"tools", "images", "relay", "all"})
 
@@ -421,6 +424,7 @@ ST_MISSING = "missing"
 ST_FAIL = "fail"
 ST_AUTH_MISSING = "auth_missing"
 ST_SKIPPED_NETWORK = "skipped(network)"
+ST_WARN = "warn"
 
 
 @dataclass
@@ -450,10 +454,27 @@ class RelayResult:
 
 
 @dataclass
+class FlowGateResult:
+    status: str
+    detail: str = ""
+    hook_installed: bool = False
+    install_command: str = FLOW_HOOK_INSTALL_COMMAND
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "detail": self.detail,
+            "hook_installed": self.hook_installed,
+            "install_command": self.install_command,
+        }
+
+
+@dataclass
 class DoctorReport:
     tools: List[ItemResult] = field(default_factory=list)
     images: List[ItemResult] = field(default_factory=list)
     relay: Optional[RelayResult] = None
+    flow_gate: Optional[FlowGateResult] = None
     machine_note: Optional[str] = None
     section: str = "all"
     skip_network: bool = False
@@ -471,6 +492,10 @@ class DoctorReport:
                 reasons.append(f"{img.name} {img.status}")
         if self.relay is not None and self.relay.status != ST_OK:
             reasons.append(f"relay {self.relay.status}")
+        if self.section == "all" and self.flow_gate is None:
+            reasons.append("flow-gate check missing")
+        elif self.flow_gate is not None and self.flow_gate.status == ST_FAIL:
+            reasons.append("flow-gate fail")
         return reasons
 
     def is_ready(self) -> bool:
@@ -487,6 +512,10 @@ class DoctorReport:
                 sections["relay"] = self.relay.to_dict()
             else:
                 sections["relay"] = None
+        if self.section == "all":
+            sections["flow_gate"] = (
+                self.flow_gate.to_dict() if self.flow_gate is not None else None
+            )
         out: Dict[str, Any] = {
             "section": self.section,
             "sections": sections,
@@ -501,6 +530,77 @@ class DoctorReport:
 # ---------------------------------------------------------------------------
 # section evaluators
 # ---------------------------------------------------------------------------
+
+def _has_flow_hook(settings_path: Path) -> Tuple[bool, str]:
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, f"settings not found: {settings_path}"
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return False, f"cannot read settings {settings_path}: {exc}"
+    if not isinstance(raw, dict):
+        return False, f"settings root is not an object: {settings_path}"
+    hooks = raw.get("hooks")
+    entries = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    if not isinstance(entries, list):
+        return False, "PreToolUse entry for enforce-flow-gate.py is missing"
+    for entry in entries:
+        nested = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(nested, list):
+            continue
+        for hook in nested:
+            if isinstance(hook, dict) and "enforce-flow-gate.py" in str(
+                hook.get("command", "")
+            ):
+                return True, ""
+    return False, "PreToolUse entry for enforce-flow-gate.py is missing"
+
+
+def check_flow_gate(timeout: float) -> FlowGateResult:
+    """Check bundled flow files, run can-enter M0, and inspect the user hook."""
+    required = ("flow_gate.py", "flow_eval.py", "flow-rules.yaml")
+    missing = [name for name in required if not (MW_SCRIPT_DIR / name).is_file()]
+    hook_installed, hook_detail = _has_flow_hook(CLAUDE_SETTINGS_PATH)
+    if missing:
+        detail = "missing: " + ", ".join(missing)
+        if not hook_installed:
+            detail += f"; {hook_detail}; install: {FLOW_HOOK_INSTALL_COMMAND}"
+        return FlowGateResult(
+            status=ST_FAIL,
+            detail=detail,
+            hook_installed=hook_installed,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="mw-doctor-flow-") as temp_root:
+        probe = run_probe(
+            [
+                sys.executable,
+                str(MW_SCRIPT_DIR / "flow_gate.py"),
+                "can-enter",
+                "M0",
+                "doctor-probe",
+                "--project-root",
+                temp_root,
+            ],
+            timeout=timeout,
+        )
+    if probe.exit_code != 0:
+        detail = probe.error or f"can-enter M0 exited {probe.exit_code}"
+        output = (probe.stderr or probe.stdout).strip()
+        if output:
+            detail += f": {output[:200]}"
+        return FlowGateResult(
+            status=ST_FAIL,
+            detail=detail,
+            hook_installed=hook_installed,
+        )
+    if not hook_installed:
+        return FlowGateResult(
+            status=ST_WARN,
+            detail=f"{hook_detail}; install: {FLOW_HOOK_INSTALL_COMMAND}",
+            hook_installed=False,
+        )
+    return FlowGateResult(status=ST_OK, hook_installed=True)
 
 def check_tools(
     tools_cfg: Any,
@@ -810,6 +910,8 @@ def _status_label(status: str, optional: bool = False, detail: str = "") -> str:
         return f"AUTH_MISSING({hint})"
     if status == ST_SKIPPED_NETWORK:
         return "SKIPPED(network)"
+    if status == ST_WARN:
+        return f"WARN({detail[:160]})" if detail else "WARN"
     # fail
     if detail:
         return f"FAIL({detail[:80]})"
@@ -846,6 +948,15 @@ def format_human(report: DoctorReport) -> str:
                 "relay: "
                 + _status_label(report.relay.status, False, report.relay.detail)
             )
+
+    if report.section == "all":
+        if report.flow_gate is None:
+            lines.append("flow-gate: FAIL(check did not run)")
+        else:
+            label = report.flow_gate.status.upper()
+            if report.flow_gate.detail:
+                label += f"({report.flow_gate.detail})"
+            lines.append("flow-gate: " + label)
 
     if report.is_ready():
         # Scoped passes must never read as full readiness (section != all).
@@ -970,6 +1081,9 @@ def run_doctor(
             skip_network=skip_network,
             cwd=cwd,
         )
+
+    if section == "all":
+        report.flow_gate = check_flow_gate(timeout=timeout)
 
     return report
 

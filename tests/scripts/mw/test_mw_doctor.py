@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import textwrap
 from pathlib import Path
@@ -233,6 +234,40 @@ def _run_cli(config: Path, *extra: str) -> tuple:
     return code, out_buf.getvalue(), err_buf.getvalue()
 
 
+def _install_flow_gate_fixture(root: Path, *, include_gate: bool = True) -> Path:
+    scripts = root / "scripts" / "mw"
+    scripts.mkdir(parents=True, exist_ok=True)
+    names = ["flow_eval.py", "flow-rules.yaml"]
+    if include_gate:
+        names.append("flow_gate.py")
+    for name in names:
+        shutil.copy2(REPO_ROOT / "scripts" / "mw" / name, scripts / name)
+    return scripts
+
+
+def _settings_with_flow_hook(path: Path) -> Path:
+    return _write(
+        path,
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Edit|Write|NotebookEdit|Bash",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/tmp/enforce-flow-gate.py",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # looks_like_auth_error helper
 # ---------------------------------------------------------------------------
@@ -275,6 +310,74 @@ def test_all_ok_ready_exit_0(tmp_path: Path):
     assert "work_locks OK" in out
     assert "freepik OK" in out
     assert "relay: OK" in out
+
+
+def test_flow_gate_files_and_can_enter_probe_report_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scripts = _install_flow_gate_fixture(tmp_path)
+    settings = _settings_with_flow_hook(tmp_path / ".claude" / "settings.json")
+    monkeypatch.setattr(mw_doctor, "MW_SCRIPT_DIR", scripts)
+    monkeypatch.setattr(mw_doctor, "CLAUDE_SETTINGS_PATH", settings)
+    cfg = _write_config(
+        tmp_path,
+        _config_yaml(
+            tools=_tool_entry("t1", _py_ok()),
+            images=_image_entry("img", _py_image_ok()),
+            relay=_relay_entry(_py_relay_ok()),
+        ),
+    )
+
+    code, out, err = _run_cli(cfg)
+
+    assert code == mw_doctor.EXIT_READY, (out, err)
+    assert "flow-gate: OK" in out
+
+
+def test_missing_flow_gate_script_reports_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scripts = _install_flow_gate_fixture(tmp_path, include_gate=False)
+    settings = _settings_with_flow_hook(tmp_path / ".claude" / "settings.json")
+    monkeypatch.setattr(mw_doctor, "MW_SCRIPT_DIR", scripts)
+    monkeypatch.setattr(mw_doctor, "CLAUDE_SETTINGS_PATH", settings)
+    cfg = _write_config(
+        tmp_path,
+        _config_yaml(
+            tools=_tool_entry("t1", _py_ok()),
+            images=_image_entry("img", _py_image_ok()),
+            relay=_relay_entry(_py_relay_ok()),
+        ),
+    )
+
+    code, out, err = _run_cli(cfg)
+
+    assert code == mw_doctor.EXIT_NOT_READY, (out, err)
+    assert "flow-gate: FAIL" in out
+    assert "flow_gate.py" in out
+
+
+def test_missing_flow_hook_reports_warn_with_install_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    scripts = _install_flow_gate_fixture(tmp_path)
+    settings = _write(tmp_path / ".claude" / "settings.json", "{}\n")
+    monkeypatch.setattr(mw_doctor, "MW_SCRIPT_DIR", scripts)
+    monkeypatch.setattr(mw_doctor, "CLAUDE_SETTINGS_PATH", settings)
+    cfg = _write_config(
+        tmp_path,
+        _config_yaml(
+            tools=_tool_entry("t1", _py_ok()),
+            images=_image_entry("img", _py_image_ok()),
+            relay=_relay_entry(_py_relay_ok()),
+        ),
+    )
+
+    code, out, err = _run_cli(cfg)
+
+    assert code == mw_doctor.EXIT_READY, (out, err)
+    assert "flow-gate: WARN" in out
+    assert "python3 team-shortcuts/install-team-hooks.py" in out
 
 
 def test_all_ok_json_shape(tmp_path: Path):

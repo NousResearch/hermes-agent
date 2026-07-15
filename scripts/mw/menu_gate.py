@@ -30,6 +30,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import flow_eval
+from flow_gate import resolve_rules_path
+
 # ---------------------------------------------------------------------------
 # constants
 # ---------------------------------------------------------------------------
@@ -927,6 +934,47 @@ def build_report(
     }
 
 
+def evaluate_flow_gate(root: Path, menu: str) -> Dict[str, Any]:
+    """Evaluate configured flow evidence and require every step before M8."""
+    rules_path = resolve_rules_path(root, None)
+    rules = flow_eval.load_rules(rules_path)
+    result = flow_eval.evaluate(root, menu, rules)
+    m8_index = next(
+        (index for index, step in enumerate(result["steps"]) if step["id"] == "M8"),
+        None,
+    )
+    if m8_index is None:
+        raise flow_eval.ConfigError("flow rules must contain M8")
+    pending = [
+        step for step in result["steps"][:m8_index] if step["status"] == "pending"
+    ]
+    return {
+        "status": "fail" if pending else "pass",
+        "menu": menu,
+        "rules": str(rules_path),
+        "pending_before_m8": [step["id"] for step in pending],
+        "pending_details": pending,
+    }
+
+
+def apply_flow_gate(report: Dict[str, Any], flow_gate: Dict[str, Any]) -> None:
+    """Attach the flow result and make pending pre-M8 steps block closing."""
+    report["flow_gate"] = flow_gate
+    if flow_gate["status"] == "fail":
+        report["closeable"] = False
+
+
+def format_flow_gate(flow_gate: Dict[str, Any]) -> str:
+    if flow_gate["status"] == "pass":
+        return "flow-gate: PASS (all steps before M8 are done)"
+    pending = ", ".join(flow_gate["pending_before_m8"])
+    lines = [f"flow-gate: FAIL (pending before M8: {pending})"]
+    for step in flow_gate["pending_details"]:
+        for reason in step["missing"]:
+            lines.append(f"  RED [flow] {step['id']}: {reason}")
+    return "\n".join(lines)
+
+
 def format_human(report: Dict[str, Any], sections: List[SectionReport]) -> str:
     lines: List[str] = []
     for srep in sections:
@@ -1028,7 +1076,7 @@ def _preprocess_argv(argv: Optional[Sequence[str]]) -> List[str]:
     can reject them with exit 2 instead of argparse "unrecognized arguments".
     """
     raw = list(argv) if argv is not None else list(sys.argv[1:])
-    value_opts = {"--checklist", "--root", "--cmd-timeout"}
+    value_opts = {"--checklist", "--root", "--cmd-timeout", "--menu"}
     known_flags = {"--json", "--all", "--help", "-h", *value_opts}
 
     # First pass: rewrite --all; leave structure intact
@@ -1118,6 +1166,12 @@ def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         metavar="N",
         help=f"Timeout seconds for command verify (default {DEFAULT_CMD_TIMEOUT})",
     )
+    p.add_argument(
+        "--menu",
+        dest="flow_menu",
+        default=None,
+        help="Flow menu slug to require all configured steps before M8",
+    )
     return p.parse_args(_preprocess_argv(argv))
 
 
@@ -1142,6 +1196,10 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     if menu_arg == _ALL_SENTINEL:
         menu_arg = "--all"
     cmd_timeout = float(args.cmd_timeout)
+
+    if args.flow_menu is not None and not is_safe_id(args.flow_menu):
+        print(f"error: invalid flow menu id: {args.flow_menu!r}", file=sys.stderr)
+        return EXIT_ERR
 
     # FIX D: validate site / menu ids before any evaluation (argument injection)
     if not is_safe_id(site):
@@ -1187,6 +1245,19 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     if v_err is not None:
         print(f"error: {v_err}", file=sys.stderr)
         return EXIT_ERR
+
+    flow_gate: Optional[Dict[str, Any]] = None
+    if args.flow_menu is None:
+        print(
+            "warning: --menu not provided; skipping the flow-gate check",
+            file=sys.stderr,
+        )
+    else:
+        try:
+            flow_gate = evaluate_flow_gate(root, args.flow_menu)
+        except (flow_eval.ConfigError, OSError, ValueError) as exc:
+            print(f"error: cannot evaluate flow-gate: {exc}", file=sys.stderr)
+            return EXIT_ERR
 
     if menu_arg == "--all":
         raw_menus = discover_menus(checklist, root, site)
@@ -1280,10 +1351,14 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             "closeable": closeable,
             "sections": [s.as_dict() for s in all_sections_for_total],
         }
+        if flow_gate is not None:
+            apply_flow_gate(aggregate, flow_gate)
 
         if args.json:
             print(json.dumps(aggregate, ensure_ascii=False))
         else:
+            if flow_gate is not None:
+                print(format_flow_gate(flow_gate))
             print(f"site {site} — evaluating {len(menus)} menu(s)")
             if site_sections:
                 print("--- site-scope (once) ---")
@@ -1318,6 +1393,8 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         return EXIT_ERR
 
     report = build_report(site, menu, sections)
+    if flow_gate is not None:
+        apply_flow_gate(report, flow_gate)
     # Fail closed: never green on zero evaluated items
     if report["total"]["count"] == 0:
         print("error: checklist evaluation produced 0 items", file=sys.stderr)
@@ -1326,6 +1403,8 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     if args.json:
         print(json.dumps(report, ensure_ascii=False))
     else:
+        if flow_gate is not None:
+            print(format_flow_gate(flow_gate))
         print(format_human(report, sections))
 
     return EXIT_OK if report["closeable"] else EXIT_RED

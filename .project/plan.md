@@ -141,6 +141,18 @@
 
 ## MW-P5 — ปิดงาน: 1 PR + อัปความจำ · สถานะ: **PR merged แล้ว (2 PR) · อัป OverviewProgress+plan รอบนี้ · เหลือ Use Close Chat formalize + decisions**
 
+## MW-P6 — Flow Enforcement: บังคับ 13 ขั้นด้วยเครื่อง (เริ่ม 2026-07-15 · เจ้าของสั่ง "แก้ต้นเหตุ AI ข้าม flow" หลังเหตุการณ์จริง 2026-07-15) · สถานะ: **I1-I4 เสร็จ 2026-07-15 (เทสต์ mw 291 เขียว + demo block จริง 4 ฉาก) · เหลือ: เจ้าของรัน installer ติด hook เครื่องจริง + push/PR**  · branch `feature/mw-flow-gate`
+
+> ปฐมเหตุ: AI ข้าม flow ทั้งที่เอกสารครบ — ตรวจแล้ว G5 มีโค้ดจริงแค่ menu-gate (ปลายทาง M8) · "ด่านก่อนเขียน" ไม่มีไฟล์ · ไม่มีสถานะต่อเมนู · Fable วิเคราะห์ + Codex ตรวจค้าน 2026-07-15 (ผลใน xc-flow-gate.md)
+> หลักออกแบบ (Codex เสริม): สถานะคำนวณสดจากหลักฐานจริง ไม่เก็บไฟล์ state ให้ปลอม · กติกากลางไฟล์เดียว evaluator เดียว · ตรวจเนื้อไฟล์ไม่ใช่แค่มีไฟล์ · คำถาม owner คง 4 checkpoint เดิม ไม่เพิ่ม
+
+- **MW-P6-I1** กติกากลาง `scripts/mw/flow-rules.yaml` (13 ขั้น: ไฟล์ output ต่อขั้น + เกณฑ์เนื้อขั้นต่ำ + confirm checkpoint) + evaluator `scripts/mw/flow_eval.py` (คำนวณขั้นปัจจุบันจากหลักฐานบนดิสก์ · fail-closed)
+- **MW-P6-I2** CLI `scripts/mw/flow_gate.py` — `status <menu>` / `can-enter <step> <menu>` (exit 0/1) / `--json` · ใช้ evaluator I1
+- **MW-P6-I3** hook ด่านก่อนเขียน `team-shortcuts/hooks/enforce-flow-gate.py` (PreToolUse: โปรเจกต์มี `.work/profile.yaml` → Edit/Write/shell-write ไฟล์งานเมนูต้องผ่าน can-enter + มีล็อกเมนู) + เสียบ `install-team-hooks.py`
+- **MW-P6-I4** ผูกเครื่องเดิม: menu-gate เพิ่มแถวเรียก evaluator เดียวกัน + mw-doctor เช็ค hook ติดตั้ง
+- **MW-P6-I5** negative tests (ข้ามขั้น/ไฟล์เปล่า/ปลอมหลักฐาน → block ทุกเคส) + live demo ให้เจ้าของเห็น block บนจอ
+- verify: pytest scoped เขียว + negative ครบ + demo เจ้าของ (tier 4-5) · ผู้เขียน Codex/Grok · ผู้ตรวจต่างค่าย · verified = แถว gate-run
+
 ## งานคน (เจ้าของ)
 
 - ส่งไฟล์ 2-5 · ตัดสินจุดขัดรายข้อ · อนุมัติ spec (จบ P2) · กด merge PR (จบ P5)

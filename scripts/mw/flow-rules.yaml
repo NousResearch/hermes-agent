@@ -1,0 +1,81 @@
+version: 1
+# ลำดับ 13 สถานี — ห้ามข้าม: ขั้น N เข้าได้เมื่อทุกขั้นก่อนหน้า done
+steps:
+  - id: M0
+    title: "ยืนยันเมนูเก่ากับ owner"
+    outputs:
+      - path: ".project/menu-briefs/{menu}.confirm.md"
+        min_bytes: 200
+        must_contain: ["owner_quote:", "date:", "menu_url:"]
+  - id: "M0.5"
+    title: "Benchmark Intake Gate"
+    outputs:
+      - path: ".work/menus/{menu}/benchmark.md"
+        min_bytes: 20
+        must_contain_any: ["NO_INPUT", "benchmark_source:"]
+  - id: M1
+    title: "เก็บเว็บเก่า (Capture)"
+    outputs:
+      - path: ".work/menus/{menu}/m1-capture.md"
+        min_bytes: 100
+        must_contain: ["source_url:"]
+  - id: M2
+    title: "Design Brief 9 หัวข้อ"
+    outputs:
+      - path: ".work/menus/{menu}/design-brief.md"
+        min_bytes: 500
+        must_contain: ["จุดอ่อนเก่า", "Emotion", "ว้าว"]
+  - id: "M2.5"
+    title: "Image Direction"
+    outputs:
+      - path: ".work/menus/{menu}/image-direction.md"
+        min_bytes: 100
+        must_contain: ["source:"]
+  - id: M3
+    title: "จัดหาภาพ + owner เลือกทุกภาพ"
+    outputs:
+      - path: ".work/menus/{menu}/asset-register.md"
+        min_bytes: 100
+        must_contain: ["owner_approved:", "license:"]
+  - id: "M3.5"
+    title: "Wow Design"
+    outputs:
+      - path: ".work/menus/{menu}/wow.md"
+        min_bytes: 100
+        must_contain: ["layout_id:"]
+  - id: M4
+    title: "สร้างหน้าใหม่ตาม Design System"
+    outputs:
+      - path: ".work/menus/{menu}/m4-build.md"
+        min_bytes: 100
+        must_contain: ["ds_version:"]
+  - id: M5
+    title: "Admin คุมหน้าได้จริง (CRUD ผ่านจอ)"
+    outputs:
+      - path: ".work/menus/{menu}/m5-admin-proof.md"
+        min_bytes: 100
+        must_contain: ["manual_verified:", "ผู้ยืนยัน:", "วันที่:"]
+  - id: M6
+    title: "Standards Gate 9 เกต"
+    outputs:
+      - path: ".work/menus/{menu}/m6-gates.md"
+        min_bytes: 100
+        must_contain: ["menu-gate:", "exit_code:"]
+  - id: S
+    title: "ด่านส่ง owner"
+    outputs:
+      - path: ".work/menus/{menu}/send-owner.md"
+        min_bytes: 100
+        must_contain: ["owner_response:"]
+  - id: M7
+    title: "Migration Summary"
+    outputs:
+      - path: ".work/menus/{menu}/m7-migration-summary.md"
+        min_bytes: 100
+        must_contain: ["ตารางสรุป"]
+  - id: M8
+    title: "ปิดเมนู (menu-gate + fact sheet)"
+    outputs:
+      - path: ".work/deliverables/fact-sheets/{menu}.md"
+        min_bytes: 200
+        must_contain: ["REQ", "หลักฐาน"]

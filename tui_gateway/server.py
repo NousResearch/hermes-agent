@@ -6160,7 +6160,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait({"session_id": sid}, rid)
     if err:
         return err
-    assert session is not None
+    if session is None:
+        raise RuntimeError("TUI gateway: session must not be None")
 
     return _ok(
         rid,

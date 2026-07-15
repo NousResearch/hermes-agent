@@ -848,7 +848,8 @@ class CDPSupervisor:
 
     async def _read_loop(self) -> None:
         """Continuously dispatch incoming CDP frames."""
-        assert self._ws is not None
+        if self._ws is None:
+            raise RuntimeError("BrowserSupervisor: websocket connection must be established")
         try:
             async for raw in self._ws:
                 if self._stop_requested:

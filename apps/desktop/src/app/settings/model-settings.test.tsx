@@ -28,16 +28,15 @@ const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
-  getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
-  getAuxiliaryModels: () => getAuxiliaryModels(),
+  getGlobalModelInfo: (profile?: null | string, opts?: unknown) => getGlobalModelInfo(profile, opts),
+  getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
+  getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
   getApiRequestProfile: () => 'default',
-  getMoaModels: () => getMoaModels(),
+  getMoaModels: (profile?: null | string) => getMoaModels(profile),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   saveMoaModels: (body: unknown) => saveMoaModels(body),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
-  setApiRequestProfile: vi.fn(),
   getHermesConfigRecord: () => getHermesConfigRecord(),
   saveHermesConfig: (config: unknown) => saveHermesConfig(config),
   setApiRequestProfile: () => {}
@@ -324,6 +323,27 @@ describe('ModelSettings', () => {
     const provider = (await screen.findAllByRole('combobox'))[0]
     fireEvent.click(provider)
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
+  })
+
+  it('renders recovered settings before a delayed model-options request settles', async () => {
+    let resolveOptions!: (value: { providers: never[] }) => void
+    getGlobalModelInfo.mockRejectedValueOnce(new Error('Model metadata request timed out'))
+    getGlobalModelOptions.mockReturnValueOnce(
+      new Promise<{ providers: never[] }>(resolve => {
+        resolveOptions = resolve
+      })
+    )
+
+    await renderModelSettings()
+
+    expect(await screen.findByText('Vision')).toBeTruthy()
+    expect(screen.getByText('Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Set to main' }).length).toBeGreaterThan(0)
+    expect(getGlobalModelInfo).toHaveBeenCalledWith(null, { timeoutMs: 5_000 })
+
+    await act(async () => {
+      resolveOptions({ providers: [] })
+    })
   })
 
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {

@@ -434,10 +434,14 @@ display:
 
 | Mode | What you receive |
 |------|-----------------|
-| `all` | Running-output updates **and** the final completion message (default) |
+| `all` | New-output notices **and** the final completion message (default) |
 | `result` | Only the final completion message (regardless of exit code) |
 | `error` | Only the final message when the exit code is non-zero |
 | `off` | No process watcher messages at all |
+
+Notices carry the process status (including kills and signals) and a
+shortened, redacted command line — never the raw stdout/stderr, which stays
+available in full via `process(action="log", session_id=...)`.
 
 You can also set this via environment variable:
 

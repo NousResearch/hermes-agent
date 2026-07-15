@@ -154,7 +154,7 @@ class TestLoadBackgroundNotificationsMode:
             "result",
             [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
             1,
-            "finished with exit code 0",
+            "completed normally (exit code 0)",
         ),
         # error mode: exit 0 → no notification
         (
@@ -168,14 +168,14 @@ class TestLoadBackgroundNotificationsMode:
             "error",
             [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)],
             1,
-            "finished with exit code 1",
+            "exited (exit code 1)",
         ),
         # all mode: exited → notifies
         (
             "all",
             [SimpleNamespace(output_buffer="ok\n", exited=True, exit_code=0)],
             1,
-            "finished with exit code 0",
+            "completed normally (exit code 0)",
         ),
     ],
 )
@@ -556,3 +556,71 @@ def test_parse_session_key_too_short():
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
     assert _parse_session_key("agent:cron:telegram:dm:123") is None
+
+
+# ---------------------------------------------------------------------------
+# Chat-facing notice content: output omitted, states retained, commands redacted
+# ---------------------------------------------------------------------------
+
+from gateway.run import (  # noqa: E402
+    _format_process_completion_notice,
+    _format_process_running_notice,
+)
+
+_SECRET = "sk-abc123456789012345678901234567890123"
+_SECRET_CMD = f'curl -H "Authorization: Bearer {_SECRET}" https://api.example.com/v1'
+
+
+class TestProcessNoticeContent:
+
+    def test_completion_notice_omits_output_and_points_at_log(self):
+        notice = _format_process_completion_notice(
+            session_id="proc_1", command="npm run build", exit_code=0
+        )
+        assert "proc_1 completed normally (exit code 0)" in notice
+        assert "Command: npm run build" in notice
+        assert 'process(action="log", session_id="proc_1")' in notice
+
+    def test_completion_notice_retains_kill_diagnostics(self):
+        notice = _format_process_completion_notice(
+            session_id="proc_2",
+            command="sleep 600",
+            exit_code=-15,
+            completion_reason="killed",
+            termination_source="process.kill",
+        )
+        assert "terminated by process.kill" in notice
+        assert "exit code -15, SIGTERM" in notice
+
+    def test_completion_notice_reports_lost_backend(self):
+        notice = _format_process_completion_notice(
+            session_id="proc_3",
+            command="sleep 600",
+            exit_code=None,
+            completion_reason="lost",
+        )
+        assert "marked lost because the process backend disappeared" in notice
+
+    def test_completion_notice_redacts_command_credentials(self):
+        notice = _format_process_completion_notice(
+            session_id="proc_4", command=_SECRET_CMD, exit_code=1
+        )
+        assert _SECRET not in notice
+        assert "proc_4" in notice
+
+    def test_running_notice_redacts_and_omits_output(self):
+        notice = _format_process_running_notice(
+            session_id="proc_5", command=_SECRET_CMD
+        )
+        assert _SECRET not in notice
+        assert "proc_5 is still running" in notice
+        assert 'process(action="log", session_id="proc_5")' in notice
+
+    def test_long_commands_are_shortened_after_redaction(self):
+        long_cmd = "echo " + "x" * 600
+        notice = _format_process_running_notice(session_id="proc_6", command=long_cmd)
+        command_line = next(
+            line for line in notice.splitlines() if line.startswith("Command: ")
+        )
+        assert len(command_line) <= 310
+        assert command_line.endswith("…")

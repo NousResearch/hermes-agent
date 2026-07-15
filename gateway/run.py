@@ -2759,6 +2759,49 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
     return watch_events
 
 
+def _format_process_completion_notice(
+    *,
+    session_id: str,
+    command: object,
+    exit_code: object,
+    completion_reason: object = None,
+    termination_source: object = None,
+) -> str:
+    """Chat-facing completion notice: status retained, raw output omitted.
+
+    Shares the status phrase and the redacting command shortener with the
+    synthetic [IMPORTANT: ...] injection so killed/lost/SIGTERM outcomes and
+    the command-redaction boundary can never diverge between the two surfaces.
+    """
+    from tools.process_registry import (
+        _process_log_hint,
+        _short_process_command,
+        process_status_phrase,
+    )
+
+    status, signal = process_status_phrase(
+        exit_code, completion_reason, termination_source
+    )
+    return (
+        f"[Background process {session_id} {status} "
+        f"(exit code {exit_code}{signal}).\n"
+        f"Command: {_short_process_command(command)}\n"
+        f"{_process_log_hint(session_id)}]"
+    )
+
+
+def _format_process_running_notice(*, session_id: str, command: object) -> str:
+    """Chat-facing still-running notice without the raw output tail."""
+    from tools.process_registry import _process_log_hint, _short_process_command
+
+    return (
+        f"[Background process {session_id} is still running.\n"
+        f"Command: {_short_process_command(command)}\n"
+        f"New output is available in the process log.\n"
+        f"{_process_log_hint(session_id)}]"
+    )
+
+
 # Module-level weak reference to the active GatewayRunner instance.
 # Used by tools (e.g. send_message) that need to route through a live
 # adapter for plugin platforms.  Set in GatewayRunner.__init__().
@@ -16856,24 +16899,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # (#10156) — a status check must not suppress this delivery turn.
                 from tools.process_registry import format_process_notification, process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from agent.redact import redact_terminal_output
-                    from tools.ansi_strip import strip_ansi
-                    _command = getattr(session, "command", "") or ""
-                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    _raw = redact_terminal_output(_raw, _command)
-                    _command = _redact_gateway_user_facing_secrets(_command)
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
-                    _LIMIT = 2000
-                    if len(_raw) > _LIMIT:
-                        _tail = _raw[-_LIMIT:]
-                        _nl = _tail.find("\n")
-                        _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-                        _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-                    else:
-                        _out = _raw
+                    _command = _redact_gateway_user_facing_secrets(
+                        getattr(session, "command", "") or ""
+                    )
+                    # Raw output is deliberately not embedded (the formatter
+                    # points at process(action="log") instead) — multi-KB
+                    # tails made these synthetic turns unreadable and pushed
+                    # terminal noise into the transcript.
                     completion_evt = {
                         "type": "completion",
                         "session_id": session_id,
@@ -16890,7 +16922,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "exit_code": session.exit_code,
                         "completion_reason": getattr(session, "completion_reason", "exited"),
                         "termination_source": getattr(session, "termination_source", ""),
-                        "output": _out,
+                        "output": "",
                     }
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
@@ -16911,15 +16943,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                    if new_output:
-                        from agent.redact import redact_terminal_output
-                        new_output = redact_terminal_output(
-                            new_output, getattr(session, "command", "") or ""
-                        )
-                    message_text = (
-                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
+                    message_text = _format_process_completion_notice(
+                        session_id=session_id,
+                        command=getattr(session, "command", "unknown"),
+                        exit_code=session.exit_code,
+                        completion_reason=getattr(session, "completion_reason", None),
+                        termination_source=getattr(session, "termination_source", None),
                     )
                     adapter = None
                     for p, a in self.adapters.items():
@@ -16941,15 +16970,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output available -- deliver status update (only in "all" mode)
                 # Skip periodic updates for agent_notify watchers (they only care about completion)
-                new_output = session.output_buffer[-500:] if session.output_buffer else ""
-                if new_output:
-                    from agent.redact import redact_terminal_output
-                    new_output = redact_terminal_output(
-                        new_output, getattr(session, "command", "") or ""
-                    )
-                message_text = (
-                    f"[Background process {session_id} is still running~ "
-                    f"New output:\n{new_output}]"
+                message_text = _format_process_running_notice(
+                    session_id=session_id,
+                    command=getattr(session, "command", "unknown"),
                 )
                 adapter = None
                 for p, a in self.adapters.items():

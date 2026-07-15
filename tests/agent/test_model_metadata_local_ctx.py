@@ -493,7 +493,7 @@ class TestQueryLocalContextLengthLmStudio:
             result = _query_local_context_length("publisher/model-a", "http://localhost:1234/api/v1")
 
         assert result == 32768
-        assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
+        assert client_mock.get.call_args_list[0].args[0] == "http://127.0.0.1:1234/api/v1/models"
 
 
 class TestDetectLocalServerTypeAuth:
@@ -532,7 +532,67 @@ class TestDetectLocalServerTypeAuth:
             result = detect_local_server_type("http://localhost:1234/api/v1")
 
         assert result == "lm-studio"
-        assert client_mock.get.call_args_list[0].args[0] == "http://localhost:1234/api/v1/models"
+        assert client_mock.get.call_args_list[0].args[0] == "http://127.0.0.1:1234/api/v1/models"
+
+
+class TestDetectLocalServerTypeLocalhostIPv4:
+    """detect_local_server_type should resolve localhost to 127.0.0.1."""
+
+    def test_localhost_resolved_to_ipv4(self):
+        """Probes should use 127.0.0.1, not localhost, to avoid IPv6 timeout."""
+        from agent.model_metadata import detect_local_server_type
+
+        resp = MagicMock()
+        resp.status_code = 200
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://localhost:8317/v1")
+
+        for call in client_mock.get.call_args_list:
+            url = call[0][0]
+            assert "localhost" not in url, f"Probe URL still uses localhost: {url}"
+            assert "127.0.0.1" in url
+
+    def test_non_localhost_urls_unchanged(self):
+        """Non-localhost URLs should not be modified."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        resp = MagicMock()
+        resp.status_code = 404
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://192.168.1.100:8080")
+
+        for call in client_mock.get.call_args_list:
+            url = call[0][0]
+            assert "192.168.1.100" in url
+
+    def test_127_0_0_1_urls_unchanged(self):
+        """URLs already using 127.0.0.1 should pass through unchanged."""
+        from agent.model_metadata import detect_local_server_type
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        resp = MagicMock()
+        resp.status_code = 404
+        client_mock.get.return_value = resp
+
+        with patch("httpx.Client", return_value=client_mock):
+            detect_local_server_type("http://127.0.0.1:8317")
+
+        for call in client_mock.get.call_args_list:
+            url = call[0][0]
+            assert "127.0.0.1" in url
 
 
 class TestFetchEndpointModelMetadataLmStudio:
@@ -666,6 +726,32 @@ class TestFetchEndpointModelMetadataLmStudio:
         assert mock_get.call_args_list[0].args[0] == "https://lmstudio.example.com/v1/models"
         assert mock_get.call_args_list[1].args[0] == "https://lmstudio.example.com/api/v1/models"
         assert result["publisher/model-a"]["context_length"] == 100_000
+
+    def test_remote_non_lmstudio_does_not_probe_native_endpoint(self):
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        openai_resp = self._make_resp(
+            {
+                "data": [
+                    {
+                        "id": "publisher/model-a",
+                        "object": "model",
+                        "owned_by": "custom-provider",
+                    }
+                ]
+            }
+        )
+
+        with patch("agent.model_metadata.requests.get", return_value=openai_resp) as mock_get:
+            result = fetch_endpoint_model_metadata(
+                "https://custom.example.com/v1",
+                force_refresh=True,
+            )
+
+        assert mock_get.call_count == 1
+        assert mock_get.call_args.args[0] == "https://custom.example.com/v1/models"
+        assert result["publisher/model-a"] == {"name": "publisher/model-a"}
+        assert "context_length" not in result["publisher/model-a"]
 
 
 class TestQueryLocalContextLengthNetworkError:

@@ -2340,6 +2340,46 @@ def _gateway_config_home() -> Path:
     return _hermes_home
 
 
+def _start_gateway_memory_monitor() -> None:
+    """Start the periodic [MEMORY] heartbeat thread if enabled in config.
+
+    The heartbeat (``gateway/memory_monitor.py``) logs an RSS/GC/thread
+    snapshot to gateway.log every ``logging.memory_monitor.interval_seconds``.
+    Besides memory observability it keeps the log fresh while the gateway is
+    idle, so external watchdogs that treat log staleness as a hung-detection
+    signal don't false-trigger and kill a healthy gateway (#49773).
+
+    Runs on a daemon thread (never blocks exit). Best-effort: any failure is
+    logged at warning and never aborts gateway startup.
+    """
+    try:
+        cfg = _load_gateway_config()
+        if not cfg_get(cfg, "logging", "memory_monitor", "enabled", default=True):
+            return
+        from gateway.memory_monitor import start_memory_monitoring
+
+        interval = cfg_get(
+            cfg, "logging", "memory_monitor", "interval_seconds", default=300
+        )
+        try:
+            interval = float(interval)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Memory monitor interval_seconds=%r is not numeric; using default 300",
+                interval,
+            )
+            interval = 300.0
+        if interval <= 0:
+            logger.warning(
+                "Memory monitor interval_seconds=%s is non-positive; using default 300",
+                interval,
+            )
+            interval = 300.0
+        start_memory_monitoring(interval_seconds=interval)
+    except Exception as exc:
+        logger.warning("Memory monitor start skipped: %s", exc)
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error.
 
@@ -6825,6 +6865,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
 
+        # Start the periodic [MEMORY] heartbeat so gateway.log keeps emitting a
+        # freshness signal even while the gateway is idle (#49773).
+        _start_gateway_memory_monitor()
+
         # Sanity-check that systemd's TimeoutStopSec covers our drain
         # window.  When the user upgraded hermes-agent without re-running
         # ``hermes setup``, their unit file may still encode the old
@@ -8222,6 +8266,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._draining = True
+
+            # Stop the [MEMORY] heartbeat thread and log a final snapshot.
+            # Safe even if it was never started (config-disabled). #49773.
+            try:
+                from gateway.memory_monitor import stop_memory_monitoring
+
+                stop_memory_monitoring()
+            except Exception as exc:
+                logger.warning("Memory monitor stop skipped: %s", exc)
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.

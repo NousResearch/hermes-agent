@@ -1205,6 +1205,58 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_with_provider_carries_runtime_request_overrides(self, mock_resolve):
+        """#65035: the base_url short-circuit must not drop the configured
+        provider's request_overrides / max_output_tokens."""
+        mock_resolve.return_value = {
+            "provider": "custom",
+            "base_url": "https://provider-default.example/v1",
+            "api_key": "provider-key",
+            "api_mode": "chat_completions",
+            "request_overrides": {"extra_body": {"thinking": {"type": "disabled"}}},
+            "max_output_tokens": 8192,
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "mimo-v2.5-pro",
+            "provider": "mimo",
+            "base_url": "https://api.xiaomimimo.com/v1",
+            "api_key": "cfg-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        # Explicitly configured endpoint + key still win over the runtime's.
+        self.assertEqual(creds["base_url"], "https://api.xiaomimimo.com/v1")
+        self.assertEqual(creds["api_key"], "cfg-key")
+        # The provider's request personality survives the short-circuit.
+        self.assertEqual(
+            creds["request_overrides"],
+            {"extra_body": {"thinking": {"type": "disabled"}}},
+        )
+        self.assertEqual(creds["max_output_tokens"], 8192)
+
+    def test_bare_base_url_returns_none_overrides(self):
+        """No provider alongside base_url → no overrides source; keys are
+        present but None (shape parity with the inherit-everything path)."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "", "base_url": "http://localhost:1234/v1", "api_key": "k"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["request_overrides"])
+        self.assertIsNone(creds["max_output_tokens"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_survives_runtime_resolution_failure(self, mock_resolve):
+        """Best-effort: the explicit endpoint worked before this change even
+        when the provider can't resolve — a resolution failure must not
+        break it, only skip the overrides."""
+        mock_resolve.side_effect = RuntimeError("MIMO_API_KEY not set")
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "m", "provider": "mimo", "base_url": "https://api.xiaomimimo.com/v1", "api_key": "k"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["base_url"], "https://api.xiaomimimo.com/v1")
+        self.assertIsNone(creds["request_overrides"])
+        self.assertIsNone(creds["max_output_tokens"])
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolution_failure_raises_valueerror(self, mock_resolve):
         """When provider resolution fails, ValueError is raised with helpful message."""
         mock_resolve.side_effect = RuntimeError("OPENROUTER_API_KEY not set")

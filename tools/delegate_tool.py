@@ -3099,12 +3099,42 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             api_mode = configured_api_mode
 
+        # A provider configured ALONGSIDE base_url means the user wants that
+        # provider's request personality on an explicit endpoint. This
+        # short-circuit runs before the resolve_runtime_provider() call below,
+        # so without this block the runtime-carried request_overrides
+        # (extra_body / extra_headers, e.g. `thinking: {type: disabled}`) and
+        # max_output_tokens are silently dropped for subagents (#65035).
+        # Best-effort: the explicit endpoint worked before this change even
+        # when the provider can't resolve, so a resolution failure only skips
+        # the overrides — it must not fail the dispatch.
+        request_overrides = None
+        max_output_tokens = None
+        if configured_provider:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(
+                    requested=configured_provider, target_model=configured_model
+                )
+                request_overrides = dict(runtime.get("request_overrides") or {}) or None
+                max_output_tokens = runtime.get("max_output_tokens")
+            except Exception as exc:
+                logger.debug(
+                    "delegation.base_url: runtime resolution for provider '%s' "
+                    "failed; proceeding without request_overrides: %s",
+                    configured_provider,
+                    exc,
+                )
+
         return {
             "model": configured_model,
             "provider": provider,
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "request_overrides": request_overrides,
+            "max_output_tokens": max_output_tokens,
         }
 
     if not configured_provider:

@@ -79,3 +79,14 @@ def test_flat_platform_override_precedence_over_nested():
         "platforms": {"whatsapp": {"memory": {"scrub_recall_output": False}}},
     }
     assert _resolve_memory_scrub_recall_output(cfg, "whatsapp") is False
+
+
+def test_resolved_policy_controls_runtime_scrubber():
+    from agent.agent_init import StreamingContextScrubber
+
+    assert StreamingContextScrubber(
+        enabled=_resolve_memory_scrub_recall_output({}, "whatsapp")
+    )._enabled is True
+    assert StreamingContextScrubber(
+        enabled=_resolve_memory_scrub_recall_output({}, "cli")
+    )._enabled is False

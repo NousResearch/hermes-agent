@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
-from agent.memory_manager import strip_injected_recall_blocks
+from agent.memory_manager import sanitize_recall_payload, strip_injected_recall_blocks
 
 
 def _sanitize_current_turn_assistant_messages(messages) -> None:
@@ -46,6 +46,19 @@ def _sanitize_current_turn_assistant_messages(messages) -> None:
         content = msg.get("content")
         if isinstance(content, str) and content:
             msg["content"] = strip_injected_recall_blocks(content).strip()
+        ordered_blocks = msg.get("anthropic_content_blocks")
+        if ordered_blocks is None:
+            continue
+        sanitized_blocks = sanitize_recall_payload(ordered_blocks)
+        if sanitized_blocks != ordered_blocks:
+            msg["anthropic_content_blocks"] = sanitized_blocks
+            if any(
+                isinstance(block, dict)
+                and block.get("type") in {"thinking", "redacted_thinking"}
+                and (block.get("signature") or block.get("data"))
+                for block in ordered_blocks
+            ):
+                msg["_thinking_signature_invalidated"] = True
 
 
 def finalize_turn(

@@ -1960,6 +1960,20 @@ class AIAgent:
                     if cleaned_content != content:
                         msg["content"] = cleaned_content
                         content = cleaned_content
+                raw_reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                persisted_reasoning_details = sanitize_recall_payload(raw_reasoning_details)
+                if (
+                    role == "assistant"
+                    and persisted_reasoning_details != raw_reasoning_details
+                    and isinstance(raw_reasoning_details, list)
+                    and any(
+                        isinstance(detail, dict)
+                        and detail.get("type") in {"thinking", "redacted_thinking"}
+                        and (detail.get("signature") or detail.get("data"))
+                        for detail in raw_reasoning_details
+                    )
+                ):
+                    msg["_thinking_signature_invalidated"] = True
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = sanitize_recall_payload([
@@ -1987,12 +2001,14 @@ class AIAgent:
                         else None
                     ),
                     reasoning_details=(
-                        sanitize_recall_payload(msg.get("reasoning_details"))
+                        persisted_reasoning_details
                         if role == "assistant"
                         else None
                     ),
                     thinking_signature_invalidated=(
-                        msg.get("_thinking_signature_invalidated") if role == "assistant" else None
+                        bool(msg.get("_thinking_signature_invalidated"))
+                        if role == "assistant"
+                        else None
                     ),
                     codex_reasoning_items=(
                         sanitize_recall_payload(msg.get("codex_reasoning_items"))

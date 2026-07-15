@@ -2,6 +2,8 @@ import copy
 import logging
 import os
 import sys
+import tempfile
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -117,3 +119,76 @@ def test_finalize_turn_persists_and_syncs_sanitized_recall_output():
         interrupted=False,
         messages=persisted_messages,
     )
+
+
+def test_finalize_turn_scrubs_ordered_anthropic_blocks_and_invalidates_signature():
+    agent = _bare_finalizer_agent()
+    leaked = build_memory_context_block("operator-only peer card")
+    messages = [
+        {"role": "user", "content": "I need a refund"},
+        {
+            "role": "assistant",
+            "content": "Visible answer",
+            "anthropic_content_blocks": [
+                {"type": "thinking", "thinking": leaked, "signature": "sig_old"},
+                {"type": "tool_use", "id": "tc_1", "name": "lookup", "input": {}},
+            ],
+        },
+    ]
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        finalize_turn(
+            agent,
+            final_response="Visible answer",
+            api_call_count=1,
+            interrupted=False,
+            failed=False,
+            messages=messages,
+            conversation_history=None,
+            effective_task_id="task-40170",
+            turn_id="turn-40170",
+            user_message="I need a refund",
+            original_user_message="I need a refund",
+            _should_review_memory=False,
+            _turn_exit_reason="text_response(finish_reason=stop)",
+        )
+
+    assert messages[-1]["anthropic_content_blocks"][0]["thinking"] == ""
+    assert messages[-1]["_thinking_signature_invalidated"] is True
+
+
+def test_session_flush_marks_changed_signed_reasoning_details_invalid():
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    leaked = build_memory_context_block("operator-only peer card")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db = SessionDB(db_path=Path(tmpdir) / "session.db")
+        try:
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id="sess-40170-persist",
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            agent._ensure_db_session()
+            agent._flush_messages_to_session_db(
+                [{
+                    "role": "assistant",
+                    "content": "Visible answer",
+                    "reasoning_details": [
+                        {"type": "thinking", "thinking": leaked, "signature": "sig_old"},
+                    ],
+                }],
+                [],
+            )
+            restored = db.get_messages_as_conversation(agent.session_id)[0]
+            assert restored["reasoning_details"][0]["thinking"] == ""
+            assert restored["_thinking_signature_invalidated"] is True
+        finally:
+            db.close()

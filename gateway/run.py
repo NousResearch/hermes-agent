@@ -16007,6 +16007,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         ("agent", "disabled_toolsets"),
         ("memory", "provider"),
         ("memory", "auto_inject_recall"),
+        ("memory", "scrub_recall_output"),
     )
 
     _HONCHO_CACHE_BUSTING_KEYS = (
@@ -16099,12 +16100,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "memory",
                 "auto_inject_recall",
             )
+            out[f"gateway.platforms.{platform_key}.memory.scrub_recall_output"] = cfg_get(
+                cfg,
+                "gateway",
+                "platforms",
+                platform_key,
+                "memory",
+                "scrub_recall_output",
+            )
             out[f"platforms.{platform_key}.memory.auto_inject_recall"] = cfg_get(
                 cfg,
                 "platforms",
                 platform_key,
                 "memory",
                 "auto_inject_recall",
+            )
+            out[f"platforms.{platform_key}.memory.scrub_recall_output"] = cfg_get(
+                cfg,
+                "platforms",
+                platform_key,
+                "memory",
+                "scrub_recall_output",
             )
         try:
             from tools.registry import registry

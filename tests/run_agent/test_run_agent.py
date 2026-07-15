@@ -4280,6 +4280,120 @@ class TestRunConversation:
         assert "customer recall" not in sent_user["content"]
         assert "plugin user context" in sent_user["content"]
 
+    def test_live_provider_prompt_recall_and_output_surfaces_are_fenced(self):
+        from agent.memory_manager import build_memory_context_block
+
+        secret = "LIVE_PROVIDER_RECALL_SECRET"
+        recall = build_memory_context_block(f"provider recall: {secret}")
+
+        class LiveProvider:
+            name = "live-fake"
+
+            def __init__(self):
+                self.synced = []
+                self.ended = []
+
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                self.session_id = session_id
+
+            def system_prompt_block(self):
+                return "PROVIDER_STATIC_PROMPT_BLOCK"
+
+            def prefetch(self, query, *, session_id=""):
+                return f"provider recall: {secret}"
+
+            def queue_prefetch(self, query, *, session_id=""):
+                pass
+
+            def get_tool_schemas(self):
+                return []
+
+            def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
+                self.synced.append((user_content, assistant_content, messages))
+
+            def on_session_end(self, messages):
+                self.ended.append(messages)
+
+            def shutdown(self):
+                pass
+
+        provider = LiveProvider()
+        persisted = []
+        hook_calls = []
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "memory": {
+                        "provider": "live-fake",
+                        "memory_enabled": True,
+                        "scrub_recall_output": True,
+                    }
+                },
+            ),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+            patch("tools.memory_tool.MemoryStore.load_from_disk"),
+            patch("tools.memory_tool.MemoryStore.format_for_system_prompt", return_value="BUILTIN_MEMORY_TRUSTED"),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch(
+                "hermes_cli.plugins.invoke_hook",
+                side_effect=lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
+            ),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                platform="whatsapp",
+                quiet_mode=True,
+                skip_context_files=True,
+            )
+            agent._use_prompt_caching = False
+            agent.compression_enabled = False
+            agent.save_trajectories = False
+            agent._persist_session = lambda messages, history=None: persisted.append(messages)
+            agent._save_trajectory = lambda *args, **kwargs: None
+            agent._cleanup_task_resources = lambda *args: None
+            agent.client = MagicMock()
+            agent.client.chat.completions.create.return_value = _mock_response(
+                content=recall,
+                finish_reason="stop",
+            )
+
+            result = agent.run_conversation("remember this")
+
+        assert "PROVIDER_STATIC_PROMPT_BLOCK" in agent._cached_system_prompt
+        assert "BUILTIN_MEMORY_TRUSTED" in agent._cached_system_prompt
+        assert secret not in agent._cached_system_prompt
+
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        api_text = json.dumps(api_messages, ensure_ascii=False)
+        assert secret in api_text
+        assert "<memory-context>" in api_text
+        assert any("provider recall" in str(m.get("content")) for m in api_messages if m.get("role") == "user")
+
+        assert secret not in result["final_response"]
+        assert secret not in json.dumps(persisted, ensure_ascii=False)
+        agent._memory_manager.flush_pending(timeout=5)
+        assert secret not in json.dumps(provider.synced, ensure_ascii=False)
+        agent._memory_manager.on_session_end(persisted[-1])
+        assert secret not in json.dumps(provider.ended, ensure_ascii=False)
+        hook_payloads = [
+            {
+                key: kwargs[key]
+                for key in ("request", "request_messages", "conversation_history", "response")
+                if key in kwargs
+            }
+            for _, kwargs in hook_calls
+        ]
+        assert secret not in json.dumps(hook_payloads, ensure_ascii=False)
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

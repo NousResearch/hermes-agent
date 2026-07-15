@@ -300,3 +300,29 @@ def test_each_file_gets_private_basetemp_and_runner_cleans_it(tmp_path: Path) ->
     assert len(set(basetemps)) == 2
     assert all(str(path) != "None" for path in basetemps)
     assert all(not path.exists() for path in basetemps)
+
+
+def test_private_basetemp_is_cleaned_when_popen_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A spawn failure must not leak the runner-owned temp root."""
+    from scripts import run_tests_parallel as runner
+
+    private_basetemp = tmp_path / "private-basetemp"
+
+    def make_basetemp(*_args, **_kwargs) -> str:
+        private_basetemp.mkdir()
+        return str(private_basetemp)
+
+    def fail_to_spawn(*_args, **_kwargs):
+        raise OSError("synthetic Popen failure")
+
+    monkeypatch.setattr(runner.tempfile, "mkdtemp", make_basetemp)
+    monkeypatch.setattr(runner.subprocess, "Popen", fail_to_spawn)
+
+    with pytest.raises(OSError, match="synthetic Popen failure"):
+        runner._run_one_file(
+            tmp_path / "test_probe.py", [], tmp_path, file_timeout=1,
+        )
+
+    assert not private_basetemp.exists()

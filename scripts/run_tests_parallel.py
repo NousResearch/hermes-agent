@@ -357,20 +357,25 @@ def _run_one_file(
     
     subproc_start = time.monotonic()
     # launch the pytest process
-    proc = subprocess.Popen(
-        cmd,
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
-        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
-        # POSIX: place the child at the head of its own process group so
-        # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
+            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
+            # POSIX: place the child at the head of its own process group so
+            # _kill_tree can SIGKILL the group atomically.
+            # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
+            # _kill_tree handles the Windows path via taskkill /F /T.
+            start_new_session=True,
+        )
+    except BaseException:
+        if private_basetemp is not None:
+            shutil.rmtree(private_basetemp, ignore_errors=True)
+        raise
 
     # Capture the pgid NOW, before the leader can exit and be reaped. Once
     # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
@@ -408,9 +413,9 @@ def _run_one_file(
         _kill_tree(proc, pgid=pgid)
 
         output +=  "\n"
-
-    if private_basetemp is not None:
-        shutil.rmtree(private_basetemp, ignore_errors=True)
+    finally:
+        if private_basetemp is not None:
+            shutil.rmtree(private_basetemp, ignore_errors=True)
 
     summary = _parse_pytest_summary(output)
     if rc == 5:

@@ -438,6 +438,17 @@ def test_s6_manager_kind_and_supports_registration() -> None:
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
+def _assert_portable_s6_event_mode(path) -> None:
+    """Assert portable bits; the Docker integration owns exact setgid proof."""
+    import stat
+
+    mode = stat.S_IMODE(path.stat().st_mode)
+    # A host temp root whose group is unavailable to the test user may cause
+    # the kernel to strip setgid. The ordering test below proves chmod is the
+    # final production write; Linux container E2E proves exact 03730 there.
+    assert mode in {0o1730, 0o3730}
+
+
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO + modes the helper lays down."""
     import stat
@@ -452,13 +463,7 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # Top-level event/ — s6-svlisten1 event subscription dir.
     event = svc_dir / "event"
     assert event.is_dir(), "missing top-level event/"
-    # s6 deploys on Linux, where CI remains authoritative for the 03730
-    # setgid contract. Darwin's temp filesystem strips setgid here, so local
-    # macOS runs can only assert the remaining 01730 permission bits.
-    expected_event_mode = 0o1730 if sys.platform == "darwin" else 0o3730
-    assert stat.S_IMODE(event.stat().st_mode) == expected_event_mode, (
-        f"event/ mode = {oct(event.stat().st_mode)}, want {oct(expected_event_mode)}"
-    )
+    _assert_portable_s6_event_mode(event)
 
     # supervise/ dir.
     supervise = svc_dir / "supervise"
@@ -468,7 +473,7 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     # supervise/event/.
     supervise_event = supervise / "event"
     assert supervise_event.is_dir(), "missing supervise/event/"
-    assert stat.S_IMODE(supervise_event.stat().st_mode) == expected_event_mode
+    _assert_portable_s6_event_mode(supervise_event)
 
     # supervise/control FIFO.
     control = supervise / "control"
@@ -503,11 +508,53 @@ def test_seed_supervise_skeleton_handles_log_subservice(tmp_path) -> None:
     log_control = log_supervise / "control"
 
     assert log_event.is_dir()
-    expected_event_mode = 0o1730 if sys.platform == "darwin" else 0o3730
-    assert stat.S_IMODE(log_event.stat().st_mode) == expected_event_mode
+    _assert_portable_s6_event_mode(log_event)
     assert log_supervise.is_dir()
     assert log_supervise_event.is_dir()
     assert log_control.exists() and stat.S_ISFIFO(log_control.stat().st_mode)
+
+
+def test_seed_supervise_skeleton_restores_modes_after_chown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    """Ownership changes must precede the final permission write.
+
+    ``chown`` may clear setgid bits. Applying the documented mode last keeps
+    the production 03730 contract independent of that platform behavior.
+    """
+    import os
+    from pathlib import Path
+
+    from hermes_cli.service_manager import _seed_supervise_skeleton
+
+    operations: list[tuple[str, Path, int | None]] = []
+    real_chmod = Path.chmod
+
+    def record_chown(path, _uid, _gid) -> None:
+        operations.append(("chown", Path(path), None))
+
+    def record_chmod(path: Path, mode: int, *args, **kwargs) -> None:
+        operations.append(("chmod", path, mode))
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "chown", record_chown)
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+
+    svc_dir = tmp_path / "gateway-foo"
+    svc_dir.mkdir()
+    _seed_supervise_skeleton(svc_dir)
+
+    expected = {
+        svc_dir / "event": 0o3730,
+        svc_dir / "supervise": 0o755,
+        svc_dir / "supervise" / "event": 0o3730,
+        svc_dir / "supervise" / "control": 0o660,
+    }
+    for path, mode in expected.items():
+        assert [op for op in operations if op[1] == path] == [
+            ("chown", path, None),
+            ("chmod", path, mode),
+        ]
 
 
 def test_seed_supervise_skeleton_skips_when_no_log_subservice(tmp_path) -> None:

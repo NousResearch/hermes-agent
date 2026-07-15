@@ -487,7 +487,6 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         if path.exists():
             return
         path.mkdir(parents=False, exist_ok=False)
-        path.chmod(mode)
         try:
             os.chown(path, _HERMES_UID, _HERMES_GID)
         except PermissionError:
@@ -496,6 +495,10 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             # swallowing this keeps both root and unprivileged callers
             # on one code path.
             pass
+        # chown may clear setgid; permissions are therefore always the final
+        # write, preserving the documented mode under root and unprivileged
+        # callers alike.
+        path.chmod(mode)
 
     # Top-level event/ dir (this is the s6-svlisten1 event-subscription
     # dir at the service root, distinct from supervise/event/).
@@ -517,11 +520,11 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
     control = supervise / "control"
     if not control.exists():
         os.mkfifo(control, 0o660)
-        control.chmod(0o660)
         try:
             os.chown(control, _HERMES_UID, _HERMES_GID)
         except PermissionError:
             pass
+        control.chmod(0o660)
 
     # If a log/ subdir is present (the canonical s6 logger pattern —
     # see servicedir(7)), it gets its own s6-supervise instance and
@@ -537,11 +540,11 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
         log_control = log_supervise / "control"
         if not log_control.exists():
             os.mkfifo(log_control, 0o660)
-            log_control.chmod(0o660)
             try:
                 os.chown(log_control, _HERMES_UID, _HERMES_GID)
             except PermissionError:
                 pass
+            log_control.chmod(0o660)
 
 
 class S6Error(RuntimeError):

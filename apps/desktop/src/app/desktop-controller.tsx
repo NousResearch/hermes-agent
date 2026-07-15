@@ -88,6 +88,7 @@ import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
+import { handleGroupEvent } from './groups/group-store'
 import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
@@ -132,6 +133,7 @@ const CommandCenterView = lazy(async () => ({ default: (await import('./command-
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
+const GroupsView = lazy(async () => ({ default: (await import('./groups')).GroupsView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
@@ -148,6 +150,18 @@ const CRON_POLL_INTERVAL_MS = 30_000
 // appears without requiring a manual refresh or route change.
 const MESSAGING_POLL_INTERVAL_MS = 10_000
 const ACTIVE_MESSAGING_SESSION_POLL_INTERVAL_MS = 5_000
+
+function GroupRoomRoute({
+  navigate,
+  request
+}: {
+  navigate: (path: string) => void
+  request: (method: string, params?: Record<string, unknown>) => Promise<unknown>
+}) {
+  const { roomId } = useParams<{ roomId: string }>()
+
+  return <GroupsView navigate={navigate} request={request} roomId={roomId ?? null} />
+}
 
 function sessionMatchesStoredId(session: { id: string; _lineage_root_id?: null | string }, id: string): boolean {
   return session.id === id || session._lineage_root_id === id
@@ -853,7 +867,10 @@ export function DesktopController() {
   }, [])
 
   useGatewayBoot({
-    handleGatewayEvent: handleDesktopGatewayEvent,
+    handleGatewayEvent: event => {
+      handleGroupEvent(event)
+      handleDesktopGatewayEvent(event)
+    },
     onConnectionReady: c => {
       connectionRef.current = c
     },
@@ -1296,6 +1313,22 @@ export function DesktopController() {
               </Suspense>
             }
             path="skills"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <GroupsView navigate={path => navigate(path)} request={requestGateway} roomId={null} />
+              </Suspense>
+            }
+            path="groups"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <GroupRoomRoute navigate={path => navigate(path)} request={requestGateway} />
+              </Suspense>
+            }
+            path="groups/:roomId"
           />
           <Route
             element={

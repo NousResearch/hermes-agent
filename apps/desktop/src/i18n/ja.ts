@@ -1464,11 +1464,22 @@ export const ja = defineLocale({
     copyPath: 'パスをコピー'
   },
 
+  groups: {
+    title: 'グループチャット', createRoom: 'ルームを作成', roomName: 'ルーム名', profiles: 'プロファイル',
+    profilesHint: 'プロファイル名をカンマ区切りで入力', searchProfiles: 'プロファイルを検索', create: '作成', cancel: 'キャンセル', empty: 'グループルームはまだありません。',
+    message: 'ルームにメッセージ', send: '送信', stop: '停止', delete: 'ルームを削除', back: 'すべてのルーム',
+    approval: '承認が必要です', run: '実行', reject: '拒否', loadFailed: 'グループチャットを読み込めませんでした。',
+    you: 'あなた', agent: 'エージェント', working: '作業中…', workspace: 'ワークスペース', noWorkspace: 'ワークスペースなし',
+    browseWorkspace: '参照…', loadEarlier: '以前のメッセージを読み込む', loadingEarlier: '以前のメッセージを読み込み中…',
+    compressed: '以前のコンテキストは圧縮されています。', summary: 'コンテキストの要約'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新しいセッション',
       skills: 'スキルとツール',
       messaging: 'メッセージング',
+      groups: 'グループチャット',
       artifacts: 'アーティファクト'
     },
     searchAria: 'セッションを検索',

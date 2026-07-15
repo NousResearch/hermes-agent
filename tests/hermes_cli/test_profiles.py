@@ -690,6 +690,15 @@ class TestListProfiles:
         assert "alpha" in names
         assert "beta" in names
 
+    def test_surfaces_unicode_display_name_from_profile_metadata(self, profile_env):
+        create_profile("architect", no_alias=True)
+        profile_dir = get_profile_dir("architect")
+        profiles.write_profile_meta(profile_dir, display_name="技术架构师")
+
+        info = next(p for p in list_profiles() if p.name == "architect")
+
+        assert info.display_name == "技术架构师"
+
     def test_sorted_alphabetically(self, profile_env):
         create_profile("zebra", no_alias=True)
         create_profile("alpha", no_alias=True)

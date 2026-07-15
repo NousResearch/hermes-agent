@@ -46,6 +46,7 @@ import {
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
+  profileDisplayName,
   refreshActiveProfile,
   selectProfile,
   setProfileColor,
@@ -280,12 +281,13 @@ export function ProfileRail() {
                       active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                       color={resolveProfileColor(profile.name, colors)}
                       key={profile.name}
-                      label={profile.name}
+                      label={profileDisplayName(profile)}
                       onDelete={() => setPendingDelete(profile)}
                       onEditSoul={() => setPendingSoul(profile.name)}
                       onRecolor={color => setProfileColor(profile.name, color)}
                       onRename={() => setPendingRename(profile)}
                       onSelect={() => selectProfile(profile.name)}
+                      profileId={profile.name}
                     />
                   ))}
                 </div>
@@ -464,9 +466,9 @@ function ProfileDropdown({
                   className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
                   style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
                 >
-                  {profile.name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                  {profileDisplayName(profile).charAt(0) || '?'}
                 </span>
-                <span className="truncate">{profile.name}</span>
+                <span className="truncate">{profileDisplayName(profile)}</span>
               </span>
             </SelectItem>
           )
@@ -509,6 +511,7 @@ interface ProfileSquareProps {
   active: boolean
   color: null | string
   label: string
+  profileId: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
   onRename: () => void
@@ -535,7 +538,8 @@ function ProfileSquare({
   onEditSoul,
   onRecolor,
   onRename,
-  onSelect
+  onSelect,
+  profileId
 }: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
@@ -545,7 +549,7 @@ function ProfileSquare({
   const suppressClick = useRef(false)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
-    id: label,
+    id: profileId,
     transition: RAIL_TRANSITION
   })
 
@@ -635,7 +639,7 @@ function ProfileSquare({
                     onPointerLeave={clearPress}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {label.charAt(0) || '?'}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>

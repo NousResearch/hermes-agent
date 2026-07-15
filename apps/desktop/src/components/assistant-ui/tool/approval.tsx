@@ -45,7 +45,12 @@ import type { ToolPart } from './fallback-model'
 export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
 
 // Canonical gateway choices (ui-tui/src/components/prompts.tsx).
-type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
+export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
+
+export const GroupApprovalBar: FC<{
+  onRespond: (choice: ApprovalChoice) => Promise<unknown>
+  request: ApprovalRequest
+}> = ({ onRespond, request }) => <ApprovalBar onRespond={onRespond} request={request} surface="inline" />
 
 export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
   const request = useStore($approvalRequest)
@@ -94,7 +99,11 @@ export const PendingApprovalFallback: FC = () => {
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
-const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline' }> = ({ request, surface }) => {
+const ApprovalBar: FC<{
+  onRespond?: (choice: ApprovalChoice) => Promise<unknown>
+  request: ApprovalRequest
+  surface: 'floating' | 'inline'
+}> = ({ onRespond, request, surface }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
   const gateway = useStore($gateway)
@@ -120,11 +129,11 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
     async (choice: ApprovalChoice) => {
       // Another bar (or the keyboard path) may have already resolved this
       // approval; the atom is the single source of truth, so bail if it's gone.
-      if (busy || !$approvalRequest.get()) {
+      if (busy || (!onRespond && !$approvalRequest.get())) {
         return
       }
 
-      if (!gateway) {
+      if (!onRespond && !gateway) {
         notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
 
         return
@@ -133,18 +142,24 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
       setSubmitting(choice)
 
       try {
-        await gateway.request<{ resolved?: boolean }>('approval.respond', {
-          choice,
-          session_id: request.sessionId ?? undefined
-        })
+        if (onRespond) {
+          await onRespond(choice)
+        } else {
+          await gateway!.request<{ resolved?: boolean }>('approval.respond', {
+            choice,
+            session_id: request.sessionId ?? undefined
+          })
+        }
+
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
-        clearApprovalRequest(request.sessionId)
+
+        if (!onRespond) {clearApprovalRequest(request.sessionId)}
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(null)
       }
     },
-    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, onRespond, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.

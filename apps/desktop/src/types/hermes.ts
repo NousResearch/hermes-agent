@@ -596,6 +596,7 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  display_name?: string
   has_env: boolean
   is_default: boolean
   model: null | string

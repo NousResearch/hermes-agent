@@ -1523,11 +1523,22 @@ export const en: Translations = {
     copyPath: 'Copy path'
   },
 
+  groups: {
+    title: 'Group chats', createRoom: 'Create room', roomName: 'Room name', profiles: 'Profiles',
+    profilesHint: 'Comma-separated profile names', searchProfiles: 'Search profiles', create: 'Create', cancel: 'Cancel', empty: 'No group rooms yet.',
+    message: 'Message the room', send: 'Send', stop: 'Stop', delete: 'Delete room', back: 'All rooms',
+    approval: 'Approval needed', run: 'Run', reject: 'Reject', loadFailed: 'Could not load group chats.',
+    you: 'You', agent: 'Agent', working: 'Working…', workspace: 'Workspace', noWorkspace: 'No workspace',
+    browseWorkspace: 'Browse…', loadEarlier: 'Load earlier messages', loadingEarlier: 'Loading earlier messages…',
+    compressed: 'Earlier context was compressed.', summary: 'Context summary'
+  },
+
   sidebar: {
     nav: {
       'new-session': 'New session',
       skills: 'Capabilities',
       messaging: 'Messaging',
+      groups: 'Group chats',
       artifacts: 'Artifacts'
     },
     searchAria: 'Search sessions',

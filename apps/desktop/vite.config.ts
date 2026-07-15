@@ -42,18 +42,11 @@ export default defineConfig({
     postcss: { plugins: [] }
   },
   build: {
-    // Keep desktop packaging stable: Shiki ships many dynamic chunks by
-    // default, and electron-builder can OOM scanning thousands of files.
-    // Collapsing to a single chunk is intentional, so the renderer bundle is
-    // large by design (~22 MB). Raise the warning ceiling above that so the
-    // cosmetic "chunk larger than 500 kB" nag stays quiet, while still acting
-    // as a regression alarm if the bundle balloons well past today's size.
-    chunkSizeWarningLimit: 25000,
-    rolldownOptions: {
-      output: {
-        codeSplitting: false
-      }
-    }
+    // Keep a generous warning ceiling for Shiki's language payloads. Do not
+    // force Rolldown into a single chunk: Vite 8 can emit a broken Shiki
+    // re-export helper in that mode (`__reExport$1 is not defined`), which
+    // crashes the renderer before React mounts and leaves a blank window.
+    chunkSizeWarningLimit: 25000
   },
   resolve: {
     alias: {

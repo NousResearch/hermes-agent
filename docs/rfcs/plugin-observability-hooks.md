@@ -19,26 +19,30 @@ immediately instead of polling.
 
 ## Proposal 1: Worker lifecycle hooks
 
-### `kanban_worker_spawned`
+### `kanban_task_claimed` (pre-spawn observer)
 
-Fires in the **DISPATCHER** process after a worker subprocess is successfully
-spawned.
+Fires in the **DISPATCHER** process BEFORE `_default_spawn` at
+`kanban_db.py:3485`. Carries `task_id`, `assignee`, `board`.
+Observer-only — callbacks run before the worker subprocess is created
+and cannot affect the spawn decision.
 
-```python
-# Kwargs: task_id, board, assignee, run_id, profile_name, worker_pid: int
-```
+### `kanban_task_spawned` (post-spawn observer)
 
-### `kanban_worker_exited`
+Fires in the **DISPATCHER** process AFTER `_default_spawn` returns
+successfully and the worker PID is persisted in the tasks table at
+`kanban_db.py:8058-8069`. Carries `task_id`, `board`, `assignee`,
+`run_id`, `profile_name`, `worker_pid: int`. Use this for "worker is
+actually running" events.
 
-Fires in the **DISPATCHER** process when a worker subprocess exits (whether
-success, failure, or crash).
+### `kanban_worker_exited` (tick-derived observer)
 
-```python
-# Kwargs: task_id, board, assignee, run_id, profile_name,
-#         exit_code: int, outcome: str ("completed" | "failed" | "crashed")
-```
+Fires in the **DISPATCHER** process from `detect_crashed_workers`
+(`kanban_db.py:6641`) when a worker PID is discovered dead. Carries
+`task_id`, `board`, `assignee`, `run_id`, `profile_name`,
+`exit_kind` (`clean_exit` | `nonzero_exit` | `signaled`), `exit_code`.
+Rate-limited exits emit a separate `kanban_worker_rate_limited` event.
 
-### `kanban_worker_stale_claim`
+### `kanban_worker_stale_claim` (tick-derived observer)
 
 Fires in the **DISPATCHER** process when `release_stale_claims` reclaims a
 timed-out claim.
@@ -81,10 +85,52 @@ increments.
 
 ## Implementation notes
 
-All four hooks follow the same pattern as existing kanban lifecycle hooks:
+All hooks follow the same pattern as existing kanban lifecycle hooks:
 - Fire AFTER the write txn commits (observer safety)
 - Swallowed exceptions (a misbehaving plugin can't break board state)
 - Standard kwargs: `task_id`, `board`, `assignee`, `run_id`, `profile_name`
+
+### Mutation boundary
+
+`kanban_task_updated` must fire for every write path that mutates task
+state, regardless of which module performs the write:
+
+**kanban_db.py paths:**
+| Function | Changed fields |
+|----------|---------------|
+| `create_task` | All fields (initial) |
+| `complete_task` | status→done, summary, result, metadata |
+| `block_task` | status→blocked, last_failure_error |
+| `unblock_task` | status→ready/todo, block_recurrences |
+| `_set_status_direct` | status |
+| `recompute_ready` | status→ready (promotion) |
+| `_record_task_failure` | status→blocked, consecutive_failures |
+
+**Dashboard plugin_api.py paths:**
+| Endpoint | Changed fields |
+|----------|---------------|
+| `PATCH /tasks/:id` (L838) | priority, title, body |
+| Bulk update (L1254) | priority |
+
+**Payload contract:** `changed_fields` is a list of field names that were
+mutated, not just a generic "updated" signal. Consumers can filter on
+specific fields without diffing DB state.
+
+### Timing contract
+
+| Hook | Fires | Latency |
+|------|-------|---------|
+| `kanban_task_claimed` | Pre-spawn, before `_default_spawn` | Immediate |
+| `kanban_task_spawned` | Post-spawn, after `_default_spawn` + PID persistence | Immediate |
+| `kanban_worker_exited` | Tick-derived via `detect_crashed_workers` | ≤ dispatcher tick interval |
+| `kanban_worker_rate_limited` | Tick-derived, separate event kind | ≤ dispatcher tick interval |
+| `kanban_worker_stale_claim` | Tick-derived via `release_stale_claims` | ≤ dispatcher tick interval |
+| `kanban_task_updated` | Post-commit, after any task mutation write | Immediate |
+
+Exit events are NOT immediate — `_default_spawn` is fire-and-forget.
+Workers are discovered dead on the next dispatcher tick. Plugins
+requiring lower latency should combine hook observation with
+`kanban_heartbeat` liveness tracking.
 
 ---
 

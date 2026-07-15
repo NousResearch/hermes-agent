@@ -256,7 +256,15 @@ class TestPlatformDefaults:
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
+        for plat in (
+            "signal",
+            "bluebubbles",
+            "weixin",
+            "wecom",
+            "dingtalk",
+            "whatsapp_cloud",
+            "yuanbao",
+        ):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
     def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
@@ -332,6 +340,74 @@ class TestPlatformDefaults:
         assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
+
+
+# ---------------------------------------------------------------------------
+# Yuanbao (Tencent 腾讯元宝) — no edit support → TIER_LOW
+# ---------------------------------------------------------------------------
+
+class TestYuanbaoDefaults:
+    """Yuanbao adapter has no ``edit_message``, so display defaults must align
+    with the TIER_LOW platforms (signal / bluebubbles / weixin / wecom /
+    dingtalk). Every progress/status message on Yuanbao is permanent, so
+    surfacing live tool progress or interim chatter would spam the chat with
+    separate, undeletable bubbles — the exact failure mode TIER_LOW exists to
+    avoid."""
+
+    # YB-001: adapter declares it cannot edit messages (capability flag, C1).
+    def test_yb001_adapter_declares_no_message_editing(self):
+        """``YuanbaoAdapter.SUPPORTS_MESSAGE_EDITING`` must be False.
+
+        Yuanbao's API exposes no message-edit endpoint, so the adapter must
+        advertise this so the rest of the system knows each bubble is
+        permanent and avoids edit-based UX (tool_progress grouping, progress
+        edits, cleanup_progress edits, etc.).
+        """
+        from gateway.platforms.yuanbao import YuanbaoAdapter
+
+        assert YuanbaoAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    # YB-002: interim_assistant_messages defaults to False on yuanbao.
+    def test_yb002_interim_assistant_messages_defaults_off(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "yuanbao", "interim_assistant_messages") is False
+
+    # YB-003: every TIER_LOW key resolves identically for yuanbao (full-field
+    # alignment, parameterised over _TIER_LOW).
+    def test_yb003_all_tier_low_keys_align(self):
+        from gateway.display_config import _TIER_LOW, resolve_display_setting
+
+        for key, expected in _TIER_LOW.items():
+            assert (
+                resolve_display_setting({}, "yuanbao", key) == expected
+            ), f"yuanbao key {key!r}: expected {expected!r}, got {resolve_display_setting({}, 'yuanbao', key)!r}"
+
+    # YB-004: explicit user config still overrides the TIER_LOW default.
+    def test_yb004_explicit_config_wins(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"interim_assistant_messages": True}}
+        assert (
+            resolve_display_setting(config, "yuanbao", "interim_assistant_messages") is True
+        )
+
+    # YB-005: an explicit ``display.platforms.yuanbao.streaming`` opt-in is
+    # honoured by the resolver, but the adapter still declares no edit support —
+    # so the run-layer setup guard (gateway/run.py, "skip streaming for
+    # non-editable platform") skips streaming rather than emitting a partial
+    # first message that could never be edited into the final answer.
+    def test_yb005_explicit_streaming_optin_still_blocked_by_no_edit(self):
+        from gateway.display_config import resolve_display_setting
+        from gateway.platforms.yuanbao import YuanbaoAdapter
+
+        config = {"display": {"platforms": {"yuanbao": {"streaming": True}}}}
+        # The opt-in is reachable at the resolver layer…
+        assert resolve_display_setting(config, "yuanbao", "streaming") is True
+        # …but the adapter cannot edit, so edit-based streaming would only
+        # emit permanent partials. SUPPORTS_MESSAGE_EDITING is exactly the
+        # flag the run-layer guard checks before constructing the consumer.
+        assert YuanbaoAdapter.SUPPORTS_MESSAGE_EDITING is False
 
 
 # ---------------------------------------------------------------------------

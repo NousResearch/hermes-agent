@@ -149,6 +149,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "wecom":           _TIER_LOW,
     "wecom_callback":  _TIER_LOW,
     "dingtalk":        _TIER_LOW,
+    "yuanbao":         _TIER_LOW,  # Yuanbao has no message edit endpoint
 
     # Tier 4 — batch or non-interactive delivery
     "email":           _TIER_MINIMAL,

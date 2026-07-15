@@ -119,6 +119,9 @@ def _redact_docker_env_args(args: list[str]) -> list[str]:
         if arg.startswith("--env="):
             redacted.append("--env=" + _redact_env_assignment(arg[len("--env="):]))
             continue
+        if arg.startswith("-e="):
+            redacted.append("-e=" + _redact_env_assignment(arg[len("-e="):]))
+            continue
         if arg.startswith("-e") and "=" in arg:
             redacted.append("-e" + _redact_env_assignment(arg[2:]))
             continue
@@ -133,7 +136,8 @@ def _redact_subprocess_error(error: BaseException) -> str:
     if isinstance(cmd, (list, tuple)):
         raw_cmd = [str(arg) for arg in cmd]
         redacted_cmd = _redact_docker_env_args(raw_cmd)
-        message = message.replace(repr(raw_cmd), repr(redacted_cmd))
+        rendered_cmd = tuple(redacted_cmd) if isinstance(cmd, tuple) else redacted_cmd
+        message = message.replace(repr(cmd), repr(rendered_cmd))
     return message
 
 
@@ -1506,14 +1510,10 @@ class DockerEnvironment(BaseEnvironment):
                 image,
                 "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
             ]
-<<<<<<< HEAD
-            logger.debug("Starting container: %s", ' '.join(run_cmd))
-=======
             logger.debug(
                 "Starting container: %s",
                 " ".join(_redact_docker_env_args(run_cmd)),
             )
->>>>>>> 87376706b (fix(docker): redact env values from run logs)
             try:
                 result = subprocess.run(
                     run_cmd,

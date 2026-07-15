@@ -6722,8 +6722,13 @@ def _prompt_model_selection(
     confirm_provider: str = "",
     confirm_base_url: str = "",
     confirm_api_key: str = "",
-) -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+    multi_select: bool = False,
+) -> Optional[str] | list[str]:
+    """Interactively choose one model, or multiple models when requested.
+
+    ``current_model`` is placed first with a marker. The default single-select
+    mode returns a model ID or ``None``. Multi-select mode returns model IDs in
+    deterministic menu order, or ``None`` when cancelled or left empty.
 
     If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
     price indicator is shown next to each model in aligned columns.
@@ -6746,6 +6751,15 @@ def _prompt_model_selection(
         ):
             return None
         return mid
+
+    def _confirmed_selections(model_ids: list[str]) -> Optional[list[str]]:
+        confirmed: list[str] = []
+        for model_id in model_ids:
+            selected = _confirmed_selection(model_id)
+            if selected is None:
+                return None
+            confirmed.append(selected)
+        return confirmed or None
 
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
@@ -6802,12 +6816,10 @@ def _prompt_model_selection(
     default_idx = 0
 
     # Build a pricing header hint for the menu title
-    menu_title = "Select default model:"
+    menu_title = "Select model(s):" if multi_select else "Select default model:"
     if has_pricing:
-        # Align the header with the model column.
-        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
-        # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
-        pad = " " * 5
+        # Align the header after the curses menu's cursor/selection prefix.
+        pad = " " * (7 if multi_select else 5)
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
         if has_cache:
             header += f"  {'Cache':>{cache_col}}"
@@ -6818,16 +6830,17 @@ def _prompt_model_selection(
     _RESET = "\033[0m"
 
     # Try arrow-key menu first, fall back to number input.
-    # Uses the shared curses radiolist (ESC/arrow-key handling that works
+    # Uses the shared curses menus (ESC/arrow-key handling that works
     # across terminals, incl. those that emit raw escape sequences) instead
     # of simple_term_menu, which conflicts with /dev/tty and left ESC/arrow
     # keys unreliable in the setup model picker.
     try:
-        from hermes_cli.curses_ui import curses_radiolist
+        from hermes_cli.curses_ui import curses_checklist, curses_radiolist
 
         choices = [_label(mid) for mid in ordered]
         choices.append("Enter custom model name")
-        choices.append("Skip (keep current)")
+        if not multi_select:
+            choices.append("Skip (keep current)")
 
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         unavailable_footer = unavailable_message.strip()
@@ -6849,6 +6862,29 @@ def _prompt_model_selection(
                 desc_lines.append(f"   {_label(mid)}")
             desc_lines.append(f"  ── {unavailable_footer} ──")
         description = "\n".join(desc_lines) if desc_lines else None
+
+        if multi_select:
+            chosen = curses_checklist(
+                "Select models (first in menu order becomes default):",
+                choices,
+                selected=set(),
+                cancel_returns=set(),
+                description=description,
+                searchable=True,
+            )
+            if not chosen:
+                return None
+            selected_models = [
+                model_id for idx, model_id in enumerate(ordered) if idx in chosen
+            ]
+            if len(ordered) in chosen:
+                try:
+                    custom = input("Enter model name: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    return None
+                if custom and custom not in selected_models:
+                    selected_models.append(custom)
+            return _confirmed_selections(selected_models)
 
         idx = curses_radiolist(
             "Select default model:",
@@ -6875,12 +6911,14 @@ def _prompt_model_selection(
 
     # Fallback: numbered list
     print(menu_title)
-    num_width = len(str(len(ordered) + 2))
+    option_count = len(ordered) + (1 if multi_select else 2)
+    num_width = len(str(option_count))
     for i, mid in enumerate(ordered, 1):
         print(f"  {i:>{num_width}}. {_label(mid)}")
     n = len(ordered)
     print(f"  {n + 1:>{num_width}}. Enter custom model name")
-    print(f"  {n + 2:>{num_width}}. Skip (keep current)")
+    if not multi_select:
+        print(f"  {n + 2:>{num_width}}. Skip (keep current)")
 
     if _unavailable:
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
@@ -6895,9 +6933,24 @@ def _prompt_model_selection(
 
     while True:
         try:
-            choice = input(f"Choice [1-{n + 2}] (default: skip): ").strip()
+            prompt = (
+                f"Choices [1-{n + 1}, comma-separated] (default: skip): "
+                if multi_select
+                else f"Choice [1-{n + 2}] (default: skip): "
+            )
+            choice = input(prompt).strip()
             if not choice:
                 return None
+            if multi_select:
+                indices = sorted({int(part.strip()) for part in choice.split(",")})
+                if any(idx < 1 or idx > n + 1 for idx in indices):
+                    raise ValueError
+                selected_models = [ordered[idx - 1] for idx in indices if idx <= n]
+                if n + 1 in indices:
+                    custom = input("Enter model name: ").strip()
+                    if custom and custom not in selected_models:
+                        selected_models.append(custom)
+                return _confirmed_selections(selected_models)
             idx = int(choice)
             if 1 <= idx <= n:
                 return _confirmed_selection(ordered[idx - 1])

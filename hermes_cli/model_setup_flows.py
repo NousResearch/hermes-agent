@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+from typing import Callable
 
 from hermes_cli.config import clear_model_endpoint_credentials
 
@@ -118,6 +119,81 @@ def _prompt_auth_credentials_choice(title: str) -> str:
     return "use"
 
 
+def _normalize_model_selection(selection: object) -> list[str]:
+    """Normalize a picker result while preserving its deterministic order."""
+    if selection is None:
+        return []
+    if isinstance(selection, str):
+        value = selection.strip()
+        return [value] if value else []
+    if not isinstance(selection, (list, tuple)):
+        return []
+
+    result: list[str] = []
+    for item in selection:
+        value = str(item or "").strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _append_fallback_models(
+    models: list[str],
+    *,
+    provider: str,
+    base_url: str = "",
+    api_mode: str = "",
+    api_mode_for_model: Callable[[str], str] | None = None,
+) -> int:
+    """Append selected models to the normalized fallback chain in order."""
+    if not models:
+        return 0
+
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    cfg = load_config()
+    chain = get_fallback_chain(cfg)
+
+    def _identity(entry: dict) -> tuple[str, str, str]:
+        return (
+            str(entry.get("provider") or "").strip().lower(),
+            str(entry.get("model") or "").strip().lower(),
+            str(entry.get("base_url") or "").strip().rstrip("/").lower(),
+        )
+
+    existing = {_identity(entry) for entry in chain}
+    added = 0
+    normalized_base_url = base_url.strip().rstrip("/")
+    for model_id in models:
+        entry: dict[str, str] = {"provider": provider, "model": model_id}
+        if normalized_base_url:
+            entry["base_url"] = normalized_base_url
+        resolved_api_mode = (
+            api_mode_for_model(model_id) if api_mode_for_model else api_mode
+        )
+        if resolved_api_mode:
+            entry["api_mode"] = resolved_api_mode
+        identity = _identity(entry)
+        if identity in existing:
+            continue
+        chain.append(entry)
+        existing.add(identity)
+        added += 1
+
+    if added:
+        cfg["fallback_providers"] = chain
+        cfg.pop("fallback_model", None)
+        save_config(cfg)
+    return added
+
+
+def _print_fallback_models_added(count: int) -> None:
+    if count:
+        noun = "model" if count == 1 else "models"
+        print(f"Added {count} fallback {noun} from the extra selections.")
+
+
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
     from hermes_cli.main import _prompt_api_key
@@ -156,15 +232,17 @@ def _model_flow_openrouter(config, current_model=""):
     # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
 
-    selected = _prompt_model_selection(
+    selected_models = _normalize_model_selection(_prompt_model_selection(
         openrouter_models,
         current_model=current_model,
         pricing=pricing,
         confirm_provider="openrouter",
         confirm_base_url=OPENROUTER_BASE_URL,
         confirm_api_key=_resolved or existing_key,
-    )
-    if selected:
+        multi_select=True,
+    ))
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         # Update config provider and deactivate any OAuth provider
@@ -182,6 +260,14 @@ def _model_flow_openrouter(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
         print(f"Default model set to: {selected} (via OpenRouter)")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="openrouter",
+                base_url=OPENROUTER_BASE_URL,
+                api_mode="chat_completions",
+            )
+        )
     else:
         print("No change.")
 
@@ -461,7 +547,7 @@ def _model_flow_nous(config, current_model="", args=None):
         f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
     )
 
-    selected = _prompt_model_selection(
+    selected_models = _normalize_model_selection(_prompt_model_selection(
         model_ids,
         current_model=current_model,
         pricing=pricing,
@@ -471,8 +557,10 @@ def _model_flow_nous(config, current_model="", args=None):
         confirm_provider="nous",
         confirm_base_url=creds.get("base_url", ""),
         confirm_api_key=creds.get("api_key", ""),
-    )
-    if selected:
+        multi_select=True,
+    ))
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
         # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
@@ -501,6 +589,13 @@ def _model_flow_nous(config, current_model="", args=None):
             save_env_value("OPENAI_API_KEY", "")
         save_config(config)
         print(f"Default model set to: {selected} (via Nous Portal)")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="nous",
+                base_url=inference_url,
+            )
+        )
         # Offer Tool Gateway enablement for paid subscribers
         prompt_enable_tool_gateway(config)
     else:
@@ -580,17 +675,26 @@ def _model_flow_openai_codex(config, current_model=""):
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
 
-    selected = _prompt_model_selection(
+    selected_models = _normalize_model_selection(_prompt_model_selection(
         codex_models,
         current_model=current_model,
         confirm_provider="openai-codex",
         confirm_base_url=DEFAULT_CODEX_BASE_URL,
         confirm_api_key=_codex_token or "",
-    )
-    if selected:
+        multi_select=True,
+    ))
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         print(f"Default model set to: {selected} (via OpenAI Codex)")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="openai-codex",
+                base_url=DEFAULT_CODEX_BASE_URL,
+            )
+        )
     else:
         print("No change.")
 
@@ -667,11 +771,23 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         pass
 
     models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-build-0.1"))
-    if selected:
+    selected_models = _normalize_model_selection(_prompt_model_selection(
+        models,
+        current_model=current_model or (models[0] if models else "grok-build-0.1"),
+        multi_select=True,
+    ))
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
         print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="xai-oauth",
+                base_url=base_url,
+            )
+        )
     else:
         print("No change.")
 
@@ -710,16 +826,25 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         models = list(_DEFAULT_QWEN_PORTAL_MODELS)
 
     default = current_model or (models[0] if models else "qwen3-coder-plus")
-    selected = _prompt_model_selection(
+    selected_models = _normalize_model_selection(_prompt_model_selection(
         models,
         current_model=default,
         confirm_provider="qwen-oauth",
         confirm_base_url=DEFAULT_QWEN_BASE_URL,
-    )
-    if selected:
+        multi_select=True,
+    ))
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
         _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
         print(f"Default model set to: {selected} (via Qwen OAuth)")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="qwen-oauth",
+                base_url=DEFAULT_QWEN_BASE_URL,
+            )
+        )
     else:
         print("No change.")
 
@@ -764,17 +889,26 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     from hermes_cli.models import _PROVIDER_MODELS
 
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
-    selected = _prompt_model_selection(
+    selected_models = _normalize_model_selection(_prompt_model_selection(
         model_ids,
         current_model,
         confirm_provider="minimax-oauth",
         confirm_base_url=creds["base_url"],
-    )
-    if not selected:
+        multi_select=True,
+    ))
+    if not selected_models:
         return
+    selected = selected_models[0]
     _save_model_choice(selected)
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
+    _print_fallback_models_added(
+        _append_fallback_models(
+            selected_models[1:],
+            provider="minimax-oauth",
+            base_url=creds["base_url"],
+        )
+    )
 
 
 def _model_flow_custom(config):
@@ -1695,28 +1829,32 @@ def _model_flow_copilot(config, current_model=""):
             print('    Use "Enter custom model name" if you do not see your model.')
 
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=normalized_current_model,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=api_key,
+            multi_select=True,
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selection = input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
-        selected = (
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
+        selected_models = [
             normalize_copilot_model_id(
-                selected,
+                model_id,
                 catalog=catalog,
                 api_key=api_key,
             )
-            or selected
-        )
+            or model_id
+            for model_id in selected_models
+        ]
+        selected = selected_models[0]
         initial_cfg = load_config()
         current_effort = _current_reasoning_effort(initial_cfg)
         reasoning_efforts = github_model_reasoning_efforts(
@@ -1752,6 +1890,18 @@ def _model_flow_copilot(config, current_model=""):
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via {pconfig.name})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider=provider_id,
+                base_url=effective_base,
+                api_mode_for_model=lambda model_id: copilot_model_api_mode(
+                    model_id,
+                    catalog=catalog,
+                    api_key=api_key,
+                ),
+            )
+        )
         if reasoning_efforts:
             if selected_effort == "none":
                 print("Reasoning disabled for this model.")
@@ -1836,31 +1986,35 @@ def _model_flow_copilot_acp(config, current_model=""):
             print('    Use "Enter custom model name" if you do not see your model.')
 
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=normalized_current_model,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=catalog_api_key,
+            multi_select=True,
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selection = input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if not selected:
+    selected_models = _normalize_model_selection(selection)
+    if not selected_models:
         print("No change.")
         return
 
-    selected = (
+    selected_models = [
         normalize_copilot_model_id(
-            selected,
+            model_id,
             catalog=catalog,
             api_key=catalog_api_key,
         )
-        or selected
-    )
+        or model_id
+        for model_id in selected_models
+    ]
+    selected = selected_models[0]
     _save_model_choice(selected)
 
     cfg = load_config()
@@ -1876,6 +2030,14 @@ def _model_flow_copilot_acp(config, current_model=""):
     deactivate_provider()
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
+    _print_fallback_models_added(
+        _append_fallback_models(
+            selected_models[1:],
+            provider=provider_id,
+            base_url=effective_base,
+            api_mode="chat_completions",
+        )
+    )
 
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
@@ -1936,20 +2098,23 @@ def _model_flow_kimi(config, current_model=""):
     model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
 
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=current_model,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=existing_key,
+            multi_select=True,
         )
     else:
         try:
-            selected = input("Enter model name: ").strip()
+            selection = input("Enter model name: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         # Update config with provider and base URL
@@ -1967,6 +2132,13 @@ def _model_flow_kimi(config, current_model=""):
 
         endpoint_label = "Kimi Coding" if is_coding_plan else "Moonshot"
         print(f"Default model set to: {selected} (via {endpoint_label})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider=provider_id,
+                base_url=effective_base,
+            )
+        )
     else:
         print("No change.")
 
@@ -2051,20 +2223,23 @@ def _model_flow_stepfun(config, current_model=""):
             )
 
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=current_model,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=existing_key,
+            multi_select=True,
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selection = input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         cfg = load_config()
@@ -2081,6 +2256,13 @@ def _model_flow_stepfun(config, current_model=""):
 
         config["model"] = dict(model)
         print(f"Default model set to: {selected} (via {pconfig.name})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider=provider_id,
+                base_url=effective_base,
+            )
+        )
     else:
         print("No change.")
 
@@ -2134,20 +2316,23 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     print(f"  Showing {len(model_list)} curated models")
 
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=current_model,
             confirm_provider="custom",
             confirm_base_url=mantle_base_url,
             confirm_api_key=existing_key,
+            multi_select=True,
         )
     else:
         try:
-            selected = input("  Model ID: ").strip()
+            selection = input("  Model ID: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         # Save as custom provider pointing to bedrock-mantle
@@ -2176,6 +2361,13 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         deactivate_provider()
 
         print(f"  Default model set to: {selected} (via Bedrock API Key, {region})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="custom",
+                base_url=mantle_base_url,
+            )
+        )
         print(f"  Endpoint: {mantle_base_url}")
     else:
         print("  No change.")
@@ -2330,19 +2522,22 @@ def _model_flow_bedrock(config, current_model=""):
 
     # 4. Model selection
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=current_model,
             confirm_provider="bedrock",
             confirm_base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+            multi_select=True,
         )
     else:
         try:
-            selected = input("  Model ID: ").strip()
+            selection = input("  Model ID: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         cfg = load_config()
@@ -2365,6 +2560,13 @@ def _model_flow_bedrock(config, current_model=""):
         deactivate_provider()
 
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="bedrock",
+                base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+            )
+        )
     else:
         print("  No change.")
 
@@ -2437,14 +2639,16 @@ def _model_flow_vertex(config, current_model=""):
         else f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/<project>/"
         f"locations/{region}/endpoints/openapi"
     )
-    selected = _prompt_model_selection(
+    selected_models = _normalize_model_selection(_prompt_model_selection(
         model_list,
         current_model=current_model,
         confirm_provider="vertex",
         confirm_base_url=base_url_preview,
-    )
+        multi_select=True,
+    ))
 
-    if selected:
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         cfg = load_config()
@@ -2469,6 +2673,12 @@ def _model_flow_vertex(config, current_model=""):
         deactivate_provider()
 
         print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="vertex",
+            )
+        )
     else:
         print("  No change.")
 
@@ -2792,23 +3002,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = list(dict.fromkeys(mid for mid in model_list if mid))
 
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=current_model,
             confirm_provider=provider_id,
             confirm_base_url=effective_base,
             confirm_api_key=existing_key,
+            multi_select=True,
         )
     else:
         try:
-            selected = input("Model name: ").strip()
+            selection = input("Model name: ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
         if provider_id in {"opencode-zen", "opencode-go"}:
-            selected = normalize_opencode_model_id(provider_id, selected)
+            selected_models = [
+                normalize_opencode_model_id(provider_id, model_id)
+                for model_id in selected_models
+            ]
 
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         # Update config with provider, base URL, and provider-specific API mode
@@ -2828,6 +3044,18 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via {pconfig.name})")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider=provider_id,
+                base_url=effective_base,
+                api_mode_for_model=(
+                    (lambda model_id: opencode_model_api_mode(provider_id, model_id))
+                    if provider_id in {"opencode-zen", "opencode-go"}
+                    else None
+                ),
+            )
+        )
     else:
         print("No change.")
 
@@ -2949,18 +3177,21 @@ def _model_flow_anthropic(config, current_model=""):
     # Model selection
     model_list = _PROVIDER_MODELS.get("anthropic", [])
     if model_list:
-        selected = _prompt_model_selection(
+        selection = _prompt_model_selection(
             model_list,
             current_model=current_model,
             confirm_provider="anthropic",
+            multi_select=True,
         )
     else:
         try:
-            selected = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
+            selection = input("Model name (e.g., claude-sonnet-4-20250514): ").strip()
         except (KeyboardInterrupt, EOFError):
-            selected = None
+            selection = None
 
-    if selected:
+    selected_models = _normalize_model_selection(selection)
+    if selected_models:
+        selected = selected_models[0]
         _save_model_choice(selected)
 
         # Update config with provider — clear base_url since
@@ -2979,5 +3210,11 @@ def _model_flow_anthropic(config, current_model=""):
         deactivate_provider()
 
         print(f"Default model set to: {selected} (via Anthropic)")
+        _print_fallback_models_added(
+            _append_fallback_models(
+                selected_models[1:],
+                provider="anthropic",
+            )
+        )
     else:
         print("No change.")

@@ -68,6 +68,7 @@ Usage:
 
 import json
 import logging
+import threading
 import time
 
 from hermes_constants import get_hermes_home, display_hermes_home
@@ -782,6 +783,26 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _is_subagent_worker() -> bool:
+    """True when running inside a delegate_task child thread."""
+    return bool(getattr(threading.current_thread(), "hermes_is_subagent", False))
+
+
+_subagent_skill_view_cache = threading.local()
+
+
+def _subagent_skill_view_cache_key(name: str, file_path: str | None) -> tuple[str, str]:
+    return (name, file_path or "")
+
+
+def _get_subagent_skill_view_cache() -> dict[tuple[str, str], str]:
+    cache = getattr(_subagent_skill_view_cache, "entries", None)
+    if cache is None:
+        cache = {}
+        _subagent_skill_view_cache.entries = cache
+    return cache
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
@@ -796,6 +817,21 @@ def skills_list(category: str = None, task_id: str = None) -> str:
     Returns:
         JSON string with minimal skill info: name, description, category
     """
+    if _is_subagent_worker():
+        return json.dumps(
+            {
+                "success": True,
+                "skills": [],
+                "categories": [],
+                "count": 0,
+                "message": (
+                    "skills_list is disabled for subagents to save tokens. "
+                    "Use skill_view(skill_id) for skills referenced in your task or system prompt."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     try:
         active_skills_dir = _skills_dir()
         if not active_skills_dir.exists():
@@ -1729,12 +1765,21 @@ def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count on success. Best-effort: a
     telemetry failure never breaks the tool call."""
     name = args.get("name", "")
+    file_path = args.get("file_path")
+    cache_key = _subagent_skill_view_cache_key(name, file_path)
+    if _is_subagent_worker():
+        cached = _get_subagent_skill_view_cache().get(cache_key)
+        if cached is not None:
+            return cached
+
     result = skill_view(
-        name, file_path=args.get("file_path"), task_id=kw.get("task_id")
+        name, file_path=file_path, task_id=kw.get("task_id")
     )
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
+            if _is_subagent_worker():
+                _get_subagent_skill_view_cache()[cache_key] = result
             # Use the resolved skill name from the payload when present —
             # qualified forms ("plugin:skill") return with the canonical name.
             resolved = parsed.get("name") or name

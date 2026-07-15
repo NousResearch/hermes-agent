@@ -244,7 +244,7 @@ When you ask the bot to create or export a file, it sends the file directly to y
 1. Check gateway logs for error patterns
 2. Increase heartbeat timeout in connection settings
 3. Ensure stable network connection to Yuanbao API
-4. Consider enabling verbose logging: `HERMES_LOG_LEVEL=debug`
+4. Consider enabling verbose logging by setting `logging.level: DEBUG` in `config.yaml` (see [Verbose Logging](#verbose-logging))
 
 ## Access Control
 
@@ -299,10 +299,17 @@ These values are currently not configurable via environment variables. They are 
 
 ### Verbose Logging
 
-Enable debug logging to troubleshoot connection issues:
+Enable debug logging to troubleshoot connection issues by setting the logging level in `config.yaml`:
+
+```yaml
+logging:
+  level: DEBUG
+```
+
+Then start the gateway:
 
 ```bash
-HERMES_LOG_LEVEL=debug hermes gateway
+hermes gateway
 ```
 
 ## Integration with Other Features

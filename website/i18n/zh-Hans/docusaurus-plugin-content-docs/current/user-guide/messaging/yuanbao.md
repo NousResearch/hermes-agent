@@ -244,7 +244,7 @@ Please analyze this document
 1. 检查 gateway 日志中的错误模式
 2. 在连接设置中增加心跳超时时间
 3. 确保到元宝 API 的网络连接稳定
-4. 考虑启用详细日志：`HERMES_LOG_LEVEL=debug`
+4. 考虑在 `config.yaml` 中设置 `logging.level: DEBUG` 以启用详细日志（参见[详细日志](#详细日志)）
 
 ## 访问控制
 
@@ -299,10 +299,17 @@ platforms:
 
 ### 详细日志
 
-启用 debug 日志以排查连接问题：
+通过在 `config.yaml` 中设置日志级别来启用 debug 日志以排查连接问题：
+
+```yaml
+logging:
+  level: DEBUG
+```
+
+然后启动 gateway：
 
 ```bash
-HERMES_LOG_LEVEL=debug hermes gateway
+hermes gateway
 ```
 
 ## 与其他功能集成

@@ -220,6 +220,7 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM not in runner._failed_platforms
         assert Platform.TELEGRAM in runner.adapters
+        assert succeed_adapter.gateway_runner is runner
 
     @pytest.mark.asyncio
     async def test_reconnect_passes_is_reconnect_true(self):

@@ -127,8 +127,11 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
         sessions_dir=tmp_path / "sessions",
     )
     runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
 
-    monkeypatch.setattr(runner, "_create_adapter", lambda platform, platform_config: _SuccessfulAdapter())
+    monkeypatch.setattr(
+        runner, "_create_adapter", lambda platform, platform_config: adapter
+    )
     monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
     monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
 
@@ -140,6 +143,7 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
     assert state["platforms"]["discord"]["state"] == "connected"
     assert state["platforms"]["discord"]["error_code"] is None
     assert state["platforms"]["discord"]["error_message"] is None
+    assert adapter.gateway_runner is runner
 
 
 @pytest.mark.asyncio
@@ -174,6 +178,49 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
 
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_start_gateway_limits_lock_takeover_to_initial_replace(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    observed = []
+    instances = []
+
+    class _IntentRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.exit_code = None
+            self.adapters = {}
+            instances.append(self)
+
+        async def start(self):
+            observed.append(self._replace_existing_platform_locks)
+            return True
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr(
+        "hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
+    )
+    monkeypatch.setattr(
+        "hermes_logging._add_rotating_handler", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner", _IntentRunner)
+
+    from gateway.run import start_gateway
+
+    assert await start_gateway(
+        config=GatewayConfig(), replace=True, verbosity=None
+    ) is True
+    assert observed == [True]
+    assert instances[0]._replace_existing_platform_locks is False
 
 
 @pytest.mark.asyncio

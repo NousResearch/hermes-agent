@@ -215,6 +215,35 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _acquire_scoped_coordination_lock(lock_path: Path):
+    """Serialize ownership-file reclamation without locking that file itself.
+
+    The coordination file is stable across ownership handoffs, so the guarded
+    code can safely unlink and recreate ``lock_path`` without opening a TOCTOU
+    window for another starter.  A contender fails fast and retries through
+    the platform reconnect path rather than blocking behind a long takeover.
+    """
+    coordination_path = lock_path.with_name(f"{lock_path.name}.guard")
+    try:
+        handle = open(coordination_path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return None
+    return handle
+
+
+def _release_scoped_coordination_lock(handle) -> None:
+    if handle is None:
+        return
+    _release_file_lock(handle)
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return a stable per-process start-time fingerprint, or None.
 
@@ -1062,7 +1091,134 @@ def remove_pid_file() -> None:
         pass
 
 
-def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
+def _scoped_lock_owner_exited(existing: dict[str, Any], timeout: float) -> bool:
+    """Wait for the recorded owner to exit without trusting a recycled PID."""
+    try:
+        owner_pid = int(existing["pid"])
+    except (KeyError, TypeError, ValueError):
+        return True
+
+    recorded_start = existing.get("start_time")
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
+        if not _pid_exists(owner_pid):
+            return True
+        current_start = _get_process_start_time(owner_pid)
+        if (
+            recorded_start is not None
+            and current_start is not None
+            and current_start != recorded_start
+        ):
+            return True
+        time.sleep(0.1)
+    if not _pid_exists(owner_pid):
+        return True
+    current_start = _get_process_start_time(owner_pid)
+    return bool(
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    )
+
+
+def _get_live_process_hermes_home(pid: int) -> Optional[Path]:
+    """Read a live gateway's home without trusting the shared lock record."""
+    try:
+        import psutil  # type: ignore
+
+        raw_home = psutil.Process(pid).environ().get("HERMES_HOME", "").strip()
+        if raw_home:
+            return Path(raw_home)
+        return _get_platform_default_hermes_home()
+    except Exception:
+        return None
+
+
+def _take_over_scoped_lock_owner(existing: dict[str, Any]) -> bool:
+    """Stop a verified gateway that owns a scoped lock for ``--replace``.
+
+    The lock record provides the PID that the profile-local PID file may have
+    missed.  Treat it as kill authority only after validating liveness, process
+    start time, and the live gateway command line.
+    """
+    try:
+        owner_pid = int(existing["pid"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    if owner_pid == os.getpid() or not _pid_exists(owner_pid):
+        return False
+
+    recorded_start = existing.get("start_time")
+    current_start = _get_process_start_time(owner_pid)
+    if (
+        recorded_start is not None
+        and current_start is not None
+        and current_start != recorded_start
+    ):
+        return False
+    if not _looks_like_gateway_process(owner_pid):
+        return False
+
+    recorded_home_raw = existing.get("hermes_home")
+    recorded_home = (
+        Path(recorded_home_raw)
+        if isinstance(recorded_home_raw, str) and recorded_home_raw
+        else None
+    )
+    live_home = _get_live_process_hermes_home(owner_pid)
+    if live_home is not None and recorded_home is not None:
+        if live_home.resolve() != recorded_home.resolve():
+            return False
+    # Prefer the live process environment. If it is unreadable, only a home
+    # recorded by the owner itself is sufficient fallback authority. Guessing
+    # the replacer's home for an older record could put the takeover marker in
+    # the wrong profile and turn a planned stop into a supervisor flap.
+    owner_home = live_home or recorded_home
+    if owner_home is None:
+        return False
+    if live_home is None:
+        owner_cmdline = _read_process_cmdline(owner_pid)
+        if not owner_cmdline or not _command_line_belongs_to_profile(
+            owner_cmdline, owner_home
+        ):
+            return False
+    try:
+        logger.info(
+            "Replacing scoped lock owner gateway (PID %d) for --replace.",
+            owner_pid,
+        )
+        write_takeover_marker(owner_pid, target_hermes_home=owner_home)
+        terminate_pid(owner_pid, force=False)
+        if not _scoped_lock_owner_exited(existing, timeout=10.0):
+            logger.warning(
+                "Scoped lock owner gateway (PID %d) did not exit after SIGTERM; "
+                "forcing termination.",
+                owner_pid,
+            )
+            terminate_pid(owner_pid, force=True)
+            if not _scoped_lock_owner_exited(existing, timeout=5.0):
+                logger.error(
+                    "Scoped lock owner gateway (PID %d) survived force termination.",
+                    owner_pid,
+                )
+                return False
+        return True
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        return False
+    finally:
+        clear_takeover_marker(hermes_home=owner_home)
+
+
+def acquire_scoped_lock(
+    scope: str,
+    identity: str,
+    metadata: Optional[dict[str, Any]] = None,
+    *,
+    replace_owner: bool = False,
+) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity.
 
     Used to prevent multiple local gateways from using the same external identity
@@ -1070,8 +1226,33 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     """
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    coordination_handle = _acquire_scoped_coordination_lock(lock_path)
+    if coordination_handle is None:
+        return False, _read_json_file(lock_path)
+    try:
+        return _acquire_scoped_lock_coordinated(
+            lock_path,
+            scope,
+            identity,
+            metadata,
+            replace_owner=replace_owner,
+        )
+    finally:
+        _release_scoped_coordination_lock(coordination_handle)
+
+
+def _acquire_scoped_lock_coordinated(
+    lock_path: Path,
+    scope: str,
+    identity: str,
+    metadata: Optional[dict[str, Any]],
+    *,
+    replace_owner: bool,
+) -> tuple[bool, Optional[dict[str, Any]]]:
+    """Acquire ``lock_path`` while its stable coordination lock is held."""
     record = {
         **_build_pid_record(),
+        "hermes_home": str(_get_process_hermes_home()),
         "scope": scope,
         "identity_hash": _scope_hash(identity),
         "metadata": metadata or {},
@@ -1162,7 +1343,20 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
             except OSError:
                 pass
         else:
-            return False, existing
+            if not replace_owner or not _take_over_scoped_lock_owner(existing):
+                return False, existing
+            # The old process is gone. Remove only the record we validated;
+            # another replacer may already have claimed the path.
+            current = _read_json_file(lock_path)
+            if current is not None and (
+                current.get("pid") != existing.get("pid")
+                or current.get("start_time") != existing.get("start_time")
+            ):
+                return False, current
+            try:
+                lock_path.unlink(missing_ok=True)
+            except OSError:
+                return False, _read_json_file(lock_path)
 
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -1183,17 +1377,23 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 def release_scoped_lock(scope: str, identity: str) -> None:
     """Release a previously-acquired scope lock when owned by this process."""
     lock_path = _get_scope_lock_path(scope, identity)
-    existing = _read_json_file(lock_path)
-    if not existing:
-        return
-    if existing.get("pid") != os.getpid():
-        return
-    if existing.get("start_time") != _get_process_start_time(os.getpid()):
+    coordination_handle = _acquire_scoped_coordination_lock(lock_path)
+    if coordination_handle is None:
         return
     try:
-        lock_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        existing = _read_json_file(lock_path)
+        if not existing:
+            return
+        if existing.get("pid") != os.getpid():
+            return
+        if existing.get("start_time") != _get_process_start_time(os.getpid()):
+            return
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    finally:
+        _release_scoped_coordination_lock(coordination_handle)
 
 
 def release_all_scoped_locks(
@@ -1218,26 +1418,32 @@ def release_all_scoped_locks(
     removed = 0
     if lock_dir.exists():
         for lock_file in lock_dir.glob("*.lock"):
-            if owner_pid is not None:
-                record = _read_json_file(lock_file)
-                if not isinstance(record, dict):
-                    continue
-                try:
-                    record_pid = int(record.get("pid"))
-                except (TypeError, ValueError):
-                    continue
-                if record_pid != owner_pid:
-                    continue
-                if (
-                    owner_start_time is not None
-                    and record.get("start_time") != owner_start_time
-                ):
-                    continue
+            coordination_handle = _acquire_scoped_coordination_lock(lock_file)
+            if coordination_handle is None:
+                continue
             try:
-                lock_file.unlink(missing_ok=True)
-                removed += 1
-            except OSError:
-                pass
+                if owner_pid is not None:
+                    record = _read_json_file(lock_file)
+                    if not isinstance(record, dict):
+                        continue
+                    try:
+                        record_pid = int(record.get("pid"))
+                    except (TypeError, ValueError):
+                        continue
+                    if record_pid != owner_pid:
+                        continue
+                    if (
+                        owner_start_time is not None
+                        and record.get("start_time") != owner_start_time
+                    ):
+                        continue
+                try:
+                    lock_file.unlink(missing_ok=True)
+                    removed += 1
+                except OSError:
+                    pass
+            finally:
+                _release_scoped_coordination_lock(coordination_handle)
     return removed
 
 
@@ -1266,9 +1472,9 @@ _PLANNED_STOP_MARKER_FILENAME = ".gateway-planned-stop.json"
 _PLANNED_STOP_MARKER_TTL_S = 60
 
 
-def _get_takeover_marker_path() -> Path:
+def _get_takeover_marker_path(hermes_home: Optional[Path] = None) -> Path:
     """Return the path to the --replace takeover marker file."""
-    home = _get_process_hermes_home()
+    home = hermes_home or _get_process_hermes_home()
     return home / _TAKEOVER_MARKER_FILENAME
 
 
@@ -1328,9 +1534,15 @@ def _consume_pid_marker_for_self(
     # absent as "same home" so old markers and single-profile setups are
     # unaffected. Leave a mismatched marker in place so the correct
     # profile can still consume it.
+    process_home = str(_get_process_hermes_home())
     replacer_home = record.get("replacer_hermes_home")
-    if replacer_home is not None and replacer_home != str(_get_process_hermes_home()):
-        return False
+    target_home = record.get("target_hermes_home")
+    if replacer_home is not None and replacer_home != process_home:
+        # A deliberate scoped-lock takeover writes the marker into the target
+        # profile's home and names that home explicitly. Older markers lack
+        # this field and retain the cross-profile rejection from #29092.
+        if target_home != process_home:
+            return False
 
     our_pid = os.getpid()
     our_start_time = _get_process_start_time(our_pid)
@@ -1361,7 +1573,11 @@ def _consume_pid_marker_for_self(
     return matches
 
 
-def write_takeover_marker(target_pid: int) -> bool:
+def write_takeover_marker(
+    target_pid: int,
+    *,
+    target_hermes_home: Optional[Path] = None,
+) -> bool:
     """Record that ``target_pid`` is being replaced by the current process.
 
     Captures the target's ``start_time`` so that PID reuse after the
@@ -1379,9 +1595,12 @@ def write_takeover_marker(target_pid: int) -> bool:
             "target_start_time": target_start_time,
             "replacer_pid": os.getpid(),
             "replacer_hermes_home": str(_get_process_hermes_home()),
+            "target_hermes_home": (
+                str(target_hermes_home) if target_hermes_home else None
+            ),
             "written_at": _utc_now_iso(),
         }
-        _write_json_file(_get_takeover_marker_path(), record)
+        _write_json_file(_get_takeover_marker_path(target_hermes_home), record)
         return True
     except (OSError, PermissionError):
         return False
@@ -1406,10 +1625,10 @@ def consume_takeover_marker_for_self() -> bool:
     )
 
 
-def clear_takeover_marker() -> None:
+def clear_takeover_marker(*, hermes_home: Optional[Path] = None) -> None:
     """Remove the takeover marker unconditionally. Safe to call repeatedly."""
     try:
-        _get_takeover_marker_path().unlink(missing_ok=True)
+        _get_takeover_marker_path(hermes_home).unlink(missing_ok=True)
     except OSError:
         pass
 

@@ -2851,9 +2851,16 @@ class BasePlatformAdapter(ABC):
         from gateway.status import acquire_scoped_lock
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
-        acquired, existing = acquire_scoped_lock(
-            scope, identity, metadata={'platform': self.platform.value}
+        runner = getattr(self, "gateway_runner", None)
+        replace_owner = bool(
+            getattr(runner, "_replace_existing_platform_locks", False)
         )
+        lock_kwargs = {'metadata': {'platform': self.platform.value}}
+        if replace_owner:
+            # Preserve the historical call shape for normal starts; several
+            # external adapters wrap this helper and do not accept new kwargs.
+            lock_kwargs['replace_owner'] = True
+        acquired, existing = acquire_scoped_lock(scope, identity, **lock_kwargs)
         if acquired:
             return True
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None

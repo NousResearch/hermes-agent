@@ -17,6 +17,7 @@ Contract asserted here
 acquisition fails, regardless of the reason.
 """
 
+from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -63,11 +64,28 @@ def test_stale_lock_failure_is_retryable(adapter):
     with patch(
         "gateway.status.acquire_scoped_lock",
         return_value=(False, {"pid": 99999, "start_time": "2026-01-01T00:00:00Z"}),
-    ), patch.object(adapter, "_write_runtime_status_safe"):
+    ) as acquire, patch.object(adapter, "_write_runtime_status_safe"):
         result = adapter._acquire_platform_lock(
             "telegram-bot-token", "test-token", "Telegram bot token"
         )
 
     assert result is False
+    assert "replace_owner" not in acquire.call_args.kwargs
     assert adapter._fatal_error_retryable is True
     assert adapter._fatal_error_code == "telegram-bot-token_lock"
+
+
+def test_platform_lock_forwards_explicit_replace_intent(adapter):
+    """Only an initial --replace connection may take over a live owner."""
+    adapter.gateway_runner = SimpleNamespace(_replace_existing_platform_locks=True)
+
+    with patch(
+        "gateway.status.acquire_scoped_lock",
+        return_value=(True, None),
+    ) as acquire:
+        result = adapter._acquire_platform_lock(
+            "telegram-bot-token", "test-token", "Telegram bot token"
+        )
+
+    assert result is True
+    assert acquire.call_args.kwargs["replace_owner"] is True

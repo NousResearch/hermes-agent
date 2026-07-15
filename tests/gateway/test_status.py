@@ -916,6 +916,214 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
+    def test_explicit_replace_takes_over_verified_gateway_owner(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "replacer"))
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        owner_home = tmp_path / "owner"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "hermes_home": str(owner_home),
+        }))
+
+        alive = {99999: True}
+        signals = []
+        marker_homes = []
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: alive.get(pid, True))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+        monkeypatch.setattr(
+            status, "_get_live_process_hermes_home", lambda pid: owner_home
+        )
+        monkeypatch.setattr(
+            status,
+            "write_takeover_marker",
+            lambda pid, *, target_hermes_home=None: marker_homes.append(
+                target_hermes_home
+            ) or True,
+        )
+        monkeypatch.setattr(status, "clear_takeover_marker", lambda **kwargs: None)
+
+        def terminate(pid, *, force=False):
+            signals.append((pid, force))
+            alive[pid] = False
+
+        monkeypatch.setattr(status, "terminate_pid", terminate)
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token",
+            "secret",
+            metadata={"platform": "telegram"},
+            replace_owner=True,
+        )
+
+        assert acquired is True
+        assert existing is None
+        assert signals == [(99999, False)]
+        assert marker_homes == [owner_home]
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
+    def test_scoped_takeover_does_not_unlink_a_racing_owner(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        original = {
+            "pid": 111,
+            "start_time": 222,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        replacement = {**original, "pid": 333, "start_time": 444}
+        lock_path.write_text(json.dumps(original))
+
+        def takeover(_existing):
+            lock_path.write_text(json.dumps(replacement))
+            return True
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 222)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+        monkeypatch.setattr(status, "_take_over_scoped_lock_owner", takeover)
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", replace_owner=True
+        )
+
+        assert acquired is False
+        assert existing == replacement
+        assert json.loads(lock_path.read_text()) == replacement
+
+    def test_scoped_takeover_serializes_between_recheck_and_unlink(
+        self, tmp_path, monkeypatch
+    ):
+        """A contender cannot reclaim the dead owner in the unlink window."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        original = {
+            "pid": 111,
+            "start_time": 222,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        lock_path.write_text(json.dumps(original))
+
+        alive = {111: True}
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: alive.get(pid, True))
+        monkeypatch.setattr(
+            status,
+            "_get_process_start_time",
+            lambda pid: 222 if pid == 111 else 333,
+        )
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+
+        def takeover(_existing):
+            alive[111] = False
+            return True
+
+        monkeypatch.setattr(status, "_take_over_scoped_lock_owner", takeover)
+
+        real_unlink = Path.unlink
+        contender_results = []
+        interleaved = False
+
+        def unlink_with_contender(path, *args, **kwargs):
+            nonlocal interleaved
+            if path == lock_path and not interleaved:
+                interleaved = True
+                contender_results.append(
+                    status.acquire_scoped_lock("telegram-bot-token", "secret")
+                )
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", unlink_with_contender)
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", replace_owner=True
+        )
+
+        assert acquired is True
+        assert existing is None
+        assert contender_results == [(False, original)]
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
+    def test_explicit_replace_does_not_kill_unverified_pid(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+        monkeypatch.setattr(
+            status,
+            "terminate_pid",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("unverified PID must not be terminated")
+            ),
+        )
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", replace_owner=True
+        )
+
+        assert acquired is False
+        assert existing["pid"] == 99999
+
+    def test_explicit_replace_does_not_guess_home_for_legacy_owner(
+        self, tmp_path, monkeypatch
+    ):
+        """An old record plus unreadable live env is not kill authority."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "replacer"))
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "telegram-bot-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 123,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }))
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
+        monkeypatch.setattr(status, "_get_live_process_hermes_home", lambda pid: None)
+        monkeypatch.setattr(
+            status,
+            "terminate_pid",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("owner with unknown home must not be terminated")
+            ),
+        )
+
+        acquired, existing = status.acquire_scoped_lock(
+            "telegram-bot-token", "secret", replace_owner=True
+        )
+
+        assert acquired is False
+        assert existing["pid"] == 99999
+        assert json.loads(lock_path.read_text())["pid"] == 99999
+
     def test_acquire_scoped_lock_recovers_empty_lock_file(self, tmp_path, monkeypatch):
         """Empty lock file (0 bytes) left by a crashed process should be treated as stale."""
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
@@ -1070,6 +1278,26 @@ class TestTakeoverMarker:
         assert result is True
         # Marker must be unlinked after consumption
         assert not (tmp_path / ".gateway-takeover.json").exists()
+
+    def test_scoped_takeover_marker_can_target_another_profile(
+        self, tmp_path, monkeypatch
+    ):
+        replacer_home = tmp_path / "replacer"
+        target_home = tmp_path / "target"
+        replacer_home.mkdir()
+        target_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(replacer_home))
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
+
+        ok = status.write_takeover_marker(
+            target_pid=os.getpid(), target_hermes_home=target_home
+        )
+        assert ok is True
+        assert (target_home / ".gateway-takeover.json").exists()
+
+        monkeypatch.setenv("HERMES_HOME", str(target_home))
+        assert status.consume_takeover_marker_for_self() is True
+        assert not (target_home / ".gateway-takeover.json").exists()
 
     def test_consume_returns_false_for_different_pid(self, tmp_path, monkeypatch):
         """A marker naming a DIFFERENT process must not be consumed as ours."""

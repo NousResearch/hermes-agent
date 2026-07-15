@@ -127,7 +127,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
   {
     name: '/reasoning',
-    description: 'Show or set reasoning effort (none|minimal|low|medium|high|xhigh|show|hide)',
+    description: 'Show or set reasoning effort (none|minimal|low|medium|high|xhigh|max|show|hide)',
     aliases: ['/effort'],
     surface: action('reasoning'),
     args: true

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import { $busy, $connection, $currentReasoningEffort, $messages, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -315,6 +315,87 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect(renderedText).toContain('session busy')
     expect(renderedText).not.toContain('not a quick/plugin/skill command: compress')
+  })
+})
+
+describe('usePromptActions /reasoning', () => {
+  beforeEach(() => {
+    $currentReasoningEffort.set('medium')
+  })
+
+  afterEach(() => {
+    cleanup()
+    $currentReasoningEffort.set('medium')
+    vi.restoreAllMocks()
+  })
+
+  it.each(['xhigh', 'max'])('sets %s as a session-scoped reasoning effort', async effort => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'config.set') {
+        expect(params).toEqual({ key: 'reasoning', session_id: RUNTIME_SESSION_ID, value: effort })
+
+        return { value: effort } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText(`/reasoning ${effort}`)
+
+    expect($currentReasoningEffort.get()).toBe(effort)
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: RUNTIME_SESSION_ID,
+      value: effort
+    })
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    expect(renderedText).toContain(`Reasoning effort set to ${effort}`)
+    expect(renderedText).not.toContain(`Reasoning display: ${effort}`)
+  })
+
+  it('keeps display values separate from effort values', async () => {
+    const requestGateway = vi.fn(async () => ({ value: 'hide' }) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    await handle!.submitText('/reasoning hide')
+
+    expect($currentReasoningEffort.get()).toBe('medium')
+  })
+
+  it('does not mutate the live effort when the backend rejects the command', async () => {
+    const requestGateway = vi.fn(async () => {
+      throw new Error('unsupported')
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    await handle!.submitText('/reasoning max')
+
+    expect($currentReasoningEffort.get()).toBe('medium')
   })
 })
 

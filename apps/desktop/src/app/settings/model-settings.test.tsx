@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -131,6 +131,37 @@ describe('ModelSettings', () => {
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     expect(screen.queryByRole('switch')).toBeNull()
+  })
+
+  it('offers Off plus every reasoning effort as distinct profile defaults', async () => {
+    await renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    const triggers = await screen.findAllByRole('combobox')
+    fireEvent.click(triggers[2])
+
+    expect(await screen.findByRole('option', { name: 'Off' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Minimal' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Low' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Medium' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'High' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Extra High' })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Max' })).toBeTruthy()
+  })
+
+  it('writes exact max reasoning effort as a profile default', async () => {
+    await renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    const triggers = await screen.findAllByRole('combobox')
+    fireEvent.click(triggers[2])
+    fireEvent.click(await screen.findByRole('option', { name: 'Max' }))
+
+    await waitFor(() =>
+      expect(saveHermesConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ agent: expect.objectContaining({ reasoning_effort: 'max' }) })
+      )
+    )
   })
 
   it('renders the auxiliary task rows', async () => {

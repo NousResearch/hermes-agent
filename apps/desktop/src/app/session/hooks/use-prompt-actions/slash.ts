@@ -12,6 +12,7 @@ import {
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
+import { isReasoningEffort } from '@/lib/reasoning-effort'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -33,9 +34,6 @@ import {
 import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
 
 import { type GatewayRequest, isSessionIdCandidate, renderCommandsCatalog, slashStatusText } from './utils'
-
-/** Effort levels /reasoning accepts (mirrors VALID_REASONING_EFFORTS). */
-const REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -399,7 +397,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
             const value = applied.value || arg
 
-            if (REASONING_LEVELS.has(value)) {
+            if (isReasoningEffort(value)) {
               setCurrentReasoningEffort(value === 'none' ? 'none' : value)
               render(copy.reasoning.effortSet(value))
             } else {

@@ -1522,7 +1522,11 @@ def init_agent(
         skills_config = _agent_cfg.get("skills", {})
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
     except Exception:
-        pass
+        skills_config = {}
+
+    from agent.skill_preprocessing import resolve_skill_loading_mode
+
+    agent.skills_loading_mode = resolve_skill_loading_mode(skills_config)
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.

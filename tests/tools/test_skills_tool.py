@@ -350,6 +350,30 @@ class TestSkillsList:
         result = json.loads(raw)
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
+        assert result["category_counts"] == {"devops": 1, "mlops": 1}
+
+    def test_top_level_category_includes_nested_skills(self, tmp_path):
+        _make_skill(tmp_path, "publisher", category="social-media")
+        _make_skill(tmp_path, "thread-writer", category="social-media/twitter")
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            data = json.loads(skills_list(category="social-media"))
+
+        assert data["count"] == 2
+        assert {skill["name"] for skill in data["skills"]} == {
+            "publisher",
+            "thread-writer",
+        }
+
+    def test_general_category_filter_finds_root_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "root-skill")
+            raw = skills_list(category="general")
+
+        result = json.loads(raw)
+        assert result["count"] == 1
+        assert result["categories"] == ["general"]
+        assert result["category_counts"] == {"general": 1}
+        assert result["skills"][0]["name"] == "root-skill"
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"

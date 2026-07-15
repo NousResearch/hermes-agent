@@ -26,6 +26,7 @@ from agent.skill_utils import (
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
+    skill_conditions_match,
     skill_matches_environment,
     skill_matches_platform,
     skill_matches_platform_list,
@@ -1310,7 +1311,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1402,7 +1403,7 @@ def _build_snapshot_entry(
     parts = rel_path.parts
     if len(parts) >= 2:
         skill_name = parts[-2]
-        category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+        category = "/".join(parts[:-2]) if len(parts) > 2 else "general"
     else:
         category = "general"
         skill_name = skill_file.parent.name
@@ -1456,30 +1457,8 @@ def _skill_should_show(
     available_tools: "set[str] | None",
     available_toolsets: "set[str] | None",
 ) -> bool:
-    """Return False if the skill's conditional activation rules exclude it."""
-    if available_tools is None and available_toolsets is None:
-        return True  # No filtering info — show everything (backward compat)
-
-    at = available_tools or set()
-    ats = available_toolsets or set()
-
-    # fallback_for: hide when the primary tool/toolset IS available
-    for ts in conditions.get("fallback_for_toolsets", []):
-        if ts in ats:
-            return False
-    for t in conditions.get("fallback_for_tools", []):
-        if t in at:
-            return False
-
-    # requires: hide when a required tool/toolset is NOT available
-    for ts in conditions.get("requires_toolsets", []):
-        if ts not in ats:
-            return False
-    for t in conditions.get("requires_tools", []):
-        if t not in at:
-            return False
-
-    return True
+    """Compatibility wrapper for shared skill-condition filtering."""
+    return skill_conditions_match(conditions, available_tools, available_toolsets)
 
 
 def _current_session_platform_hint() -> str:
@@ -1502,6 +1481,7 @@ def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None,
+    loading_mode: str = "eager",
 ) -> str:
     """Build a compact skill index for the system prompt.
 
@@ -1519,9 +1499,9 @@ def build_skills_system_prompt(
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    the eager index. ``loading_mode='routed'`` renders only top-level category
+    counts; deterministic trigger matching and ``skills_list(category=...)`` /
+    ``skill_view(name=...)`` provide the on-demand loading path.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1542,6 +1522,7 @@ def build_skills_system_prompt(
         _platform_hint,
         tuple(sorted(disabled)),
         tuple(sorted(compact_categories or ())),
+        loading_mode,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1554,6 +1535,7 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    seen_skill_names: set[str] = set()
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1566,6 +1548,9 @@ def build_skills_system_prompt(
             platforms = entry.get("platforms") or []
             if not skill_matches_platform_list(platforms):
                 continue
+            if frontmatter_name in seen_skill_names:
+                continue
+            seen_skill_names.add(frontmatter_name)
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(
@@ -1591,7 +1576,11 @@ def build_skills_system_prompt(
             if not is_compatible:
                 continue
             skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
+            frontmatter_name = entry["frontmatter_name"]
+            if frontmatter_name in seen_skill_names:
+                continue
+            seen_skill_names.add(frontmatter_name)
+            if frontmatter_name in disabled or skill_name in disabled:
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -1600,7 +1589,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
+                (frontmatter_name, entry["description"])
             )
 
         # Read category-level DESCRIPTION.md files
@@ -1628,11 +1617,6 @@ def build_skills_system_prompt(
     # Scan external dirs directly (no snapshot caching — they're read-only
     # and typically small).  Local skills already in skills_by_category take
     # precedence: we track seen names and skip duplicates from external dirs.
-    seen_skill_names: set[str] = set()
-    for cat_skills in skills_by_category.values():
-        for name, _desc in cat_skills:
-            seen_skill_names.add(name)
-
     for ext_dir in external_dirs:
         if not ext_dir.exists():
             continue
@@ -1675,6 +1659,8 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    category_index_only = loading_mode == "routed"
+
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only
     # line — descriptions are dropped to cut noise, but every skill name
@@ -1686,11 +1672,19 @@ def build_skills_system_prompt(
     # their parent.
     demoted = frozenset(
         cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+        if not category_index_only
+        and cat.split("/", 1)[0] in (compact_categories or frozenset())
     )
 
     hidden_note = ""
-    if demoted:
+    if category_index_only:
+        hidden_note = (
+            "\n(Routed skill-loading mode: only categories are shown in the "
+            "system prompt. Call skills_list(category='<category>') to inspect "
+            "a relevant category, then skill_view(name) to load the chosen "
+            "skill.)"
+        )
+    elif demoted:
         hidden_note = (
             "\n(Categories marked [names only] are outside the current coding "
             "context, so their descriptions are omitted — the skills work "
@@ -1701,9 +1695,29 @@ def build_skills_system_prompt(
         result = ""
     else:
         index_lines = []
-        for category in sorted(skills_by_category.keys()):
+        routed_categories: dict[str, set[str]] = {}
+        if category_index_only:
+            for category, skills in skills_by_category.items():
+                top_level = category.split("/", 1)[0]
+                routed_categories.setdefault(top_level, set()).update(
+                    name for name, _ in skills
+                )
+
+        categories_to_render = (
+            sorted(routed_categories) if category_index_only
+            else sorted(skills_by_category)
+        )
+        for category in categories_to_render:
             # Deduplicate and sort skills within each category
             seen = set()
+            if category_index_only:
+                count = len(routed_categories[category])
+                cat_desc = category_descriptions.get(category, "")
+                suffix = f" — {cat_desc}" if cat_desc else ""
+                index_lines.append(
+                    f"  {category}: {count} skill{'s' if count != 1 else ''}{suffix}"
+                )
+                continue
             if category in demoted:
                 names = sorted({name for name, _ in skills_by_category[category]})
                 index_lines.append(f"  {category} [names only]: {', '.join(names)}")
@@ -1713,7 +1727,9 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+            for name, desc in sorted(
+                skills_by_category[category], key=lambda x: x[0]
+            ):
                 if name in seen:
                     continue
                 seen.add(name)
@@ -1722,11 +1738,29 @@ def build_skills_system_prompt(
                 else:
                     index_lines.append(f"    - {name}")
 
+        routed_guidance = (
+            (
+                "The active skill-loading mode is `routed`: matching frontmatter triggers "
+                "are loaded automatically before the turn reaches the model. If no skill "
+                "was loaded and a category below could match the task, call "
+                "skills_list(category='<category>'), then load the best match with "
+                "skill_view(name). Do not conclude that no skill applies from the category "
+                "index alone.\n"
+            )
+            if category_index_only
+            else (
+                "Before replying, scan the skills below. If a skill matches or is even "
+                "partially relevant to your task, you MUST load it with skill_view(name) "
+                "and follow its instructions.\n"
+            )
+        )
+        index_tag = (
+            "available_skill_categories" if category_index_only else "available_skills"
+        )
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
+            + routed_guidance
+            + "Err on the side of loading — it is always better to have context you don't need "
             "than to miss critical steps, pitfalls, or established workflows. "
             "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
             "and proven workflows that outperform general-purpose approaches. Load the skill "
@@ -1744,11 +1778,12 @@ def build_skills_system_prompt(
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
             "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
+            + f"<{index_tag}>\n"
+            + "\n".join(index_lines)
+            + "\n"
+            + f"</{index_tag}>\n"
+            + "\n"
+            + "Only proceed without loading a skill if genuinely none are relevant to the task."
             + hidden_note
         )
 

@@ -676,6 +676,13 @@ streaming:
 # also create new skills after completing complex tasks.
 #
 skills:
+  # Startup discovery mode:
+  #   eager  — include every skill name and description in the system prompt
+  #   routed — include top-level category counts only; exact frontmatter
+  #            triggers auto-load skills before the turn reaches the model
+  # Takes effect for new agent sessions. Default: eager.
+  loading: eager
+
   # Nudge the agent to create skills after complex tasks.
   # Every N tool-calling iterations, remind the model to consider saving a skill.
   # Set to 0 to disable.

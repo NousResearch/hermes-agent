@@ -22,6 +22,7 @@ def _make_agent(**overrides):
         platform="",
         pass_session_id=False,
         session_id="",
+        skills_loading_mode="eager",
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -58,6 +59,23 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+def test_skill_loading_mode_is_forwarded_to_prompt_builder():
+    agent = _make_agent(
+        valid_tool_names=["skill_view", "skills_list"],
+        skills_loading_mode="routed",
+    )
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("run_agent.build_skills_system_prompt", return_value="") as skills_prompt,
+    ):
+        build_system_prompt_parts(agent)
+
+    assert skills_prompt.call_args.kwargs["loading_mode"] == "routed"
 
 
 def _stable_prompt(agent):

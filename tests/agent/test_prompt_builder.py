@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -463,6 +464,124 @@ class TestBuildSkillsSystemPrompt:
         assert "social-media [names only]" in result
         # Disclosure note explains the demotion and how to load.
         assert "skill_view" in result
+
+    def test_eager_mode_preserves_large_skill_catalog(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        for idx in range(45):
+            category = "devops" if idx % 2 else "creative"
+            d = skills_root / category / f"skill-{idx:02d}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                "---\n"
+                f"name: skill-{idx:02d}\n"
+                f"description: Detailed description {idx:02d}\n"
+                "---\n"
+            )
+
+        result = build_skills_system_prompt()
+
+        assert "<available_skills>" in result
+        assert "skill-00" in result
+        assert "Detailed description 00" in result
+
+    def test_routed_mode_uses_top_level_category_index_only(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        for category, name in (
+            ("creative", "diagram"),
+            ("social-media/twitter", "thread-writer"),
+            ("social-media/linkedin", "post-writer"),
+        ):
+            d = skills_root / category / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Detailed {name}\n---\n"
+            )
+        root_skill = skills_root / "root-helper"
+        root_skill.mkdir(parents=True)
+        (root_skill / "SKILL.md").write_text(
+            "---\nname: root-helper\ndescription: Root-level helper\n---\n"
+        )
+
+        result = build_skills_system_prompt(loading_mode="routed")
+
+        assert "Routed skill-loading mode" in result
+        assert "skills_list(category='<category>')" in result
+        assert "<available_skill_categories>" in result
+        assert "  creative: 1 skill" in result
+        assert "  general: 1 skill" in result
+        assert "  social-media: 2 skills" in result
+        assert "  root-helper:" not in result
+        assert "social-media/twitter" not in result
+        assert "thread-writer" not in result
+        assert "Detailed thread-writer" not in result
+
+        eager = build_skills_system_prompt(loading_mode="eager")
+        assert "thread-writer" in eager
+        assert "Detailed thread-writer" in eager
+
+    def test_routed_mode_stays_within_prompt_budget(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        for idx in range(250):
+            category = f"category-{idx % 25:02d}"
+            name = f"skill-{idx:03d}"
+            d = skills_root / category / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Detailed workflow for {name}\n---\n"
+            )
+
+        eager = build_skills_system_prompt(loading_mode="eager")
+        routed = build_skills_system_prompt(loading_mode="routed")
+
+        assert len(routed.encode("utf-8")) < 6 * 1024
+        assert len(routed) * 4 < len(eager)
+        assert "skill-000" not in routed
+        assert "Detailed workflow" not in routed
+
+    def test_legacy_snapshot_is_rejected_and_regenerated(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "root-helper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: root-helper\ndescription: Root helper\n---\n"
+        )
+
+        first = build_skills_system_prompt(loading_mode="routed")
+        assert "  general: 1 skill" in first
+
+        snapshot_path = tmp_path / ".skills_prompt_snapshot.json"
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot["version"] = 1
+        snapshot["skills"][0]["category"] = "stale-category"
+        snapshot_path.write_text(json.dumps(snapshot))
+        clear_skills_system_prompt_cache()
+
+        rebuilt = build_skills_system_prompt(loading_mode="routed")
+
+        assert "  general: 1 skill" in rebuilt
+        assert "stale-category" not in rebuilt
+        assert json.loads(snapshot_path.read_text())["version"] == 2
+
+    def test_duplicate_skill_names_are_counted_once_globally(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for category in ("alpha", "omega"):
+            skill_dir = tmp_path / "skills" / category / "duplicate"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: shared-name\ndescription: Shared skill\n---\n"
+            )
+
+        routed = build_skills_system_prompt(loading_mode="routed")
+
+        assert "  alpha: 1 skill" in routed
+        assert "omega" not in routed
 
     def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path
@@ -1704,5 +1823,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-

@@ -10,6 +10,8 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    expand_triggered_skill_message,
+    find_triggered_skill_command,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -112,6 +114,154 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+    def test_reads_frontmatter_triggers(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [market, EUR/USD, market]\n"
+                ),
+            )
+            result = scan_skill_commands()
+
+        assert result["/market-watch"]["triggers"] == ["market", "EUR/USD"]
+
+    def test_reads_top_level_frontmatter_triggers(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "weather-watch",
+                frontmatter_extra="triggers: [weather forecast]\n",
+            )
+            result = scan_skill_commands()
+
+        assert result["/weather-watch"]["triggers"] == ["weather forecast"]
+
+    def test_finds_triggered_skill_by_word_boundary(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [market]\n"
+                ),
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command("What is the market doing today?")
+            not_matched = find_triggered_skill_command("This supermarket is busy.")
+
+        assert matched is not None
+        assert matched[0] == "/market-watch"
+        assert matched[2] == "market"
+        assert not_matched is None
+
+    def test_finds_triggered_skill_with_punctuation_phrase(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "fx-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [EUR/USD]\n"
+                ),
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command("What is happening with EUR/USD today?")
+
+        assert matched is not None
+        assert matched[0] == "/fx-watch"
+        assert matched[2] == "EUR/USD"
+
+    def test_trigger_respects_required_tool_conditions(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "terminal-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [inspect runtime]\n"
+                    "    requires_tools: [terminal]\n"
+                ),
+            )
+            scan_skill_commands()
+            unavailable = find_triggered_skill_command(
+                "Please inspect runtime state.", available_tools=set()
+            )
+            available = find_triggered_skill_command(
+                "Please inspect runtime state.", available_tools={"terminal"}
+            )
+
+        assert unavailable is None
+        assert available is not None
+        assert available[0] == "/terminal-watch"
+
+    def test_trigger_respects_fallback_toolset_conditions(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "browser-fallback",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [browse fallback]\n"
+                    "    fallback_for_toolsets: [browser]\n"
+                ),
+            )
+            scan_skill_commands()
+            primary_available = find_triggered_skill_command(
+                "Use the browse fallback.", available_toolsets={"browser"}
+            )
+            fallback_needed = find_triggered_skill_command(
+                "Use the browse fallback.", available_toolsets=set()
+            )
+
+        assert primary_available is None
+        assert fallback_needed is not None
+        assert fallback_needed[0] == "/browser-fallback"
+
+    def test_does_not_rematch_loaded_skill_scaffolding(self):
+        assert find_triggered_skill_command(
+            "[IMPORTANT: The user has invoked the market-watch skill.] market"
+        ) is None
+
+    def test_expands_trigger_only_in_routed_mode(self):
+        match = ("/market-watch", {"name": "market-watch"}, "market")
+        with (
+            patch("agent.skill_commands.find_triggered_skill_command", return_value=match),
+            patch(
+                "agent.skill_commands.build_skill_invocation_message",
+                return_value="[expanded skill payload]",
+            ) as build,
+        ):
+            eager = expand_triggered_skill_message(
+                "What is the market doing?", loading_mode="eager", task_id="t-1"
+            )
+            routed = expand_triggered_skill_message(
+                "What is the market doing?", loading_mode="routed", task_id="t-1"
+            )
+
+        assert eager == ("What is the market doing?", None, None)
+        assert routed[0] == "[expanded skill payload]"
+        assert routed[1] == "What is the market doing?"
+        assert routed[2] == {
+            "command": "/market-watch",
+            "name": "market-watch",
+            "trigger": "market",
+        }
+        build.assert_called_once_with(
+            "/market-watch",
+            user_instruction="What is the market doing?",
+            task_id="t-1",
+            runtime_note='Auto-activated from skill trigger "market".',
+        )
 
     def test_finds_skills_in_symlinked_category_dir(self, tmp_path):
         external_root = tmp_path / "repo"

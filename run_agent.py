@@ -6368,6 +6368,33 @@ class AIAgent:
             reset_conversation_context,
             set_conversation_context,
         )
+        from agent.skill_commands import expand_triggered_skill_message
+
+        available_tools = set(getattr(self, "valid_tool_names", set()) or set())
+        available_toolsets = {
+            toolset
+            for toolset in (
+                get_toolset_for_tool(tool_name) for tool_name in available_tools
+            )
+            if toolset
+        }
+        routed_message, original_message, activation = expand_triggered_skill_message(
+            user_message,
+            loading_mode=getattr(self, "skills_loading_mode", "eager"),
+            task_id=task_id or getattr(self, "session_id", None),
+            available_tools=available_tools,
+            available_toolsets=available_toolsets,
+        )
+        if original_message is not None:
+            user_message = routed_message
+            if persist_user_message is None:
+                persist_user_message = original_message
+            logger.info(
+                "Auto-loaded skill %s from trigger %r",
+                activation.get("name") if activation else "",
+                activation.get("trigger") if activation else "",
+            )
+
         # Publish the conversation id for ambient Nous Portal tagging. Every
         # LLM call made inside this turn — main loop, compression, vision,
         # web_extract, session_search, MoA slots, background-review forks

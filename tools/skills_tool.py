@@ -69,6 +69,7 @@ Usage:
 import json
 import logging
 import time
+from collections import Counter
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -751,7 +752,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if len(description) > MAX_DESCRIPTION_LENGTH:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
-                category = _get_category_from_path(skill_md)
+                category = _get_category_from_path(skill_md) or "general"
 
                 seen_names.add(name)
                 skills.append({
@@ -824,12 +825,23 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
+        category_counts = Counter(
+            s.get("category") or "general"
+            for s in all_skills
+        )
+
         # Filter by category if specified
         if category:
-            all_skills = [s for s in all_skills if s.get("category") == category]
-
-        # Sort by category then name
-        all_skills = _sort_skills(all_skills)
+            category_prefix = f"{category}/"
+            filtered = [
+                skill
+                for skill in all_skills
+                if skill.get("category") == category
+                or str(skill.get("category") or "").startswith(category_prefix)
+            ]
+        else:
+            filtered = all_skills
+        all_skills = _sort_skills(filtered)
 
         # Extract unique categories
         categories = sorted(
@@ -841,6 +853,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "success": True,
                 "skills": all_skills,
                 "categories": categories,
+                "category_counts": dict(sorted(category_counts.items())),
                 "count": len(all_skills),
                 "hint": "Use skill_view(name) to see full content, tags, and linked files",
             },
@@ -1683,7 +1696,11 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": (
+        "List available skills by category (name + description). Use category "
+        "to drill into large category-only skill indexes, then skill_view(name) "
+        "to load full content."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

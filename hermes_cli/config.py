@@ -2442,6 +2442,9 @@ DEFAULT_CONFIG = {
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
     "skills": {
+        # "eager" lists every skill at startup. "routed" keeps a compact
+        # category index and auto-loads deterministic frontmatter triggers.
+        "loading": "eager",
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
@@ -5723,6 +5726,24 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "warning",
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
+            ))
+
+    # ── skills.loading: eager | routed ───────────────────────────────────
+    skills_cfg = config.get("skills")
+    if skills_cfg is not None and not isinstance(skills_cfg, dict):
+        issues.append(ConfigIssue(
+            "error",
+            f"skills should be a dict, got {type(skills_cfg).__name__}",
+            "Change to:\n  skills:\n    loading: eager",
+        ))
+    elif isinstance(skills_cfg, dict):
+        loading_mode = skills_cfg.get("loading", "eager")
+        normalized_loading_mode = str(loading_mode or "eager").strip().lower()
+        if normalized_loading_mode not in {"eager", "routed"}:
+            issues.append(ConfigIssue(
+                "error",
+                f"skills.loading must be 'eager' or 'routed', got {loading_mode!r}",
+                "Use 'eager' for the full startup index or 'routed' for category-first discovery and trigger activation",
             ))
 
     return issues

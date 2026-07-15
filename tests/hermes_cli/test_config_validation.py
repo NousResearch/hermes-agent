@@ -10,6 +10,23 @@ from hermes_cli.config import (
 )
 
 
+class TestSkillsLoadingValidation:
+    def test_accepts_supported_modes(self):
+        for mode in ("eager", "routed", " Routed "):
+            issues = validate_config_structure({"skills": {"loading": mode}})
+            assert not [issue for issue in issues if "skills.loading" in issue.message]
+
+    def test_rejects_unknown_mode(self):
+        issues = validate_config_structure({"skills": {"loading": "semantic"}})
+        errors = [issue for issue in issues if issue.severity == "error"]
+        assert any("skills.loading" in issue.message for issue in errors)
+
+    def test_rejects_non_mapping_skills_section(self):
+        issues = validate_config_structure({"skills": ["routed"]})
+        errors = [issue for issue in issues if issue.severity == "error"]
+        assert any("skills should be a dict" in issue.message for issue in errors)
+
+
 class TestCustomProvidersValidation:
     """custom_providers must be a YAML list, not a dict."""
 

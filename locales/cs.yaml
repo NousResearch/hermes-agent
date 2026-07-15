@@ -51,7 +51,7 @@ gateway:
     state_running: běžící
   approve:
     no_pending: Žádný čekající příkaz ke schválení.
-    once_singular: ✅ Příkaz schválen. The agent is resuming...
+    once_singular: ✅ Příkaz schválen. Agent pokračuje...
     once_plural: ✅ Příkazy schváleny (příkazy {count}). Agent pokračuje...
     session_singular: ✅ Příkaz schválen (vzor schválen pro tuto relaci). Agent pokračuje...
     session_plural: ✅ Příkazy schváleny (vzor schválen pro tuto relaci) (příkazy {count}). Agent pokračuje...
@@ -89,10 +89,10 @@ gateway:
 
       Pomocí `/resume` přepněte zpět na originál.'
   commands:
-    usage: 'Usage: `/commands [page]`'
+    usage: 'Použití: `/commands [page]`'
     skill_header: '⚡ **Příkazy dovedností**:'
     default_desc: Dovednostní příkaz
-    none: No commands available.
+    none: Žádné příkazy nejsou k dispozici.
     header: 📚 **Příkazy** (celkem {total}, stránka {page}/{total_pages})
     nav_prev: '`/commands {page}` ← předchozí'
     nav_next: další → `/commands {page}`

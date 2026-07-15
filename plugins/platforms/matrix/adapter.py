@@ -2456,6 +2456,21 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             return False
 
+    @staticmethod
+    def _adapter_allow_all_users() -> bool:
+        """True when either the Matrix-specific or the global allow-all env is set.
+
+        The gateway authorization layer honors both ``MATRIX_ALLOW_ALL_USERS``
+        (the adapter's registered ``allow_all_env``) and the cross-platform
+        ``GATEWAY_ALLOW_ALL_USERS``; the adapter's own pre-auth gates must honor
+        the same pair, or an operator who set only ``MATRIX_ALLOW_ALL_USERS``
+        would find media downloads and invite auto-joins silently blocked.
+        """
+        return any(
+            os.getenv(var, "").lower() in {"true", "1", "yes"}
+            for var in ("MATRIX_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS")
+        )
+
     def _is_media_download_authorized(self, sender: str) -> bool:
         """Whether to fetch+cache attacker-supplied media bytes for *sender*.
 
@@ -2463,12 +2478,12 @@ class MatrixAdapter(BasePlatformAdapter):
         BEFORE the gateway's pairing/allowlist runs. Open by default (no
         ``MATRIX_ALLOWED_USERS`` configured) to preserve the adapter's existing
         intake posture where the gateway handles pairing downstream; when an
-        operator sets an allowlist (or ``GATEWAY_ALLOW_ALL_USERS``) it is
-        honored here too so unauthorized senders can't drive pre-auth
-        downloads. Unauthorized senders still reach the gateway via the
-        HTTP-fallback envelope, so pairing/denial is unchanged.
+        operator sets an allowlist (or an allow-all env) it is honored here too
+        so unauthorized senders can't drive pre-auth downloads. Unauthorized
+        senders still reach the gateway via the HTTP-fallback envelope, so
+        pairing/denial is unchanged.
         """
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if self._adapter_allow_all_users():
             return True
         if not self._allowed_user_ids:
             return True
@@ -3023,21 +3038,23 @@ class MatrixAdapter(BasePlatformAdapter):
         await self.handle_message(msg_event)
 
     def _invite_auto_join_allowed(self, room_id: str, inviter: str) -> bool:
-        """Whether to auto-join an invite given the configured allowlists.
+        """Whether to auto-join a *pending* invite during the reconcile sweep.
 
-        Open by default (no allowlist configured) to preserve existing
-        behavior. When ``MATRIX_ALLOWED_ROOMS`` or ``MATRIX_ALLOWED_USERS`` is
-        set (and ``GATEWAY_ALLOW_ALL_USERS`` is not), only auto-join rooms or
-        inviters the operator allowlisted — otherwise an arbitrary external
-        user could DM-invite the bot, get auto-joined, and (because DMs are
-        exempt from the room allowlist) manufacture an authorized-looking
-        context for later message/media processing.
+        Open by default (no allowlist configured) to preserve the adapter's
+        existing reconcile behavior. When an allowlist is configured, require an
+        explicitly authorized *inviter*.
+
+        A ``MATRIX_ALLOWED_ROOMS`` match is deliberately NOT sufficient on its
+        own: the inviter is any federated user / room member and is unverified,
+        and DMs are exempt from the room allowlist, so honoring a room-only
+        match would let an unauthorized inviter manufacture an
+        authorized-looking context for later message/media processing.
+        ``MATRIX_ALLOWED_ROOMS`` still constrains which rooms the bot operates
+        in elsewhere; it just can't, by itself, authorize an auto-join.
         """
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+        if self._adapter_allow_all_users():
             return True
         if not self._allowed_user_ids and not self._allowed_room_ids:
-            return True
-        if room_id and room_id in self._allowed_room_ids:
             return True
         return bool(inviter) and inviter in self._allowed_user_ids
 
@@ -3063,31 +3080,19 @@ class MatrixAdapter(BasePlatformAdapter):
         is_direct = bool(getattr(content, "is_direct", False))
         inviter = str(getattr(event, "sender", "") or "")
 
-        if not self._invite_auto_join_allowed(room_id, inviter):
-            logger.info(
-                "Matrix: declining invite to %s from unauthorized inviter %s "
-                "(not in MATRIX_ALLOWED_ROOMS / MATRIX_ALLOWED_USERS)",
-                room_id,
-                inviter or "<unknown>",
-            )
-            return
-
-        # Only auto-join when the inviter is authorized. Without this, any
+        # Only auto-join when the inviter is authorized (fail-closed: with no
+        # allowlist configured, live invites are rejected). Without this, any
         # federated Matrix user could invite the bot into arbitrary rooms,
-        # exposing its presence and metadata. Mirrors the allow-list gate
-        # used on the message/reaction paths.
-        allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {
-            "true",
-            "1",
-            "yes",
-        }
-        if not allow_all and not (
+        # exposing its presence and metadata. Mirrors the allow-list gate used
+        # on the message/reaction paths. The pending-invite reconcile sweep
+        # applies its own (open-by-default) gate via _invite_auto_join_allowed.
+        if not self._adapter_allow_all_users() and not (
             self._allowed_user_ids and inviter in self._allowed_user_ids
         ):
             logger.warning(
                 "Matrix: rejecting invite to %s from unauthorized user %s",
                 room_id,
-                inviter,
+                inviter or "<unknown>",
             )
             return
 

@@ -149,15 +149,30 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     return agent
 
 
+@pytest.mark.parametrize(
+    ("configured_context_length", "expected_context_length"),
+    [(32_768, 32_768), ("131072", 131_072)],
+    ids=("integer", "quoted-numeric"),
+)
 @patch("hermes_cli.config.load_config")
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_preserves_config_context_length(mock_ctx_len, mock_load_cfg):
-    """Switching models must retain the configured endpoint context window."""
-    mock_load_cfg.return_value = {"model": {"context_length": 32_768}}
-    agent = _make_agent_with_compressor(config_context_length=32_768)
+def test_switch_model_preserves_config_context_length(
+    mock_ctx_len,
+    mock_load_cfg,
+    configured_context_length,
+    expected_context_length,
+):
+    """Switching models must preserve valid model.context_length values."""
+    mock_load_cfg.return_value = {
+        "model": {"context_length": configured_context_length}
+    }
+
+    agent = _make_agent_with_compressor(
+        config_context_length=expected_context_length
+    )
 
     assert agent.context_compressor.model == "primary-model"
-    assert agent.context_compressor.context_length == 32_768
+    assert agent.context_compressor.context_length == expected_context_length
 
     agent.switch_model(
         "new-model",
@@ -167,9 +182,41 @@ def test_switch_model_preserves_config_context_length(mock_ctx_len, mock_load_cf
     )
 
     mock_ctx_len.assert_called_once()
-    assert mock_ctx_len.call_args.kwargs["config_context_length"] == 32_768
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") == expected_context_length
     assert agent.context_compressor.model == "new-model"
     assert agent.context_compressor.context_length == 131_072
+
+
+@pytest.mark.parametrize(
+    "configured_context_length",
+    ["256K", 0, -1],
+    ids=("non-numeric", "zero", "negative"),
+)
+@patch("hermes_cli.config.load_config")
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+def test_switch_model_rejects_invalid_config_context_length(
+    mock_ctx_len,
+    mock_load_cfg,
+    configured_context_length,
+):
+    """Invalid, non-positive, and boolean overrides fall back safely."""
+    mock_load_cfg.return_value = {
+        "model": {"context_length": configured_context_length}
+    }
+    agent = _make_agent_with_compressor(config_context_length=32_768)
+
+    agent.switch_model(
+        "new-model",
+        "openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert agent._config_context_length is None
+    mock_ctx_len.assert_called_once()
+    assert mock_ctx_len.call_args.kwargs.get("config_context_length") is None
+    assert agent.context_compressor.context_length == 128_000
 
 
 @patch("hermes_cli.config.load_config")

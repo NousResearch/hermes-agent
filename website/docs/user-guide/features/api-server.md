@@ -198,6 +198,42 @@ Delete a stored response.
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
+`/v1/models` is intentionally the cheap OpenAI-compat surface. It does **not**
+enumerate every authenticated provider/model combination Hermes can route to,
+and it does not do pricing or capability enrichment.
+
+### GET /api/model/options
+
+Hermes-aware clients can request the same curated provider/model inventory used
+by the dashboard and TUI. This route uses the API server's normal bearer
+authentication and returns provider rows, model capability hints, and pricing
+metadata that do not belong in the OpenAI-compatible `/v1/models` response:
+
+```bash
+curl \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  "http://127.0.0.1:8642/api/model/options"
+```
+
+That payload is the same substrate the dashboard Models page and the TUI
+`model.options` RPC use. It returns authenticated providers, curated model
+lists, per-model pricing, and model capability hints.
+
+Normal opens are intentionally conservative for custom providers: Hermes probes
+only the **currently selected** custom endpoint so a stale or offline saved
+endpoint does not block the picker. An explicit refresh flips to full probing
+and busts the provider model cache:
+
+```bash
+curl \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  "http://127.0.0.1:8642/api/model/options?refresh=1"
+```
+
+Use `/v1/models` when an OpenAI-compatible client only needs a model name to
+send back in chat/responses requests. Use `/api/model/options` when an
+authenticated UI needs the richer Hermes-specific picker metadata.
+
 ### GET /v1/capabilities
 
 Returns a machine-readable description of the API server's stable surface for external UIs, orchestrators, and plugin bridges.

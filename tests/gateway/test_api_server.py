@@ -923,7 +923,7 @@ class TestModelsEndpoint:
 
     @pytest.mark.asyncio
     async def test_model_options_returns_shared_inventory(self, adapter, monkeypatch):
-        """GET /api/model/options mirrors the dashboard/TUI provider catalog."""
+        """GET /api/model/options builds the shared picker payload off-loop."""
         from hermes_cli import inventory
 
         ctx = object()
@@ -932,16 +932,28 @@ class TestModelsEndpoint:
             "model": "gpt-5.5",
             "provider": "nous",
         }
-        seen = {}
+        seen = {"thread_calls": 0}
 
         monkeypatch.setattr(inventory, "load_picker_context", lambda: ctx)
 
-        def fake_build_models_payload(received_ctx, **kwargs):
+        def fake_build_model_options_payload(received_ctx, **kwargs):
             seen["ctx"] = received_ctx
             seen["kwargs"] = kwargs
             return payload
 
-        monkeypatch.setattr(inventory, "build_models_payload", fake_build_models_payload)
+        async def fake_to_thread(func, *args, **kwargs):
+            seen["thread_calls"] += 1
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(
+            inventory,
+            "build_model_options_payload",
+            fake_build_model_options_payload,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server.asyncio.to_thread",
+            fake_to_thread,
+        )
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -950,13 +962,10 @@ class TestModelsEndpoint:
             data = await resp.json()
 
         assert data == payload
+        assert seen["thread_calls"] == 1
         assert seen["ctx"] is ctx
         assert seen["kwargs"] == {
             "include_unconfigured": True,
-            "picker_hints": True,
-            "canonical_order": True,
-            "pricing": True,
-            "capabilities": True,
             "refresh": True,
         }
 

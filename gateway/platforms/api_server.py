@@ -1635,17 +1635,18 @@ class APIServerAdapter(BasePlatformAdapter):
 
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
         try:
-            from hermes_cli.inventory import build_models_payload, load_picker_context
+            from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
-            payload = build_models_payload(
-                load_picker_context(),
-                include_unconfigured=True,
-                picker_hints=True,
-                canonical_order=True,
-                pricing=True,
-                capabilities=True,
-                refresh=refresh,
-            )
+            def _build_payload() -> Dict[str, Any]:
+                return build_model_options_payload(
+                    load_picker_context(),
+                    include_unconfigured=True,
+                    refresh=refresh,
+                )
+
+            # Inventory enrichment can fetch pricing and provider catalogs.
+            # Keep all synchronous picker work off aiohttp's event loop.
+            payload = await asyncio.to_thread(_build_payload)
             return web.json_response(payload)
         except Exception:
             logger.exception("[%s] GET /api/model/options failed", self.name)

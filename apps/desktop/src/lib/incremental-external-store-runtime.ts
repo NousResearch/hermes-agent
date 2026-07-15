@@ -68,7 +68,6 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
     }
 
     const self = this as unknown as {
-      _assistantOptimisticId: null | string
       _capabilities: object
       _messages: readonly ThreadMessage[]
       _notifyEventSubscribers: (event: string, payload: object) => void
@@ -121,11 +120,6 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
       return
     }
 
-    if (self._assistantOptimisticId) {
-      this.repository.deleteMessage(self._assistantOptimisticId)
-      self._assistantOptimisticId = null
-    }
-
     const messages = syncRepositoryIncrementally(this, store.messageRepository)
 
     if (messages.length > 0) {
@@ -138,8 +132,13 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
 
     // metadata.isOptimistic keeps this placeholder ephemeral: core evicts
     // off-branch optimistic messages on head moves and omits them from export().
+    // The id stays local to this call -- core owns the placeholder's lifetime
+    // (cancelRun deletes it by lookup, resetHead evicts it on a head move), so
+    // holding it in a field would only let it go stale behind our back.
+    let optimisticId: null | string = null
+
     if (hasUpcomingMessage(isRunning, messages)) {
-      const optimisticId = generateId()
+      optimisticId = generateId()
       this.repository.addOrUpdateMessage(
         messages.at(-1)?.id ?? null,
         fromThreadMessageLike(
@@ -148,10 +147,9 @@ class IncrementalExternalStoreThreadRuntimeCore extends ExternalStoreThreadRunti
           { type: 'running' }
         )
       )
-      self._assistantOptimisticId = optimisticId
     }
 
-    this.repository.resetHead(self._assistantOptimisticId ?? messages.at(-1)?.id ?? null)
+    this.repository.resetHead(optimisticId ?? messages.at(-1)?.id ?? null)
     self._messages = this.repository.getMessages()
     self._notifySubscribers()
   }

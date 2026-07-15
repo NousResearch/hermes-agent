@@ -15743,6 +15743,22 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     )
 
 
+def _export_interactive_marker() -> None:
+    """Export HERMES_INTERACTIVE=1 so terminal_tool/approval treat this
+    process as an interactive CLI (enables sudo password prompts etc.).
+
+    Kanban workers are the exception: the dispatcher spawns them as
+    `hermes ... chat -q` with stdin=DEVNULL and HERMES_KANBAN_SESSION=1
+    (hermes_cli/kanban_db._default_spawn). No human can answer a prompt
+    there, so self-marking interactive would only misroute approval gates
+    and sudo prompts toward a stdin that immediately EOFs (#55946).
+    """
+    from utils import env_var_enabled
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        return
+    os.environ["HERMES_INTERACTIVE"] = "1"
+
+
 def main(
     query: str = None,
     q: str = None,
@@ -15814,7 +15830,8 @@ def main(
 
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
-    os.environ["HERMES_INTERACTIVE"] = "1"
+    # (skipped for headless kanban workers — see _export_interactive_marker).
+    _export_interactive_marker()
     
     # Handle gateway mode (messaging + cron)
     if gateway:

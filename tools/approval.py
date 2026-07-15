@@ -2675,8 +2675,9 @@ def _run_approval_gate(
     persist policy in ONE place so the two entry points can never drift.
 
     Ordering mirrors the historical ``check_dangerous_command`` tail:
-    yolo bypass → session-cache short-circuit → interactive/gateway/cron
-    branch → prompt → ``deny/session/always`` persistence. The caller is
+    yolo bypass → session-cache short-circuit → kanban-worker policy →
+    interactive/gateway/cron branch → prompt → ``deny/session/always``
+    persistence. The caller is
     responsible for the checks that are specific to its input shape
     (hardline detection, command-string permanent allowlist, dangerous-
     pattern detection) BEFORE calling this gate.
@@ -2718,6 +2719,28 @@ def _run_approval_gate(
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
+    # Kanban worker subprocesses: explicit unattended identity, decided
+    # BEFORE the ambient is_cli/is_gateway/cron inference below. A real
+    # worker launches as `hermes ... chat -q` with stdin=DEVNULL and its own
+    # startup may export HERMES_INTERACTIVE=1, and a dispatching gateway/cron
+    # parent can leak its markers into the child env (#63183) — none of that
+    # ambient state means a human can answer here, so it must never reroute
+    # a worker into a prompt or a pending queue nobody watches. Both arms
+    # return so the precedence is unconditional.
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        if _get_kanban_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": kanban_deny_message,
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+        logger.warning(
+            "%s (pattern: %s): %s — approvals.kanban_mode is 'approve'.",
+            autoapprove_log_prefix, pattern_key, description,
+        )
+        return {"approved": True, "message": None}
+
     if approval_callback is None:
         try:
             from tools.terminal_tool import _get_approval_callback
@@ -2739,17 +2762,6 @@ def _run_approval_gate(
                     "description": description,
                 }
             # cron_mode: approve — fall through to auto-approve below.
-        elif env_var_enabled("HERMES_KANBAN_SESSION"):
-            # Kanban worker subprocesses: same unattended-execution problem
-            # as cron — no user present to approve. Respect kanban_mode.
-            if _get_kanban_approval_mode() == "deny":
-                return {
-                    "approved": False,
-                    "message": kanban_deny_message,
-                    "pattern_key": pattern_key,
-                    "description": description,
-                }
-            # kanban_mode: approve — fall through to auto-approve below.
         elif fail_closed_when_no_human:
             # Non-cron, non-interactive, no gateway: no human can answer.
             # The plugin-escalation path opts in to fail-closed here so a
@@ -3349,6 +3361,22 @@ def check_all_command_guards(command: str, env_type: str,
     if _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
+    # Kanban worker subprocesses: explicit unattended identity, decided
+    # BEFORE the ambient is_cli/is_gateway/is_ask inference and before the
+    # cron marker. A real worker's own startup may export
+    # HERMES_INTERACTIVE=1 (cli.main), and a dispatching gateway/cron parent
+    # can leak HERMES_GATEWAY_SESSION / HERMES_EXEC_ASK / HERMES_CRON_SESSION
+    # into the child env (#63183). A worker has no human surface, so ambient
+    # state must never pull it into a prompt, smart approval, or a pending
+    # queue that lives in the dispatcher process. Both arms return so the
+    # precedence is unconditional.
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        if _get_kanban_approval_mode() == "deny":
+            blocked = _unattended_deny_check(command, "kanban workers", "kanban_mode")
+            if blocked is not None:
+                return blocked
+        return {"approved": True, "message": None}
+
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
@@ -3360,13 +3388,6 @@ def check_all_command_guards(command: str, env_type: str,
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 blocked = _unattended_deny_check(command, "cron jobs", "cron_mode")
-                if blocked is not None:
-                    return blocked
-        # Kanban worker subprocesses: same unattended-execution problem as
-        # cron — no user present to approve. Respect kanban_mode config.
-        if env_var_enabled("HERMES_KANBAN_SESSION"):
-            if _get_kanban_approval_mode() == "deny":
-                blocked = _unattended_deny_check(command, "kanban workers", "kanban_mode")
                 if blocked is not None:
                     return blocked
         return {"approved": True, "message": None}
@@ -3742,6 +3763,31 @@ def check_execute_code_guard(code: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
+    # Kanban worker subprocesses: no user is present to approve arbitrary
+    # code. Checked BEFORE the cron marker: HERMES_KANBAN_SESSION is set
+    # explicitly for this child by the dispatcher, while HERMES_CRON_SESSION
+    # is process-global in a scheduler parent and can leak into the worker
+    # env (#63183) — an inherited cron approve-mode must not preempt the
+    # worker's own kanban policy.
+    if env_var_enabled("HERMES_KANBAN_SESSION"):
+        if _get_kanban_approval_mode() == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: execute_code runs arbitrary local Python "
+                    "(including subprocess calls that bypass shell-string "
+                    "approval checks). Kanban workers run without a user "
+                    "present to approve it. Use normal tools instead, or set "
+                    "approvals.kanban_mode: approve only if this kanban "
+                    "profile is intentionally trusted."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+                "outcome": "blocked",
+                "user_consent": False,
+            }
+        return {"approved": True, "message": None}
+
     # Cron: no user is present to approve arbitrary code.
     if env_var_enabled("HERMES_CRON_SESSION"):
         if _get_cron_approval_mode() == "deny":
@@ -3754,26 +3800,6 @@ def check_execute_code_guard(code: str, env_type: str,
                     "to approve it. Use normal tools instead, or set "
                     "approvals.cron_mode: approve only if this cron profile "
                     "is intentionally trusted."
-                ),
-                "pattern_key": pattern_key,
-                "description": description,
-                "outcome": "blocked",
-                "user_consent": False,
-            }
-        return {"approved": True, "message": None}
-
-    # Kanban worker subprocesses: same unattended-execution problem as cron.
-    if env_var_enabled("HERMES_KANBAN_SESSION"):
-        if _get_kanban_approval_mode() == "deny":
-            return {
-                "approved": False,
-                "message": (
-                    "BLOCKED: execute_code runs arbitrary local Python "
-                    "(including subprocess calls that bypass shell-string "
-                    "approval checks). Kanban workers run without a user "
-                    "present to approve it. Use normal tools instead, or set "
-                    "approvals.kanban_mode: approve only if this kanban "
-                    "profile is intentionally trusted."
                 ),
                 "pattern_key": pattern_key,
                 "description": description,

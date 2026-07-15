@@ -225,8 +225,11 @@ def test_execute_code_non_approved_still_interrupts_on_stale_bit(monkeypatch):
     )
     set_interrupt(True)
 
+    # 5s (not 0.5s) so the parent's kill-poll wins the race even on a loaded
+    # parallel test runner; the interrupt still fires on the first poll, so
+    # the passing case stays fast (mirrors the terminal tests' `sleep 5`).
     result = json.loads(execute_code(
-        code='import time; time.sleep(0.5); print("CODE_DONE")',
+        code='import time; time.sleep(5); print("CODE_DONE")',
         task_id="test-clean-slate-2",
     ))
 

@@ -2325,8 +2325,8 @@ class MCPServerTask:
                     # until the gateway hits EMFILE. Timing out here converts the
                     # hang into a normal failure, letting the ``finally`` reap the
                     # child. See #59349.
-                    connect_timeout = float(
-                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                    connect_timeout = _cfg_float(
+                        config, "connect_timeout", _DEFAULT_CONNECT_TIMEOUT
                     )
                     self.initialize_result = await asyncio.wait_for(
                         session.initialize(), timeout=connect_timeout

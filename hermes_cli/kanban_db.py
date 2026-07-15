@@ -6567,75 +6567,49 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-# Empirically ~96% of "clean exit without a terminal tool call" tasks complete
-# on a later run (a goal-mode finalize nudge, or the model simply emitting the
-# tool call next time), so a protocol violation is NOT deterministic — give it a
-# bounded retry before the breaker trips instead of blocking on the first hit.
-#
-# The budget is a violation-only STREAK, not a share of the unified
-# ``consecutive_failures`` counter: it counts consecutive clean-exit protocol
-# violations (derived from run history by ``_protocol_violation_streak``), so
-# earlier timeouts / nonzero exits neither consume nor extend it, and a
-# below-budget violation does not tick the unified counter either. A per-task
-# ``max_retries`` overrides this bound — the same "task override wins"
-# precedence ``_record_task_failure`` documents for every other failure kind.
-_PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
-
-# How far back to walk a task's closed runs when counting the violation
-# streak. The streak trips at a handful of violations, so anything beyond a
-# few dozen rows (violations interleaved with neutral rate-limited requeues)
-# can only mean "way past the bound" anyway.
-_PROTOCOL_VIOLATION_SCAN_LIMIT = 50
+_MISSING_HANDOFF_CLASSIFICATION = "protocol_violation_missing_handoff"
+_MISSING_HANDOFF_LOG_TAIL_BYTES = 4096
+_MISSING_HANDOFF_LOG_TAIL_LINES = 20
 
 
-def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
-    """Count the task's trailing run of clean-exit protocol violations.
+def _missing_handoff_log_evidence(task_id: str) -> dict:
+    """Return bounded, redacted stdout evidence for a missing handoff."""
+    path = worker_logs_dir() / f"{task_id}.log"
+    evidence = {"stdout_path": str(path)}
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            if size > _MISSING_HANDOFF_LOG_TAIL_BYTES:
+                stream.seek(-_MISSING_HANDOFF_LOG_TAIL_BYTES, os.SEEK_END)
+            raw = stream.read(_MISSING_HANDOFF_LOG_TAIL_BYTES)
+        text = raw.decode("utf-8", errors="replace")
+        if size > _MISSING_HANDOFF_LOG_TAIL_BYTES:
+            # The seek may land inside a credential. Discard that partial first
+            # line rather than asking the redactor to recognize a token suffix.
+            text = text.partition("\n")[2]
+        lines = text.splitlines()
+        tail = "\n".join(lines[-_MISSING_HANDOFF_LOG_TAIL_LINES:])
+        try:
+            from agent.redact import redact_sensitive_text
 
-    Walks the task's closed runs newest-first — including the violation run
-    ``detect_crashed_workers`` just closed — and counts how many in a row were
-    clean-exit protocol violations:
-
-    * ``rate_limited`` runs are neutral and skipped: a quota wall says nothing
-      about the task, exactly as it is neutral for the unified
-      ``consecutive_failures`` counter.
-    * Any other closed run (completed, plain crash, timeout, spawn failure,
-      reclaim, …) breaks the streak, so the bounded retry budget counts ONLY
-      protocol violations — mixed failure kinds can neither consume nor
-      extend it.
-
-    Violation runs are recognized by the ``protocol_violation`` marker that
-    ``detect_crashed_workers`` stamps into the run metadata; the violation
-    error text is matched as a fallback for runs recorded before the marker
-    existed.
-    """
-    streak = 0
-    rows = conn.execute(
-        "SELECT outcome, error, metadata FROM task_runs "
-        "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY id DESC LIMIT ?",
-        (task_id, _PROTOCOL_VIOLATION_SCAN_LIMIT),
-    ).fetchall()
-    for row in rows:
-        outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
-            continue
-        if outcome == "crashed":
-            is_violation = False
-            raw_meta = row["metadata"]
-            if raw_meta:
-                try:
-                    is_violation = bool(
-                        json.loads(raw_meta).get("protocol_violation")
-                    )
-                except (ValueError, TypeError):
-                    is_violation = False
-            if not is_violation:
-                is_violation = "protocol violation" in (row["error"] or "")
-            if is_violation:
-                streak += 1
-                continue
-        break
-    return streak
+            tail = redact_sensitive_text(tail, force=True)
+        except Exception:
+            tail = "[log tail unavailable: redaction failed]"
+        tail_bytes = tail.encode("utf-8")
+        if len(tail_bytes) > _MISSING_HANDOFF_LOG_TAIL_BYTES:
+            tail = tail_bytes[-_MISSING_HANDOFF_LOG_TAIL_BYTES:].decode(
+                "utf-8", errors="replace",
+            )
+        evidence.update({
+            "final_log_tail": tail,
+            "log_tail_truncated": (
+                size > _MISSING_HANDOFF_LOG_TAIL_BYTES
+                or len(lines) > _MISSING_HANDOFF_LOG_TAIL_LINES
+            ),
+        })
+    except (OSError, ValueError) as exc:
+        evidence["log_tail_error"] = f"{type(exc).__name__}: {exc}"[:200]
+    return evidence
 
 
 def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
@@ -6651,11 +6625,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     dispatcher (the whole design is single-host).
 
     When the reap registry shows the worker exited cleanly (rc=0) but
-    the task was still ``running`` in the DB, treat it as a protocol
-    violation (worker answered conversationally without calling
-    ``kanban_complete`` / ``kanban_block``) and trip the circuit breaker
-    on the first occurrence — retrying a worker whose CLI keeps
-    returning 0 without a terminal transition just loops forever.
+    the task was still ``running`` in the DB, block it immediately as a
+    missing-handoff protocol violation. A clean exit is not a crash, and
+    blindly rerunning already-completed work risks duplicate side effects.
 
     When the reap registry shows the worker exited with the rate-limit
     sentinel (``KANBAN_RATE_LIMIT_EXIT_CODE``), the worker bailed on a
@@ -6670,12 +6642,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     rate_limited: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
-    # write_txn so can't nest). ``protocol_violation`` flags the
-    # clean-exit-but-still-running case, which is accounted against its
-    # own bounded violation streak instead of the unified failure
-    # counter (see the post-txn loop below).
-    crash_details: list[tuple[str, int, str, bool, str]] = []
-    # (task_id, pid, claimer, protocol_violation, error_text)
+    # write_txn so can't nest). Missing-handoff exits are blocked inside the
+    # main transaction and never enter the genuine-crash accounting path.
+    crash_details: list[tuple[str, int, str, str]] = []
+    # (task_id, pid, claimer, error_text)
+    auto_blocked: list[str] = []
     with write_txn(conn):
         rows = conn.execute(
             "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
@@ -6702,31 +6673,24 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
             if kind == "clean_exit":
-                # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
-                # work itself succeeded and only the paperwork was skipped, so
-                # a retry usually completes; the corrective sentence below is
-                # surfaced to the retry worker via the prior-attempt error in
-                # ``build_worker_context`` (guidance approach from #61817).
+                # Work may already have happened, so never retry it blindly.
                 protocol_violation = True
+                evidence = _missing_handoff_log_evidence(row["id"])
                 error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation. "
-                    "If the prior run already did the work, verify it and "
-                    "report the result via kanban_complete; a run that ends "
-                    "without a terminal kanban call counts as failed no "
-                    "matter what it did."
+                    "Worker ended cleanly (rc=0) but omitted the required "
+                    "terminal board handoff (kanban_complete or kanban_block). "
+                    "Blocked automatically to avoid blindly rerunning work; "
+                    f"inspect stdout at {evidence['stdout_path']}."
                 )
                 event_kind = "protocol_violation"
                 event_payload = {
                     "pid": pid,
                     "claimer": row["claim_lock"],
                     "exit_code": code,
-                    # Durable marker for _protocol_violation_streak: _end_run
-                    # copies this payload into the run metadata, which is how
-                    # the violation-only retry budget is derived later.
                     "protocol_violation": True,
+                    "classification": _MISSING_HANDOFF_CLASSIFICATION,
+                    "reason": error_text,
+                    **evidence,
                 }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
@@ -6762,18 +6726,33 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
-            cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
-            )
+            if protocol_violation:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL, "
+                    "last_failure_error = ?, block_kind = 'capability', "
+                    "block_recurrences = 1 "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (error_text[:500], row["id"], pid, row["claim_lock"]),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                    "claim_expires = NULL, worker_pid = NULL "
+                    "WHERE id = ? AND status = 'running' "
+                    "  AND worker_pid = ? AND claim_lock IS ?",
+                    (row["id"], pid, row["claim_lock"]),
+                )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                _run_outcome = (
+                    "blocked" if protocol_violation
+                    else "rate_limited" if rate_limited_exit
+                    else "crashed"
+                )
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
@@ -6785,7 +6764,15 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
-                if rate_limited_exit:
+                if protocol_violation:
+                    # Keep the automatic block sticky until an operator
+                    # explicitly unblocks it. Otherwise recompute_ready could
+                    # turn the next dispatcher tick into an accidental retry.
+                    _append_event(
+                        conn, row["id"], "blocked", event_payload, run_id=run_id,
+                    )
+                    auto_blocked.append(row["id"])
+                elif rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
                     # respawn until the window clears — WITHOUT touching
@@ -6797,93 +6784,23 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     )
                     rate_limited.append(row["id"])
                 else:
-                    if protocol_violation:
-                        # Stamp the failure error now: a below-budget
-                        # violation never reaches ``_record_task_failure``
-                        # (which stamps this column for every other failure
-                        # kind), yet the board UI and the retry worker's
-                        # context still need the violation message + the
-                        # corrective guidance it carries.
-                        conn.execute(
-                            "UPDATE tasks SET last_failure_error = ? "
-                            "WHERE id = ?",
-                            (error_text[:500], row["id"]),
-                        )
                     crashed.append(row["id"])
                     crash_details.append(
-                        (row["id"], pid, row["claim_lock"],
-                         protocol_violation, error_text)
+                        (row["id"], pid, row["claim_lock"], error_text)
                     )
     # Outside the main txn: account each crashed task and maybe trip the
     # breaker (the task transitions ready → blocked with a ``gave_up`` event
     # on top of the event we already emitted).
-    #
-    # Protocol-violation crashes (clean exit, no terminal tool call) get a
-    # BOUNDED retry, not an immediate trip: empirically ~96% of these tasks
-    # complete on a later run (a goal-mode finalize nudge, or the model simply
-    # emitting kanban_complete/kanban_block next time), so blocking on the first
-    # occurrence just churned them through the respawn cycle. The retry budget
-    # is a violation-only streak (``_protocol_violation_streak``): earlier
-    # timeouts / nonzero exits neither consume nor extend it, and a
-    # below-budget violation does not tick the unified
-    # ``consecutive_failures`` counter, so the two budgets stay independent.
-    # A per-task ``max_retries`` overrides the violation bound with the same
-    # top precedence it has for every other failure kind. Systemic same-error
-    # crashes still trip immediately.
-    auto_blocked: list[str] = []
+    # Clean missing-handoff exits were already blocked atomically above.
+    # Genuine crashes retain the existing failure-counter behavior; systemic
+    # same-error crashes still trip immediately.
     if crash_details:
         # Fingerprint errors to detect systemic failures.
         _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
+        for _, _, _, err_text in crash_details:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
-        for tid, pid, claimer, protocol_violation, error_text in crash_details:
-            if protocol_violation:
-                streak = _protocol_violation_streak(conn, tid)
-                trow = conn.execute(
-                    "SELECT max_retries FROM tasks WHERE id = ?", (tid,),
-                ).fetchone()
-                if trow is None:
-                    continue  # task deleted mid-loop
-                task_override = (
-                    trow["max_retries"] if "max_retries" in trow.keys() else None
-                )
-                violation_limit = (
-                    int(task_override)
-                    if task_override is not None
-                    else _PROTOCOL_VIOLATION_FAILURE_LIMIT
-                )
-                if streak < violation_limit:
-                    # Below budget: the task is already back at ``ready``
-                    # (respawn allowed) with ``last_failure_error`` stamped.
-                    # Deliberately no ``_record_task_failure`` call — a
-                    # below-budget violation must not consume the unified
-                    # failure budget, just as other failure kinds don't
-                    # consume this one.
-                    continue
-                # Streak reached the bound: trip the breaker. ``force_trip``
-                # skips the threshold resolution inside
-                # ``_record_task_failure`` because the decision — including
-                # the per-task ``max_retries`` override — was already made
-                # against the violation streak above.
-                tripped = _record_task_failure(
-                    conn, tid,
-                    error=error_text,
-                    outcome="crashed",
-                    failure_limit=violation_limit,
-                    force_trip=True,
-                    release_claim=False,
-                    end_run=False,
-                    event_payload_extra={
-                        "pid": pid,
-                        "claimer": claimer,
-                        "protocol_violations": streak,
-                        "protocol_violation_limit": violation_limit,
-                    },
-                )
-                if tripped:
-                    auto_blocked.append(tid)
-                continue
+        for tid, pid, claimer, error_text in crash_details:
             fp = _error_fingerprint(error_text)
             is_systemic = _fp_counts.get(fp, 0) >= 3
             tripped = _record_task_failure(

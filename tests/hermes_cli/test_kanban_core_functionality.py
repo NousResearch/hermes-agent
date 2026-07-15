@@ -4439,210 +4439,55 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
-def test_detect_crashed_workers_protocol_violation_first_occurrence_retries(kanban_home):
-    """A first clean-exit protocol violation gets a retry, not a block.
+def test_clean_exit_without_handoff_blocks_with_bounded_log_evidence(kanban_home):
+    """rc=0 without a terminal board handoff is actionable, not retried."""
+    import hermes_cli.kanban_db as _kb
 
-    A worker that exited rc=0 while its task was still ``running`` skipped
-    the terminal kanban call (model answered conversationally, transient tool
-    wedge). Empirically these overwhelmingly complete on respawn, so the
-    first violation must leave the task ``ready`` with corrective guidance
-    stamped in ``last_failure_error`` — not trip the breaker like the pre-fix
-    behavior did. The violation is accounted against its own violation-only
-    streak, so it must NOT tick the unified ``consecutive_failures`` counter.
-    """
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="quiet", assignee="worker")
+        log_dir = _kb.worker_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sensitive_value = "sk-test-sensitive-value-that-must-not-survive"
+        lines = [f"line {i} {'x' * 240}" for i in range(30)]
+        lines.extend([f"OPENAI_API_KEY={sensitive_value}", "FINAL WORKER OUTPUT"])
+        log_path = log_dir / f"{tid}.log"
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+
         result_crashed = _drive_protocol_violation(conn, tid, 999998)
-        assert tid in result_crashed, "should be detected as crashed"
 
-        task = kb.get_task(conn, tid)
-        assert task.status == "ready", (
-            f"first protocol violation should retry, got status={task.status}"
-        )
-        assert task.consecutive_failures == 0, (
-            "a below-budget violation must not consume the unified failure "
-            f"budget, got consecutive_failures={task.consecutive_failures}"
-        )
-        assert "kanban_complete" in (task.last_failure_error or ""), (
-            f"expected protocol-violation message, got {task.last_failure_error!r}"
-        )
-
-        events = kb.list_events(conn, tid)
-        kinds = [e.kind for e in events]
-        assert "protocol_violation" in kinds, (
-            f"expected 'protocol_violation' event, got {kinds}"
-        )
-        # The ``crashed`` event would be misleading here — the worker
-        # didn't crash, it returned 0.
-        assert "crashed" not in kinds, (
-            f"should NOT emit 'crashed' event on clean exit, got {kinds}"
-        )
-        assert "gave_up" not in kinds, (
-            f"breaker must not trip on the first violation, got {kinds}"
-        )
-    finally:
-        conn.close()
-
-
-def test_detect_crashed_workers_protocol_violation_streak_trips_at_limit(kanban_home):
-    """The violation streak trips the terminal path exactly at the bound.
-
-    Genuine repeat offenders (a worker whose CLI keeps returning 0 without a
-    terminal transition) must still surface to a human: the
-    ``_PROTOCOL_VIOLATION_FAILURE_LIMIT``-th consecutive violation blocks the
-    task with a ``gave_up`` event carrying the streak accounting.
-    """
-    import hermes_cli.kanban_db as _kb
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="quiet", assignee="worker")
-        limit = _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
-        for i in range(limit - 1):
-            _drive_protocol_violation(conn, tid, 990000 + i)
-            assert kb.get_task(conn, tid).status == "ready", (
-                f"violation {i + 1}/{limit} should still retry"
-            )
-
-        _drive_protocol_violation(conn, tid, 990900)
-
-        task = kb.get_task(conn, tid)
-        assert task.status == "blocked", (
-            f"violation streak at the bound must block, got {task.status}"
-        )
-        events = kb.list_events(conn, tid)
-        kinds = [e.kind for e in events]
-        assert kinds.count("protocol_violation") == limit
-        assert "crashed" not in kinds
-        gave_up = [e for e in events if e.kind == "gave_up"]
-        assert len(gave_up) == 1, f"expected exactly one gave_up, got {kinds}"
-        payload = gave_up[0].payload or {}
-        assert payload.get("protocol_violations") == limit
-        assert payload.get("protocol_violation_limit") == limit
-        # Side channel consumed by dispatch_once — read through the same
-        # (current) module object the reaper ran in, see _drive_worker_exit.
-        assert tid in _kb.detect_crashed_workers._last_auto_blocked
-    finally:
-        conn.close()
-
-
-def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
-    """Mixed failure kinds must not consume the violation retry budget.
-
-    Regression for the #61233 review finding: expressed as a plain
-    ``failure_limit`` over the unified ``consecutive_failures`` counter, the
-    violation budget was consumed by earlier timeouts / nonzero exits. As a
-    violation-only streak, a prior real crash must not eat violation
-    retries, and below-budget violations must leave the unified counter
-    untouched (so the two budgets stay independent).
-    """
-    import hermes_cli.kanban_db as _kb
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="mixed", assignee="worker")
-
-        # One real crash: unified counter ticks to 1 (below
-        # DEFAULT_FAILURE_LIMIT=2 — task stays ready).
-        _drive_nonzero_crash(conn, tid, 991000)
-        task = kb.get_task(conn, tid)
-        assert task.status == "ready"
-        assert task.consecutive_failures == 1
-
-        # Two violations after it: streak 1 and 2 — both retry, unified
-        # counter untouched. (Pre-fix: the crash consumed the budget and the
-        # violations blocked well before three of them happened.)
-        for i, pid in enumerate((991001, 991002)):
-            _drive_protocol_violation(conn, tid, pid)
-            task = kb.get_task(conn, tid)
-            assert task.status == "ready", (
-                f"violation {i + 1} after a crash must still retry, "
-                f"got {task.status}"
-            )
-            assert task.consecutive_failures == 1, (
-                "below-budget violations must not tick the unified counter"
-            )
-
-        # Third consecutive violation: streak hits the bound — blocked.
-        _drive_protocol_violation(conn, tid, 991003)
+        assert tid not in result_crashed, "a clean exit must not be a crash"
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        gave_up = [e for e in kb.list_events(conn, tid) if e.kind == "gave_up"]
-        assert len(gave_up) == 1
-        assert (gave_up[0].payload or {}).get("protocol_violations") == \
-            _kb._PROTOCOL_VIOLATION_FAILURE_LIMIT
-    finally:
-        conn.close()
+        assert task.block_kind == "capability"
+        assert task.consecutive_failures == 0
+        assert "ended cleanly (rc=0)" in (task.last_failure_error or "")
+        assert "inspect stdout" in (task.last_failure_error or "")
 
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds
+        assert "blocked" in kinds
+        assert "crashed" not in kinds
+        assert "gave_up" not in kinds
+        payload = [e.payload for e in events if e.kind == "protocol_violation"][-1]
+        assert payload["classification"] == "protocol_violation_missing_handoff"
+        assert payload["stdout_path"] == str(log_path)
+        assert payload["log_tail_truncated"] is True
+        assert "FINAL WORKER OUTPUT" in payload["final_log_tail"]
+        assert sensitive_value not in payload["final_log_tail"]
+        assert len(payload["final_log_tail"].encode("utf-8")) <= 4096
 
-def test_protocol_violation_streak_resets_on_other_failure_kind(kanban_home):
-    """A non-violation failure between violations resets the streak.
-
-    The budget counts CONSECUTIVE clean-exit violations: two violations, a
-    real crash, then two more violations is a streak of 2 — not 4 — so the
-    fourth violation must still retry; only a third consecutive one blocks.
-    """
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="reset", assignee="worker")
-
-        _drive_protocol_violation(conn, tid, 993000)
-        _drive_protocol_violation(conn, tid, 993001)
-        assert kb.get_task(conn, tid).status == "ready"
-
-        # Real crash breaks the streak (and ticks the unified counter to 1).
-        _drive_nonzero_crash(conn, tid, 993002)
-        assert kb.get_task(conn, tid).status == "ready"
-
-        # Streak restarts at 1, 2 — the pre-crash violations no longer count.
-        _drive_protocol_violation(conn, tid, 993003)
-        assert kb.get_task(conn, tid).status == "ready", (
-            "violation streak must reset after a non-violation failure"
-        )
-        _drive_protocol_violation(conn, tid, 993004)
-        assert kb.get_task(conn, tid).status == "ready"
-
-        # Third consecutive violation since the crash: blocked.
-        _drive_protocol_violation(conn, tid, 993005)
+        run = conn.execute(
+            "SELECT outcome, metadata FROM task_runs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        assert run["outcome"] == "blocked"
+        assert json.loads(run["metadata"])["classification"] == \
+            "protocol_violation_missing_handoff"
+        assert tid in _kb.detect_crashed_workers._last_auto_blocked
+        assert kb.recompute_ready(conn) == 0
         assert kb.get_task(conn, tid).status == "blocked"
-    finally:
-        conn.close()
-
-
-def test_protocol_violation_respects_max_retries_precedence(kanban_home):
-    """Per-task ``max_retries`` overrides the violation bound, both ways.
-
-    Same top precedence it has for every other failure kind in
-    ``_record_task_failure``: ``max_retries=1`` blocks on the FIRST violation
-    (zero retries — the pre-fix behavior, now opt-in per task);
-    ``max_retries=5`` keeps retrying past the default bound of 3 and blocks
-    on the 5th consecutive violation.
-    """
-    conn = kb.connect()
-    try:
-        strict = kb.create_task(
-            conn, title="strict", assignee="worker", max_retries=1,
-        )
-        _drive_protocol_violation(conn, strict, 992000)
-        task = kb.get_task(conn, strict)
-        assert task.status == "blocked", (
-            f"max_retries=1 must block on the first violation, got {task.status}"
-        )
-        gave_up = [e for e in kb.list_events(conn, strict) if e.kind == "gave_up"]
-        assert len(gave_up) == 1
-        payload = gave_up[0].payload or {}
-        assert payload.get("protocol_violations") == 1
-        assert payload.get("protocol_violation_limit") == 1
-
-        lenient = kb.create_task(
-            conn, title="lenient", assignee="worker", max_retries=5,
-        )
-        for i in range(4):
-            _drive_protocol_violation(conn, lenient, 992100 + i)
-            assert kb.get_task(conn, lenient).status == "ready", (
-                f"violation {i + 1}/5 should retry under max_retries=5"
-            )
-        _drive_protocol_violation(conn, lenient, 992104)
-        assert kb.get_task(conn, lenient).status == "blocked"
     finally:
         conn.close()
 

@@ -171,6 +171,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Platform-native interaction hook. Fired for authorized callback actions
+    # that were not claimed by a built-in platform handler. The first plugin
+    # returning {"handled": True, ...} owns the action. Platform adapters pass
+    # normalized scalar context only; transport objects stay inside the host.
+    "platform_callback",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs an approval decision -- fires for CLI-interactive prompts,
     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.

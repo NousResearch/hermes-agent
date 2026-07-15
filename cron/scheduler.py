@@ -1488,6 +1488,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+    inline_keyboard = job.get("inline_keyboard")
 
     for target in targets:
         platform_name = target["platform"]
@@ -1676,6 +1677,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
+
+            if platform == Platform.TELEGRAM and inline_keyboard is not None:
+                route_metadata["inline_keyboard"] = inline_keyboard
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
@@ -1900,7 +1904,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+                inline_keyboard=inline_keyboard,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError as run_err:
@@ -1929,7 +1941,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        future = pool.submit(
+                            asyncio.run,
+                            _send_to_platform(
+                                platform,
+                                pconfig,
+                                chat_id,
+                                cleaned_delivery_content,
+                                thread_id=thread_id,
+                                media_files=media_files,
+                                inline_keyboard=inline_keyboard,
+                            ),
+                        )
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)

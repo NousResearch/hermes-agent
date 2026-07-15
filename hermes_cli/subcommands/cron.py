@@ -67,6 +67,17 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         ),
     )
     cron_create.add_argument(
+        "--button",
+        dest="buttons",
+        action="append",
+        metavar="LABEL=CALLBACK_DATA",
+        help=(
+            "Attach a Telegram inline action to the delivered message. "
+            "Repeat for multiple buttons. Callback data is handled by an "
+            "enabled platform_callback plugin."
+        ),
+    )
+    cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
@@ -129,6 +140,13 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         action="store_const",
         const=False,
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
+    )
+    cron_edit.add_argument(
+        "--button",
+        dest="buttons",
+        action="append",
+        metavar="LABEL=CALLBACK_DATA",
+        help="Replace the job's Telegram inline actions. Repeat for multiple buttons.",
     )
     cron_edit.add_argument(
         "--workdir",

@@ -3881,6 +3881,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
+
+        inline_keyboard = None
+        if metadata and "inline_keyboard" in metadata:
+            inline_keyboard = self._plugin_callback_keyboard(
+                metadata.get("inline_keyboard")
+            )
+            if inline_keyboard is None:
+                return SendResult(
+                    success=False,
+                    error="invalid inline_keyboard metadata",
+                    retryable=False,
+                )
         
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -3888,7 +3900,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # through to the legacy MarkdownV2 path on permanent/capability
             # errors or DM-topic routing skips; returns directly on success or
             # on a transient failure (which must NOT be legacy-resent).
-            if self._should_attempt_rich(content, metadata=metadata):
+            if inline_keyboard is None and self._should_attempt_rich(content, metadata=metadata):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
@@ -3942,6 +3954,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
+                action_kwargs = (
+                    {"reply_markup": inline_keyboard}
+                    if inline_keyboard is not None and i == len(chunks) - 1
+                    else {}
+                )
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
@@ -3997,6 +4014,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                **action_kwargs,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -4011,6 +4029,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    **action_kwargs,
                                 )
                             else:
                                 raise
@@ -5940,8 +5959,16 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
-        # --- Update prompt callbacks ---
+        # --- Plugin-owned platform callbacks ---
         if not data.startswith("update_prompt:"):
+            await self._handle_platform_callback_hook(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))
@@ -5977,6 +6004,113 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    @staticmethod
+    def _plugin_callback_keyboard(rows: object):
+        """Build a bounded Telegram keyboard from normalized plugin output."""
+        if not isinstance(rows, list) or not 1 <= len(rows) <= 8:
+            return None
+        keyboard = []
+        for row in rows:
+            if not isinstance(row, list) or not 1 <= len(row) <= 8:
+                return None
+            built_row = []
+            for button in row:
+                if not isinstance(button, dict):
+                    return None
+                text = button.get("text")
+                callback_data = button.get("callback_data")
+                if not isinstance(text, str) or not text.strip() or len(text) > 64:
+                    return None
+                if (
+                    not isinstance(callback_data, str)
+                    or not callback_data
+                    or len(callback_data.encode("utf-8")) > 64
+                ):
+                    return None
+                built_row.append(
+                    InlineKeyboardButton(text=text, callback_data=callback_data)
+                )
+            keyboard.append(built_row)
+        return InlineKeyboardMarkup(keyboard)
+
+    async def _handle_platform_callback_hook(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Offer an unclaimed, authorized callback to enabled plugins."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        chat_type_value = getattr(query_chat_type, "value", query_chat_type)
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(chat_type_value) if chat_type_value is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to use this action.")
+            return
+
+        message = getattr(query, "message", None)
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            results = await asyncio.to_thread(
+                invoke_hook,
+                "platform_callback",
+                platform="telegram",
+                callback_data=data,
+                user_id=caller_id,
+                user_name=str(query_user_name or ""),
+                chat_id=str(query_chat_id) if query_chat_id is not None else None,
+                chat_type=str(chat_type_value) if chat_type_value is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                message_id=(
+                    str(getattr(message, "message_id"))
+                    if getattr(message, "message_id", None) is not None
+                    else None
+                ),
+                message_text=str(getattr(message, "text", "") or ""),
+            )
+        except Exception:
+            logger.warning("[%s] platform callback hook dispatch failed", self.name, exc_info=True)
+            results = []
+
+        handled = next(
+            (
+                result
+                for result in results
+                if isinstance(result, dict) and result.get("handled") is True
+            ),
+            None,
+        )
+        if handled is None:
+            await query.answer(text="Action unavailable.")
+            return
+
+        answer = handled.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            answer = "Done"
+        await query.answer(
+            text=answer.strip()[:200],
+            show_alert=bool(handled.get("show_alert", False)),
+        )
+
+        if "buttons" in handled:
+            reply_markup = self._plugin_callback_keyboard(handled.get("buttons"))
+            if reply_markup is None:
+                logger.warning("[%s] platform callback returned an invalid keyboard", self.name)
+                return
+            try:
+                await query.edit_message_reply_markup(reply_markup=reply_markup)
+            except Exception:
+                logger.debug("[%s] platform callback keyboard update failed", self.name, exc_info=True)
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

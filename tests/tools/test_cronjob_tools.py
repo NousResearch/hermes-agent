@@ -264,6 +264,30 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_create_persists_validated_inline_buttons(self):
+        from cron.jobs import get_job
+
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Daily Radar",
+                schedule="every 1h",
+                deliver="telegram",
+                buttons=[
+                    "Relevant=zbr:relevant",
+                    "Zu technisch=zbr:technical",
+                    "Bezug fehlt=zbr:missing",
+                ],
+            )
+        )
+
+        assert created["success"] is True
+        assert get_job(created["job_id"])["inline_keyboard"] == [[
+            {"text": "Relevant", "callback_data": "zbr:relevant"},
+            {"text": "Zu technisch", "callback_data": "zbr:technical"},
+            {"text": "Bezug fehlt", "callback_data": "zbr:missing"},
+        ]]
+
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs
 

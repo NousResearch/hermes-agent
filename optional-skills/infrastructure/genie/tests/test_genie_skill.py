@@ -65,19 +65,34 @@ def test_genie_help():
 
 
 def test_genie_assess_dry_run(tmp_vps, monkeypatch):
-    """Genie --assess should report disk usage without errors."""
+    """Genie --assess should report disk usage without errors.
+
+    Config now comes from config.yaml (skills.config.genie.*), not env vars.
+    We point HERMES_HOME/HERMES_PROFILE at the temp VPS so the profile-scoped
+    paths (PROFILE_HOME/state-snapshots, logs, etc.) resolve into tmp_vps.
+    """
     import subprocess
-    monkeypatch.setenv("GENIE_SNAPSHOTS_PATH", str(tmp_vps / "state-snapshots"))
-    monkeypatch.setenv("GENIE_LOGS_PATH", str(tmp_vps / "logs"))
-    monkeypatch.setenv("GENIE_SESSIONS_PATH", str(tmp_vps / "sessions"))
-    monkeypatch.setenv("GENIE_CRON_OUTPUT_PATH", str(tmp_vps / "cron-output"))
-    monkeypatch.setenv("GENIE_COMMONS_PATH", str(tmp_vps / "commons"))
+
+    # tmp_vps is the HERMES_HOME root; create the profiles/<profile> layout.
+    profile = "indigo"
+    profile_home = tmp_vps / "profiles" / profile
+    for sub in ("state-snapshots", "logs", "sessions", "cron-output", "commons"):
+        (profile_home / sub).mkdir(parents=True, exist_ok=True)
+
+    # Move the fixture top-level dirs into the profile layout genie expects.
+    for name in ("state-snapshots", "logs", "sessions", "cron-output", "commons"):
+        src = tmp_vps / name
+        if src.exists():
+            dest = profile_home / name
+            for item in src.iterdir():
+                shutil.move(str(item), str(dest / item.name))
+            src.rmdir()
 
     result = subprocess.run(
         ["python3", os.path.join(os.path.dirname(__file__), "..", "scripts", "genie.py"), "--assess"],
         capture_output=True,
         text=True,
-        env={**os.environ, "GENIE_SNAPSHOTS_PATH": str(tmp_vps / "state-snapshots")},
+        env={**os.environ, "HERMES_HOME": str(tmp_vps), "HERMES_PROFILE": profile},
     )
     # Should not crash
     assert result.returncode == 0 or "Error" not in result.stderr

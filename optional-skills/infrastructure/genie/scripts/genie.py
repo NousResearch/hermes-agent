@@ -20,7 +20,7 @@ Usage:
 
 FILESYSTEM.md integration:
   If FILESYSTEM.md exists at ~/.hermes/profiles/<profile>/references/FILESYSTEM.md
-  (or the path in GENIE_FILESYSTEM_MD), genie reads the cleanup-manifest section
+  (or the path in skills.config.genie.filesystem_md), genie reads the cleanup-manifest section
   and merges it with built-in defaults. Discovered paths extend — never replace —
   the built-in knowledge.
 
@@ -55,33 +55,85 @@ if HERMES_HOME.endswith(os.path.join("profiles", PROFILE)):
 PROFILE_HOME = os.path.join(HERMES_HOME, "profiles", PROFILE)
 
 # FILESYSTEM.md locations to check (in order)
+# ── Config loading (config.yaml, NOT environment variables) ───────────────
+# Hermes policy (AGENTS.md): non-secret behavioral settings — retention
+# thresholds, dry-run, paths — live in config.yaml under
+# ``skills.config.genie.<key>``, never in environment variables.
+# We resolve them here; CLI flags and built-in defaults supply overrides /
+# fallbacks. (HERMES_HOME / HERMES_PROFILE remain the only env inputs — they
+# locate the runtime, not behavior.)
+
+def _load_root_config() -> dict:
+    """Read $HERMES_HOME/config.yaml via PyYAML. Returns {} if absent/unreadable."""
+    path = os.path.join(HERMES_HOME, "config.yaml")
+    if not os.path.exists(path):
+        return {}
+    try:
+        import yaml  # Hermes already ships PyYAML
+    except Exception:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _skill_config(key: str, default):
+    """Resolve ``skills.config.genie.<key>`` from config.yaml.
+
+    Falls back to ``default`` when the key is unset or empty. Boolean and int
+    coercion follows the declared default's type.
+    """
+    node = _load_root_config()
+    for part in ("skills", "config", "genie", key):
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        else:
+            return default
+    if node is None or (isinstance(node, str) and not node.strip()):
+        return default
+    if isinstance(default, bool):
+        return str(node).strip().lower() in {"1", "true", "yes", "on"}
+    if isinstance(default, int):
+        try:
+            return int(node)
+        except (TypeError, ValueError):
+            return default
+    return node
+
+
+# FILESYSTEM.md locations to check (in order). The first entry is the optional
+# override path, configurable via skills.config.genie.filesystem_md.
 FILESYSTEM_MD_PATHS = [
-    os.environ.get("GENIE_FILESYSTEM_MD", ""),
+    os.path.expanduser(str(_skill_config("filesystem_md", "") or "")),
     os.path.join(PROFILE_HOME, "references", "FILESYSTEM.md"),
     os.path.join(HERMES_HOME, "references", "FILESYSTEM.md"),
     os.path.join(HERMES_HOME, "FILESYSTEM.md"),
 ]
 
 DEFAULTS = {
-    "snapshot_max_age_days": int(os.environ.get("GENIE_SNAPSHOT_MAX_AGE_DAYS", 7)),
-    "log_compress_age_days": int(os.environ.get("GENIE_LOG_COMPRESS_AGE_DAYS", 7)),
-    "log_delete_age_days": int(os.environ.get("GENIE_LOG_DELETE_AGE_DAYS", 30)),
-    "cron_output_compress_age_days": int(os.environ.get("GENIE_CRON_OUTPUT_COMPRESS_AGE_DAYS", 7)),
-    "session_compress_age_days": int(os.environ.get("GENIE_SESSION_COMPRESS_AGE_DAYS", 14)),
-    "dry_run": os.environ.get("GENIE_DRY_RUN", "false").lower() == "true",
-    "tier_limit": os.environ.get("GENIE_TIER_LIMIT", "3"),
-    "state_db_path": os.environ.get("GENIE_STATE_DB_PATH", os.path.join(PROFILE_HOME, "state.db")),
-    "sessions_path": os.environ.get("GENIE_SESSIONS_PATH", os.path.join(PROFILE_HOME, "sessions")),
-    "logs_path": os.environ.get("GENIE_LOGS_PATH", os.path.join(PROFILE_HOME, "logs")),
-    "cron_output_path": os.environ.get("GENIE_CRON_OUTPUT_PATH", os.path.join(PROFILE_HOME, "cron-output")),
-    "snapshots_path": os.environ.get("GENIE_SNAPSHOTS_PATH", os.path.join(PROFILE_HOME, "state-snapshots")),
-    "commons_path": os.environ.get("GENIE_COMMONS_PATH", os.path.join(PROFILE_HOME, "commons")),
-    "backups_path": os.environ.get("GENIE_BACKUPS_PATH", "/root/backups"),
-    "backup_paths": os.environ.get("GENIE_BACKUP_PATHS", "/root/backup:/root/backups").split(":"),
-    "historical_backup_keep_count": int(os.environ.get("GENIE_HISTORICAL_BACKUP_KEEP_COUNT", 1)),
-    "tmp_stale_hours": int(os.environ.get("GENIE_TMP_STALE_HOURS", 24)),
-    "git_clone_max_age_days": int(os.environ.get("GENIE_GIT_CLONE_MAX_AGE_DAYS", 5)),
-    "git_clones_path": os.environ.get("GENIE_GIT_CLONES_PATH", "/root/projects"),
+    "snapshot_max_age_days": _skill_config("snapshot_max_age_days", 7),
+    "log_compress_age_days": _skill_config("log_compress_age_days", 7),
+    "log_delete_age_days": _skill_config("log_delete_age_days", 30),
+    "cron_output_compress_age_days": _skill_config("cron_output_compress_age_days", 7),
+    "session_compress_age_days": _skill_config("session_compress_age_days", 14),
+    "dry_run": _skill_config("dry_run", False),
+    "tier_limit": "3",
+    "state_db_path": os.path.join(PROFILE_HOME, "state.db"),
+    "sessions_path": os.path.join(PROFILE_HOME, "sessions"),
+    "logs_path": os.path.join(PROFILE_HOME, "logs"),
+    "cron_output_path": os.path.join(PROFILE_HOME, "cron-output"),
+    "snapshots_path": os.path.join(PROFILE_HOME, "state-snapshots"),
+    "commons_path": os.path.join(PROFILE_HOME, "commons"),
+    "backups_path": "/root/backups",
+    "backup_paths": ["/root/backup", "/root/backups"],
+    "historical_backup_keep_count": 1,
+    "tmp_stale_hours": _skill_config("tmp_stale_hours", 24),
+    "git_clone_max_age_days": _skill_config("git_clone_max_age_days", 5),
+    "git_clones_path": "/root/projects",
+    "allow_local_state_db_backup": _skill_config("allow_local_state_db_backup", False),
 }
 
 # Built-in cleanup targets: path → {tier, action, max_age_days, ...}
@@ -282,8 +334,8 @@ def backup_retention_plan(cfg):
     candidates = historical_backup_candidates(cfg)
     # Local full state.db copies are not valid retained backups by default: they
     # duplicate live data and are the primary disk-balloon failure mode. They are
-    # removed unless explicitly allowed with GENIE_ALLOW_LOCAL_STATE_DB_BACKUP=1.
-    allow_state_db = os.environ.get("GENIE_ALLOW_LOCAL_STATE_DB_BACKUP", "false").lower() in {"1", "true", "yes"}
+    # removed unless explicitly allowed via skills.config.genie.allow_local_state_db_backup.
+    allow_state_db = cfg.get("allow_local_state_db_backup", False)
     invalid = []
     valid = []
     for item in candidates:

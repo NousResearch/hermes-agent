@@ -64,7 +64,7 @@ Safely reclaims disk space on Linux VPS and workstations by deleting or compress
 
 No external dependencies — uses only Python 3.11+ stdlib.
 
-Optional: set `GENIE_*` environment variables to override defaults (see Configuration below).
+Configuration lives in `config.yaml` under `skills.config.genie.*` (see Configuration below). Behavioral settings are never read from environment variables.
 
 ## How to Run
 
@@ -186,15 +186,23 @@ When disk is critically high, flag these in the report even if `--clean` cannot 
 
 ## Configuration
 
-| Variable | Default | Description |
+Genie reads all behavioral settings from `config.yaml` under
+`skills.config.genie.*`. Set them with `hermes config set` or by editing
+`config.yaml` directly. CLI flags (e.g. `--dry-run`) override config at runtime.
+Any setting not present falls back to the built-in default shown below.
+
+| Config key (`skills.config.genie.*`) | Default | Description |
 |---|---|---|
-| `GENIE_SNAPSHOT_MAX_AGE_DAYS` | 7 | Delete snapshots older than N days |
-| `GENIE_LOG_COMPRESS_AGE_DAYS` | 7 | Compress logs older than N days |
-| `GENIE_LOG_DELETE_AGE_DAYS` | 30 | Delete compressed logs older than N days |
-| `GENIE_CRON_OUTPUT_COMPRESS_AGE_DAYS` | 7 | Compress cron output older than N days |
-| `GENIE_SESSION_COMPRESS_AGE_DAYS` | 14 | Compress session JSONs older than N days |
-| `GENIE_TMP_STALE_HOURS` | 24 | Delete /tmp files older than N hours (0 to skip) |
-| `GENIE_DRY_RUN` | false | If true, only report — don't delete/compress |
+| `snapshot_max_age_days` | 7 | Delete snapshots older than N days |
+| `log_compress_age_days` | 7 | Compress logs older than N days |
+| `log_delete_age_days` | 30 | Delete compressed logs older than N days |
+| `cron_output_compress_age_days` | 7 | Compress cron output files older than N days |
+| `session_compress_age_days` | 14 | Compress session JSONs older than N days |
+| `tmp_stale_hours` | 24 | Delete /tmp files older than N hours (0 to skip) |
+| `git_clone_max_age_days` | 5 | Delete git clones in /root/projects/ untouched for N days (must have remote) |
+| `dry_run` | false | If true, only report — don't delete/compress |
+| `filesystem_md` | (empty) | Optional override path for FILESYSTEM.md |
+| `allow_local_state_db_backup` | false | If true, local full state.db copies count as valid retained backups |
 
 ## Verification
 

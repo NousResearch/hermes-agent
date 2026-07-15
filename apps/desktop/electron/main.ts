@@ -558,10 +558,14 @@ function getTitleBarOverlayOptions() {
     return { height: macTitleBarOverlayHeight({ darwinMajor: DARWIN_MAJOR, titlebarHeight: TITLEBAR_HEIGHT }) }
   }
 
-  // WSLg paints WCO via the RDP host's own min/max/close, so requesting
-  // an Electron overlay there just leaves a dead gap. Plain Linux (KDE,
-  // GNOME) can use the native overlay — let it through.
-  if (!IS_WINDOWS && IS_WSL) {
+  // Linux: the native min/max/close overlay is the OS window-manager's
+  // frame, which users with a minimalist (frameless) desktop don't want.
+  // The renderer already paints its own frameless titlebar with drag
+  // regions and has no in-renderer window buttons, so dropping the overlay
+  // removes the native controls while keeping the window moveable. (WSLg
+  // was already excluded for a different reason: it paints WCO via the RDP
+  // host's own buttons, so the overlay would just leave a dead gap.)
+  if (!IS_WINDOWS && !IS_MAC) {
     return false
   }
 
@@ -4419,7 +4423,7 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC, isLinux: process.platform === 'linux' })
 }
 
 function getWindowState() {

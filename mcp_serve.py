@@ -818,6 +818,31 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
 
+    # -- consult_colleague ---------------------------------------------------
+
+    @mcp.tool()
+    def consult_colleague(agent: str, query: str) -> str:
+        """Ask another Toryx Managing Director a single focused question and
+        return their answer. Runs the colleague's full agent loop as a
+        same-host subprocess (no email, no network, no message sent to any
+        external channel or human — agent-to-agent only).
+
+        Colleague must be one of: scarlett, christopher, hilary, elon, eva,
+        ray. Do not chain multiple consults — call this once per question.
+
+        Args:
+            agent: Which colleague to consult (scarlett, christopher, hilary, elon, eva, ray).
+            query: The full, self-contained question — the colleague will NOT
+                see the surrounding conversation.
+        """
+        try:
+            from tools.consult_colleague_tool import consult_colleague as _consult
+            return _consult(agent=agent, query=query)
+        except ImportError:
+            return json.dumps({"error": "consult_colleague tool not available"})
+        except Exception as e:
+            return json.dumps({"error": f"consult failed: {e}"})
+
     # -- permissions_list_open ---------------------------------------------
 
     @mcp.tool()

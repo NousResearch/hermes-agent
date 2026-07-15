@@ -10,12 +10,13 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
+import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-
+from typing import Any, Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -1030,6 +1031,7 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     purge_ids = list(getattr(args, "purge_ids", None) or [])
+    reason = (getattr(args, "reason", None) or "").strip() or None
     if ids and purge_ids:
         return _err("choose either task_ids to archive or --rm archived task_ids")
     if not ids and not purge_ids:
@@ -1038,7 +1040,7 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
-        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
+        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid, reason=reason),
                            lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
 
 

@@ -3586,9 +3586,6 @@ def decompose_triage_task(
     # children in ``todo`` for manual-review-first workflows.
     if auto_promote:
         recompute_ready(conn)
-    return child_ids
-
-
 def _insert_decomposed_child(
     conn: sqlite3.Connection, root_id: str, root_row: sqlite3.Row, child: dict,
     author: Optional[str], now: int,
@@ -3633,7 +3630,12 @@ def _insert_decomposed_child(
     return new_id
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -3647,7 +3649,30 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        payload = {"reason": reason} if reason else None
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
+    # ``archived`` parents no longer block children; promote them now.
+    recompute_ready(conn)
+    # Reap the workspace on archive too (never-completed tasks kept it forever).
+    _cleanup_workspace(conn, task_id)
+    return True
+
+
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'archived', "
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status != 'archived'", (task_id,),
+        )
+        if cur.rowcount != 1:
+            return False
+        # Archived mid-run (dashboard): close the run so history isn't orphaned.
+        run_id = _end_run(
+            conn, task_id, outcome="reclaimed", status="reclaimed",
+            summary="task archived with run still active",
+        )
+        payload = {"reason": reason} if reason else None
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).

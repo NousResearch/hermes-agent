@@ -11547,6 +11547,43 @@ def cmd_profile(args):
             sys.exit(0 if ok_count == 1 else 1)
         sys.exit(0 if ok_count > 0 else 1)
 
+    elif action == "audit":
+        from hermes_cli.profile_audit import (
+            audit_profiles,
+            load_policy,
+            render_text,
+        )
+        from hermes_cli.profiles import _get_profiles_root
+
+        profiles_root = Path(
+            getattr(args, "profiles_root", None) or _get_profiles_root()
+        ).expanduser()
+        kanban_db = Path(
+            getattr(args, "kanban_db", None) or profiles_root.parent / "kanban.db"
+        ).expanduser()
+        since_days = getattr(args, "since_days", 30)
+        if since_days < 0:
+            print("profile audit: --since-days must be 0 or greater", file=sys.stderr)
+            sys.exit(2)
+        try:
+            policy_arg = getattr(args, "policy", None)
+            policy = load_policy(Path(policy_arg).expanduser() if policy_arg else None)
+        except ValueError as exc:
+            print(f"profile audit: {exc}", file=sys.stderr)
+            sys.exit(2)
+        report = audit_profiles(
+            profiles_root,
+            kanban_db,
+            policy=policy,
+            since_days=since_days,
+        )
+        if getattr(args, "format", "text") == "json":
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(render_text(report))
+        if getattr(args, "strict", False) and report["summary"]["issues"]:
+            sys.exit(1)
+
     elif action == "show":
         name = args.profile_name
         from hermes_cli.profiles import (

@@ -66,6 +66,7 @@ def test_profile_has_expected_actions():
         "use": ["work"],
         "create": ["work"],
         "delete": ["work"],
+        "audit": [],
         "show": ["work"],
         "rename": ["old", "new"],
         "export": ["work"],
@@ -74,6 +75,25 @@ def test_profile_has_expected_actions():
     for action, extra in cases.items():
         ns = p.parse_args(["profile", action, *extra])
         assert ns.profile_action == action
+
+
+def test_profile_audit_options():
+    p = _profile_parser()
+    ns = p.parse_args([
+        "profile", "audit",
+        "--profiles-root", "/profiles",
+        "--kanban-db", "/state/kanban.db",
+        "--policy", "/policy.yaml",
+        "--since-days", "7",
+        "--format", "json",
+        "--strict",
+    ])
+    assert ns.profiles_root == "/profiles"
+    assert ns.kanban_db == "/state/kanban.db"
+    assert ns.policy == "/policy.yaml"
+    assert ns.since_days == 7
+    assert ns.format == "json"
+    assert ns.strict is True
 
 
 def test_gateway_and_proxy_dispatch():

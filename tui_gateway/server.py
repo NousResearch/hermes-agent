@@ -13523,6 +13523,18 @@ def _(rid, params: dict) -> dict:
                 global _voice_event_sid
                 _voice_event_sid = params.get("session_id") or _voice_event_sid
 
+            # Interrupt any in-flight TTS playback before opening the mic —
+            # mirrors cli.py's Ctrl+B handler (classic CLI). Without this the
+            # TUI's record key starts listening but leaves TTS audio playing
+            # in the background, since nothing else in this path ever calls
+            # stop_playback() (parity fix — TUI previously had no interrupt).
+            try:
+                from tools.voice_mode import stop_playback
+
+                stop_playback()
+            except Exception:
+                pass
+
             from hermes_cli.voice import start_continuous
 
             # Shape-safe lookups: malformed ``voice:`` YAML (bool/scalar/list)

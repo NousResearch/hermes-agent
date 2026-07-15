@@ -1506,9 +1506,10 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     # missing target before checking the resolved-target boundary so one safe
     # placeholder does not abort the whole listing. Permission and other I/O
     # errors still pass through the existing boundary/error handling below.
+    st = None
     if target.is_symlink():
         try:
-            resolved.stat()
+            st = resolved.stat()
         except FileNotFoundError:
             return {
                 "name": target.name or resolved.name or str(resolved),
@@ -1525,12 +1526,13 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
-    try:
-        st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+    if st is None:
+        try:
+            st = resolved.stat()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
-    is_dir = resolved.is_dir()
+    is_dir = stat.S_ISDIR(st.st_mode)
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
     return {
         "name": target.name or resolved.name or str(resolved),

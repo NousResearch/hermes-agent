@@ -3258,8 +3258,22 @@ This compaction should PRIORITISE preserving all information related to the focu
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
             })
 
+        _prev_tail_content = None
         for i in range(compress_end, n_messages):
             msg = _fresh_compaction_message_copy(messages[i])
+            # Deduplicate consecutive identical assistant messages
+            # in the tail window. Model turns frequently repeat the
+            # same final output (\"103 passed!\") that compounds across
+            # compression cycles. Reset tracker on every intervening
+            # non-assistant or tool_calls-bearing message so the
+            # guard is limited to truly consecutive identical items.
+            if msg.get("role") != "assistant" or msg.get("tool_calls"):
+                _prev_tail_content = None
+            else:
+                _msg_content = msg.get("content")
+                if _msg_content == _prev_tail_content:
+                    continue
+                _prev_tail_content = _msg_content
             if _merge_summary_into_tail and i == compress_end:
                 # Merge the summary into the first tail message, but place
                 # the END MARKER at the very end so the model sees an

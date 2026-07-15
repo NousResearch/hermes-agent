@@ -1,56 +1,50 @@
 ---
 name: provider-validation-harness
-description: Use when validating whether a provider, model, or OpenAI-compatible endpoint is ready for real Hermes agent-loop/tool-call use. Runs receipt-based `hermes providers validate` checks and frames results as deployment readiness, not a leaderboard.
-version: 1.0.0
+description: Use when running the tier-0 provider compatibility smoke through real Hermes agent-loop turns and persisted SessionDB receipts. It is a narrow compatibility check, never Hermes qualification, replacement evidence, or routing authority.
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
   hermes:
-    tags: [providers, validation, hermes, tool-calling, local-models, evaluation]
+    tags: [providers, validation, hermes, tool-calling, local-models, compatibility]
     related_skills: [hermes-agent, github-pr-workflow, requesting-code-review]
 ---
 
-# Provider Validation Harness
+# Tier-0 Provider Compatibility Smoke
 
-## Overview
+## Purpose and ownership
 
-Use this skill when a user wants to know whether a model, provider, or local endpoint is **Hermes-ready**. A model that answers normal chat is not necessarily ready for Hermes. Hermes readiness means the model/provider can survive the real agent loop: tool schemas, actual tool calls, persisted sessions, recovery from failed tool calls, refusal/abstention boundaries, and user-visible output hygiene.
+Use this skill when a user needs a narrow answer to: “Does this configured
+provider/model execute these representative Hermes turns and leave valid
+receipts?” The command runs real `hermes chat -Q` subprocesses and checks the
+persisted SessionDB lineage. A raw `/v1/chat/completions` response is not a
+Hermes receipt and cannot answer this question.
 
-The harness is intentionally a deployment-readiness screen, not a benchmark. It runs real `hermes chat -Q` subprocess turns and scores the resulting session receipts. Direct `/v1/chat/completions` probes only prove that an endpoint responds; they do not prove agent-loop behavior.
+The initial harness was authored by Drew Schuyler. Preserve Drew-first credit
+and authorship in follow-up changes; adaptations and receipt repairs belong in
+separate commits.
 
-## When to Use
+This is a tier-0 compatibility smoke only. It is not full qualification, a
+benchmark, replacement evidence, a leaderboard, or permission to route user
+traffic. Candidate-vs-incumbent evaluation is a
+separate planned lane and is not implemented by this command.
 
-Use this skill for:
+## When to use
 
-- Validating a newly configured provider/model before recommending it for Hermes use.
-- Checking an OpenAI-compatible local endpoint before promoting it into a Hermes lane.
-- Comparing runtime variants such as MTP on/off, speculative decoding, quantization, prompt caching, context length, or inference server changes.
-- Preparing or reviewing PRs that add provider-readiness validation to Hermes.
-- Investigating claims like “this provider works” when only raw chat or curl tests have passed.
+Use it for:
 
-Do **not** use this as:
+- a configured provider/model or OpenAI-compatible local endpoint;
+- a focused check that the real Hermes CLI, tool schemas, and session store work
+  together;
+- diagnosing a provider path before a separately approved evaluation.
 
-- a public model leaderboard;
-- an MMLU/GSM8K/arena-style intelligence benchmark;
-- a substitute for full task-specific evaluation;
-- proof that all Hermes tools work under all contexts;
-- permission to send private workflows or vault data through cloud providers.
+Do not use it to claim that all Hermes tools, loaded context, skills, memory,
+multi-turn continuity, compression, safety, performance, or production tasks
+have passed. Do not put private workflows or secrets in prompts or receipts.
 
-## Core Principle
+## Current command
 
-Provider validation asks:
-
-> Can this model/provider preserve real Hermes agent-loop behavior with receipts?
-
-It does **not** ask:
-
-> Which model is smartest?
-
-Correctness comes before speed. A faster endpoint is not better if it breaks tool calls, emits malformed tool arguments, leaks hidden reasoning markers, fabricates file/tool work, or fails recovery behavior.
-
-## Current CLI Shape
-
-The harness command lives under `hermes providers validate`:
+The only supported command in this milestone is `validate`:
 
 ```bash
 hermes providers validate \
@@ -62,55 +56,96 @@ hermes providers validate \
   --timeout 120
 ```
 
+`--toolsets file` is intentional for this compatibility smoke. Do not present
+it as full-harness coverage or expand it to other toolsets through this command.
+There is no `evaluate`, `score`, `archive`, promotion, or automatic routing
+command in this milestone.
+
 Arguments:
 
-- `--provider`: provider to validate. Omit to use the configured provider.
-- `--model`: model to validate. Omit to use the configured model.
-- `--toolsets`: comma-separated toolsets for validation turns. Default: `file`.
-- `--suite`: validation suite. Current suite: `agent-readiness`.
-- `--out`: directory for JSONL/JSON/Markdown receipts. If omitted, Hermes creates a temp dir.
-- `--timeout`: per-case timeout in seconds. Default: `120`.
+- `--provider`: provider to exercise; omit to use the configured provider.
+- `--model`: model to exercise; omit to use the configured model.
+- `--toolsets`: toolsets for these turns; the compatibility mode defaults to
+  `file`.
+- `--suite`: currently `agent-readiness`, the frozen six-case compatibility
+  smoke.
+- `--out`: output directory for deterministic local receipts; omitted means a
+  temporary directory.
+- `--timeout`: per-case timeout in seconds; default `120`.
 
-## What the Agent-Readiness Suite Checks
+## Receipt contract
 
-The current `agent-readiness` suite uses a temporary fixture directory and real `hermes chat -Q` subprocesses. It checks these behaviors:
+Every case must retain raw stdout and stderr, including partial output from a
+timeout. A printed `session_id` or a plausible final answer is insufficient.
+The case passes the receipt gate only when the harness successfully resolves
+and loads that session from SessionDB, then writes the loaded messages to
+`raw/<case>.session.json`. Missing or invalid session ids, load errors, and
+timeouts fail honestly and write `raw/<case>.session-error.txt` when applicable.
 
-- **No-tool abstention:** answer exactly without calling tools when tools are unnecessary.
-- **Real file read:** call `read_file` and report a marker from an actual file.
-- **Real file search:** call `search_files` and report a marker found under a fixture tree.
-- **Failed read recovery:** attempt a missing file, recover by reading the correct file, and finish correctly.
-- **Side-effect abstention:** avoid write/patch/terminal/code-execution tools when asked for a side effect that should be blocked.
-- **Visible reasoning hygiene:** do not leak `<think>`, `<reasoning>`, scratchpad, or hidden reasoning markers into the final user-visible answer.
+Tool receipts are ordered records, not a list of names. Each record includes the
+tool name, parsed arguments, result content, and normalized status. The recovery
+case must prove, in order, a failed `read_file` for the expected missing path
+followed by a successful `read_file` for the expected fixture path. The
+abstention case must also prove that its forbidden output artifact does not
+exist after the turn.
 
-Scoring checks include:
+The final answer is read from the loaded session messages. Stdout never acts as
+a fallback for a missing receipt.
 
-- subprocess exit status;
-- session id discovered in stdout/stderr;
-- expected final text found;
-- required tools called;
-- forbidden tools absent;
-- no tools called when tools were forbidden/unnecessary;
-- visible reasoning markers absent from final text.
+## Frozen tier-0 cases
 
-The suite reads persisted Hermes session messages to verify actual tool calls. Assistant text claiming a tool was used is not enough.
+The compatibility smoke uses a temporary fixture directory and six real
+`hermes chat -Q` turns:
 
-## Standard Workflow
+- no-tool abstention;
+- real `read_file` marker read;
+- real `search_files` marker search;
+- failed-read recovery with expected paths and order;
+- side-effect abstention plus forbidden-artifact absence;
+- visible-reasoning-marker hygiene.
 
-1. **Confirm the question.** Decide whether you are validating a provider/model, a local endpoint, or a runtime optimization variant.
-2. **Keep scope narrow.** Start with `--toolsets file` unless the user explicitly needs broader tool behavior.
-3. **Run the harness.** Save receipts with `--out` when the result matters.
-4. **Inspect the summary.** Read `summary.md` or `summary.json` in the output directory.
-5. **Inspect failures.** For failed cases, check `results.jsonl` and `raw/<case>.session.json`, plus stdout/stderr.
-6. **Classify the result.** Use the failure taxonomy below.
-7. **Report with receipts.** Include provider, model, suite, pass count, output directory, and the specific failure reason.
+The checks cover subprocess success, session-id discovery, successful SessionDB
+loading, expected final text, required/forbidden tools, ordered tool receipts,
+no-tool abstention, artifact absence, and visible output hygiene. Internal
+reasoning fields in a receipt are diagnostic; markers in the final visible text
+fail the case.
+
+## Result policy
+
+The summary reports only screening outcomes from the allowed set:
+
+- `SCREEN-PASS`: all six compatibility cases and receipt gates passed;
+- `REJECT`: a behavioral case failed after the receipt path was valid;
+- `GATE-FAILED`: receipt integrity, timeout, missing session, or another
+  non-negotiable execution gate failed;
+- `HOLD`: reserved for an approved screening workflow that is incomplete or
+  intentionally awaiting review.
+
+`PROMOTE-CANDIDATE` is not a tier-0 status. Promotion-grade claims require a
+later preregistered lane with at least 100 cases, paired candidate/incumbent
+evidence, and human-only review.
+
+## Standard workflow
+
+1. Confirm the exact configured provider/model path and use synthetic fixtures.
+2. Run only the compatibility command above; do not mutate config or
+   credentials as part of the smoke.
+3. Save receipts with `--out` when the result matters.
+4. Read `summary.json` and `summary.md`, then inspect failed-case JSONL and raw
+   stdout/stderr/session files.
+5. Confirm every purported pass has a loaded SessionDB receipt and complete
+   tool records, not merely printed text.
+6. Report the exact provider, model, suite, toolset, status, failures, and
+   receipt directory. Do not translate `SCREEN-PASS` into qualification,
+   replacement, promotion, or routing.
 
 Example:
 
 ```bash
 OUT=/tmp/hermes-provider-validation-$(date +%Y%m%d-%H%M%S)
 hermes providers validate \
-  --provider openai-codex \
-  --model gpt-5.5 \
+  --provider custom:local-qwen \
+  --model qwen3-coder \
   --toolsets file \
   --suite agent-readiness \
   --out "$OUT" \
@@ -119,140 +154,54 @@ hermes providers validate \
 sed -n '1,200p' "$OUT/summary.md"
 ```
 
-## Local / OpenAI-Compatible Endpoint Pattern
+For a local endpoint, configure it through normal Hermes provider setup first.
+Keep credentials in the supported secret store. A direct curl check is useful
+diagnosis but is not evidence for this smoke.
 
-For local endpoints, create or select a Hermes provider config that points at the endpoint, then run the same harness. Do not infer Hermes readiness from a direct curl request to `/v1/chat/completions`.
-
-Example shape, assuming a configured custom provider:
-
-```bash
-hermes providers validate \
-  --provider custom:local-qwen \
-  --model Qwen3.6-27B \
-  --toolsets file \
-  --suite agent-readiness \
-  --out /tmp/qwen36-agent-readiness
-```
-
-If the endpoint is only raw-API reachable and not yet configured in Hermes, first add the provider using normal Hermes config/provider setup. Keep secrets in `.env` or config-supported secret fields; do not hardcode credentials in commands, docs, or receipts.
-
-## Runtime Optimization / Variant Evaluation
-
-Use this lane when comparing the **same model** under different runtime settings:
-
-- MTP enabled vs disabled;
-- speculative decoding enabled vs disabled;
-- quantization A vs B;
-- prompt-cache on vs off;
-- context-length settings;
-- batch/concurrency settings;
-- inference servers such as llama.cpp, vLLM, SGLang, TGI, Ollama, or TensorRT-LLM;
-- GPU split/tensor-parallel settings.
-
-Rules:
-
-1. Hold the suite fixed.
-2. Hold model identity as fixed as possible.
-3. Change one runtime variable at a time.
-4. Run the baseline first.
-5. Compare correctness before speed.
-6. Do not promote an optimization that breaks tool calling or receipt verification.
-7. Report the optimization as passing only if it preserves agent behavior and improves the intended metric.
-
-Example A/B run:
-
-```bash
-BASE=/tmp/hermes-qwen36-no-mtp
-MTP=/tmp/hermes-qwen36-mtp
-
-hermes providers validate \
-  --provider custom:qwen36-no-mtp \
-  --model qwen36-27b \
-  --toolsets file \
-  --suite agent-readiness \
-  --out "$BASE"
-
-hermes providers validate \
-  --provider custom:qwen36-mtp \
-  --model qwen36-27b \
-  --toolsets file \
-  --suite agent-readiness \
-  --out "$MTP"
-```
-
-When reporting A/B results, include both receipt paths and state whether the variant preserved readiness before discussing latency or throughput.
-
-## Reading Results
+## Output files
 
 The output directory contains:
 
-- `summary.md`: human-readable summary.
-- `summary.json`: machine-readable suite summary.
-- `results.jsonl`: one JSON result per case.
-- `fixtures/`: temporary test files used by the suite.
-- `raw/<case>.stdout`: captured subprocess stdout.
-- `raw/<case>.stderr`: captured subprocess stderr.
-- `raw/<case>.session.json`: persisted Hermes session messages when a session id was found.
+- `summary.md`: human-readable status and receipt overview;
+- `summary.json`: machine-readable status and per-case results;
+- `results.jsonl`: one serialized result per case;
+- `fixtures/`: synthetic files used by the smoke;
+- `raw/<case>.stdout` and `raw/<case>.stderr`: complete captured streams;
+- `raw/<case>.session.json`: loaded SessionDB messages when valid;
+- `raw/<case>.session-error.txt`: missing-id or load-error evidence.
 
-A real pass requires both the right final text and the right receipts. For tool cases, inspect `tool_calls` in `summary.md`/`results.jsonl` or the raw session JSON.
+## Failure taxonomy
 
-## Failure Taxonomy
+- **Provider unreachable:** subprocess failed before model behavior was
+  evaluated.
+- **Session receipt failure:** no session id, invalid session, or SessionDB load
+  failure; printed output cannot repair this.
+- **Tool receipt failure:** missing/forbidden tool, malformed arguments, absent
+  result, or incorrect status/order/path.
+- **Recovery failure:** the expected failed read and successful read did not
+  occur in the required order and locations.
+- **Side-effect boundary failure:** a forbidden tool was called or the forbidden
+  artifact exists.
+- **Visible reasoning leak:** the final visible text contains `<think>`,
+  `<reasoning>`, or equivalent markers.
+- **Timeout/incomplete:** preserve partial stdout/stderr and classify as a
+  failed gate, not as a pass.
+- **Harness failure:** command, installation, or fixture setup prevented the
+  smoke from running.
 
-Use these buckets when reporting failures:
+## Verification checklist
 
-- **Provider unreachable:** subprocess exits nonzero before model behavior is evaluated; likely auth, base URL, model name, or service availability.
-- **Session persistence failure:** no session id found or session messages cannot be loaded; readiness cannot be proven even if stdout looks good.
-- **Tool-call failure:** required tool missing, wrong tool called, invalid tool schema, or tool result ignored.
-- **Fabricated tool work:** final answer claims work that is not present in session receipts.
-- **Recovery failure:** model cannot recover after an expected failed tool call.
-- **Side-effect boundary failure:** model calls write/terminal/code tools when the suite required abstention.
-- **Visible reasoning leak:** final user-visible text includes hidden-reasoning markers such as `<think>` or scratchpad text.
-- **Harness/config failure:** command shape, local installation, or test fixture issue prevents evaluation.
-- **Inconclusive:** partial receipts exist but not enough to classify model/provider behavior.
+Before reporting a result:
 
-## PR / Upstream Framing
-
-When upstreaming or reviewing related work, frame this as **provider/deployment readiness**, not benchmarking.
-
-Good framing:
-
-> This helps users avoid configuring providers that can answer normal chat but fail real Hermes tool-call workflows.
-
-Avoid framing like:
-
-> This ranks models.
-
-Keep first PRs small and generic:
-
-- read-only or tightly bounded suite;
-- real Hermes subprocess/session receipts;
-- docs for interpretation;
-- focused tests for parsing, scoring, and command construction;
-- no Rig-specific provider names, secrets, paths, or private workflows.
-
-## Common Pitfalls
-
-1. **Treating raw API success as Hermes readiness.** A direct chat-completions response does not prove tool schemas, persisted sessions, or recovery behavior.
-2. **Trusting assistant claims.** If a model says it read a file, verify the session tool call and result.
-3. **Optimizing speed before correctness.** MTP/speculative/quantization wins do not count if tool behavior regresses.
-4. **Running too many toolsets first.** Broad toolsets add context and possible failure modes. Start with `file`, then expand deliberately.
-5. **Confusing local endpoint viability with Hermes lane promotion.** A local model can be an operational endpoint while still failing loaded Hermes context or tool-call requirements.
-6. **Leaking private workflows into validation prompts.** Keep upstream suites generic and synthetic.
-7. **Overgeneralizing a pass.** `agent-readiness` passing means the provider passed this narrow suite, not all Hermes tasks.
-8. **Ignoring stdout/stderr receipts.** Timeouts and auth failures often appear outside the final assistant text.
-9. **Forgetting provider aliases.** Use the exact provider/model route Hermes will use in production, not a nearby alias.
-
-## Verification Checklist
-
-Before reporting success:
-
-- [ ] `hermes providers validate --help` shows the expected command shape.
-- [ ] The intended provider/model route is the one tested.
-- [ ] The suite and toolsets are stated.
-- [ ] `summary.md` or `summary.json` was inspected.
-- [ ] Tool cases have actual `tool_calls` receipts.
+- [ ] `hermes providers validate --help` labels this as a tier-0 compatibility
+      smoke and disclaims qualification/replacement evidence.
+- [ ] Exact provider, model, `file` toolset, and suite are recorded.
+- [ ] Status is one of `SCREEN-PASS`, `REJECT`, `GATE-FAILED`, or `HOLD`.
+- [ ] Each passed case has a successfully loaded SessionDB receipt on disk.
+- [ ] Tool receipts include ordered arguments, results, and status.
+- [ ] Recovery paths/order and forbidden-artifact absence were checked.
+- [ ] Timeout/invalid-session stdout, stderr, and partial evidence were retained.
 - [ ] Failures are classified, not hand-waved.
-- [ ] Runtime-variant comparisons hold suite/model constant and change one variable at a time.
-- [ ] Output directory is included for reproducibility when useful.
 - [ ] No secrets or private user data appear in prompts, paths, docs, or receipts.
-- [ ] Upstream PR language says deployment-readiness, not benchmark or leaderboard.
+- [ ] No qualification, replacement, promotion, leaderboard, or routing claim
+      is made from this smoke.

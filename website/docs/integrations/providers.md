@@ -93,9 +93,9 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 Paid Nous Portal subscribers also get access to the **[Tool Gateway](/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal info`.
 :::
 
-### Validate provider readiness
+### Run the tier-0 provider compatibility smoke
 
-Once a provider or custom endpoint responds, you can screen whether it works inside the real Hermes agent loop:
+Once a provider or custom endpoint responds, you can run the narrow compatibility smoke inside the real Hermes agent loop:
 
 ```bash
 hermes providers validate \
@@ -105,16 +105,17 @@ hermes providers validate \
   --out /tmp/hermes-provider-validation
 ```
 
-This is not a raw API smoke test and not a benchmark leaderboard. The validation command runs real `hermes chat -Q` turns with tool schemas enabled, reads the persisted session receipts, and checks common deployment-readiness failures:
+This is not a raw API smoke test, benchmark leaderboard, qualification, or replacement-evidence lane. The validation command runs real `hermes chat -Q` turns with the `file` toolset, reads successfully loaded SessionDB receipts, and checks compatibility failures:
 
 - required tool calls were actually emitted;
-- tool results were recovered after a failed read;
+- tool results were recovered after a failed read for the expected paths and in the expected order;
 - side-effecting tools such as `write_file`, `patch`, `terminal`, and `execute_code` were not called when the prompt requires abstention;
+- the forbidden output artifact was absent after the abstention case;
 - user-visible output does not leak reasoning markers such as `<think>`.
 
 Internal reasoning fields in the session receipt are allowed for diagnostics. The leak check only fails reasoning markers that appear in the final response shown to the user.
 
-The command writes `results.jsonl`, `summary.json`, `summary.md`, raw stdout/stderr, and session receipts under `--out`. Treat it as an automated readiness screen that reduces manual smoke testing; workflow-specific validation is still required for sensitive or high-stakes use.
+The command writes `results.jsonl`, `summary.json`, `summary.md`, raw stdout/stderr, and loaded session receipts under `--out`. A printed session id or final answer cannot substitute for a loaded receipt; timeout and invalid-session evidence remains captured and fails honestly. Treat it as a tier-0 compatibility smoke only; workflow-specific validation is still required for sensitive or high-stakes use.
 
 ### Two Commands for Model Management
 

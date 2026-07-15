@@ -2669,7 +2669,7 @@ class ClawHubSource(SkillSource):
                             retry_after = int(resp.headers.get("retry-after", "5"))
                         except (ValueError, TypeError):
                             retry_after = 5
-                        retry_after = min(retry_after, 15)  # Cap wait time
+                        retry_after = max(0, min(retry_after, 15))  # Cap wait time
                         logger.debug(
                             "ClawHub download rate-limited for %s, retrying in %ds (attempt %d/%d)",
                             slug, retry_after, attempt + 1, max_retries,
@@ -2708,8 +2708,9 @@ class ClawHubSource(SkillSource):
                             archive.write(chunk)
                         archive.seek(0)
 
-                if retry_after_delay is not None and attempt < max_retries - 1:
-                    time.sleep(retry_after_delay)
+                if retry_after_delay is not None:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_after_delay)
                     continue
 
                 with zipfile.ZipFile(archive) as zf:

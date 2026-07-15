@@ -169,6 +169,40 @@ class TestClawHubSource(unittest.TestCase):
         self.assertTrue(args[1].endswith("/download"))
         self.assertEqual(kwargs["params"], {"slug": "demo", "version": "1.0.0"})
 
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.stream")
+    def test_download_zip_exhausts_rate_limit_retries(self, mock_stream, mock_sleep):
+        mock_stream.side_effect = [
+            _MockStreamContext(
+                _MockStreamResponse(status_code=429, headers={"retry-after": "1"})
+            )
+            for _ in range(3)
+        ]
+
+        files = self.src._download_zip("demo", "1.0.0")
+
+        self.assertEqual(files, {})
+        self.assertEqual(mock_stream.call_count, 3)
+        self.assertEqual(
+            [sleep_call.args for sleep_call in mock_sleep.call_args_list],
+            [(1,), (1,)],
+        )
+
+    @patch("tools.skills_hub.time.sleep")
+    @patch("tools.skills_hub.httpx.stream")
+    def test_download_zip_clamps_negative_retry_after(self, mock_stream, mock_sleep):
+        mock_stream.side_effect = [
+            _MockStreamContext(
+                _MockStreamResponse(status_code=429, headers={"retry-after": "-1"})
+            ),
+            _MockStreamContext(_MockStreamResponse(status_code=404)),
+        ]
+
+        files = self.src._download_zip("demo", "1.0.0")
+
+        self.assertEqual(files, {})
+        mock_sleep.assert_called_once_with(0)
+
     @patch.object(ClawHubSource, "ZIP_DOWNLOAD_MAX_BYTES", 10)
     @patch("tools.skills_hub.httpx.stream")
     def test_download_zip_rejects_declared_oversized_archive(self, mock_stream):

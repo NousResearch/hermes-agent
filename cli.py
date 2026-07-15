@@ -3723,11 +3723,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # bell_on_approval: ring the terminal bell when a command is waiting for
-        # approval. Defaults to bell_on_complete so users who enabled the bell
+        # approval. null inherits bell_on_complete so users who enabled the bell
         # also get alerted when the agent blocks on a prompt.
-        _bell_approval = CLI_CONFIG["display"].get("bell_on_approval", None)
-        self.bell_on_approval = (
-            self.bell_on_complete if _bell_approval is None else bool(_bell_approval)
+        self.bell_on_approval = self._resolve_bell_on_approval(
+            CLI_CONFIG["display"].get("bell_on_approval", None), self.bell_on_complete
         )
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", True)
@@ -11680,6 +11679,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._paint_now()
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
+
+    @staticmethod
+    def _resolve_bell_on_approval(configured, bell_on_complete: bool) -> bool:
+        """null inherits bell_on_complete; an explicit true/false overrides it."""
+        return bool(bell_on_complete) if configured is None else bool(configured)
 
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True) -> str:

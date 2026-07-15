@@ -1175,6 +1175,13 @@ display:
   #   false: Silent (default)
   bell_on_complete: false
 
+  # Ring the terminal bell when a command is waiting for approval, so a user
+  # who stepped away knows the agent is blocked on a prompt (not just on task
+  # completion).
+  #   null (default): inherit bell_on_complete
+  #   true/false:     control the approval bell independently
+  bell_on_approval: null
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

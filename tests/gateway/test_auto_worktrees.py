@@ -6,6 +6,7 @@ from gateway.session import SessionContext, SessionEntry, SessionSource
 from gateway.config import Platform
 from gateway.run import (
     GatewayRunner,
+    _cleanup_gateway_session_worktrees,
     _ensure_gateway_session_worktree,
     _ensure_gateway_session_worktree_map,
     _prepare_gateway_session_worktrees_async,
@@ -82,6 +83,30 @@ def test_enabled_auto_worktree_reuses_existing_session_worktree(tmp_path):
     )
 
     assert second == first
+
+
+def test_cleanup_removes_session_worktree_and_branch(tmp_path):
+    repo = _repo(tmp_path)
+    cfg = {"gateway": {"auto_worktrees": {"enabled": True, "sync_base": False}}}
+    session_key = "agent:main:slack:dm:U1"
+    session_id = "20260623_120000_abcd"
+    cwd = _ensure_gateway_session_worktree(
+        base_cwd=str(repo),
+        session_key=session_key,
+        session_id=session_id,
+        user_config=cfg,
+    )
+    branch = _git(Path(cwd), "branch", "--show-current")
+
+    assert _cleanup_gateway_session_worktrees(
+        base_cwd=str(repo),
+        user_config=cfg,
+        session_key=session_key,
+        session_id=session_id,
+    ) == 1
+
+    assert not Path(cwd).exists()
+    assert branch not in _git(repo, "branch", "--format=%(refname:short)").splitlines()
 
 
 def test_worktree_map_materializes_configured_repo_even_when_base_cwd_elsewhere(tmp_path):

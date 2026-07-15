@@ -387,6 +387,100 @@ async def _prepare_gateway_session_worktrees_async(
         session_id=session_id,
     )
 
+
+def _remove_gateway_session_worktree(
+    *,
+    repo_root: Path,
+    session_key: str,
+    session_id: str,
+) -> bool:
+    """Remove one gateway-owned session worktree and its temporary branch."""
+    slug = _gateway_worktree_slug(session_key, session_id)
+    worktree_path = repo_root / ".worktrees" / f"hermes-gw-{slug}"
+    branch_name = f"hermes/gateway/{slug}"
+
+    if _is_linked_git_worktree(worktree_path):
+        subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "unlock", str(worktree_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        removed = subprocess.run(
+            ["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if removed.returncode != 0:
+            logger.warning(
+                "Gateway auto-worktree removal failed for %s: %s",
+                worktree_path,
+                removed.stderr.strip(),
+            )
+            return False
+    elif worktree_path.exists():
+        logger.warning(
+            "Gateway auto-worktree cleanup skipped non-linked path: %s",
+            worktree_path,
+        )
+        return False
+
+    deleted = subprocess.run(
+        ["git", "-C", str(repo_root), "branch", "-D", branch_name],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if deleted.returncode != 0 and "not found" not in (deleted.stderr or "").lower():
+        logger.debug(
+            "Gateway auto-worktree branch cleanup skipped for %s: %s",
+            branch_name,
+            deleted.stderr.strip(),
+        )
+    return True
+
+
+def _cleanup_gateway_session_worktrees(
+    *,
+    base_cwd: str,
+    user_config: Optional[dict],
+    session_key: str,
+    session_id: str,
+) -> int:
+    """Clean up every auto-worktree owned by an ended gateway session."""
+    settings = _gateway_auto_worktree_settings(user_config)
+    repo_roots: set[Path] = set()
+    for repo in settings.get("repos") or []:
+        try:
+            repo_path = Path(repo).expanduser().resolve()
+        except Exception:
+            continue
+        if repo_path.is_dir():
+            repo_roots.add(repo_path)
+
+    base_root = _git_repo_root_for_cwd(base_cwd)
+    if base_root is not None:
+        repo_roots.add(base_root)
+
+    removed = 0
+    for repo_root in repo_roots:
+        try:
+            if _remove_gateway_session_worktree(
+                repo_root=repo_root,
+                session_key=session_key,
+                session_id=session_id,
+            ):
+                removed += 1
+        except Exception as exc:
+            logger.warning(
+                "Gateway auto-worktree cleanup failed for session %s in %s: %s",
+                session_id,
+                repo_root,
+                exc,
+            )
+    return removed
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -8123,6 +8217,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await self._cleanup_agent_resources_off_loop(
                                 _cached_agent, context="session expiry"
                             )
+                        try:
+                            _cleanup_cfg = _load_gateway_config()
+                        except Exception:
+                            _cleanup_cfg = {}
+                        try:
+                            from agent.runtime_cwd import resolve_agent_cwd
+
+                            _cleanup_base_cwd = str(resolve_agent_cwd())
+                        except Exception:
+                            _cleanup_base_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                        await asyncio.to_thread(
+                            _cleanup_gateway_session_worktrees,
+                            base_cwd=_cleanup_base_cwd,
+                            user_config=_cleanup_cfg if isinstance(_cleanup_cfg, dict) else {},
+                            session_key=key,
+                            session_id=entry.session_id,
+                        )
                         # Drop the cache entry so the AIAgent (and its LLM
                         # clients, tool schemas, memory provider refs) can
                         # be garbage-collected.  Otherwise the cache grows

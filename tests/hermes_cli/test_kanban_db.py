@@ -1838,6 +1838,30 @@ def test_respawn_guard_explicit_rearm_releases_block_loop(kanban_home):
         assert kb.check_respawn_guard(conn, t) is None
 
 
+def test_respawn_guard_same_second_event_order_controls_rearm(kanban_home):
+    """Second-resolution timestamps must not let stale rearm release a new loop."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping", assignee="alice")
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'unblocked', '{}', 100)",
+            (t,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        assert kb.is_block_loop_frozen(conn, t) is True
+
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'unblocked', '{}', 100)",
+            (t,),
+        )
+        assert kb.is_block_loop_frozen(conn, t) is False
+
+
 def test_respawn_guard_worker_cannot_self_rearm_block_loop(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="looping", assignee="dev")

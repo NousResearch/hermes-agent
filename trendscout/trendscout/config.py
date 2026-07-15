@@ -32,14 +32,6 @@ def load_config(path: str | Path = None) -> dict:
         else:
             # DB/chroma paths: expanduser only (not profile-aware overrides)
             paths[key] = str(Path(value).expanduser())
-    
-    # Thread Firecrawl API URL from config into environment for firecrawl_client
-    # This ensures localhost:3002 (or custom) is used consistently
-    firecrawl_cfg = config.get('firecrawl', {})
-    if firecrawl_cfg.get('enabled'):
-        api_url = firecrawl_cfg.get('api_url', 'http://localhost:3002')
-        import os
-        os.environ.setdefault('FIRECRAWL_API_URL', api_url)
 
     return config
 

@@ -32,8 +32,13 @@ def test_paths_default_to_hermes_home():
         print("✓ Default paths point to Hermes home")
 
 
-def test_firecrawl_url_threaded_to_env():
-    """Verify firecrawl.api_url from config is set in FIRECRAWL_API_URL env var."""
+def test_firecrawl_url_not_mutated_in_config():
+    """Verify config.load_config() does NOT mutate FIRECRAWL_API_URL env var.
+    
+    The old implementation set os.environ.setdefault() during config load,
+    which caused import-order bugs. Now the URL is passed explicitly at call
+    time to firecrawl_client.scrape().
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / 'config.yaml'
         custom_url = 'http://custom-firecrawl:3002'
@@ -41,19 +46,19 @@ def test_firecrawl_url_threaded_to_env():
             'firecrawl': {'enabled': True, 'api_url': custom_url},
         }))
         
-        # Clear any existing env var
+        # Clear env var before loading config
         old_val = os.environ.pop('FIRECRAWL_API_URL', None)
         
         try:
             loaded = cfg.load_config(config_path)
-            assert os.environ.get('FIRECRAWL_API_URL') == custom_url
-            print(f"✓ Firecrawl URL threaded to env: {custom_url}")
+            # Env var should NOT be set — URL is passed at call time instead
+            assert os.environ.get('FIRECRAWL_API_URL') is None
+            # But the config should still have the value for explicit passing
+            assert loaded['firecrawl']['api_url'] == custom_url
+            print(f"✓ Config does not mutate env var (URL passed at call time)")
         finally:
-            # Restore
             if old_val:
                 os.environ['FIRECRAWL_API_URL'] = old_val
-            else:
-                os.environ.pop('FIRECRAWL_API_URL', None)
 
 
 def test_profile_aware_path_resolution():
@@ -110,7 +115,7 @@ def test_source_files_relative_to_project_root():
 
 if __name__ == '__main__':
     test_paths_default_to_hermes_home()
-    test_firecrawl_url_threaded_to_env()
+    test_firecrawl_url_not_mutated_in_config()
     test_profile_aware_path_resolution()
     test_source_files_relative_to_project_root()
     print("\n✅ All config tests passed")

@@ -42,7 +42,8 @@ def main():
     if config['firecrawl']['enabled']:
         urls = cfg.load_urls(config)
         if urls:
-            posts.extend(firecrawl_ingest.fetch_all(urls))
+            api_url = config.get('firecrawl', {}).get('api_url')
+            posts.extend(firecrawl_ingest.fetch_all(urls, api_url=api_url))
             sources_used.append('firecrawl')
 
     new_count = 0

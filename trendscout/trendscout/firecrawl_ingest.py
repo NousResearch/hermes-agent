@@ -80,25 +80,34 @@ _PARSERS = {
 }
 
 
-def fetch_url(url: str) -> list[dict]:
+def fetch_url(url: str, api_url: str | None = None) -> list[dict]:
     """Scrape a single URL via Firecrawl and parse it into post dicts.
 
     Returns an empty list for unrecognised domains or failed scrapes.
+    
+    Args:
+        url: The URL to scrape
+        api_url: Firecrawl API endpoint (optional, passed to scrape())
     """
     parser = next((fn for domain, fn in _PARSERS.items() if domain in url), None)
     if parser is None:
         return []
 
-    markdown = firecrawl_client.scrape(url)
+    markdown = firecrawl_client.scrape(url, api_url=api_url)
     if not markdown:
         return []
     return parser(markdown)
 
 
-def fetch_all(urls: list[str]) -> list[dict]:
-    """Fetch posts for every URL in the list, in order."""
+def fetch_all(urls: list[str], api_url: str | None = None) -> list[dict]:
+    """Fetch posts for every URL in the list, in order.
+    
+    Args:
+        urls: List of URLs to scrape
+        api_url: Firecrawl API endpoint (optional, passed to scrape())
+    """
     all_posts: list[dict] = []
     for url in urls:
-        all_posts.extend(fetch_url(url))
+        all_posts.extend(fetch_url(url, api_url=api_url))
         time.sleep(REQUEST_DELAY_SECONDS)
     return all_posts

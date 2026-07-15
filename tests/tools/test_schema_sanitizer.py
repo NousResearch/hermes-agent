@@ -759,3 +759,27 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
     assert props["flag"]["enum"] == [True, False]
+
+
+def test_dependent_required_preserved():
+    """Regression: dependentRequired must NOT be recursed as schemas.
+
+    GitHub Copilot MCP ships dependentRequired like {"owner": ["repo"]}.
+    Without a pass-through guard, _sanitize_node would recurse into the value
+    lists and rewrite property-name strings into {"type": "object"} dicts,
+    causing HTTP 400 from every provider (xAI, OpenAI, openai-codex, etc.).
+    """
+    tools = [_tool("mcp__github__search_issues", {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+        },
+        "dependentRequired": {
+            "owner": ["repo"],
+            "repo": ["owner"],
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    dep = out[0]["function"]["parameters"]["dependentRequired"]
+    assert dep == {"owner": ["repo"], "repo": ["owner"]}, f"Corrupted: {dep}"

@@ -1,0 +1,11 @@
+schema_version: plan-directory.v1
+slug: 2026-07-11-gpt-realtime-voice-bridge
+title: Hermes Desktop GPT Realtime 음성 브리지
+version: v3
+work_size: L
+risk_level: R3
+work_type: feature
+lifecycle_state: ready_for_implementation
+scope_escalation:
+  max_files_changed: 12
+  staged_worker_runs: 3

@@ -1,0 +1,33 @@
+schema_version: gptpro-research-brief.v1
+artifact_id: research-gpt-realtime-voice-v1
+task_id: 2026-07-11-gpt-realtime-voice-bridge
+revision: 1
+producer: hermes
+owner: hermes
+authority_scope: canonical
+supporting_only: false
+degraded: false
+status: validated
+decision_question: Can OpenAI Realtime GA safely act as Hermes Desktop voice transport without becoming a second agent or bypassing Hermes tool policy?
+assumptions:
+  - confirmed transcripts can be delivered exactly once to Hermes
+  - Hermes text can be spoken without semantic rewriting
+  - ephemeral credentials can be renderer-safe and session-bound
+falsification:
+  - GA API cannot provide deterministic read-aloud of supplied Hermes text
+  - transcript completion cannot be correlated/idempotently owned
+  - browser session credentials cannot satisfy the local Desktop trust boundary
+alternatives:
+  - realtime_transcription_plus_existing_tts
+  - streaming_stt_plus_streaming_tts
+  - legacy_turn_based_voice
+source_policy:
+  primary:
+    - platform.openai.com
+    - hermes-agent.nousresearch.com
+  recency: current_GA
+success_rubric:
+  - source-backed architecture recommendation
+  - explicit P0 blockers
+  - minimal state machine and test contract
+stop_condition: sufficient evidence to select one architecture or block implementation

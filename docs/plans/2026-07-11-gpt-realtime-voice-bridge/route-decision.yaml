@@ -1,0 +1,18 @@
+schema_version: gptpro-route.v1
+artifact_id: route-gpt-realtime-voice-v1
+task_id: 2026-07-11-gpt-realtime-voice-bridge
+revision: 1
+producer: hermes
+owner: hermes
+authority_scope: canonical
+supporting_only: false
+degraded: false
+status: validated
+route: research_spec_plan_review
+mandatory_reasons:
+  - work_size_L
+  - external_OpenAI_Realtime_GA_protocol
+  - credential_and_client_secret_security
+  - cross_component_backend_renderer_gateway
+  - interruption_and_state_ownership_unknowns
+fast_path_allowed: false

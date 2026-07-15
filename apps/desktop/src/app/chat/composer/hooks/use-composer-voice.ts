@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
@@ -6,7 +7,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { notifyError } from '@/store/notifications'
 import { $messages } from '@/store/session'
-import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $voiceInputMode, setAutoSpeakReplies } from '@/store/voice-prefs'
 
 import { onComposerVoiceToggleRequest } from '../focus'
 import type { ChatBarProps } from '../types'
@@ -45,6 +46,7 @@ export function useComposerVoice({
   sessionId
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
+  const voiceInputMode = useStore($voiceInputMode)
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   const lastSpokenIdRef = useRef<string | null>(null)
 
@@ -100,10 +102,12 @@ export function useComposerVoice({
     busy,
     consumePendingResponse,
     enabled: voiceConversationActive,
+    mode: voiceInputMode,
     onFatalError: () => setVoiceConversationActive(false),
     onSubmit: submitVoiceTurn,
     onTranscribeAudio,
-    pendingResponse
+    pendingResponse,
+    sessionId
   })
 
   // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
@@ -126,7 +130,15 @@ export function useComposerVoice({
 
   // Explicit start/end for the on-screen conversation controls (the hotkey uses
   // the gated toggle above).
-  const startConversation = useCallback(() => setVoiceConversationActive(true), [])
+  const startConversation = useCallback(() => {
+    if (voiceConversationActive) {
+      void conversation.start()
+
+      return
+    }
+
+    setVoiceConversationActive(true)
+  }, [conversation, voiceConversationActive])
 
   const endConversation = useCallback(() => {
     setVoiceConversationActive(false)

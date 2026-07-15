@@ -1775,6 +1775,10 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "",
+        # Optional image URL shown behind the Desktop new-chat landing page.
+        # Profile config is intentionally authoritative so each workspace can
+        # have its own visual identity. Empty preserves the standard landing.
+        "desktop_background_image": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume. The defaults match the
         # historical hardcoded values; expose them as config so power users can
@@ -3346,7 +3350,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # =============================================================================

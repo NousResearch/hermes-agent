@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   checkHermesUpdate,
   getActionStatus,
+  getHermesConfig,
   getStatus,
   restartGateway,
   setApiRequestProfile,
@@ -45,5 +46,13 @@ describe('backend action helpers are profile-scoped', () => {
     for (const call of api.mock.calls) {
       expect(call[0].profile).toBe('coder')
     }
+  })
+
+  it('reads landing-page config from the active profile', () => {
+    setApiRequestProfile('coder')
+
+    void getHermesConfig()
+
+    expect(api).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/api/config', profile: 'coder' }))
   })
 })

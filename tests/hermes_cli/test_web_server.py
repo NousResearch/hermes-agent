@@ -2126,11 +2126,19 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def test_desktop_background_image_is_a_profile_config_field(self):
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        field = resp.json()["fields"]["display.desktop_background_image"]
+        assert field["type"] == "string"
+        assert field["category"] == "display"
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
         defaults = resp.json()
         assert "model" in defaults
+        assert defaults["display"]["desktop_background_image"] == ""
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
@@ -3806,6 +3814,27 @@ class TestConfigRoundTrip:
         config = self.client.get("/api/config").json()
         assert isinstance(config.get("model"), str), \
             f"model should be string, got {type(config.get('model'))}"
+
+    def test_desktop_background_image_is_isolated_per_profile(self):
+        from hermes_cli import profiles as profiles_mod
+
+        coder_home = profiles_mod.get_profile_dir("coder")
+        writer_home = profiles_mod.get_profile_dir("writer")
+        coder_home.mkdir(parents=True)
+        writer_home.mkdir(parents=True)
+        (coder_home / "config.yaml").write_text(
+            "display:\n  desktop_background_image: https://example.com/coder.png\n",
+            encoding="utf-8",
+        )
+        (writer_home / "config.yaml").write_text("display: {}\n", encoding="utf-8")
+
+        coder = self.client.get("/api/config?profile=coder").json()
+        writer = self.client.get("/api/config?profile=writer").json()
+        default = self.client.get("/api/config").json()
+
+        assert coder["display"]["desktop_background_image"] == "https://example.com/coder.png"
+        assert writer["display"]["desktop_background_image"] == ""
+        assert default["display"]["desktop_background_image"] == ""
 
     def test_round_trip_preserves_model_subkeys(self):
         """Save and reload should not lose model.provider, model.base_url, etc."""

@@ -14,6 +14,7 @@ type IntroCopyRecord = IntroCopy & {
 }
 
 export type IntroProps = {
+  backgroundImage?: string
   personality?: string
   seed?: number
 }
@@ -156,16 +157,24 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
   return pickCopy(copies, seed)
 }
 
-export function Intro({ personality, seed }: IntroProps) {
+export function Intro({ backgroundImage, personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
 
   return (
     <div
-      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-0.5 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
+      className="pointer-events-none relative flex h-full w-full min-w-0 flex-col items-center justify-center overflow-hidden px-0.5 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
       data-slot="aui_intro"
     >
-      <div className="w-full min-w-0">
+      {backgroundImage && (
+        <img
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover opacity-30 dark:opacity-40"
+          data-slot="aui_intro_background"
+          src={backgroundImage}
+        />
+      )}
+      <div className="relative w-full min-w-0">
         <p
           aria-label={WORDMARK}
           className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"

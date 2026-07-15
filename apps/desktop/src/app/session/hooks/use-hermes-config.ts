@@ -11,6 +11,7 @@ import {
   setCurrentPersonality,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setIntroBackgroundImage,
   setIntroPersonality
 } from '@/store/session'
 import { applyAutoSpeakFromConfig } from '@/store/voice-prefs'
@@ -56,6 +57,12 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
         typeof config.display?.personality === 'string' ? config.display.personality : ''
       )
 
+      const backgroundImage =
+        typeof config.display?.desktop_background_image === 'string'
+          ? config.display.desktop_background_image.trim()
+          : ''
+
+      setIntroBackgroundImage(backgroundImage)
       setIntroPersonality(personality)
       // Active sessions keep their per-session value; standalone falls back to config.
       setCurrentPersonality(prev => (activeSessionIdRef.current ? prev || personality : personality))

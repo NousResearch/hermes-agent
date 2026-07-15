@@ -207,6 +207,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    desktop_background_image?: string
     personality?: string
     skin?: string
   }

@@ -320,6 +320,131 @@ def test_ledger_carries_graph_and_origin_return(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Blocked review-required final — remediation must stay runnable
+# ---------------------------------------------------------------------------
+
+def _make_blocked_graph(*, verdict: str = "BLOCK"):
+    """origin(done) -> impl(done) -> final(**blocked** review-required).
+
+    Mirrors a sticky ``blocked`` review-required verdict the resolver must
+    preserve. Returns ``(origin, impl, final)``.
+    """
+    conn = kb.connect()
+    try:
+        origin = kb.create_task(conn, title="origin work")
+        kb.complete_task(conn, origin, result="origin done")
+        impl = kb.create_task(conn, title="impl", parents=[origin])
+        kb.complete_task(conn, impl, result="impl done")
+        final = kb.create_task(
+            conn, title="final review", parents=[impl], assignee="ccreviewer"
+        )
+        reason = (
+            f"Verdict: {verdict}\n"
+            "review-required: worker handed back for human review."
+        )
+        assert kb.block_task(conn, final, reason=reason), (
+            "fixture: final review task did not transition to blocked"
+        )
+        assert kb.get_task(conn, final).status == "blocked"
+    finally:
+        conn.close()
+    return origin, impl, final
+
+
+def test_apply_on_blocked_final_creates_runnable_remediation(
+    kanban_home, monkeypatch
+):
+    """Regression: when the final review is a sticky ``blocked``
+    review-required verdict, ``resolve-fanin --apply`` must create a
+    *runnable* remediation graph.
+
+    Previously the fix card was parented to the blocked final, so it stuck
+    in ``todo`` (a child cannot reach ``ready`` until every parent is
+    ``done``) and the dispatcher — which only claims ``ready`` tasks —
+    could never run it. The blocked final's verdict/status must stay
+    untouched; the link back to it is preserved as an audit comment, not a
+    dependency edge.
+    """
+    origin, impl, final = _make_blocked_graph(verdict="BLOCK")
+
+    out = kc.run_slash(
+        f"resolve-fanin {final} --apply --json "
+        f"--fix-assignee ccsupervisor --review-assignee ccreviewer"
+    )
+    payload = _extract_json(out)
+    assert payload["task_verdict"] == "BLOCK"
+    assert payload["remediation_status"] == "CREATED"
+    fix_id = payload["remediation_task_ids"]["fix"]
+    rev_id = payload["remediation_task_ids"]["fix_review"]
+    assert fix_id and rev_id and fix_id != rev_id
+
+    conn = kb.connect()
+    try:
+        fix = kb.get_task(conn, fix_id)
+        rev = kb.get_task(conn, rev_id)
+        # The core of the fix: the fix card is dispatchable (``ready``) and
+        # does NOT depend on the blocked final.
+        assert fix.status == "ready", (
+            f"fix card must be dispatchable, got {fix.status!r}"
+        )
+        assert final not in kb.parent_ids(conn, fix_id)
+        # fix-review is still gated behind the fix card.
+        assert kb.parent_ids(conn, rev_id) == [fix_id]
+        assert rev.status == "todo"
+        # Audit trail preserved as a comment on the final task.
+        comments = [c.body for c in kb.list_comments(conn, final)]
+        assert any(fix_id in b and rev_id in b for b in comments), (
+            f"expected a remediation-created audit comment, got {comments!r}"
+        )
+        # The blocked final verdict/status is untouched.
+        assert kb.get_task(conn, final).status == "blocked"
+    finally:
+        conn.close()
+
+    # ---- Dispatcher/claim semantics: the remediation graph actually runs. ----
+    import hermes_cli.profiles as _profiles
+
+    monkeypatch.setattr(_profiles, "profile_exists", lambda name: True)
+    claimed: list[str] = []
+
+    def _spawn(task, workspace_path, board):
+        claimed.append(task.id)
+        return 4321  # fake worker pid
+
+    conn = kb.connect()
+    try:
+        kb.dispatch_once(conn, spawn_fn=_spawn)
+        assert fix_id in claimed, "dispatcher must claim the ready fix card"
+        assert kb.get_task(conn, fix_id).status == "running"
+
+        # Complete the fix -> the fix-review promotes todo -> ready.
+        assert kb.complete_task(
+            conn, fix_id, result="fix applied", summary="Verdict: GO"
+        )
+        assert kb.get_task(conn, rev_id).status == "ready"
+
+        # Second tick claims the now-ready fix-review; complete it.
+        claimed.clear()
+        kb.dispatch_once(conn, spawn_fn=_spawn)
+        assert rev_id in claimed, "dispatcher must claim the ready fix-review"
+        assert kb.complete_task(
+            conn, rev_id, result="fix verified", summary="Verdict: GO"
+        )
+        assert kb.get_task(conn, rev_id).status == "done"
+
+        # Semantic resolution: the remediation pair ran to completion while
+        # the original blocked final verdict/status is unchanged.
+        assert kb.get_task(conn, final).status == "blocked"
+    finally:
+        conn.close()
+
+    # Re-classifying the final still reports BLOCK — its verdict was never
+    # mutated to GO/done by the remediation flow.
+    payload2 = _extract_json(kc.run_slash(f"resolve-fanin {final} --dry-run --json"))
+    assert payload2["task_verdict"] == "BLOCK"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

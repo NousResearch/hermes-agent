@@ -5,8 +5,12 @@ with verdict ``BLOCK`` or ``NEED_MORE``, the originating operator can
 be left waiting: ``notify-subscribe`` is a passive terminal delivery,
 not an active fan-in/remediation resolver. This module classifies the
 final task into three independent dimensions and, in apply mode,
-creates at most one deduped fix card + one fix-review card linked
-back to the final task so a remediation graph exists on the board.
+creates at most one deduped fix card + one fix-review card so a
+runnable remediation graph exists on the board. The fix card is
+kept dependency-free (fix ready -> fix-review todo -> reporter todo)
+so it dispatches even when the final review is a sticky ``blocked``
+verdict; the link back to the final task is recorded as an audit
+comment rather than a dependency edge.
 
 Classification heuristics
 -------------------------
@@ -415,13 +419,22 @@ def resolve_fanin(
     fix_key = _IDEMPOTENCY_FIX_PREFIX + final_task_id
     review_key = _IDEMPOTENCY_REVIEW_PREFIX + final_task_id
 
+    # Do NOT parent the fix card to the final review task. The final may be
+    # a sticky ``blocked`` review-required verdict we must preserve as-is;
+    # parenting the fix under it would leave the fix stuck in ``todo`` (a
+    # child can only reach ``ready`` once every parent is ``done``), so the
+    # dispatcher — which only claims ``ready`` tasks — could never run it.
+    # The remediation graph is kept self-runnable (fix ready -> fix-review
+    # todo -> reporter todo) and the link back to the final review is
+    # preserved as an audit comment + the fix body, not a dependency edge.
+    fresh_fix = existing_fix is None
     fix_id = existing_fix or kb.create_task(
         conn,
         title=f"fix: remediate {final_task_id} ({verdict})",
         body=fix_body,
         assignee=fix_assignee,
         created_by="fanin-resolver",
-        parents=[final_task_id],
+        parents=[],
         idempotency_key=fix_key,
         initial_status="running",
     )
@@ -435,6 +448,23 @@ def resolve_fanin(
         idempotency_key=review_key,
         initial_status="running",
     )
+
+    # Audit trail: because we deliberately do not add a dependency edge from
+    # the (possibly still-``blocked``) final review to the fix card, record
+    # the created remediation ids as a comment on the final task so the
+    # verdict/handoff history points forward to the remediation graph. Only
+    # write it on a fresh creation so re-runs stay idempotent (no duplicate
+    # comment). The final task's own verdict/status is never mutated.
+    if fresh_fix:
+        kb.add_comment(
+            conn,
+            final_task_id,
+            author="fanin-resolver",
+            body=(
+                f"remediation-created: fix={fix_id} fix_review={review_id} "
+                f"(verdict {verdict}; final review left untouched)"
+            ),
+        )
 
     # Final fan-in reporter (optional): if the caller named one and we
     # have no existing reporter card, gate it behind the fix-review.

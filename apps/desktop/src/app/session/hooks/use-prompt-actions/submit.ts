@@ -117,10 +117,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // Pin the session context for the whole async submit pipeline. Without
       // this, a fast session switch during session.resume / file.attach can
-      // redirect the user's text into a different chat (#54527).
+      // redirect the user's text into a different chat (#54527). Mutable —
+      // not const — because a new-chat submit legitimately re-homes to the
+      // session it creates (see the re-pin after createBackendSessionForSend).
       const startingActiveSessionId = activeSessionIdRef.current
-      const startingStoredSessionId = selectedStoredSessionIdRef.current
-      const startingRouteToken = getRouteToken()
+      let startingStoredSessionId = selectedStoredSessionIdRef.current
+      let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
         selectedStoredSessionIdRef.current !== startingStoredSessionId ||
@@ -281,17 +283,37 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        if (sessionContextDrifted()) {
-          return abortForSessionSwitch(sessionId)
-        }
-
         if (!sessionId) {
+          // createBackendSessionForSend returns null when the user switched
+          // sessions mid-create (it closes the orphaned session itself) —
+          // abort silently. Anything else is a real failure worth a toast.
+          if (sessionContextDrifted()) {
+            return abortForSessionSwitch(null)
+          }
+
           dropOptimistic(null)
           releaseBusy()
           notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
           return false
         }
+
+        // A successful create re-homes selection + route to the chat it just
+        // minted, so the pre-create baseline can't tell our own re-home from
+        // a user switch (judging it drift aborted EVERY first send of a new
+        // chat: no prompt.submit, no DB row, a stranded route that 404s
+        // "Session not found"). The drift signal for this window is the
+        // active ref instead: every switch path re-nulls or retargets it
+        // synchronously, so it only still equals the id create returned when
+        // nobody re-homed since.
+        if (activeSessionIdRef.current !== sessionId) {
+          return abortForSessionSwitch(sessionId)
+        }
+
+        // Re-pin the baseline to the created chat for the rest of the
+        // pipeline; the closures (seedOptimistic et al) see the new value.
+        startingStoredSessionId = selectedStoredSessionIdRef.current
+        startingRouteToken = getRouteToken()
 
         seedOptimistic(sessionId)
       }

@@ -61,6 +61,36 @@ async def test_returns_false_when_no_session_store():
 
 
 @pytest.mark.asyncio
+async def test_structural_lock_absence_still_fails_open():
+    runner = _make_runner(holder_value=None)
+    runner._session_db._db.get_compression_lock_holder = MagicMock(
+        side_effect=AttributeError("old SessionDB has no lock helper")
+    )
+
+    assert await runner._session_has_compression_in_flight("k") is False
+
+
+@pytest.mark.asyncio
+async def test_db_lock_probe_error_fails_closed():
+    runner = _make_runner(holder_value=None)
+    runner._session_db._db.get_compression_lock_holder = MagicMock(
+        side_effect=RuntimeError("sqlite temporarily unavailable")
+    )
+
+    assert await runner._session_has_compression_in_flight("k") is True
+
+
+@pytest.mark.asyncio
+async def test_store_lookup_error_fails_closed():
+    runner = _make_runner(holder_value=None)
+    runner.session_store._ensure_loaded_locked = MagicMock(
+        side_effect=RuntimeError("routing index temporarily unavailable")
+    )
+
+    assert await runner._session_has_compression_in_flight("k") is True
+
+
+@pytest.mark.asyncio
 async def test_db_call_runs_off_event_loop():
     """Regression core: get_compression_lock_holder MUST execute in non-event-loop thread."""
     sink = {}

@@ -33,8 +33,10 @@ from fastapi.testclient import TestClient
 
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError
 from hermes_cli.dashboard_auth.cookies import (
     SESSION_AT_COOKIE,
+    SESSION_PROVIDER_COOKIE,
     SESSION_RT_COOKIE,
     clear_session_cookies,
     set_session_cookies,
@@ -251,6 +253,156 @@ class TestTransparentRefreshOnAccessTokenEviction:
             c.startswith(SESSION_RT_COOKIE) or f"-{SESSION_RT_COOKIE}" in c
             for c in set_cookies
         ), f"no rotated RT cookie in {set_cookies!r}"
+
+    def test_provider_hint_routes_refresh_to_token_owner(self, gated_app):
+        """A Nous-style RT must not be rejected by Basic just because Basic
+        was registered first. The non-secret provider hint routes directly to
+        the provider that minted the session."""
+        class WrongProvider(StubAuthProvider):
+            name = "basic"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise AssertionError("foreign refresh token reached Basic provider")
+
+        wrong = WrongProvider()
+        _provider, valid_rt = self._build_rt_only_app()
+        clear_providers()
+        register_provider(wrong)
+        register_provider(StubAuthProvider(default_ttl=900))
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "stub")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 200
+        assert wrong.refresh_calls == 0
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_unknown_provider_hint_retains_verify_fallback(self, gated_app):
+        """A hint for a removed provider must not suppress the normal scan."""
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        valid_at = _sign({
+            "sub": "stub-user-1",
+            "email": "stub@example.test",
+            "name": "Stub User",
+            "org_id": "stub-org-1",
+            "exp": int(_t.time()) + 900,
+        })
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_AT_COOKIE, valid_at)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "removed-provider")
+
+        response = gated_app.get("/api/auth/me")
+
+        assert response.status_code == 200
+        assert response.json()["provider"] == "stub"
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [RefreshExpiredError, ProviderError],
+        ids=["token-rejected", "provider-unreachable"],
+    )
+    def test_stale_provider_hint_refresh_error_falls_back(
+        self,
+        gated_app,
+        error_type,
+    ):
+        """A stale known hint may reject a foreign RT or be unavailable.
+
+        Either failure applies only to that provider candidate; remaining
+        providers still get a chance to claim the token.
+        """
+        class StaleHintProvider(StubAuthProvider):
+            name = "basic"
+
+            def __init__(self):
+                super().__init__()
+                self.refresh_calls = 0
+
+            def refresh_session(self, *, refresh_token: str):
+                self.refresh_calls += 1
+                raise error_type("foreign refresh token")
+
+        stale = StaleHintProvider()
+        _provider, valid_rt = self._build_rt_only_app()
+        clear_providers()
+        register_provider(stale)
+        register_provider(StubAuthProvider(default_ttl=900))
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, valid_rt)
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "basic")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 200
+        assert stale.refresh_calls == 1
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_refresh_outage_returns_503_without_clearing_cookies(self, gated_app):
+        """Uncertain ownership during an outage must not log the user out."""
+        class UnreachableProvider(StubAuthProvider):
+            name = "unreachable"
+
+            def refresh_session(self, *, refresh_token: str):
+                raise ProviderError("simulated provider outage")
+
+        class RejectingProvider(StubAuthProvider):
+            name = "rejecting"
+
+            def refresh_session(self, *, refresh_token: str):
+                raise RefreshExpiredError("foreign refresh token")
+
+        clear_providers()
+        register_provider(UnreachableProvider())
+        register_provider(RejectingProvider())
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_RT_COOKIE, "opaque-refresh-token")
+        gated_app.cookies.set(SESSION_PROVIDER_COOKIE, "unreachable")
+
+        response = gated_app.get("/api/sessions", follow_redirects=False)
+
+        assert response.status_code == 503
+        assert gated_app.cookies.get(SESSION_RT_COOKIE) == "opaque-refresh-token"
+        assert not any(
+            SESSION_RT_COOKIE in cookie and "Max-Age=0" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
+
+    def test_valid_legacy_session_is_migrated_with_provider_hint(self, gated_app):
+        import time as _t
+        from tests.hermes_cli.conftest_dashboard_auth import _sign
+
+        valid_at = _sign({
+            "sub": "stub-user-1",
+            "email": "stub@example.test",
+            "name": "Stub User",
+            "org_id": "stub-org-1",
+            "exp": int(_t.time()) + 900,
+        })
+        gated_app.cookies.clear()
+        gated_app.cookies.set(SESSION_AT_COOKIE, valid_at)
+
+        response = gated_app.get("/api/sessions")
+
+        assert response.status_code == 200
+        assert any(
+            SESSION_PROVIDER_COOKIE in cookie and "stub" in cookie
+            for cookie in response.headers.get_list("set-cookie")
+        )
 
     def test_no_cookies_at_all_still_bounces(self, gated_app):
         """Guard the fix didn't over-reach: a request with NEITHER cookie

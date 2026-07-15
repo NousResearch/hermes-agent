@@ -392,6 +392,8 @@ export const en: Translations = {
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
+      backdropTitle: 'Chat Backdrop',
+      backdropDesc: 'The faint statue image behind the conversation.',
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',
@@ -1585,6 +1587,9 @@ export const en: Translations = {
       newWorktreeTitle: 'New worktree',
       newWorktreeDesc: 'Name the branch for this worktree.',
       branchPlaceholder: 'e.g. my-feature',
+      branchOff: () => ({ after: '', before: 'branch off ' }),
+      baseBranchPlaceholder: 'Search branches…',
+      baseBranchNone: 'No branches found',
       startWorkFailed: 'Could not create worktree',
       convertBranch: 'Convert a branch…',
       convertBranchTitle: 'Convert a branch',
@@ -2067,6 +2072,16 @@ export const en: Translations = {
       recentActivity: 'Recent activity',
       viewAllLogs: 'View all logs →',
       messagingPlatforms: 'Messaging platforms'
+    },
+    approvalMode: {
+      title: 'Approval mode',
+      ariaLabel: mode => `Approval mode: ${mode}`,
+      manual: 'Manual',
+      manualDescription: 'Ask before actions that require approval',
+      smart: 'Smart',
+      smartDescription: 'Automatically assess actions and ask when needed',
+      off: 'Off',
+      offDescription: 'Run without approval prompts'
     },
     statusbar: {
       unknown: 'unknown',

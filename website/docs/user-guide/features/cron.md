@@ -745,6 +745,10 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
 
+:::tip
+Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
+:::
+
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.

@@ -23,6 +23,18 @@ import pytest
 
 from tools import approval as A
 from tools.thread_context import propagate_context_to_thread
+from gateway.session_context import clear_cron_session, set_cron_session
+
+
+@pytest.fixture(autouse=True)
+def _reset_cron_session_contextvar():
+    """Ensure the per-job cron ContextVar is cleared between tests so a
+    leaked flag from a prior test never bleeds into a fresh one's decisions.
+    Mirrors the autouse pattern used in tests/tools/test_cron_session_leak.py
+    (#56771)."""
+    clear_cron_session()
+    yield
+    clear_cron_session()
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +118,12 @@ def test_both_rpc_threads_use_propagation_helper():
 @pytest.fixture
 def gw_session(monkeypatch):
     """A clean gateway session: HERMES_GATEWAY_SESSION set, a bound session
-    key, and isolated gateway queues/callbacks. Yields the session_key."""
+    key, and isolated gateway queues/callbacks. Yields the session_key.
+
+    The cron ContextVar is explicitly cleared so a stale flag from a previous
+    test cannot accidentally classify this gateway session as cron (#56771)."""
     monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
     # Force manual mode regardless of host config.
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
@@ -158,7 +172,10 @@ def test_guard_headless_local_approved(monkeypatch):
 
 
 def test_guard_cron_deny_blocks(monkeypatch):
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    """The cron ContextVar (not the legacy env var) drives cron-deny behavior
+    in check_execute_code_guard — this is the post-#56771 regression test for
+    the guard matrix."""
+    set_cron_session(True)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")

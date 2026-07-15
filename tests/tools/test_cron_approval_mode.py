@@ -1,4 +1,11 @@
-"""Tests for approvals.cron_mode — configurable approval behavior for cron jobs."""
+"""Tests for approvals.cron_mode — configurable approval behavior for cron jobs.
+
+Cron sessions are identified via the per-job ``_CRON_SESSION`` ContextVar
+(see ``gateway.session_context.py`` and #56771). Setting ``HERMES_CRON_SESSION``
+as an env var still works as a fallback for tests/CLI paths that set it
+directly, but these tests exercise the ContextVar path to match what
+``cron/scheduler.py::run_job()`` does in production.
+"""
 
 import pytest
 
@@ -9,6 +16,7 @@ from tools.approval import (
     check_dangerous_command,
     detect_dangerous_command,
 )
+from gateway.session_context import clear_cron_session, set_cron_session
 
 
 @pytest.fixture(autouse=True)
@@ -16,10 +24,15 @@ def _clear_approval_state():
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    # Reset the cron ContextVar so a leak from a prior test never
+    # bleeds into another test (the ContextVar default is _UNSET, which
+    # falls back to the env var; we want a clean _UNSET here).
+    clear_cron_session()
     yield
     approval_module._permanent_approved.clear()
     approval_module.clear_session("default")
     approval_module.clear_session("test-session")
+    clear_cron_session()
 
 
 # ---------------------------------------------------------------------------
@@ -88,10 +101,10 @@ class TestCronApprovalModeParsing:
 # ---------------------------------------------------------------------------
 
 class TestCronDenyMode:
-    """When HERMES_CRON_SESSION is set and cron_mode=deny, dangerous commands are blocked."""
+    """When the cron ContextVar is set and cron_mode=deny, dangerous commands are blocked."""
 
     def test_dangerous_command_blocked_in_cron_deny_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -105,7 +118,7 @@ class TestCronDenyMode:
 
     def test_safe_command_allowed_in_cron_deny_mode(self, monkeypatch):
         """Non-dangerous commands still work even with cron_mode=deny."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -117,7 +130,7 @@ class TestCronDenyMode:
 
     def test_multiple_dangerous_patterns_blocked(self, monkeypatch):
         """All dangerous patterns are blocked, not just rm."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -140,7 +153,7 @@ class TestCronDenyMode:
 
     def test_block_message_includes_description(self, monkeypatch):
         """The block message should mention what pattern was matched."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -154,10 +167,10 @@ class TestCronDenyMode:
 
 
 class TestCronApproveMode:
-    """When HERMES_CRON_SESSION is set and cron_mode=approve, dangerous commands pass through."""
+    """When the cron ContextVar is set and cron_mode=approve, dangerous commands pass through."""
 
     def test_dangerous_command_allowed_in_cron_approve_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -176,7 +189,7 @@ class TestCronDenyModeAllGuards:
     """The combined guard function also respects cron_mode."""
 
     def test_dangerous_command_blocked_in_combined_guard(self, monkeypatch):
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -189,7 +202,7 @@ class TestCronDenyModeAllGuards:
             assert "BLOCKED" in result["message"]
 
     def test_safe_command_allowed_in_combined_guard(self, monkeypatch):
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -201,7 +214,7 @@ class TestCronDenyModeAllGuards:
             assert result["approved"]
 
     def test_combined_guard_approve_mode(self, monkeypatch):
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -217,7 +230,7 @@ class TestCronDenyModeAllGuards:
         are blocked in cron-deny mode. Regression for #22070: previously the
         cron-deny early return ran only detect_dangerous_command and returned
         before reaching the tirith check, so these were silently approved."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -247,7 +260,7 @@ class TestCronDenyModeAllGuards:
         """When tirith is unavailable and security.tirith_fail_open is false,
         cron-deny mode blocks rather than silently allowing (a cron session has
         no user to approve). Mirrors the fail-closed handling in the main flow."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -278,7 +291,7 @@ class TestCronDenyModeAllGuards:
     def test_tirith_import_error_fail_open_allows_in_cron_deny(self, monkeypatch):
         """When tirith is unavailable and tirith_fail_open is true (default),
         cron-deny mode allows safe commands — preserving pre-#22070 behavior."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
@@ -315,7 +328,7 @@ class TestCronModeInteractions:
 
     def test_container_env_still_auto_approves(self, monkeypatch):
         """Docker/sandbox environments bypass approvals regardless of cron_mode."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -327,7 +340,7 @@ class TestCronModeInteractions:
 
     def test_yolo_overrides_cron_deny(self, monkeypatch):
         """--yolo still bypasses cron_mode=deny for dangerous (non-hardline) commands."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.setenv("HERMES_YOLO_MODE", "1")
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -350,8 +363,11 @@ class TestCronModeInteractions:
             assert result["approved"]
 
     def test_non_cron_non_interactive_still_auto_approves(self, monkeypatch):
-        """Non-cron, non-interactive sessions (e.g. scripted usage) still auto-approve."""
-        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        """Non-cron, non-interactive sessions (e.g. scripted usage) still auto-approve.
+        Note: this exercises the negative case — the cron ContextVar is NOT set,
+        which mirrors a fresh interactive session in a process that never ran a
+        cron job (#56771)."""
+        clear_cron_session()
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -373,7 +389,7 @@ class TestCronWithGatewayOrigin:
 
     def test_cron_with_telegram_origin_uses_cron_mode_not_gateway(self, monkeypatch):
         """Cron + contextvar platform=telegram + cron_mode=deny → BLOCKED, not pending."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -395,7 +411,7 @@ class TestCronWithGatewayOrigin:
 
     def test_cron_with_telegram_origin_approve_mode_allows(self, monkeypatch):
         """Cron + contextvar platform=telegram + cron_mode=approve → allowed via cron path."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
@@ -415,7 +431,7 @@ class TestCronWithGatewayOrigin:
 
     def test_cron_with_telegram_origin_combined_guard_uses_cron_mode(self, monkeypatch):
         """check_all_command_guards must also honor cron_mode over gateway classification."""
-        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        set_cron_session(True)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)

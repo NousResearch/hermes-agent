@@ -17,6 +17,7 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('ja-JP')).toBe('ja')
     expect(normalizeLocale('es')).toBe('es')
     expect(normalizeLocale('es-ES')).toBe('es')
+    expect(normalizeLocale('es_US')).toBe('es')
     expect(normalizeLocale('es-MX')).toBe('es')
     expect(normalizeLocale('es_AR')).toBe('es')
     expect(normalizeLocale('es-419')).toBe('es')  // código UN M.49 para LatAm

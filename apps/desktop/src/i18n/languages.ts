@@ -90,6 +90,7 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   es_ve: 'es',
   'es-419': 'es',  // código oficial para "español de Latinoamérica"
   'es-us': 'es',   // español hablado en EEUU
+  'es_us': 'es',   // variante con guion bajo (LANG=es_US)
 }
 
 export function isLocale(value: unknown): value is Locale {

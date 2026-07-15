@@ -25,7 +25,9 @@ export const es: Translations = {
     docs: 'Documentación',
     done: 'Hecho',
     error: 'Error',
+    expand: 'Expandir',
     failed: 'Falló',
+    formatJson: 'Formatear JSON',
     free: 'Gratis',
     loading: 'Cargando…',
     notSet: 'Sin establecer',
@@ -38,6 +40,7 @@ export const es: Translations = {
     set: 'Establecer',
     skip: 'Omitir',
     update: 'Actualizar',
+    tryHint: (term: string) => `Prueba «${term}»`,
     on: 'Activado',
     off: 'Desactivado'
   },
@@ -89,7 +92,8 @@ export const es: Translations = {
       useLocalGateway: 'Usar pasarela local',
       openLogs: 'Abrir logs',
       repairHint: 'Reparar vuelve a ejecutar el instalador y puede tardar varios minutos en una máquina nueva.',
-      remoteSignInHint: 'Abre la ventana de inicio de sesión de la pasarela. Usa la pasarela local para cambiar al backend incluido.',
+      remoteSignInHint: (signInLabel: string) =>
+        `Cierra la sesión del navegador remoto guardada y luego abre ${signInLabel}. Usa la pasarela local para cambiar al backend incluido.`,
       hideRecentLogs: 'Ocultar logs recientes',
       showRecentLogs: 'Mostrar logs recientes',
       signedInTitle: 'Sesión iniciada',
@@ -99,7 +103,11 @@ export const es: Translations = {
       signInFailed: 'Error al iniciar sesión',
       signInToRemoteGateway: 'Iniciar sesión en la pasarela remota',
       signInWithProvider: provider => `Iniciar sesión con ${provider}`,
-      identityProvider: 'tu proveedor de identidad'
+      identityProvider: 'tu proveedor de identidad',
+      back: 'Atrás',
+      gatewaySettings: 'Ajustes de la pasarela',
+      remoteFailureHint: 'Comprueba la URL de la pasarela e inicia sesión en Ajustes de la pasarela, o cambia a la pasarela local.',
+      signOutAndSignIn: 'Cerrar sesión e iniciar sesión'
     }
   },
 
@@ -160,13 +168,13 @@ export const es: Translations = {
       turnErrorTitle: 'Error en el turno',
       backgroundDoneTitle: 'Tarea en segundo plano completada',
       backgroundFailedTitle: 'Falló la tarea en segundo plano'
-    }
+    },
+    installMethodUnsupportedTitle: 'Método de instalación no compatible'
   },
 
   remoteDisplayBanner: {
     message: reason =>
-      `Renderizado por software activo — pantalla remota detectada (${reason}). La aceleración por GPU está desactivada para evitar parpadeos.`,
-    dismiss: 'Descartar'
+      `Renderizado por software activo — pantalla remota detectada (${reason}). La aceleración por GPU está desactivada para evitar parpadeos.`
   },
 
   titlebar: {
@@ -181,7 +189,8 @@ export const es: Translations = {
     muteHaptics: 'Silenciar vibración',
     unmuteHaptics: 'Activar vibración',
     openSettings: 'Abrir ajustes',
-    openKeybinds: 'Atajos de teclado'
+    openKeybinds: 'Atajos de teclado',
+    openStarmap: 'Abrir grafo de memoria'
   },
 
   keybinds: {
@@ -439,8 +448,15 @@ export const es: Translations = {
         exportFailed: slug => `No se pudo exportar ${slug}`,
         noneAvailable: 'No hay mascotas disponibles para activar ahora mismo.',
         turnOnFailed: 'No se pudo activar la mascota.',
-        turnOffFailed: 'No se pudo desactivar la mascota.'
-      }
+        turnOffFailed: 'No se pudo desactivar la mascota.',
+        roamDesc: 'Deja que la mascota deambule sola por la ventana mientras está inactiva.',
+        roamTitle: 'Deambular'
+      },
+      backdropDesc: 'La tenue imagen de estatua detrás de la conversación.',
+      backdropTitle: 'Fondo del chat',
+      uiScaleDesc: (percent: number) =>
+        `Escala el texto y los controles en toda la app. Cmd/Ctrl con +, - y 0 también funciona. Actual: ${percent}%.`,
+      uiScaleTitle: 'Escala de la interfaz'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -492,8 +508,6 @@ export const es: Translations = {
       enterValueFirst: 'Introduce un valor primero.',
       couldNotSave: 'No se pudo guardar la credencial.',
       remove: 'Quitar',
-      or: 'o',
-      escToCancel: 'esc para cancelar',
       getKey: 'Obtener una clave',
       saving: 'Guardando'
     },
@@ -572,7 +586,41 @@ export const es: Translations = {
       signOutFailed: 'Error al cerrar sesión',
       testFailed: 'Falló la prueba de la pasarela remota',
       applyFailed: 'No se pudieron aplicar los ajustes de la pasarela',
-      saveFailed: 'No se pudieron guardar los ajustes de la pasarela'
+      saveFailed: 'No se pudieron guardar los ajustes de la pasarela',
+      cloudAgentProvisioning: 'Aprovisionando...',
+      cloudAgentsTitle: 'Tus agentes',
+      cloudConnect: 'Conectar',
+      cloudConnectFailed: 'No se pudo conectar con ese agente',
+      cloudConnectedPill: 'Conectado',
+      cloudConnectedTitle: 'Conectado',
+      cloudConnectedTo: name => `Conectado a ${name}.`,
+      cloudConnecting: 'Conectando...',
+      cloudDesc: 'Inicia sesión una vez en Hermes Cloud y elige entre los agentes de tu cuenta — sin URL que pegar.',
+      cloudDiscoverFailed: 'No se pudieron cargar tus agentes de Hermes Cloud',
+      cloudLoadingAgents: 'Cargando tus agentes...',
+      cloudNeedsSignIn: 'Inicia sesión en Hermes Cloud para descubrir los agentes de tu cuenta.',
+      cloudNoAgents: {
+        before: 'No se encontraron agentes en esta cuenta. Crea uno en el ',
+        linkText: 'portal de Nous',
+        after: ', y luego actualiza.'
+      },
+      cloudOrgChange: 'Cambiar organización',
+      cloudOrgPickerTitle: 'Elige una organización',
+      cloudOrgRole: role => `Rol: ${role}`,
+      cloudOrgSelect: 'Seleccionar',
+      cloudRefresh: 'Actualizar',
+      cloudSignIn: 'Iniciar sesión en Hermes Cloud',
+      cloudSignInFailed: 'Error al iniciar sesión en Hermes Cloud',
+      cloudSignInTitle: 'Hermes Cloud',
+      cloudSignedIn: 'Sesión iniciada en Hermes Cloud',
+      cloudSignedInDesc: 'Has iniciado sesión. Elige un agente abajo; la sesión se actualiza automáticamente.',
+      cloudSignedOutMessage: 'Se borró la sesión de Hermes Cloud.',
+      cloudSignedOutTitle: 'Sesión cerrada en Hermes Cloud',
+      cloudStatusLabel: status => `Estado: ${status}`,
+      cloudTitle: 'Hermes Cloud',
+      modeTitle: 'Modo de conexión',
+      remoteAuthHint:
+        'Las pasarelas alojadas usan OAuth o usuario y contraseña; las autoalojadas pueden usar un token de sesión.'
     },
     keys: {
       loading: 'Cargando claves API y credenciales...',
@@ -605,7 +653,45 @@ export const es: Translations = {
       name: 'Nombre',
       serverJson: 'JSON del servidor',
       remove: 'Quitar',
-      saveServer: 'Guardar servidor'
+      saveServer: 'Guardar servidor',
+      allServers: 'Todos los servidores',
+      authenticate: 'Autenticar',
+      authenticatedMessage: (server, count) => `${server}: ${count} herramientas`,
+      authenticatedTitle: 'Autenticado',
+      capabilitySummary: (tools, prompts, resources) =>
+        `${[`${tools} herramientas`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} recursos`] : [])].join(', ')} habilitado(s)`,
+      catalogEmpty: 'No hay entradas de catálogo disponibles.',
+      catalogEnabled: 'Habilitado',
+      catalogEnvPrompt: name => `${name} requiere credenciales`,
+      catalogEnvRequired: 'Rellena los valores requeridos antes de instalar.',
+      catalogInstall: 'Instalar',
+      catalogInstallFailed: name => `Error al instalar ${name}`,
+      catalogInstallStarted: name => `Instalando ${name}... se aplicará a las nuevas sesiones al terminar.`,
+      catalogInstalled: 'Instalado',
+      catalogInstalling: 'Instalando...',
+      catalogLoadFailed: 'Error al cargar el catálogo MCP',
+      catalogLoading: 'Cargando catálogo MCP...',
+      catalogNeedsInstall: 'Necesita compilarse',
+      disableServer: name => `Deshabilitar ${name}`,
+      disableTool: tool => `Deshabilitar ${tool}`,
+      enableServer: name => `Habilitar ${name}`,
+      enableTool: tool => `Habilitar ${tool}`,
+      noOutput: 'Todavía no hay salida.',
+      serverDisabled: name => `${name} deshabilitado — se aplica a las nuevas sesiones.`,
+      serverEnabled: name => `${name} habilitado — se aplica a las nuevas sesiones.`,
+      statusConnecting: 'Conectando...',
+      statusError: 'Error',
+      statusNeedsAuth: 'Necesita autenticación',
+      statusOff: 'Desactivado',
+      tabCatalog: 'Catálogo',
+      tabServers: 'Servidores',
+      test: 'Probar conexión',
+      testFailed: 'Error de conexión',
+      testOk: count => `Conectado — ${count} herramienta${count === 1 ? '' : 's'} disponible${count === 1 ? '' : 's'}`,
+      testing: 'Probando...',
+      toggleFailed: name => `Error al alternar ${name}`,
+      unsavedConnect: 'Sin guardar — guarda mcp.json para conectar.',
+      waitingForBrowser: 'Esperando al navegador...'
     },
     model: {
       loading: 'Cargando configuración del modelo...',
@@ -633,7 +719,10 @@ export const es: Translations = {
         mcp: { label: 'MCP', hint: 'Enrutado de herramientas MCP' },
         title_generation: { label: 'Generación de títulos', hint: 'Títulos de sesión' },
         curator: { label: 'Curador', hint: 'Revisión del uso de skills' }
-      }
+      },
+      fallbackAdd: 'Añadir alternativa',
+      fallbackEmpty: 'No hay modelos alternativos — se usa el modelo predeterminado salvo que falle.',
+      notInCatalog: "no está en la lista de modelos de este proveedor — las llamadas pueden recurrir a uno de respaldo."
     },
     providers: {
       connectAccount: 'Conectar una cuenta',
@@ -717,7 +806,16 @@ export const es: Translations = {
       postSetupCompleteMessage: step => `${step} instalado.`,
       postSetupErrorTitle: 'La instalación terminó con errores',
       postSetupErrorMessage: step => `Revisa el log de ${step}.`,
-      postSetupFailed: step => `Error al ejecutar la instalación de ${step}`
+      postSetupFailed: step => `Error al ejecutar la instalación de ${step}`,
+      failedSelectModel: model => `Error al seleccionar ${model}`,
+      loadingModels: 'Cargando catálogo de modelos...',
+      modelCount: count => `${count} modelo${count === 1 ? '' : 's'}`,
+      modelDefault: 'predeterminado',
+      modelInUse: 'En uso',
+      modelInactiveHint: 'Selecciona antes este backend para cambiar su modelo.',
+      modelSectionTitle: 'Modelo',
+      modelSelectedMessage: model => `${model} se aplicará a las nuevas sesiones.`,
+      modelSelectedTitle: 'Modelo seleccionado'
     }
   },
 
@@ -747,7 +845,110 @@ export const es: Translations = {
     toolsetEnabled: 'Conjunto de herramientas activado',
     toolsetDisabled: 'Conjunto de herramientas desactivado',
     appliesToNewSessions: name => `${name} se aplica a sesiones nuevas.`,
-    failedToUpdate: name => `Error al actualizar ${name}`
+    failedToUpdate: name => `Error al actualizar ${name}`,
+    archive: 'Archivar',
+    bulkNoChange: 'Nada que cambiar.',
+    bulkUpdated: count => `Se actualizó ${count} ${count === 1 ? 'elemento' : 'elementos'} para las nuevas sesiones.`,
+    changesApplyNewSessions: 'Los cambios se aplican a las nuevas sesiones.',
+    disableAll: 'Deshabilitar todo',
+    disableUnused: 'Deshabilitar sin usar',
+    edit: 'Editar',
+    emptyNoneAvailable: noun => `Todavía no hay ${noun} disponibles.`,
+    emptyNoneFound: noun => `No se encontraron ${noun}`,
+    emptyNothingMatches: query => `Nada coincide con «${query}».`,
+    enableAll: 'Habilitar todo',
+    hub: {
+      searchPlaceholder: 'Buscar en el hub de skills',
+      search: 'Buscar',
+      searching: 'Buscando...',
+      connectingHubs: 'Conectando con los hubs de skills...',
+      connectedHubs: 'Hubs conectados:',
+      featured: 'Skills destacadas',
+      landingHint:
+        'Busca en el hub para explorar skills instalables del índice oficial, GitHub y fuentes de la comunidad.',
+      noResults: 'No se encontraron skills que coincidan en el hub.',
+      resultCount: (count, ms) => `${count} resultado${count === 1 ? '' : 's'}${ms !== null ? ` en ${ms}ms` : ''}`,
+      timedOut: sources => `Tiempo agotado: ${sources}`,
+      installed: 'Instalada',
+      install: 'Instalar',
+      installing: 'Instalando...',
+      uninstall: 'Desinstalar',
+      uninstalling: 'Desinstalando...',
+      updateAll: 'Actualizar instaladas',
+      updating: 'Actualizando...',
+      preview: 'Vista previa',
+      scan: 'Analizar',
+      scanning: 'Analizando...',
+      close: 'Cerrar',
+      files: 'Archivos',
+      noReadme: 'Esta skill no tiene vista previa de SKILL.md.',
+      trust: {
+        builtin: 'integrada',
+        trusted: 'de confianza',
+        community: 'comunidad'
+      },
+      verdictSafe: 'Segura',
+      verdictCaution: 'Precaución',
+      verdictDangerous: 'Peligrosa',
+      policyAllow: 'Instalación permitida',
+      policyAsk: 'Revisar antes de instalar',
+      policyBlock: 'Instalación bloqueada por política',
+      findings: count => `${count} hallazgo${count === 1 ? '' : 's'}`,
+      noFindings: 'Sin hallazgos de seguridad.',
+      installStarted: name => `Instalando ${name}...`,
+      uninstallStarted: name => `Desinstalando ${name}...`,
+      updateStarted: 'Actualizando skills instaladas...',
+      actionFailed: 'Error en la acción de la skill',
+      actionLog: 'Log de acciones',
+      loadFailed: 'Error al cargar el hub de skills',
+      previewFailed: 'Error en la vista previa de la skill',
+      scanFailed: 'Error en el análisis de seguridad',
+      searchFailed: 'Error en la búsqueda del hub'
+    },
+    provenance: {
+      agent: 'Aprendida',
+      bundled: 'Integrada',
+      hub: 'Hub'
+    },
+    skillArchivedMessage: 'Se puede restaurar con hermes curator restore.',
+    skillArchivedTitle: 'Skill archivada',
+    skillUpdated: 'Skill actualizada',
+    sortAlpha: 'A–Z',
+    sortLeastUsedAsc: '↑ Menos usadas',
+    sortMostUsed: 'Más usadas',
+    sortMostUsedDesc: '↓ Más usadas',
+    tabHub: 'Explorar Hub',
+    tabMcp: 'MCP',
+    usageCount: count => `usada ${count}×`
+  },
+
+  starmap: {
+    title: 'Grafo de memoria',
+    subtitle: (nodes: number, clusters: number) => `${nodes} habilidades en ${clusters} categorías`,
+    close: 'Cerrar grafo de memoria',
+    refresh: 'Actualizar',
+    memory: 'Memoria',
+    filterAll: 'Todo',
+    filterUsed: 'Usado',
+    filterLearned: 'Aprendido',
+    viewGraph: 'Grafo',
+    loadFailed: 'No se pudo cargar el grafo de memoria',
+    loading: 'Cargando…',
+    emptyTitle: 'Nada aprendido todavía',
+    emptyDesc: 'A medida que Hermes crea habilidades y recuerdos de tu trabajo, aparecerán aquí.',
+    share: 'Compartir mapa',
+    shareHint:
+      'Copia el código para compartir este mapa, o pega uno para cargarlo. Solo incluye el diseño, no tu memoria ni el texto de las habilidades.',
+    shareTitle: 'Importar / exportar mapa',
+    sharePlaceholder: 'Pega un código de mapa…',
+    copy: 'Copiar código del mapa',
+    copied: '¡Copiado!',
+    importMap: 'Importar un mapa',
+    importBtn: 'Cargar',
+    importEmpty: 'Pega un código de mapa para cargarlo.',
+    importSuccess: (nodes: number) => `Se cargó un mapa con ${nodes} ${nodes === 1 ? 'nodo' : 'nodos'}.`,
+    importedBadge: 'mapa importado',
+    resetToMine: 'Volver a mi mapa'
   },
 
   agents: {
@@ -777,7 +978,6 @@ export const es: Translations = {
     ageHours: hours => `hace ${hours}h`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
-    tokensK: k => `${k}k tok`,
     tokens: value => `${value} tok`
   },
 
@@ -849,16 +1049,18 @@ export const es: Translations = {
       install: 'Instalar',
       installing: 'Instalando...',
       installed: 'Instalado',
-      installs: count => `${count} instalaciones`
+      installs: count => `${count} instalaciones`,
+      pageTitle: 'Instalar tema'
     },
     settingsFields: 'Campos de ajustes',
     mcpServers: 'Servidores MCP',
     archivedChats: 'Chats archivados',
-    sections: { sessions: 'Sesiones', system: 'Sistema', usage: 'Uso' },
+    sections: { maintenance: 'Mantenimiento', sessions: 'Sesiones', system: 'Sistema', usage: 'Uso' },
     sectionDescriptions: {
+      maintenance: 'Diagnósticos, copias de seguridad, curador y datos de memoria',
       sessions: 'Buscar y gestionar sesiones',
       system: 'Estado, logs y acciones del sistema',
-      usage: 'Tokens, coste y actividad de skills a lo largo del tiempo'
+      usage: 'Tokens, coste y actividad de skills a lo largo del tiempo',      
     },
     nav: {
       newChat: { title: 'Nueva sesión', detail: 'Iniciar una sesión nueva' },
@@ -912,7 +1114,54 @@ export const es: Translations = {
     noModelUsage: 'Aún no hay uso de modelos.',
     topSkills: 'Skills principales',
     noSkillActivity: 'Aún no hay actividad de skills.',
-    actions: count => `${count} acciones`
+    actions: count => `${count} acciones`,
+    logFile: 'Archivo de registro',
+    logLevel: 'Nivel',
+    logSearchPlaceholder: 'Filtrar líneas del registro...',
+    maintenance: {
+      runOps: 'Diagnósticos',
+      doctor: 'Ejecutar doctor',
+      doctorDesc: 'Revisa el estado de la instalación, la configuración y los proveedores',
+      securityAudit: 'Auditoría de seguridad',
+      securityAuditDesc: 'Analiza la configuración y las skills en busca de ajustes de riesgo',
+      backup: 'Crear copia de seguridad',
+      backupDesc: 'Comprime configuración, memorias, skills y sesiones',
+      debugShare: 'Compartir depuración',
+      debugShareDesc: 'Sube un informe con datos sensibles ocultos + logs, obtén enlaces para compartir (se autoeliminan en 6h)',
+      debugShareRunning: 'Subiendo informe de depuración...',
+      debugShareLinks: 'Enlaces para compartir',
+      debugShareFailed: 'Error al compartir la depuración',
+      copyLink: 'Copiar enlace',
+      linkCopied: 'Enlace copiado',
+      curator: 'Curador de skills',
+      curatorDesc: 'Revisión en segundo plano que archiva skills creadas por el agente que ya no se usan',
+      curatorPaused: 'Pausado',
+      curatorActive: 'Activo',
+      curatorDisabled: 'Desactivado',
+      curatorLastRun: when => `Última ejecución ${when}`,
+      curatorNeverRan: 'Nunca se ha ejecutado',
+      pause: 'Pausar',
+      resume: 'Reanudar',
+      runNow: 'Ejecutar ahora',
+      memoryData: 'Datos de memoria',
+      memoryDataDesc: 'Archivos de memoria integrados que se inyectan en cada sesión',
+      memoryProvider: name => `Proveedor activo: ${name}`,
+      builtinMemory: 'integrado',
+      memoryFile: 'Memoria del agente (MEMORY.md)',
+      userFile: 'Perfil de usuario (USER.md)',
+      bytes: size => size,
+      empty: 'vacío',
+      resetMemory: 'Restablecer memoria',
+      resetUser: 'Restablecer perfil',
+      resetAll: 'Restablecer ambos',
+      resetConfirm: target => `¿Eliminar ${target}? Esto no se puede deshacer.`,
+      resetDone: files => `${files} eliminado(s).`,
+      resetFailed: 'Error al restablecer la memoria',
+      actionStarted: name => `${name} iniciado — mostrando el log...`,
+      actionFailed: name => `${name} no pudo iniciarse`,
+      running: 'Ejecutando...',
+      viewLog: 'Log de acciones'
+    }
   },
 
   messaging: {
@@ -1121,7 +1370,9 @@ export const es: Translations = {
     failedLoadSoul: 'Error al cargar SOUL.md',
     failedSaveSoul: 'Error al guardar SOUL.md',
     failedCreate: 'Error al crear el perfil',
-    failedRename: 'Error al renombrar el perfil'
+    failedRename: 'Error al renombrar el perfil',
+    editSoul: 'Editar SOUL.md...',
+    renameMenu: 'Renombrar...'
   },
 
   cron: {
@@ -1233,7 +1484,10 @@ export const es: Translations = {
     optional: 'Opcional',
     promptScheduleRequired: 'El prompt y el horario son obligatorios.',
     saveChanges: 'Guardar cambios',
-    createAction: 'Crear cron'
+    createAction: 'Crear cron',
+    promptRequired: 'El prompt es obligatorio.',
+    scheduleRequired: 'La programación es obligatoria.',
+    scriptOnlyEditHint: 'Tarea solo de script (sin prompt de IA). ID de tarea:'
   },
 
   artifacts: {
@@ -1354,7 +1608,12 @@ export const es: Translations = {
       enter: label => `Abrir ${label}`,
       reorder: label => `Reordenar ${label}`,
       toggle: label => `Alternar sesiones de ${label}`,
-      back: 'Todos los proyectos'
+      back: 'Todos los proyectos',
+      baseBranchNone: 'No se encontraron ramas',
+      baseBranchPlaceholder: 'Buscar ramas...',
+      branchOff: () => ({ after: '', before: 'ramificar desde ' }),
+      staleBackend:
+        'Actualiza el backend de Hermes para crear proyectos — tu backend es más antiguo que esta app de escritorio (Ajustes → Actualizaciones → Backend).'
     },
     newSessionIn: label => `Nueva sesión en ${label}`,
     showMoreIn: (count, label) => `Mostrar ${count} más en ${label}`,
@@ -1515,7 +1774,9 @@ export const es: Translations = {
         description: 'Repasa cómo funciona el código seleccionado y enlaza con los archivos clave.',
         text: 'Por favor explica cómo funciona esto y muéstrame los archivos clave.'
       }
-    }
+    },
+    speakReplies: 'Leer respuestas en voz alta',
+    stopSpeakingReplies: 'Detener lectura en voz alta'
   },
 
   statusStack: {
@@ -1697,6 +1958,10 @@ export const es: Translations = {
       local: {
         short: 'autoalojado',
         description: 'Apunta Hermes a un endpoint local o autoalojado compatible con OpenAI (vLLM, llama.cpp, Ollama, etc).'
+      },
+      fireworks: {
+        short: 'API de modelo directa',
+        description: 'Acceso directo a los modelos alojados por Fireworks AI.'
       }
     },
     backToSignIn: 'Volver al inicio de sesión',
@@ -1710,7 +1975,6 @@ export const es: Translations = {
     flowSubtitles: {
       pkce: 'Abre tu navegador para iniciar sesión y luego continúa aquí',
       device_code: 'Abre una página de verificación en tu navegador — Hermes conecta automáticamente',
-      loopback: 'Abre tu navegador para iniciar sesión — Hermes conecta automáticamente',
       external: 'Inicia sesión una vez en tu terminal y vuelve para chatear'
     },
     startingSignIn: provider => `Iniciando sesión para ${provider}...`,
@@ -1792,7 +2056,9 @@ export const es: Translations = {
       high: 'Alto',
       max: 'Máx',
       updateFailed: 'Error al actualizar la opción del modelo',
-      fastFailed: 'Error al actualizar el modo rápido'
+      fastFailed: 'Error al actualizar el modo rápido',
+      ultra: 'Ultra',
+      xhigh: 'Extra alto'
     },
     gatewayMenu: {
       gateway: 'Pasarela',
@@ -1853,7 +2119,37 @@ export const es: Translations = {
       switchModel: 'Cambiar de modelo',
       openModelPicker: 'Abrir selector de modelo',
       modelTitle: (provider, model) => `Modelo · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      contextUsagePanel: {
+        categories: {
+          conversation: 'Conversación',
+          mcp: 'MCP',
+          memory: 'Memoria',
+          rules: 'Reglas',
+          skills: 'Skills',
+          subagent_definitions: 'Definiciones de subagentes',
+          system_prompt: 'Prompt del sistema',
+          tool_definitions: 'Definiciones de herramientas'
+        },
+        empty: 'Todavía no hay datos de contexto',
+        loading: 'Cargando desglose...',
+        percentFull: percent => `${percent}% lleno`,
+        title: 'Uso de contexto',
+        tokenSummary: (used, max) => `${used} / ${max} tokens`
+      },
+      openContextUsage: 'Abrir desglose de uso de contexto',
+      openStarmap: 'Abrir grafo de memoria',
+      starmap: 'Grafo de memoria'
+    },
+    approvalMode: {
+      title: 'Modo de aprobación',
+      ariaLabel: mode => `Modo de aprobación: ${mode}`,
+      manual: 'Manual',
+      manualDescription: 'Pedir confirmación antes de acciones que requieren aprobación',
+      smart: 'Inteligente',
+      smartDescription: 'Evalúa las acciones automáticamente y pregunta cuando sea necesario',
+      off: 'Desactivado',
+      offDescription: 'Ejecutar sin avisos de aprobación'
     }
   },
 
@@ -2022,7 +2318,8 @@ export const es: Translations = {
       restoreNext: 'Restaurar siguiente checkpoint',
       goForward: 'Ir hacia adelante',
       sendEdited: 'Enviar mensaje editado',
-      attachingFile: 'Adjuntando…'
+      attachingFile: 'Adjuntando…',
+      expandMessage: 'Expandir mensaje'
     },
     approval: {
       gatewayDisconnected: 'La pasarela de Hermes no está conectada',
@@ -2047,7 +2344,8 @@ export const es: Translations = {
       other: 'Otra (escribe tu respuesta)',
       placeholder: 'Escribe tu respuesta…',
       skip: 'Omitir',
-      continueLabel: 'Continuar'
+      continueLabel: 'Continuar',
+      skipped: 'Omitido'
     },
     tool: {
       code: 'Código',

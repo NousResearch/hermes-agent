@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -2684,6 +2685,61 @@ def _stable_service_working_dir() -> str:
     return str(PROJECT_ROOT)
 
 
+def _get_gateway_service_wrapper() -> str | None:
+    """Return an optional service wrapper command for supervised gateways.
+
+    Operators that source credentials at runtime (Vault brokers, keychain
+    bridges, hardware-token helpers, etc.) sometimes need a small executable to
+    run before the gateway process starts.  The wrapper must be an absolute
+    path; Hermes passes the normal gateway command as arguments so wrappers can
+    finish with ``exec "$@"`` after their preflight work.
+    """
+    try:
+        gateway_cfg = read_raw_config().get("gateway", {})
+    except Exception:
+        gateway_cfg = {}
+    raw = gateway_cfg.get("service_wrapper") if isinstance(gateway_cfg, dict) else None
+
+    if not isinstance(raw, str):
+        return None
+    expanded = os.path.expanduser(raw.strip())
+    if not expanded or any(ch in expanded for ch in ("\x00", "\n", "\r")):
+        return None
+    path = Path(expanded)
+    if not path.is_absolute():
+        return None
+    return str(path)
+
+
+def _validate_gateway_service_wrapper(wrapper: str | None) -> str | None:
+    """Return *wrapper* only when the final service-side path is executable."""
+    if not wrapper:
+        return None
+    path = Path(wrapper)
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    return str(path)
+
+
+def _gateway_service_command_parts(
+    *,
+    python_path: str,
+    profile_arg: str = "",
+    wrapper: str | None = None,
+) -> list[str]:
+    command = [
+        python_path,
+        "-m",
+        "hermes_cli.main",
+        *profile_arg.split(),
+        "gateway",
+        "run",
+    ]
+    if wrapper:
+        return [wrapper, *command]
+    return command
+
+
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
@@ -2740,6 +2796,18 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+        wrapper = _get_gateway_service_wrapper()
+        if wrapper:
+            wrapper = _remap_path_for_user(wrapper, home_dir)
+        wrapper = _validate_gateway_service_wrapper(wrapper)
+        exec_start = " ".join(
+            shlex.quote(part)
+            for part in _gateway_service_command_parts(
+                python_path=python_path,
+                profile_arg=profile_arg,
+                wrapper=wrapper,
+            )
+        )
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2750,7 +2818,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2779,6 +2847,16 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
+    exec_start = " ".join(
+        shlex.quote(part)
+        for part in _gateway_service_command_parts(
+            python_path=python_path,
+            profile_arg=profile_arg,
+            wrapper=_validate_gateway_service_wrapper(
+                _get_gateway_service_wrapper()
+            ),
+        )
+    )
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -2787,7 +2865,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
+ExecStart={exec_start}
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
@@ -3907,22 +3985,17 @@ def generate_launchd_plist() -> str:
         )
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend(
-        [
-            "<string>gateway</string>",
-            "<string>run</string>",
-            "<string>--replace</string>",
-        ]
+    # Build ProgramArguments array, including --profile when using a named
+    # profile.  If a service wrapper is configured, put it first and pass the
+    # normal gateway command as arguments so the wrapper can ``exec "$@"``.
+    command_parts = _gateway_service_command_parts(
+        python_path=python_path,
+        profile_arg=profile_arg,
+        wrapper=_validate_gateway_service_wrapper(
+            _get_gateway_service_wrapper()
+        ),
     )
+    prog_args = [f"<string>{xml_escape(part)}</string>" for part in command_parts]
     prog_args_xml = "\n        ".join(prog_args)
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>

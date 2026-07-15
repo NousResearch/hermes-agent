@@ -3641,7 +3641,12 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(_skills_dir())),
+        # Relative to the RESOLVED root: _resolve_lock_install_path() hands back
+        # a resolved install_dir, so comparing it against an unresolved
+        # _skills_dir() raises whenever HERMES_HOME is reached through a symlink
+        # (macOS /tmp -> /private/tmp, a mounted skills dir, a symlinked home).
+        # That fired after the move below, orphaning files outside the lock.
+        install_path=str(install_dir.relative_to(_skills_dir().resolve())),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
         scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),

@@ -855,6 +855,14 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+# Roles that carry tool results: ``tool`` and the legacy ``function`` role older
+# transcripts can still contain.
+_TOOL_RESULT_ROLES = frozenset({"tool", "function"})
+
+
+def _is_tool_result_role(role: Any) -> bool:
+    return role in _TOOL_RESULT_ROLES
+
 
 def _is_summary_stub(content: str) -> bool:
     """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
@@ -3258,7 +3266,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             msg = result[i]
             content = msg.get("content") or ""
             # Non-string/multimodal-envelope shapes can't be hashed by text.
-            if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
+            if not _is_tool_result_role(msg.get("role")) or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
@@ -3275,7 +3283,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         """Replace the tool result at ``idx`` with a 1-line summary; True if modified.
         ``protected_skills`` (lower-cased) spares matching skill_view bodies; None (pressure pass) overrides the guard."""
         msg = result[idx]
-        if msg.get("role") != "tool":
+        if not _is_tool_result_role(msg.get("role")):
             return False
         content = msg.get("content", "")
         if isinstance(content, list) or (isinstance(content, dict) and content.get("_multimodal")):
@@ -3605,7 +3613,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
                 content = strip_think_blocks(None, content)
             if len(content) > self._CONTENT_MAX:
                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
-            if role == "tool":
+            if _is_tool_result_role(role):
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
             if role == "assistant" and msg.get("tool_calls", []):
@@ -3664,7 +3672,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
                     assistant_actions.append("Called tool(s): " + ", ".join(tool_names[:6]))
                 elif text:
                     assistant_actions.append(text)
-            elif role == "tool":
+            elif _is_tool_result_role(role):
                 tool_name, tool_args = call_id_to_tool.get(str(msg.get("tool_call_id") or ""), ("unknown", ""))
                 tool_actions.append(_summarize_tool_result(tool_name, tool_args, text or ""))
                 if re.search(r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b", text, re.I):
@@ -4739,8 +4747,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         return messages
 
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
-        """Push a compress-start boundary forward past any orphan tool results."""
-        while idx < len(messages) and messages[idx].get("role") == "tool":
+        """Push a compress-start boundary forward past any orphan tool/function results."""
+        while idx < len(messages) and _is_tool_result_role(messages[idx].get("role")):
             idx += 1
         return idx
 
@@ -4776,7 +4784,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Pull a compress-end boundary back so a tool group is not split (orphaned tail results would be dropped)."""
         if idx <= 0 or idx >= len(messages):
             return idx
-        check = next((i for i in range(idx - 1, -1, -1) if messages[i].get("role") != "tool"), -1)
+        check = next((i for i in range(idx - 1, -1, -1) if not _is_tool_result_role(messages[i].get("role"))), -1)
         # Landed on the parent assistant: move before it so the group is summarised together.
         if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
             return check
@@ -5125,7 +5133,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         return max(user_indices[min(n, len(user_indices)) - 1], head_end + 1)
 
     def _find_turn_pair_end(self, messages: List[Dict[str, Any]], user_idx: int) -> int:
-        """Index after the turn-pair (user -> assistant -> tools) at *user_idx*; ``user_idx + 1`` when no reply yet."""
+        """Index after the turn-pair (user -> assistant -> tool/function results) at *user_idx*;
+        ``user_idx + 1`` when no reply yet."""
         idx = user_idx + 1
         if idx >= len(messages) or messages[idx].get("role") != "assistant":
             return idx  # no assistant reply immediately following
@@ -5535,7 +5544,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             for m in (*compressed, *tail_messages)
         )
         # Alternate against head first, then tail; None (all-exempt head) means "user".
-        summary_role = "user" if last_head_role in {None, "assistant", "tool"} or force_user_leading else "assistant"
+        summary_role = (
+            "user" if last_head_role in {None, "assistant"}
+            or _is_tool_result_role(last_head_role) or force_user_leading else "assistant")
         merge_into_tail = False
         # Flip on a tail collision only if that doesn't collide with the head. All-exempt head pins "user";
         # flipping would open the visible sequence with "assistant". Neither alternates: merge into the first tail row.

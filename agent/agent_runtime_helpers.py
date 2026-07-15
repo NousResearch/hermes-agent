@@ -2867,8 +2867,11 @@ def _classify_tool_call_orphans(messages: List[Dict[str, Any]]):
         if (variants := tool_call_id_variants(tc))
     ]
     surviving_call_ids: set[str] = set().union(*(v for _, v in assistant_call_variants))
+    # Legacy transcripts can carry results under the old ``function`` role too.
+    from agent.context_compressor import _is_tool_result_role
     result_entries = [
-        (msg, tool_result_id_variants(msg.get("tool_call_id"))) for msg in messages if msg.get("role") == "tool"
+        (msg, tool_result_id_variants(msg.get("tool_call_id")))
+        for msg in messages if _is_tool_result_role(msg.get("role"))
     ]
     result_call_ids: set[str] = set().union(*(v for _, v in result_entries))
     orphaned_results = [msg for msg, v in result_entries if v and not (v & surviving_call_ids)]

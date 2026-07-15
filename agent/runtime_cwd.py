@@ -72,7 +72,12 @@ def map_session_path_to_worktree(path: str | Path) -> Path:
     except Exception:
         resolved = raw
 
-    for root_s, worktree_s in _session_worktree_map().items():
+    mappings = sorted(
+        _session_worktree_map().items(),
+        key=lambda item: (len(Path(item[0]).parts), len(item[0])),
+        reverse=True,
+    )
+    for root_s, worktree_s in mappings:
         root = Path(root_s)
         worktree = Path(worktree_s)
         try:

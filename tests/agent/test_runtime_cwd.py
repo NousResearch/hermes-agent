@@ -158,6 +158,27 @@ class TestSessionWorktreeMap:
         finally:
             rt._SESSION_WORKTREE_MAP.reset(token)
 
+    def test_nested_repo_uses_most_specific_worktree_mapping(self, tmp_path):
+        repo = tmp_path / "repo"
+        nested_repo = repo / "vendor" / "nested"
+        parent_worktree = tmp_path / "worktrees" / "parent"
+        nested_worktree = tmp_path / "worktrees" / "nested"
+        (nested_repo / "src").mkdir(parents=True)
+        parent_worktree.mkdir(parents=True)
+        nested_worktree.mkdir(parents=True)
+
+        token = set_session_worktree_map(
+            {
+                str(repo): str(parent_worktree),
+                str(nested_repo): str(nested_worktree),
+            }
+        )
+        try:
+            path = nested_repo / "src" / "app.py"
+            assert map_session_path_to_worktree(path) == nested_worktree / "src" / "app.py"
+        finally:
+            rt._SESSION_WORKTREE_MAP.reset(token)
+
     def test_relative_path_is_not_mapped(self, tmp_path):
         repo = tmp_path / "repo"
         worktree = tmp_path / "repo" / ".worktrees" / "session"

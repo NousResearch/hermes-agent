@@ -55,6 +55,15 @@ declare global {
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
       oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      // Hermes Cloud: one portal login powers discovery + silent per-agent
+      // sign-in (cloud-auto-discovery Phase 3).
+      cloud: {
+        status: () => Promise<DesktopCloudStatus>
+        login: () => Promise<DesktopCloudStatus & { ok: boolean }>
+        logout: () => Promise<DesktopCloudStatus & { ok: boolean }>
+        discover: (org?: string) => Promise<DesktopCloudDiscoverResult>
+        agentSignIn: (dashboardUrl: string) => Promise<DesktopCloudAgentSignInResult>
+      }
       profile: {
         get: () => Promise<DesktopActiveProfile>
         // Persists the desktop's profile choice and relaunches the local
@@ -89,12 +98,19 @@ declare global {
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
+      zoom?: {
+        get: () => Promise<{ level: number; percent: number }>
+        setPercent: (percent: number) => void
+        onChanged: (callback: (payload: { level: number; percent: number }) => void) => () => void
+      }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>
+      // Open a DIRECTORY (created if missing) in the OS file manager.
+      openDir?: (path: string) => Promise<{ ok: boolean; error?: string }>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -116,6 +132,10 @@ declare global {
         branchSwitch: (repoPath: string, branch: string) => Promise<{ branch: string }>
         // Local branches for the "convert a branch into a worktree" picker.
         branchList: (repoPath: string) => Promise<HermesGitBranch[]>
+        // Local + remote-tracking branches for the "base branch" picker in the
+        // new-worktree dialog. The remote default (origin/HEAD) is flagged so
+        // the UI can preselect it.
+        baseBranchList: (repoPath: string) => Promise<HermesGitBaseBranch[]>
         // Compact working-tree status for the composer coding rail. Null on a
         // non-repo / remote backend (where the Electron probe can't run).
         repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
@@ -149,6 +169,10 @@ declare global {
         scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        /** Best-effort current working directory of the live PTY child (POSIX
+         *  only; null on Windows or when unavailable). Used to reopen a tab
+         *  where the user last `cd`'d. */
+        cwd: (id: string) => Promise<string | null>
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
@@ -167,6 +191,9 @@ declare global {
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
+      // Soft gateway-mode apply: primary backend was torn down without a window
+      // reload. Wipe session lists (skeletons) and re-dial.
+      onConnectionApplied?: (callback: () => void) => () => void
       onPowerResume?: (callback: () => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
@@ -354,6 +381,9 @@ export interface DesktopUpdateProgress {
 export interface HermesConnection {
   baseUrl: string
   isFullscreen: boolean
+  // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
+  // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
+  // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
   nativeOverlayWidth: number
@@ -386,7 +416,12 @@ export interface DesktopActiveProfile {
 
 export interface DesktopConnectionConfig {
   envOverride: boolean
-  mode: 'local' | 'remote'
+  // The saved connection mode. 'cloud' is a Hermes Cloud connection: it carries
+  // a remote-shaped block (remoteUrl = the selected agent's dashboardUrl,
+  // remoteAuthMode 'oauth') but is remembered as cloud so settings reopens into
+  // the cloud picker. Resolution treats cloud exactly as remote
+  // (cloud-auto-discovery Q3/Q6).
+  mode: 'local' | 'remote' | 'cloud'
   // The profile this config describes, or null for the global/default
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
@@ -395,16 +430,23 @@ export interface DesktopConnectionConfig {
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
   remoteUrl: string
+  // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
+  // connected instance was discovered under, so Settings → Gateway can reopen
+  // into that org. Empty string for remote/local.
+  cloudOrg: string
 }
 
 export interface DesktopConnectionConfigInput {
-  mode: 'local' | 'remote'
+  mode: 'local' | 'remote' | 'cloud'
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   remoteUrl?: string
+  // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
+  // persist so Settings can reopen into it. Ignored for remote/local modes.
+  cloudOrg?: string
 }
 
 export interface DesktopConnectionTestResult {
@@ -443,6 +485,55 @@ export interface DesktopOauthLogoutResult {
   connected: boolean
 }
 
+// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
+
+export interface DesktopCloudStatus {
+  // The portal base URL the desktop talks to (default or env-overridden).
+  portalBaseUrl: string
+  // Whether the OAuth partition holds a live Nous portal (Privy) session — the
+  // portal authenticates via Privy, so this reflects the privy-token cookie, NOT
+  // the hermes gateway session cookies. See cookiesHavePrivySession.
+  signedIn: boolean
+}
+
+// A discovered Hermes Cloud agent — the trimmed DTO from NAS GET /api/agents.
+export interface DesktopCloudAgent {
+  id: string
+  name: string
+  status: string
+  // null until the agent has a provisioned dashboard (show "provisioning…").
+  dashboardUrl: string | null
+  // "active" | "degraded" | "down" | "unknown".
+  dashboardGatewayState: string
+}
+
+// An org the signed-in user belongs to — for the org picker shown when a
+// multi-org user's discovery call needs disambiguation (NAS 409).
+export interface DesktopCloudOrg {
+  id: string
+  slug: string | null
+  name: string
+  isPersonal: boolean
+  // "OWNER" | "MEMBER".
+  role: string
+}
+
+// Discovery result: either the agent list, OR a request to pick an org first
+// (multi-org user, no org chosen yet). The renderer shows a picker on the
+// latter and re-calls discover(org). On the agents branch, `org` echoes the
+// authoritatively-resolved org the list was scoped to (from NAS), so the
+// desktop persists it without relying on transient picker state.
+export type DesktopCloudDiscoverResult =
+  | { agents: DesktopCloudAgent[]; org?: DesktopCloudOrg | null; needsOrgSelection?: false }
+  | { needsOrgSelection: true; orgs: DesktopCloudOrg[] }
+
+export interface DesktopCloudAgentSignInResult {
+  // The agent gateway base URL the silent sign-in targeted.
+  baseUrl: string
+  // Whether the agent's gateway session cookie landed (silent cascade done).
+  connected: boolean
+}
+
 export interface DesktopBootProgress {
   error: string | null
   fakeMode: boolean
@@ -454,7 +545,7 @@ export interface DesktopBootProgress {
 }
 
 // First-launch install ("bootstrap") event types -- emitted by
-// electron/bootstrap-runner.cjs and observed by the renderer install overlay.
+// electron/bootstrap-runner.ts and observed by the renderer install overlay.
 // Mirrors the event shapes emitted by runBootstrap()'s onEvent callback.
 
 export interface DesktopBootstrapStageDescriptor {
@@ -517,6 +608,10 @@ export interface HermesApiRequest {
   path: string
   method?: string
   body?: unknown
+  // Single-file multipart upload (FastAPI UploadFile endpoints). Mutually
+  // exclusive with `body`; bytes transfer over IPC as a structured-clone
+  // ArrayBuffer. Token-mode backends only.
+  upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
   // Route this REST call to a specific profile's backend. Omit for the primary
   // (window) backend. Read-only cross-profile data is served by the primary, so
@@ -581,6 +676,16 @@ export interface HermesGitBranch {
   checkedOut: boolean
   isDefault: boolean
   worktreePath: null | string
+}
+
+// A branch the new worktree can be based on: local heads + remote-tracking
+// refs. `isRemote` distinguishes `origin/main` from a local `main` (the UI
+// may show a remote glyph); `isDefault` flags origin/HEAD so the dialog can
+// preselect it.
+export interface HermesGitBaseBranch {
+  name: string
+  isRemote: boolean
+  isDefault: boolean
 }
 
 // A single changed path from `git status --porcelain=v2`, classified by state

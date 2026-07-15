@@ -266,6 +266,32 @@ def test_list_authenticated_providers_bare_custom_endpoint_defers_to_matching_na
     assert any(p["slug"] == "custom:my-endpoint" for p in providers)
 
 
+def test_list_authenticated_providers_tolerates_legacy_scalar_model_config(monkeypatch):
+    """A legacy bare-string `model:` config value must not crash the picker.
+
+    hermes_cli/inventory.py's ConfigContext loader already treats config.model
+    as a bare string in older configs. The config-sourced 3b fallback must
+    tolerate the same shape instead of calling ``.get()`` on a str.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": "gpt-4o"},
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="xai-oauth",
+        current_base_url="",
+        current_model="grok-4",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    assert not any(p["slug"] == "custom" for p in providers)
+
+
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
     """Picker selections for bare custom endpoints should route to current base_url."""
     monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)

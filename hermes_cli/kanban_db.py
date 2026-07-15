@@ -87,7 +87,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
@@ -1176,7 +1176,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Free-form JSON metadata for task-level configuration (e.g., lane
+    -- routing: coder profile uses claude_code_lane, claude_code_tier).
+    -- NULL = no metadata.
+    metadata             TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1986,6 +1990,11 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    if "metadata" not in cols:
+        # Free-form JSON metadata for task-level configuration (e.g., lane
+        # routing). NULL is the correct default for existing rows.
+        _add_column_if_missing(conn, "tasks", "metadata", "metadata TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite

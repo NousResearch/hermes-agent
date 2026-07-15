@@ -9858,26 +9858,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _notify_goal_done_home_channel(self, source: Any, message: str) -> None:
         """Mirror a goal-completion notice to the Discord home channel (#47191)."""
         from gateway.config import Platform
-        import os
 
-        env_key = _home_target_env_var("discord")
-        chat_id = os.getenv(env_key, "").strip()
-        if not chat_id:
+        home = self.config.get_home_channel(Platform.DISCORD)
+        if home is None or not home.chat_id:
             return
 
         if source is not None and hasattr(source, "chat_id"):
-            if str(getattr(source, "chat_id", "")) == chat_id:
+            same_platform = getattr(source, "platform", None) == Platform.DISCORD
+            same_chat = str(getattr(source, "chat_id", "")) == str(home.chat_id)
+            same_thread = str(getattr(source, "thread_id", "") or "") == str(home.thread_id or "")
+            if same_platform and same_chat and same_thread:
                 return
 
         adapter = self.adapters.get(Platform.DISCORD)
         if not adapter:
             return
 
-        thread_id = os.getenv(f"{env_key}_THREAD_ID", "").strip() or None
-        metadata = self._thread_metadata_for_target(Platform.DISCORD, chat_id, thread_id)
+        metadata = self._thread_metadata_for_target(Platform.DISCORD, home.chat_id, home.thread_id)
 
         try:
-            result = await adapter.send(chat_id, message, metadata=metadata)
+            result = await adapter.send(home.chat_id, message, metadata=metadata)
             if result is not None and not getattr(result, "success", True):
                 logger.warning(
                     "goal home-channel notice: send failed: %s",

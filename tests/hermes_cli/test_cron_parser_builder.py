@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from hermes_cli.subcommands.cron import build_cron_parser
 
 
@@ -21,6 +23,11 @@ def _build():
     subparsers = parser.add_subparsers(dest="command")
     build_cron_parser(subparsers, cmd_cron=_sentinel_handler)
     return parser
+
+
+def _action_parser(parser, action):
+    cron_parser = parser._subparsers._group_actions[0].choices["cron"]
+    return cron_parser._subparsers._group_actions[0].choices[action]
 
 
 def test_cron_subactions_present():
@@ -50,7 +57,9 @@ def test_cron_create_options():
         "cron", "create", "0 9 * * *", "daily task prompt",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
+        "--attach-to-session",
         "--workdir", "/tmp/x",
+        "--provider", "openrouter", "--model", "anthropic/claude-sonnet-4",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "daily task prompt"
@@ -59,7 +68,38 @@ def test_cron_create_options():
     assert ns.repeat == 3
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
+    assert ns.attach_to_session is True
     assert ns.workdir == "/tmp/x"
+    assert ns.provider == "openrouter"
+    assert ns.model == "anthropic/claude-sonnet-4"
+
+
+def test_cron_edit_model_override_tristate():
+    parser = _build()
+
+    omitted = parser.parse_args(["cron", "edit", "j"])
+    assert omitted.model is None
+    assert omitted.provider is None
+    assert omitted.no_model is False
+
+    selected = parser.parse_args([
+        "cron", "edit", "j", "--provider", "anthropic", "--model", "claude-sonnet-4-6",
+    ])
+    assert selected.provider == "anthropic"
+    assert selected.model == "claude-sonnet-4-6"
+    assert selected.no_model is False
+
+    cleared = parser.parse_args(["cron", "edit", "j", "--no-model"])
+    assert cleared.model is None
+    assert cleared.provider is None
+    assert cleared.no_model is True
+
+
+def test_cron_edit_model_and_no_model_are_mutually_exclusive():
+    parser = _build()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["cron", "edit", "j", "--model", "m", "--no-model"])
 
 
 def test_cron_edit_no_agent_tristate():
@@ -68,6 +108,47 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j", "--no-agent"]).no_agent is True
     assert parser.parse_args(["cron", "edit", "j", "--agent"]).no_agent is False
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
+
+
+def test_cron_edit_attach_to_session_tristate():
+    parser = _build()
+    assert parser.parse_args(
+        ["cron", "edit", "j", "--attach-to-session"]
+    ).attach_to_session is True
+    assert parser.parse_args(
+        ["cron", "edit", "j", "--no-attach-to-session"]
+    ).attach_to_session is False
+    assert parser.parse_args(["cron", "edit", "j"]).attach_to_session is None
+
+
+def test_cron_attach_to_session_flags_are_in_help():
+    parser = _build()
+    create_help = _action_parser(parser, "create").format_help()
+    edit_help = _action_parser(parser, "edit").format_help()
+
+    assert "--attach-to-session" in create_help
+    assert "--attach-to-session" in edit_help
+    assert "--no-attach-to-session" in edit_help
+
+
+def test_cron_model_override_flags_are_in_help():
+    parser = _build()
+    create_help = _action_parser(parser, "create").format_help()
+    edit_help = _action_parser(parser, "edit").format_help()
+
+    assert "--provider PROVIDER" in create_help
+    assert "--model MODEL" in create_help
+    assert "--provider PROVIDER" in edit_help
+    assert "--model MODEL" in edit_help
+    assert "--no-model" in edit_help
+    no_model_action = next(
+        action
+        for action in _action_parser(parser, "edit")._actions
+        if "--no-model" in action.option_strings
+    )
+    assert no_model_action.help == (
+        "Clear the existing per-job provider, model, and base URL override"
+    )
 
 
 def test_cron_dispatch_func_is_injected_handler():

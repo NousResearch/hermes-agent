@@ -40,6 +40,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
+        "--provider",
+        help="Provider for the per-job model override (requires --model)",
+    )
+    cron_create.add_argument(
+        "--model",
+        help="Model to pin for this job (uses the current provider unless --provider is set)",
+    )
+    cron_create.add_argument(
         "--skill",
         dest="skills",
         action="append",
@@ -70,6 +78,14 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--attach-to-session",
+        action="store_true",
+        help=(
+            "Make deliveries continuable from the origin conversation. "
+            "Omit to use the global cron.mirror_delivery setting."
+        ),
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -81,6 +97,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--name", help="New job name")
     cron_edit.add_argument("--deliver", help="New delivery target")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    cron_edit.add_argument(
+        "--provider",
+        help="Provider for the new per-job model override (requires --model)",
+    )
+    cron_edit_model = cron_edit.add_mutually_exclusive_group()
+    cron_edit_model.add_argument(
+        "--model",
+        help="Set the model override (uses the current provider unless --provider is set)",
+    )
+    cron_edit_model.add_argument(
+        "--no-model",
+        action="store_true",
+        help="Clear the existing per-job provider, model, and base URL override",
+    )
     cron_edit.add_argument(
         "--skill",
         dest="skills",
@@ -133,6 +163,24 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--attach-to-session",
+        dest="attach_to_session",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "Make deliveries continuable from the origin conversation, "
+            "overriding the global setting."
+        ),
+    )
+    cron_edit.add_argument(
+        "--no-attach-to-session",
+        dest="attach_to_session",
+        action="store_const",
+        const=False,
+        help="Disable continuable delivery for this job, overriding the global setting.",
     )
 
     # lifecycle actions

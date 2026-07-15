@@ -344,6 +344,13 @@ class PluginContext:
         self._manager = manager
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
+        # Count of "other" registration surfaces this plugin exercised that
+        # are NOT tracked on LoadedPlugin (providers, context engines, skills,
+        # platforms, slack action handlers, auxiliary tasks, secret sources).
+        # Used so the zero-registration warning does not fire for legitimately
+        # provider-only / secret-source-only plugins (e.g. plugins/image_gen/fal).
+        # See #2765/#2768. CLI commands are counted separately via `_cli_commands`.
+        self._extra_registrations: int = 0
 
     # -- host-owned LLM access ----------------------------------------------
 
@@ -522,6 +529,9 @@ class PluginContext:
             "handler_fn": handler_fn,
             "plugin": self.manifest.name,
         }
+        # Counted by the zero-registration check (and the DEBUG summary) so a
+        # CLI-only plugin is not treated as an empty register().
+        self._extra_registrations += 1
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
 
     # -- slash command registration -------------------------------------------
@@ -638,6 +648,7 @@ class PluginContext:
             )
             return
         self._manager._context_engine = engine
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered context engine: %s",
             self.manifest.name, engine.name,
@@ -665,6 +676,7 @@ class PluginContext:
             )
             return
         register_provider(provider)
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered image_gen provider: %s",
             self.manifest.name, provider.name,
@@ -705,6 +717,7 @@ class PluginContext:
                 self.manifest.name, getattr(provider, "name", "?"), e,
             )
             return
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered dashboard-auth provider: %s (%s)",
             self.manifest.name, provider.name, provider.display_name,
@@ -732,6 +745,7 @@ class PluginContext:
             )
             return
         _register_video_provider(provider)
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered video_gen provider: %s",
             self.manifest.name, provider.name,
@@ -760,6 +774,7 @@ class PluginContext:
             )
             return
         _register_web_provider(provider)
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered web provider: %s",
             self.manifest.name, provider.name,
@@ -792,6 +807,7 @@ class PluginContext:
             )
             return
         _register_browser_provider(provider)
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered browser provider: %s",
             self.manifest.name, provider.name,
@@ -839,6 +855,10 @@ class PluginContext:
             )
             return
         if register_source(source):
+            # Secret-source-only plugins are a legitimate registration surface
+            # (not tracked on LoadedPlugin), so count them for the
+            # zero-registration warning. (#58692 review)
+            self._extra_registrations += 1
             logger.info(
                 "Plugin '%s' registered secret source: %s",
                 self.manifest.name, source.name,
@@ -877,6 +897,7 @@ class PluginContext:
             )
             return
         _register_tts_provider(provider)
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered TTS provider: %s",
             self.manifest.name, provider.name,
@@ -921,6 +942,7 @@ class PluginContext:
             )
             return
         _register_stt_provider(provider)
+        self._extra_registrations += 1
         logger.info(
             "Plugin '%s' registered transcription provider: %s",
             self.manifest.name, provider.name,
@@ -976,6 +998,7 @@ class PluginContext:
         )
         platform_registry.register(entry)
         self._manager._plugin_platform_names.add(name)
+        self._extra_registrations += 1
         logger.debug(
             "Plugin %s registered platform: %s",
             self.manifest.name,
@@ -1034,6 +1057,7 @@ class PluginContext:
         self._manager._slack_action_handlers.append(
             (action_id, callback, self.manifest.name)
         )
+        self._extra_registrations += 1
         logger.debug(
             "Plugin %s registered Slack action handler: %s",
             self.manifest.name,
@@ -1148,6 +1172,7 @@ class PluginContext:
             "defaults": merged_defaults,
             "plugin": self.manifest.name,
         }
+        self._extra_registrations += 1
         logger.debug(
             "Plugin %s registered auxiliary task: %s (%s)",
             self.manifest.name,
@@ -1235,6 +1260,7 @@ class PluginContext:
             "bare_name": name,
             "description": description,
         }
+        self._extra_registrations += 1
         logger.debug(
             "Plugin %s registered skill: %s",
             self.manifest.name, qualified,
@@ -1768,6 +1794,29 @@ class PluginManager:
 
             loaded.module = module
 
+            # Warn early when declared required env vars are absent, so the
+            # user gets a clear message instead of a silent no-op from the
+            # plugin's own register() (issue #2765). ``requires_env`` entries
+            # may be bare strings or dicts with a ``name`` key.
+            _missing_env: list[str] = []
+            for _entry in manifest.requires_env or []:
+                if isinstance(_entry, str):
+                    _var = _entry
+                elif isinstance(_entry, dict):
+                    _var = _entry.get("name") or ""
+                else:
+                    _var = ""
+                if _var and not os.environ.get(_var):
+                    _missing_env.append(_var)
+            if _missing_env:
+                logger.warning(
+                    "Plugin '%s' is missing required environment variable(s): %s. "
+                    "Tools or other surfaces may not be registered — ensure these "
+                    "are set in the process environment that loads plugins.",
+                    manifest.name,
+                    ", ".join(_missing_env),
+                )
+
             # Call register()
             register_fn = getattr(module, "register", None)
             if register_fn is None:
@@ -1809,6 +1858,40 @@ class PluginManager:
                     if self._plugin_commands[c].get("plugin") == manifest.name
                 ]
                 loaded.enabled = True
+
+                # Warn when register() completed but added nothing at all —
+                # the silent-skip pattern reported in #2765 (e.g. a plugin
+                # returns early when a required env var is absent, emitting no
+                # log of its own). Deferred platform loaders legitimately
+                # register nothing here, so exempt them. Also exempt plugins
+                # that registered any "other" surface not tracked on
+                # LoadedPlugin — providers (image/video/web/browser/tts/stt/
+                # dashboard-auth), context engines, platforms, slack action
+                # handlers, auxiliary tasks, skills, CLI commands, or secret
+                # sources — counted via ctx._extra_registrations. Without this,
+                # a legitimately provider-only / CLI-only / secret-source-only
+                # plugin would trigger a false zero-registration warning
+                # (#2768 / #58692 review).
+                _cli_commands_registered = any(
+                    c.get("plugin") == manifest.name
+                    for c in self._cli_commands.values()
+                )
+                if (
+                    not loaded.deferred
+                    and not loaded.tools_registered
+                    and not loaded.hooks_registered
+                    and not loaded.middleware_registered
+                    and not loaded.commands_registered
+                    and not _cli_commands_registered
+                    and not ctx._extra_registrations
+                ):
+                    logger.warning(
+                        "Plugin '%s' registered zero tools, hooks, middleware, "
+                        "commands, CLI commands, and other surfaces. If it "
+                        "requires environment variables, ensure they are set "
+                        "in the process environment that loads plugins.",
+                        manifest.name,
+                    )
                 logger.debug(
                     "  registered: %d tool(s), %d hook(s), %d middleware, %d slash command(s), %d CLI command(s)",
                     len(loaded.tools_registered),

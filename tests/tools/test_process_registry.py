@@ -16,6 +16,7 @@ from tools.process_registry import (
     ProcessSession,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
+    MAX_ACTIVE_PROCESS_AGE,
 )
 
 
@@ -138,6 +139,118 @@ class TestGetAndPoll:
         result = registry.poll(s.id)
         assert result["status"] == "exited"
         assert result["exit_code"] == 0
+
+
+def test_request_close_terminal_without_sink_is_desktop_only_error(registry):
+    """No UI close sink wired (CLI/messaging) → clear desktop-only error, no raise."""
+    s = _make_session(sid="proc_close_nosink")
+    registry._running[s.id] = s
+
+    result = registry.request_close_terminal(s.id)
+
+    assert result["status"] == "error"
+    assert "desktop" in result["error"].lower()
+
+
+def test_request_close_terminal_invokes_sink_without_killing(registry):
+    """With a sink wired, close routes (session, process_id) to the UI and leaves
+    the process running — close is a view drop, not a kill."""
+    s = _make_session(sid="proc_close_live")
+    registry._running[s.id] = s
+    calls = []
+    registry.on_close = lambda session, pid: calls.append((session, pid))
+
+    result = registry.request_close_terminal(s.id)
+
+    assert result["status"] == "ok"
+    assert result["closed"] == "proc_close_live"
+    assert calls == [(s, "proc_close_live")]
+    # Still tracked as running — closing the tab must not reap the process.
+    assert s.id in registry._running
+
+
+def test_close_terminal_tool_requires_process_id():
+    """The desktop-gated close_terminal tool rejects a missing process_id."""
+    from tools.close_terminal_tool import close_terminal_tool
+
+    assert json.loads(close_terminal_tool(""))["error"]
+
+
+def test_close_terminal_tool_routes_to_registry(monkeypatch):
+    """close_terminal delegates to process_registry.request_close_terminal."""
+    import tools.close_terminal_tool as ct
+
+    seen = {}
+
+    def _fake_close(sid):
+        seen["sid"] = sid
+
+        return {"status": "ok", "closed": sid}
+
+    monkeypatch.setattr(ct.process_registry, "request_close_terminal", _fake_close)
+
+    out = ct.close_terminal_tool("proc_abc")
+
+    assert json.loads(out)["closed"] == "proc_abc"
+    assert seen["sid"] == "proc_abc"
+
+
+def test_close_terminal_tool_gated_on_desktop(monkeypatch):
+    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal gating)."""
+    from tools.close_terminal_tool import check_close_terminal_requirements
+
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    assert check_close_terminal_requirements() is False
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    assert check_close_terminal_requirements() is True
+
+
+def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch):
+    """Local reader must emit live chunks, not one EOF burst.
+
+    Regression for desktop agent terminals: ``stdout.read(4096)`` can buffer
+    until process exit for small periodic output. ``buffer.read1(4096)`` should
+    surface each chunk as it arrives.
+    """
+
+    class _FakeBuffer:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, _n):
+            if self._chunks:
+                return self._chunks.pop(0)
+            return b""
+
+    class _FakeStdout:
+        def __init__(self, chunks):
+            self.buffer = _FakeBuffer(chunks)
+
+    class _FakeProcess:
+        def __init__(self, chunks):
+            self.stdout = _FakeStdout(chunks)
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    session = _make_session(sid="proc_reader_live")
+    session.process = _FakeProcess([b"tick 1\n", b"tick 2\n", b"tick 3\n", b""])
+    emitted = []
+    moved = []
+
+    monkeypatch.setattr(registry, "_check_watch_patterns", lambda _s, _c: None)
+    monkeypatch.setattr(registry, "_emit_output", lambda _s, chunk: emitted.append(chunk))
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._reader_loop(session)
+
+    assert emitted == ["tick 1\n", "tick 2\n", "tick 3\n"]
+    assert session.output_buffer == "tick 1\ntick 2\ntick 3\n"
+    assert session.exited is True
+    assert session.exit_code == 0
+    assert moved == ["proc_reader_live"]
 
 
 # =========================================================================
@@ -415,6 +528,34 @@ class TestListSessions:
         assert len(result) == 1
         assert result[0]["session_id"] == "proc_1"
 
+    def test_session_key_surfaces_cross_task_processes(self, registry):
+        """A bg process under the same gateway session but a DIFFERENT task is
+        surfaced when session_key is passed, and flagged session_scoped (#29177).
+        """
+        # Current turn's task = "t_now"; forgotten preview server = "t_old"
+        # but both share gateway session_key "gw1".
+        own = _make_session(sid="proc_own", task_id="t_now")
+        own.session_key = "gw1"
+        forgotten = _make_session(sid="proc_forgotten", task_id="t_old")
+        forgotten.session_key = "gw1"
+        other = _make_session(sid="proc_other", task_id="t_x")
+        other.session_key = "gw_other"
+        registry._running[own.id] = own
+        registry._running[forgotten.id] = forgotten
+        registry._running[other.id] = other
+
+        # Task-only (legacy) view sees just the current task's process.
+        legacy = registry.list_sessions(task_id="t_now")
+        assert {r["session_id"] for r in legacy} == {"proc_own"}
+
+        # With session_key, the forgotten process under the same gateway
+        # session is surfaced and flagged; the unrelated session is not.
+        result = registry.list_sessions(task_id="t_now", session_key="gw1")
+        by_id = {r["session_id"]: r for r in result}
+        assert set(by_id) == {"proc_own", "proc_forgotten"}
+        assert by_id["proc_forgotten"].get("session_scoped") is True
+        assert "session_scoped" not in by_id["proc_own"]
+
     def test_list_entry_fields(self, registry):
         s = _make_session(output="preview text")
         registry._running[s.id] = s
@@ -443,6 +584,27 @@ class TestActiveQueries:
         registry._running[s.id] = s
         assert registry.has_active_for_session("gw_session_1") is True
         assert registry.has_active_for_session("other") is False
+
+    def test_has_active_for_session_with_max_age_recent(self, registry):
+        """Recent process is considered active when max_active_age is set."""
+        s = _make_session(started_at=time.time() - 100)
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1", max_active_age=3600) is True
+
+    def test_has_active_for_session_with_max_age_stale(self, registry):
+        """Stale process (older than max_active_age) is ignored."""
+        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1", max_active_age=86400) is False
+
+    def test_has_active_for_session_max_age_none_preserves_legacy(self, registry):
+        """Without max_active_age, any running process blocks (legacy behaviour)."""
+        s = _make_session(started_at=time.time() - 90000)  # 25 hours ago
+        s.session_key = "gw_session_1"
+        registry._running[s.id] = s
+        assert registry.has_active_for_session("gw_session_1") is True
 
     def test_exited_not_active(self, registry):
         s = _make_session(task_id="t1", exited=True, exit_code=0)
@@ -941,6 +1103,26 @@ class TestKillProcess:
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
 
+    def test_kill_local_popen_uses_host_tree_terminator(self, registry, monkeypatch):
+        s = _make_session(sid="proc_local", command="sleep 999")
+        s.process = MagicMock()
+        s.process.pid = 12345
+        s.host_start_time = 67890
+        registry._running[s.id] = s
+        terminate_calls = []
+
+        monkeypatch.setattr(
+            registry,
+            "_terminate_host_pid",
+            lambda pid, expected_start=None: terminate_calls.append((pid, expected_start)),
+        )
+        monkeypatch.setattr(registry, "_write_checkpoint", lambda: None)
+
+        result = registry.kill_process(s.id)
+
+        assert result["status"] == "killed"
+        assert terminate_calls == [(12345, 67890)]
+
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
         s.pid = 424242
@@ -1162,6 +1344,181 @@ def test_drain_notifications_empty_queue():
 
     results = process_registry.drain_notifications()
     assert results == []
+
+
+def test_drain_notifications_filters_async_delegation_by_session_key():
+    """Async-delegation events should only be consumed by the matching session's drain.
+
+    Regression test for issue #58684: background delegation results delivered
+    to the wrong session when the user switches sessions while a subagent runs.
+    """
+    from tools.process_registry import process_registry
+
+    # Clear the queue first
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        # Put events for different sessions
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_session_a",
+            "session_key": "telegram:dm:111:user_a",
+            "goal": "task A",
+            "status": "completed",
+            "summary": "done A",
+            "api_calls": 1,
+            "duration_seconds": 0.5,
+        })
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_session_b",
+            "session_key": "telegram:dm:222:user_b",
+            "goal": "task B",
+            "status": "completed",
+            "summary": "done B",
+            "api_calls": 1,
+            "duration_seconds": 0.3,
+        })
+
+        # Drain for session A — should only get deleg_session_a
+        results_a = process_registry.drain_notifications(session_key="telegram:dm:111:user_a")
+        assert len(results_a) == 1, (
+            f"Expected 1 event for session A, got {len(results_a)}"
+        )
+        assert results_a[0][0]["delegation_id"] == "deleg_session_a"
+        assert "done A" in results_a[0][1]
+
+        # Session B's event should have been re-queued — drain for session B
+        results_b = process_registry.drain_notifications(session_key="telegram:dm:222:user_b")
+        assert len(results_b) == 1, (
+            f"Expected 1 event for session B, got {len(results_b)}"
+        )
+        assert results_b[0][0]["delegation_id"] == "deleg_session_b"
+        assert "done B" in results_b[0][1]
+
+        # No more events should remain
+        assert process_registry.completion_queue.empty()
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_no_filter_passes_all_async_delegation():
+    """Without a session_key filter, all async-delegation events are consumed.
+
+    This ensures backward compatibility — the default (session_key="") permits
+    all events, matching pre-fix behavior.
+    """
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_1",
+            "session_key": "telegram:dm:111:user_a",
+            "goal": "task 1",
+            "status": "completed",
+            "summary": "done 1",
+            "api_calls": 1,
+            "duration_seconds": 0.5,
+        })
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_2",
+            "session_key": "telegram:dm:222:user_b",
+            "goal": "task 2",
+            "status": "completed",
+            "summary": "done 2",
+            "api_calls": 1,
+            "duration_seconds": 0.3,
+        })
+
+        # No filter — both should be consumed
+        results = process_registry.drain_notifications()
+        assert len(results) == 2, (
+            f"Expected 2 events without filter, got {len(results)}"
+        )
+        ids = {r[0]["delegation_id"] for r in results}
+        assert ids == {"deleg_1", "deleg_2"}
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_owns_event_callback_beats_key_equality():
+    """The positive-proof ownership callback consumes ONLY approved events —
+    including across a compression rotation where bare key equality would
+    wrongly re-queue the session's own pre-compression dispatch (#55578)."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        # Pre-compression dispatch: event carries the OLD key.
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_precompress",
+            "session_key": "old_parent_key",
+            "goal": "task", "status": "completed", "summary": "mine",
+            "api_calls": 1, "duration_seconds": 0.1,
+        })
+        # Foreign event that plain key equality would also reject.
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_foreign",
+            "session_key": "someone_else",
+            "goal": "task", "status": "completed", "summary": "not mine",
+            "api_calls": 1, "duration_seconds": 0.1,
+        })
+
+        # Chain-aware ownership: this session's lineage includes old_parent_key.
+        lineage = {"old_parent_key", "new_child_key"}
+        results = process_registry.drain_notifications(
+            session_key="new_child_key",
+            owns_event=lambda e: e.get("session_key") in lineage,
+        )
+        assert [r[0]["delegation_id"] for r in results] == ["deleg_precompress"]
+
+        # The foreign event was re-queued, not consumed.
+        leftover = process_registry.completion_queue.get_nowait()
+        assert leftover["delegation_id"] == "deleg_foreign"
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
+
+
+def test_drain_notifications_owns_event_callback_fails_closed():
+    """A broken ownership callback must re-queue (never leak) the event."""
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+
+    try:
+        process_registry.completion_queue.put({
+            "type": "async_delegation",
+            "delegation_id": "deleg_x",
+            "session_key": "k",
+            "goal": "task", "status": "completed", "summary": "s",
+            "api_calls": 1, "duration_seconds": 0.1,
+        })
+
+        def broken(_evt):
+            raise RuntimeError("ownership check exploded")
+
+        results = process_registry.drain_notifications(
+            session_key="k", owns_event=broken
+        )
+        assert results == []
+        assert process_registry.completion_queue.get_nowait()["delegation_id"] == "deleg_x"
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()
 
 
 # ---------------------------------------------------------------------------
@@ -1538,6 +1895,7 @@ class TestSigkillEscalation:
                             lambda: {"terminal": {"daemon_term_grace_seconds": -5}})
         assert ProcessRegistry._daemon_term_grace_seconds() == 0.0
 
+    @pytest.mark.live_system_guard_bypass
     def test_entire_tree_is_sigkilled_not_just_parent(self, monkeypatch):
         """A SIGTERM-ignoring parent + children are ALL force-killed.
 
@@ -1567,14 +1925,31 @@ class TestSigkillEscalation:
         try:
             ProcessRegistry._terminate_host_pid(parent.pid)
 
-            def _all_dead():
-                return not any(
-                    psutil.pid_exists(p)
-                    and ProcessRegistry._proc_alive(psutil.Process(p))
-                    for p in all_pids
-                )
+            def _pid_dead(p: int) -> bool:
+                # A pid is "dead" for our purposes if it no longer exists OR
+                # exists only as an unreaped zombie (already terminated, just
+                # not reaped by its reparented parent yet). psutil can also
+                # raise mid-probe if the pid vanishes between the existence
+                # check and the status read — treat any such race as dead.
+                try:
+                    if not psutil.pid_exists(p):
+                        return True
+                    return not ProcessRegistry._proc_alive(psutil.Process(p))
+                except Exception:
+                    return True
 
-            assert _wait_until(_all_dead, timeout=4.0), (
+            def _all_dead():
+                return all(_pid_dead(p) for p in all_pids)
+
+            # _terminate_host_pid SIGKILLs synchronously before returning, so
+            # the kill signals are already delivered here. The only remaining
+            # wait is the kernel tearing down 3 processes and the reparented
+            # children transitioning to zombie — which can lag on a loaded CI
+            # runner. Give a generous budget (matches the wait() test's 10s)
+            # so this asserts the escalation BEHAVIOR, not the runner's
+            # scheduling latency. The assertion itself never weakens: every
+            # tree member must end up dead/zombie.
+            assert _wait_until(_all_dead, timeout=15.0, interval=0.02), (
                 "entire SIGTERM-ignoring tree (parent + children) must be SIGKILLed"
             )
         finally:
@@ -1584,3 +1959,59 @@ class TestSigkillEscalation:
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             parent.wait()
+
+
+class TestHandleProcessRedaction:
+    """`_handle_process` redacts background-process output before it reaches the
+    model / session.db / CLI display — issue #43025.
+
+    Mirrors the foreground `terminal` redaction so the two surfaces can't
+    diverge. Env-dump commands (`printenv`/`env`) get the ENV-assignment pass
+    so opaque tokens are masked; other commands stay on the code_file path.
+    """
+
+    def _setup(self, monkeypatch, command, output):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact1", command=command)
+        sess.output_buffer = output
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running.clear()
+        reg._finished[sess.id] = sess
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, sess
+
+    def test_log_redacts_env_dump_opaque_token(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "printenv",
+            "MY_SERVICE_TOKEN=abc123randomopaquetokenvalue999\nHOME=/home/u",
+        )
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "abc123randomopaquetokenvalue999" not in out["output"]
+        assert "HOME=/home/u" in out["output"]
+
+    def test_poll_redacts_prefix_key(self, monkeypatch):
+        pr, sess = self._setup(
+            monkeypatch, "python app.py",
+            "leaked OPENAI_API_KEY sk-proj-abc123def456ghi789jkl012 here",
+        )
+        out = json.loads(pr._handle_process({"action": "poll", "session_id": sess.id}))
+        assert "abc123def456" not in out["output_preview"]
+
+    def test_disabled_passes_through(self, monkeypatch):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", False)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_redact2", command="printenv")
+        sess.output_buffer = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert "zzzopaque1234567890abcdef" in out["output"]

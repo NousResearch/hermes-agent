@@ -37,7 +37,7 @@ class StubAdapter(BasePlatformAdapter):
         super().__init__(PlatformConfig(enabled=True, token="fake"), Platform.DISCORD)
         self.sent = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
         return True
 
     async def disconnect(self):

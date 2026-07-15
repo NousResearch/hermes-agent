@@ -113,8 +113,125 @@ def test_bg_work_blocks_idle_via_background_tasks(monkeypatch):
         loop.close()
 
 
+def test_bg_work_blocks_idle_via_async_delegation(monkeypatch):
+    """delegate_task(background=true) lives in tools.async_delegation, not the
+    process registry. An active background delegation must block suspend too."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._background_tasks = set()
+
+    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 1)
+
+    assert r._scale_to_zero_has_live_background_work() is True
+
+
+def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
+    """Once a dormant gateway receives real inbound after wake, the runtime
+    lifecycle must not remain stuck in the watcher-written `draining` state."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._last_inbound_at = 0.0
+    r._scale_to_zero_cooldown_until = time.time() + 60.0
+    status_updates = []
+    monkeypatch.setattr(
+        r,
+        "_update_runtime_status",
+        lambda state=None, *a, **k: status_updates.append(state),
+        raising=False,
+    )
+
+    r._scale_to_zero_note_real_inbound()
+
+    assert r._last_inbound_at > 0.0
+    assert status_updates == ["running"]
+
+
 def test_bg_work_false_when_quiet():
     r = GatewayRunner.__new__(GatewayRunner)
     r._background_tasks = set()
     # No background tasks, no active processes in this fresh process.
     assert r._scale_to_zero_has_live_background_work() is False
+
+
+# ── _scale_to_zero_should_arm: the CALL SITE feeds config.platforms (the F25 bug) ──
+#
+# config.platforms is pre-seeded with a DISABLED placeholder PlatformConfig for every
+# known platform, so list(config.platforms.keys()) is always the full ~20-entry catalog
+# regardless of what the instance runs. The arm check must filter to ENABLED platforms
+# (mirroring the connect loop) before asking messaging_is_relay_only_or_absent — passing
+# the bare placeholder keys made it see disabled `discord`/`telegram`/… as live direct
+# platforms and refuse to arm on a real relay-only instance. The pure-helper tests in
+# test_scale_to_zero.py pass bare names so they never exercised this call site.
+
+
+def _arm_runner(monkeypatch, platform_states, *, enabled=True, wake_url="https://wake.example"):
+    """Build a GatewayRunner stand-in whose config.platforms mirrors a real load:
+    `platform_states` is {Platform: enabled_bool}; everything runs the REAL
+    _scale_to_zero_should_arm. Only the env flag + wake_url resolution are stubbed."""
+    from types import SimpleNamespace
+
+    from gateway.config import PlatformConfig
+
+    r = GatewayRunner.__new__(GatewayRunner)
+    platforms = {p: PlatformConfig(enabled=en) for p, en in platform_states.items()}
+    r.config = SimpleNamespace(platforms=platforms)
+
+    monkeypatch.setattr("gateway.scale_to_zero.scale_to_zero_enabled", lambda *a, **k: enabled)
+    monkeypatch.setattr("gateway.relay.relay_wake_url", lambda: wake_url)
+    return r
+
+
+def test_arm_true_for_relay_only_with_disabled_placeholders(monkeypatch):
+    """The F25 regression test: relay ENABLED, every other platform present but
+    DISABLED (the real load_gateway_config() shape). Must arm — the disabled
+    placeholders must NOT count as live direct-socket platforms."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {
+            Platform.TELEGRAM: False,
+            Platform.DISCORD: False,
+            Platform.SLACK: False,
+            Platform.MATRIX: False,
+            Platform.RELAY: True,
+        },
+    )
+    assert r._scale_to_zero_should_arm() is True
+
+
+def test_no_arm_when_a_direct_platform_is_actually_enabled(monkeypatch):
+    """A genuinely-enabled direct-socket platform (real Discord token) DOES disarm —
+    the filter must not over-broaden to 'ignore everything but relay'."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {Platform.DISCORD: True, Platform.RELAY: True},
+    )
+    assert r._scale_to_zero_should_arm() is False
+
+
+def test_arm_when_no_platform_enabled_at_all(monkeypatch):
+    """Chronos-only / no-messaging agent (all placeholders disabled) can scale to zero."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {Platform.TELEGRAM: False, Platform.DISCORD: False},
+    )
+    assert r._scale_to_zero_should_arm() is True
+
+
+def test_no_arm_when_not_opted_in(monkeypatch):
+    """Relay-only but the Labs stamp is off ⇒ never arm (fail-safe default)."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(monkeypatch, {Platform.RELAY: True}, enabled=False)
+    assert r._scale_to_zero_should_arm() is False
+
+
+def test_no_arm_without_wake_url(monkeypatch):
+    """Relay-only + opted in but no registered wake URL ⇒ no arm (§3.4(1))."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(monkeypatch, {Platform.RELAY: True}, wake_url=None)
+    assert r._scale_to_zero_should_arm() is False

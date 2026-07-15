@@ -5,6 +5,7 @@ import type { TodoItem, TodoStatus } from '@/lib/todos'
 
 import { $gateway } from './gateway'
 import { dispatchNativeNotification } from './native-notifications'
+import { notifyError } from './notifications'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
@@ -37,6 +38,63 @@ export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
 const dismissedBySession = new Map<string, Set<string>>()
+
+// Finished tasks self-clear so the stack only ever holds running work. Success
+// goes quick; failure lingers longer so its exit code stays readable (the output
+// also lives in the transcript). A manual X still drops either at once.
+const SUCCESS_LINGER_MS = 4_000
+const FAILURE_LINGER_MS = 12_000
+const autoClearTimers = new Map<string, Map<string, ReturnType<typeof setTimeout>>>()
+
+function scheduleAutoDismiss(sid: string, id: string, delayMs: number) {
+  let timers = autoClearTimers.get(sid)
+
+  if (timers?.has(id)) {
+    return
+  }
+
+  if (!timers) {
+    timers = new Map()
+    autoClearTimers.set(sid, timers)
+  }
+
+  timers.set(
+    id,
+    setTimeout(() => {
+      autoClearTimers.get(sid)?.delete(id)
+      dismissBackgroundProcess(sid, id)
+    }, delayMs)
+  )
+}
+
+function cancelAutoDismiss(sid: string, id: string) {
+  const timers = autoClearTimers.get(sid)
+
+  if (!timers) {
+    return
+  }
+
+  const timer = timers.get(id)
+
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    timers.delete(id)
+  }
+}
+
+function cancelAllAutoDismiss(sid: string) {
+  const timers = autoClearTimers.get(sid)
+
+  if (!timers) {
+    return
+  }
+
+  for (const timer of timers.values()) {
+    clearTimeout(timer)
+  }
+
+  autoClearTimers.delete(sid)
+}
 
 const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   currentTool: s.currentTool,
@@ -201,6 +259,24 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
     }
   }
 
+  // Arm the self-clear on every finished task (failures linger longer); cancel
+  // it for anything running again or gone from the snapshot.
+  const finishedDelay = new Map(
+    next
+      .filter(item => item.state !== 'running')
+      .map(item => [item.id, item.state === 'failed' ? FAILURE_LINGER_MS : SUCCESS_LINGER_MS])
+  )
+
+  for (const [id, delay] of finishedDelay) {
+    scheduleAutoDismiss(sid, id, delay)
+  }
+
+  for (const id of [...(autoClearTimers.get(sid)?.keys() ?? [])]) {
+    if (!finishedDelay.has(id)) {
+      cancelAutoDismiss(sid, id)
+    }
+  }
+
   if (next.length === prev.length && next.every((item, i) => item === prev[i])) {
     return
   }
@@ -227,6 +303,8 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
 
 /** X on a finished row: drop it now and keep it dropped across refreshes. */
 export function dismissBackgroundProcess(sid: string, id: string) {
+  cancelAutoDismiss(sid, id)
+
   const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
   dismissed.add(id)
   dismissedBySession.set(sid, dismissed)
@@ -239,13 +317,17 @@ export function dismissBackgroundProcess(sid: string, id: string) {
   )
 }
 
-/** X on a running row: kill the process for real, then drop the row. */
-export function stopBackgroundProcess(sid: string, id: string) {
-  void $gateway
-    .get()
-    ?.request('process.kill', { process_id: id, session_id: sid })
-    .catch(() => undefined)
-  dismissBackgroundProcess(sid, id)
+/** X on a running row: kill the process for real, THEN drop the row. Only drop
+ *  on a confirmed kill — dismissing unconditionally (the old behavior) hid the
+ *  row while the process lived on, stranding rogue tasks. On failure the row
+ *  stays so the user can retry / see it didn't die. */
+export async function stopBackgroundProcess(sid: string, id: string): Promise<void> {
+  try {
+    await $gateway.get()?.request('process.kill', { process_id: id, session_id: sid })
+    dismissBackgroundProcess(sid, id)
+  } catch (err) {
+    notifyError(err, 'Could not stop the process')
+  }
 }
 
 /**
@@ -259,6 +341,8 @@ export function resetSessionBackground(sid: string) {
   if (!sid) {
     return
   }
+
+  cancelAllAutoDismiss(sid)
 
   const gateway = $gateway.get()
   const list = $backgroundStatusBySession.get()[sid] ?? []

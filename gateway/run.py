@@ -5433,8 +5433,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Telegram group sessions can be shared by multiple authorized users.
         # A follow-up from a different user must not interrupt or steer the
-        # active user's turn. Return control to the adapter's established FIFO
-        # path so the message becomes the next turn instead.
+        # active user's turn. Own the enqueue here and return handled so the
+        # adapter fallback cannot merge multiple users' text into one event.
         if self._telegram_group_busy_message_crosses_users(event, session_key):
             active_source = self._get_cached_session_source(session_key)
             logger.info(
@@ -5444,7 +5444,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 getattr(active_source, "user_id", None),
                 event.source.user_id,
             )
-            return False
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:

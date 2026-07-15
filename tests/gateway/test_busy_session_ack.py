@@ -3,6 +3,7 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,12 +26,14 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
+    BasePlatformAdapter,
     MessageEvent,
     MessageType,
     Platform,
     SessionSource,
     build_session_key,
 )
+from gateway.config import PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +94,22 @@ def _make_adapter(platform_val="telegram"):
     return adapter
 
 
+class _AdapterPathStub(BasePlatformAdapter):
+    """Concrete adapter for exercising the active-session callback path."""
+
+    async def connect(self, *, is_reconnect: bool = False):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def send(self, chat_id, content, **kwargs):
+        return MagicMock(success=True, message_id="sent")
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -101,7 +120,7 @@ class TestBusySessionAck:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("busy_mode", ["interrupt", "steer"])
     @pytest.mark.parametrize("chat_type", ["group", "supergroup"])
-    async def test_telegram_group_different_user_falls_back_to_queue(
+    async def test_telegram_group_different_user_is_queued_and_handled(
         self, busy_mode, chat_type,
     ):
         """A second group user must not redirect the active user's turn."""
@@ -136,18 +155,20 @@ class TestBusySessionAck:
 
         result = await runner._handle_active_session_busy_message(event, sk)
 
-        assert result is False
+        assert result is True
+        assert adapter._pending_messages[sk] is event
         agent.interrupt.assert_not_called()
         agent.steer.assert_not_called()
         adapter._send_with_retry.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_telegram_group_different_user_is_queued_by_dispatch_path(self):
+    @pytest.mark.parametrize("busy_mode", ["interrupt", "steer"])
+    async def test_telegram_group_different_user_is_queued_by_dispatch_path(self, busy_mode):
         """The busy guard's fallthrough must retain the incoming message."""
         from gateway.run import GatewayRunner
 
         runner, _sentinel = _make_runner()
-        runner._busy_input_mode = "interrupt"
+        runner._busy_input_mode = busy_mode
         runner.config.group_sessions_per_user = False
         adapter = _make_adapter()
 
@@ -173,6 +194,7 @@ class TestBusySessionAck:
         runner.adapters[Platform.TELEGRAM] = adapter
 
         agent = MagicMock()
+        agent.steer = MagicMock(return_value=True)
         runner._running_agents[sk] = agent
 
         result = await GatewayRunner._handle_message(runner, event)
@@ -180,7 +202,59 @@ class TestBusySessionAck:
         assert result is None
         assert adapter._pending_messages[sk] is event
         agent.interrupt.assert_not_called()
+        agent.steer.assert_not_called()
         adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_telegram_group_cross_user_adapter_path_preserves_fifo_turns(self):
+        """Two callback-path messages stay as two ordered pending turns."""
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner.config.group_sessions_per_user = False
+
+        config = PlatformConfig(enabled=True, token="test-token")
+        config.extra["group_sessions_per_user"] = False
+        adapter = _AdapterPathStub(config, Platform.TELEGRAM)
+
+        async def unexpected_handler(_event):
+            pytest.fail("busy cross-user messages must not reach normal dispatch")
+
+        adapter.set_message_handler(unexpected_handler)
+        adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        active_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="group-123",
+            chat_type="group",
+            user_id="active-user",
+        )
+        sk = build_session_key(active_source, group_sessions_per_user=False)
+        runner._session_sources = {sk: active_source}
+        runner._running_agents[sk] = MagicMock()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        events = [
+            MessageEvent(
+                text=text,
+                message_type=MessageType.TEXT,
+                source=SessionSource(
+                    platform=Platform.TELEGRAM,
+                    chat_id="group-123",
+                    chat_type="group",
+                    user_id="other-user",
+                ),
+                message_id=f"msg-{index}",
+            )
+            for index, text in enumerate(("first turn", "second turn"), start=1)
+        ]
+
+        for event in events:
+            await adapter.handle_message(event)
+
+        assert adapter._pending_messages[sk] is events[0]
+        assert runner._queued_events[sk] == [events[1]]
+        runner._running_agents[sk].interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_telegram_group_same_user_still_interrupts(self):

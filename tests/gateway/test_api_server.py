@@ -1082,7 +1082,25 @@ class TestMobileControlPlane:
                 assert data["data"][0]["title"] == "Release work"
                 assert data["data"][0]["latest_status"] == "Using terminal…"
                 assert data["data"][0]["updated_at"] == 3
+                assert data["data"][0]["state"] == "unresponsive"
                 assert "messages" not in data["data"][0]
+
+    def test_active_sessions_omit_terminal_run_leases(self, adapter):
+        adapter._run_statuses["run-finished"] = {
+            "run_id": "run-finished",
+            "status": "completed",
+            "updated_at": time.time(),
+        }
+        with patch(
+            "hermes_cli.active_sessions.active_session_registry_snapshot",
+            return_value=[{
+                "lease_id": "lease-finished",
+                "session_id": "session-finished",
+                "surface": "api_server",
+                "metadata": {"run_id": "run-finished", "state": "running"},
+            }],
+        ):
+            assert adapter._active_mobile_sessions() == []
 
     def test_run_latest_status_is_bounded_and_safe(self, adapter):
         assert adapter._safe_run_latest_status({

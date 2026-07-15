@@ -4399,6 +4399,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_UNRESPONSIVE_AFTER = 300  # seconds without a client-visible run update
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -4447,23 +4448,34 @@ class APIServerAdapter(BasePlatformAdapter):
             metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
             run_id = str(metadata.get("run_id") or "")
             run_status = self._run_statuses.get(run_id, {}) if run_id else {}
+            if run_status.get("status") in {"completed", "failed", "cancelled", "stopped"}:
+                continue
             updated_candidates = [entry.get("updated_at"), run_status.get("updated_at")]
             updated_at = max(
                 (value for value in updated_candidates if isinstance(value, (int, float))),
                 default=None,
             )
+            state = str(run_status.get("status") or metadata.get("state") or "active")
+            latest_status = str(
+                metadata.get("latest_status")
+                or run_status.get("latest_status")
+                or ""
+            )
+            if (
+                state in {"active", "queued", "running", "working"}
+                and updated_at is not None
+                and time.time() - updated_at >= self._RUN_UNRESPONSIVE_AFTER
+            ):
+                state = "unresponsive"
+                latest_status = latest_status or "No recent activity — the run may be stalled"
             sessions.append({
                 "lease_id": str(entry.get("lease_id") or ""),
                 "session_id": session_id,
                 "surface": str(entry.get("surface") or "unknown"),
                 "title": str(metadata.get("title") or self._mobile_session_title(session_id)),
-                "state": str(metadata.get("state") or "active"),
+                "state": state,
                 "run_id": run_id,
-                "latest_status": str(
-                    metadata.get("latest_status")
-                    or run_status.get("latest_status")
-                    or ""
-                ),
+                "latest_status": latest_status,
                 "started_at": entry.get("started_at"),
                 "updated_at": updated_at,
             })

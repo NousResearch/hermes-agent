@@ -104,6 +104,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { fontationsWorkaround } from './emoji-font-workaround'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -200,6 +201,14 @@ ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
+
+// macOS 26 (Tahoe) emoji SIGBUS workaround — see emoji-font-workaround.ts.
+const emojiWorkaround = fontationsWorkaround(DARWIN_MAJOR)
+
+if (emojiWorkaround) {
+  app.commandLine.appendSwitch(emojiWorkaround.switch, emojiWorkaround.value)
+  console.log('[hermes] macOS Tahoe detected; disabling FontationsFontBackend to work around Apple Color Emoji ImageIO crash')
+}
 
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 

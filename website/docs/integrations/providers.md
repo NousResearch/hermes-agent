@@ -1229,6 +1229,21 @@ extra_body:
     enable_thinking: false
 ```
 
+Endpoints behind a proxy or access gateway can also declare HTTP headers with `extra_headers`. The headers are matched by the exact `base_url` and applied to both OpenAI-compatible clients and native Anthropic Messages clients, including clients rebuilt after a provider switch, fallback, interrupt, or credential recovery:
+
+```yaml
+custom_providers:
+  - name: anthropic-proxy
+    base_url: https://proxy.example.com/anthropic
+    key_env: ANTHROPIC_PROXY_KEY
+    api_mode: anthropic_messages
+    extra_headers:
+      User-Agent: hermes-agent
+      CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}
+```
+
+Header values may contain credentials. Store secret material in environment variables and do not include resolved values in logs or bug reports. Custom headers are merged with SDK-required defaults, so adding `User-Agent` does not remove Hermes's `anthropic-beta` capabilities.
+
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.

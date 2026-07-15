@@ -698,7 +698,33 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    _apply_configured_anthropic_extra_headers(kwargs, base_url)
+
     return _anthropic_sdk.Anthropic(**kwargs)
+
+
+def _apply_configured_anthropic_extra_headers(
+    client_kwargs: Dict[str, Any],
+    base_url: str | None,
+) -> None:
+    """Merge endpoint-scoped custom-provider headers into Anthropic kwargs.
+
+    The shared config helper preserves SDK/provider defaults such as
+    ``anthropic-beta`` while allowing the matching ``extra_headers`` entry to
+    add or explicitly override headers. Header values may contain credentials
+    and must never be logged.
+    """
+    if not base_url:
+        return
+    try:
+        from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+
+        apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, base_url)
+    except Exception as exc:
+        logger.debug(
+            "Could not resolve custom-provider headers for Anthropic endpoint: %s",
+            type(exc).__name__,
+        )
 
 
 def build_anthropic_client(
@@ -826,6 +852,8 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    _apply_configured_anthropic_extra_headers(kwargs, base_url)
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

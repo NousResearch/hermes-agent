@@ -8,6 +8,8 @@ that GatewayRunner picks them up via the MRO (behavior-neutral relocation).
 from __future__ import annotations
 
 import inspect
+import logging
+from types import SimpleNamespace
 
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 
@@ -67,3 +69,58 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_dispatcher_logs_stale_only_tick(monkeypatch, tmp_path, caplog):
+    """Heartbeat-stale reclamation is dispatcher activity even without a spawn."""
+    import asyncio
+
+    from gateway import kanban_watchers as watchers
+    from hermes_cli import kanban_db
+
+    class _Connection:
+        def close(self):
+            pass
+
+    class _Runner(GatewayKanbanWatchersMixin):
+        _running = True
+
+    runner = _Runner()
+    result = SimpleNamespace(
+        spawned=[],
+        reclaimed=0,
+        stale=["stale-task"],
+        crashed=[],
+        timed_out=[],
+        promoted=0,
+        auto_blocked=[],
+    )
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"auto_decompose": False, "dispatch_interval_seconds": 1}},
+    )
+    monkeypatch.setattr(kanban_db, "kanban_home", lambda: tmp_path)
+    monkeypatch.setattr(kanban_db, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kanban_db, "list_boards", lambda **_kwargs: [{"slug": "test"}])
+    monkeypatch.setattr(kanban_db, "connect", lambda **_kwargs: _Connection())
+    monkeypatch.setattr(kanban_db, "dispatch_once", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(kanban_db, "has_spawnable_ready", lambda _conn: False)
+    monkeypatch.setattr(kanban_db, "has_spawnable_review", lambda _conn: False)
+    monkeypatch.setattr(watchers, "_acquire_singleton_lock", lambda _path: (None, "unavailable"))
+
+    async def _run_in_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    async def _sleep_once(delay):
+        if delay != 5:
+            runner._running = False
+
+    monkeypatch.setattr(asyncio, "to_thread", _run_in_thread)
+    monkeypatch.setattr(asyncio, "sleep", _sleep_once)
+
+    with caplog.at_level(logging.INFO, logger="gateway.run"):
+        asyncio.run(watchers.GatewayKanbanWatchersMixin._kanban_dispatcher_watcher(runner))
+
+    assert "kanban dispatcher [test]" in caplog.text
+    assert "stale=1" in caplog.text

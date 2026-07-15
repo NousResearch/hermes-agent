@@ -1250,13 +1250,15 @@ class GatewayKanbanWatchersMixin:
                     _timed_out = len(res.timed_out) if hasattr(getattr(res, "timed_out", None), "__len__") else 0
                     _auto_blocked = len(res.auto_blocked) if hasattr(getattr(res, "auto_blocked", None), "__len__") else 0
                     _reclaimed = getattr(res, "reclaimed", 0) or 0
-                    if _spawned_n or _crashed or _timed_out or _auto_blocked or _reclaimed:
+                    _stale = len(getattr(res, "stale", None) or [])
+                    if _spawned_n or _crashed or _timed_out or _auto_blocked or _reclaimed or _stale:
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                            "stale=%d crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
                             slug,
                             _spawned_n,
                             _reclaimed,
+                            _stale,
                             _crashed,
                             _timed_out,
                             res.promoted,

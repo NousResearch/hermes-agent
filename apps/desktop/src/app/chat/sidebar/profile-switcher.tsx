@@ -35,6 +35,12 @@ import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
+import {
+  REORDER_DRAG_TRANSITION_CSS,
+  REORDER_RAIL_TRANSITION,
+  reorderCommitHaptic,
+  reorderStepHaptic
+} from '@/lib/reorder'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -67,12 +73,11 @@ const RAIL_GAP = 4 // px — matches gap-1 between squares.
 // select. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
 
-// easeOutBack — a little overshoot so squares spring into their new slot rather
-// than sliding in flat. Neighbors reflow on RAIL_TRANSITION; the dragged square
-// glides between snapped cells on the snappier DRAG_TRANSITION.
-const SPRING = 'cubic-bezier(0.34, 1.56, 0.64, 1)'
-const RAIL_TRANSITION = { duration: 300, easing: SPRING }
-const DRAG_TRANSITION = `transform 200ms ${SPRING}`
+// Neighbors reflow on RAIL_TRANSITION; the dragged square glides between
+// snapped cells on the snappier DRAG_TRANSITION. Both come from the SHARED
+// reorder primitive (lib/reorder.ts) so every reorder strip feels identical.
+const RAIL_TRANSITION = REORDER_RAIL_TRANSITION
+const DRAG_TRANSITION = REORDER_DRAG_TRANSITION_CSS
 
 // The rail is a single horizontal strip of fixed cells. Pin drags to the x-axis
 // (no cross-axis scrollbar), snap to whole cells so a square steps slot-to-slot
@@ -174,7 +179,7 @@ export function ProfileRail() {
 
     if (id && id !== lastOverRef.current) {
       lastOverRef.current = id
-      triggerHaptic('selection')
+      reorderStepHaptic()
     }
   }
 
@@ -191,7 +196,7 @@ export function ProfileRail() {
 
     if (from >= 0 && to >= 0) {
       setProfileOrder(arrayMove(ids, from, to))
-      triggerHaptic('success')
+      reorderCommitHaptic()
     }
   }
 

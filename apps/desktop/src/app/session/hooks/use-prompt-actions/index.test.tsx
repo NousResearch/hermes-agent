@@ -1453,6 +1453,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let submitAttempts = 0
+
     let releaseResume: () => void = () => {}
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }

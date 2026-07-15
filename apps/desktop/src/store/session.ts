@@ -28,6 +28,13 @@ const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
 export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
 
+// The last non-overlay route (a page like /skills, or a session route), so a
+// relaunch lands back where you were instead of a bare new-chat.
+const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
+
+export const getRememberedRoute = (): null | string => storedString(LAST_ROUTE_KEY)
+export const setRememberedRoute = (path: null | string) => persistString(LAST_ROUTE_KEY, path)
+
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
@@ -125,6 +132,14 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
  *  lineage root is stable across every compression, so we pin on that. */
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
+
+/** True when a stored/lineage id resolves to this session — it matches either
+ *  the live id or the stable lineage root (see sessionPinId). The one place the
+ *  "same conversation across compression" test lives. */
+export const sessionMatchesStoredId = (
+  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  storedSessionId: string
+): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"

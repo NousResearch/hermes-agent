@@ -26,6 +26,11 @@ export const $clarifyRequest = computed(
   (requests, activeId) => requests[keyFor(activeId)] ?? null
 )
 
+/** The clarify request for one specific session — the tile counterpart of the
+ *  active-session `$clarifyRequest` view (same map, fixed key). */
+export const sessionClarifyRequest = (sessionId: string | null) =>
+  computed($clarifyRequests, requests => requests[keyFor(sessionId)] ?? null)
+
 export function setClarifyRequest(request: ClarifyRequest): void {
   $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
 }

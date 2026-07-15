@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 
-import { sameCronSignature } from './desktop-controller-utils'
+import { sameCronSignature, sessionMessagesSignature } from './session-signatures'
 
 const session = (id: string, title: string | null): SessionInfo => ({ id, title }) as SessionInfo
 
@@ -27,5 +27,22 @@ describe('sameCronSignature', () => {
     const a = [session('a', 't'), session('b', 't')]
     const b = [session('b', 't'), session('a', 't')]
     expect(sameCronSignature(a, b)).toBe(false)
+  })
+})
+
+describe('sessionMessagesSignature', () => {
+  const msg = (role: string, content: string) => ({ role, content }) as Parameters<typeof sessionMessagesSignature>[0][number]
+
+  it('is stable for identical transcripts', () => {
+    expect(sessionMessagesSignature([msg('user', 'hi')])).toBe(sessionMessagesSignature([msg('user', 'hi')]))
+  })
+
+  it('changes when content changes', () => {
+    expect(sessionMessagesSignature([msg('user', 'hi')])).not.toBe(sessionMessagesSignature([msg('user', 'yo')]))
+  })
+
+  it('changes when a message is appended', () => {
+    const one = [msg('user', 'hi')]
+    expect(sessionMessagesSignature(one)).not.toBe(sessionMessagesSignature([...one, msg('assistant', 'hey')]))
   })
 })

@@ -119,6 +119,10 @@ class HolographicMemoryProvider(MemoryProvider):
         self._config = config or _load_plugin_config()
         self._store = None
         self._retriever = None
+        # Resolved database path, captured in initialize() before the
+        # MemoryStore is constructed so the unavailable-handler message can
+        # name the exact file even when initialize() failed. None until then.
+        self._db_path = None
         self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
 
     @property
@@ -166,6 +170,10 @@ class HolographicMemoryProvider(MemoryProvider):
         if isinstance(db_path, str):
             db_path = db_path.replace("$HERMES_HOME", _hermes_home)
             db_path = db_path.replace("${HERMES_HOME}", _hermes_home)
+        # Record the resolved path before constructing MemoryStore: if that
+        # construction raises (e.g. corrupt DB), _unavailable_msg() can still
+        # point recovery at the actual file, default or configured.
+        self._db_path = db_path
         default_trust = float(self._config.get("default_trust", 0.5))
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
@@ -256,17 +264,25 @@ class HolographicMemoryProvider(MemoryProvider):
 
     # -- Tool handlers -------------------------------------------------------
 
-    _UNAVAILABLE_MSG = (
-        "Holographic memory is unavailable — provider initialization failed "
-        "(typically a corrupt $HERMES_HOME/memory_store.db, e.g. after a "
-        "crash mid-WAL-checkpoint). Check the hermes errors log for the "
-        "underlying exception. Recovery: stop hermes, remove or restore "
-        "memory_store.db, then restart."
-    )
+    def _unavailable_msg(self) -> str:
+        # db_path is configurable, so name the resolved file when we captured
+        # it in initialize(); fall back to a generic reference otherwise (e.g.
+        # initialize() never ran, or failed before path resolution).
+        if self._db_path:
+            where = f"the holographic database at {self._db_path}"
+        else:
+            where = "the configured holographic database (see the db_path setting)"
+        return (
+            "Holographic memory is unavailable — provider initialization "
+            "failed (typically a corrupt database, e.g. after a crash "
+            "mid-WAL-checkpoint). Check the hermes errors log for the "
+            "underlying exception. Recovery: stop hermes, remove or restore "
+            f"{where}, then restart."
+        )
 
     def _handle_fact_store(self, args: dict) -> str:
         if self._store is None or self._retriever is None:
-            return tool_error(self._UNAVAILABLE_MSG)
+            return tool_error(self._unavailable_msg())
         try:
             action = args["action"]
             store = self._store
@@ -355,7 +371,7 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _handle_fact_feedback(self, args: dict) -> str:
         if self._store is None:
-            return tool_error(self._UNAVAILABLE_MSG)
+            return tool_error(self._unavailable_msg())
         try:
             fact_id = int(args["fact_id"])
             helpful = args["action"] == "helpful"

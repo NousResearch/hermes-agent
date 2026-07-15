@@ -82,3 +82,40 @@ def test_fact_feedback_returns_actionable_error_when_store_uninitialized(
         f"handler should guard None _store instead of leaking AttributeError: {payload!r}"
     )
     assert "memory" in text and "unavailable" in text, payload
+
+
+def test_unavailable_message_names_configured_db_path(tmp_path):
+    """When initialize() fails, the error must point recovery at the actual
+    configured database, not the hard-coded default path.
+
+    A directory can't be opened as a SQLite file, so pointing ``db_path`` at
+    one drives ``MemoryStore.__init__`` to raise — the real failure mode —
+    while ``initialize()`` has already captured the resolved path.
+    """
+    custom_db = str(tmp_path)  # a directory: sqlite can't open it as a DB file
+    provider = HolographicMemoryProvider(config={"db_path": custom_db})
+
+    with pytest.raises(Exception):
+        provider.initialize(session_id="s")
+
+    # Path was captured before the failing MemoryStore construction.
+    assert provider._db_path == custom_db
+    assert provider._store is None
+
+    text = _unwrap_tool_error(provider._handle_fact_store({"action": "list"}))
+    # Recovery text names the configured file, not the default memory_store.db.
+    assert custom_db in text, (
+        f"error should point recovery at the configured db_path: {text!r}"
+    )
+
+
+def test_unavailable_message_is_generic_before_initialize():
+    """Before initialize() runs there is no resolved path, so the message
+    falls back to a generic reference instead of naming a wrong file."""
+    provider = HolographicMemoryProvider(config={})
+    assert provider._db_path is None
+
+    text = _unwrap_tool_error(provider._handle_fact_store({"action": "list"})).lower()
+    assert "db_path" in text, (
+        f"generic fallback should reference the db_path setting: {text!r}"
+    )

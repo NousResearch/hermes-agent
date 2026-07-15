@@ -51,6 +51,59 @@ def os_kind() -> str:
     return "unknown"
 
 
+# ─── Gateway lifecycle (clean-exit tracking) ─────────────────────────────────
+# So a crash is only ever reported when the gateway's OWN lifecycle says the prior run ended
+# UNCLEANLY — never for a planned restart, and the OS-crash search is bounded to that prior run's
+# window. The gateway records its start (status="running"); a clean shutdown flips it to "clean".
+# A run that never got flipped = it crashed. (Addresses the false-attribution + lifecycle review.)
+
+def read_run_state(state_path: "os.PathLike | str") -> dict:
+    """The persisted lifecycle marker (whatever the most recent run wrote), or ``{}``."""
+    try:
+        p = Path(state_path)
+        return json.loads(p.read_text()) if p.exists() else {}
+    except Exception:
+        return {}
+
+
+def record_gateway_start(state_path: "os.PathLike | str") -> dict:
+    """Call ONCE at gateway startup. Reads the PRIOR run's marker (returned so the caller can
+    decide whether to report a crash), then overwrites it with a fresh ``running`` marker for THIS
+    run. Best-effort — never raises."""
+    prior = read_run_state(state_path)
+    try:
+        p = Path(state_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"started_at": time.time(), "status": "running", "pid": os.getpid()}))
+    except Exception:
+        pass
+    return prior
+
+
+def mark_gateway_clean_exit(state_path: "os.PathLike | str") -> None:
+    """Call on a PLANNED shutdown/restart — flips this run's marker to ``clean`` so the next
+    startup knows the prior run ended on purpose (nothing to report). Best-effort."""
+    try:
+        data = read_run_state(state_path)
+        data["status"] = "clean"
+        data["exited_at"] = time.time()
+        Path(state_path).write_text(json.dumps(data))
+    except Exception:
+        pass
+
+
+def prior_run_crashed(prior: dict) -> tuple[bool, float]:
+    """From a prior-run marker → ``(crashed, started_at)``. A run recorded ``running`` that never
+    got flipped to ``clean`` = crashed. Unknown/empty/clean → ``(False, 0.0)`` so we never
+    misreport a planned restart or a first-ever start."""
+    if not prior or prior.get("status") != "running":
+        return (False, 0.0)
+    try:
+        return (True, float(prior.get("started_at") or 0.0))
+    except (TypeError, ValueError):
+        return (True, 0.0)
+
+
 def _infer_cause(signal: str, backtrace: list[str]) -> str:
     """Map a signal + faulting frames to a short, human-readable cause."""
     bt = " ".join(backtrace).lower()

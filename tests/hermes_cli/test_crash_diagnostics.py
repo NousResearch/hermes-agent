@@ -89,3 +89,43 @@ def test_restart_notice_swallows_errors(monkeypatch):
         raise RuntimeError("crash reader blew up")
     monkeypatch.setattr(cd, "recent_crashes", boom)
     assert cd.restart_notice() == ""
+
+
+# ── Gateway lifecycle (clean-exit tracking) ──────────────────────────────────
+# A crash is only reported when the gateway's OWN lifecycle says the prior run ended uncleanly,
+# so a planned restart (or an unrelated crash near it) is never misattributed.
+
+def test_lifecycle_first_start_not_crashed(tmp_path):
+    prior = cd.record_gateway_start(tmp_path / ".gw.json")
+    assert cd.prior_run_crashed(prior) == (False, 0.0)
+
+
+def test_lifecycle_unclean_exit_detected(tmp_path):
+    p = tmp_path / ".gw.json"
+    cd.record_gateway_start(p)              # run 1 starts (marker: running)
+    prior = cd.record_gateway_start(p)      # run 2 starts, run 1 never exited cleanly → crashed
+    crashed, started_at = cd.prior_run_crashed(prior)
+    assert crashed is True and started_at > 0
+
+
+def test_lifecycle_clean_exit_not_crashed(tmp_path):
+    p = tmp_path / ".gw.json"
+    cd.record_gateway_start(p)              # run 1 starts
+    cd.mark_gateway_clean_exit(p)           # run 1 exits cleanly (planned)
+    prior = cd.record_gateway_start(p)      # run 2 starts → prior was clean
+    assert cd.prior_run_crashed(prior) == (False, 0.0)
+
+
+def test_prior_run_crashed_guards():
+    assert cd.prior_run_crashed({}) == (False, 0.0)
+    assert cd.prior_run_crashed({"status": "clean"}) == (False, 0.0)
+    # recorded running but no start time → still a crash, started_at defaults to 0.0
+    assert cd.prior_run_crashed({"status": "running"}) == (True, 0.0)
+
+
+def test_lifecycle_state_survives_bad_file(tmp_path):
+    p = tmp_path / ".gw.json"
+    p.write_text("{ not json")
+    assert cd.read_run_state(p) == {}       # malformed → empty, never raises
+    prior = cd.record_gateway_start(p)      # still records fine over the bad file
+    assert cd.prior_run_crashed(prior) == (False, 0.0)

@@ -859,6 +859,12 @@ def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
 
 
+def _gateway_lifecycle_path() -> Path:
+    # Records how each gateway run ended (running/clean) so crash-cause diagnostics only fire on an
+    # UNCLEAN exit and stay bounded to the prior run's window.
+    return _hermes_home / ".gateway_lifecycle.json"
+
+
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
 # knows not to clobber TERMINAL_CWD if lazily imported.
 os.environ["_HERMES_GATEWAY"] = "1"
@@ -1918,6 +1924,13 @@ class GatewayRunner:
         self._exit_cleanly = False
         self._exit_with_failure = False
         self._exit_reason: Optional[str] = None
+        # Record THIS run's start + capture how the PRIOR run ended (running=crashed / clean).
+        # crash-cause diagnostics use this so they only fire on an unclean exit, bounded to that run.
+        try:
+            from hermes_cli.crash_diagnostics import record_gateway_start
+            self._prior_run = record_gateway_start(_gateway_lifecycle_path())
+        except Exception:
+            self._prior_run = {}
         self._exit_code: Optional[int] = None
         self._draining = False
         self._restart_requested = False
@@ -2842,6 +2855,13 @@ class GatewayRunner:
     def _request_clean_exit(self, reason: str) -> None:
         self._exit_cleanly = True
         self._exit_reason = reason
+        # Hermes-owned lifecycle: this is a PLANNED exit → flip the marker to 'clean' so the next
+        # startup doesn't misread the shutdown (or any unrelated crash near it) as a gateway crash.
+        try:
+            from hermes_cli.crash_diagnostics import mark_gateway_clean_exit
+            mark_gateway_clean_exit(_gateway_lifecycle_path())
+        except Exception:
+            pass
         self._shutdown_event.set()
 
     def _running_agent_count(self) -> int:
@@ -15706,12 +15726,32 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        # Append the crash *cause* when the previous run died unexpectedly — it rides along
-        # with the "back online" message users already get (best-effort, "" on a clean restart
-        # or any failure; gated below by gateway_restart_notification like the rest).
-        from hermes_cli.crash_diagnostics import restart_notice
+        # Crash-cause suffix on the "back online" message — but ONLY when the gateway's own
+        # lifecycle says the prior run exited uncleanly AND a home platform actually wants restart
+        # notices. Gate BEFORE the (subprocess) scan so its timeouts never run when disabled or on a
+        # planned restart; offload the scan off the event loop; and bound the crash search to the
+        # prior run's window so an unrelated crash near a planned restart is never misattributed.
+        notice = ""
+        try:
+            from hermes_cli.crash_diagnostics import prior_run_crashed
+            crashed, started_at = prior_run_crashed(getattr(self, "_prior_run", {}))
+            any_home_wants_notice = any(
+                (self.config.platforms.get(p) is None
+                 or self.config.platforms.get(p).gateway_restart_notification)
+                for p in self.adapters
+                if self.config.get_home_channel(p) and self.config.get_home_channel(p).chat_id
+            )
+            if crashed and any_home_wants_notice:
+                since_h = (
+                    max(0.05, min(24.0, (time.time() - started_at) / 3600.0))
+                    if started_at else 0.5
+                )
+                from hermes_cli.crash_diagnostics import restart_notice
+                notice = await asyncio.to_thread(restart_notice, since_hours=since_h)
+        except Exception:
+            notice = ""
 
-        message = "♻️ Gateway online — Hermes is back and ready." + restart_notice()
+        message = "♻️ Gateway online — Hermes is back and ready." + notice
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)

@@ -747,13 +747,15 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Skills created by Hermes in a session are local user/profile skills.
-    # Mark them explicitly instead of making `--personal` guess later.
-    content = _mark_session_created_skill_user_specific(content)
-
     err = _validate_content_size(content)
     if err:
         return {"success": False, "error": err}
+
+    # Skills created by Hermes in a session are local user/profile skills.
+    # Mark them explicitly instead of making `--personal` guess later. Runs
+    # after size validation: the injected marker is system bookkeeping and
+    # must not consume the agent's content budget.
+    content = _mark_session_created_skill_user_specific(content)
 
     # Check for name collisions across all directories
     existing = _find_skill(name)

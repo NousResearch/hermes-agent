@@ -1634,6 +1634,13 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     treated as corruption; they propagate raw so the caller sees a
     normal lock failure and no spurious ``.corrupt`` backup is made.
 
+    **Quarantine tuning:** before quarantining, we attempt a
+    ``PRAGMA wal_checkpoint(TRUNCATE)`` followed by a clean reopen and
+    re-check.  A killed-writer transient "malformed" (left-over WAL
+    frames without a committing transaction) often recovers after a
+    forced checkpoint, cutting churn.  If the checkpoint or re-check
+    fails, we proceed with quarantine as before.
+
     No-op for missing files, zero-byte files (treated as fresh), and
     paths already proven healthy this process (cache hit).
 
@@ -1674,6 +1681,36 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         reason = f"sqlite refused to open file: {exc}"
     if reason is None:
         return
+    # -----------------------------------------------------------------
+    # Quarantine tuning: attempt WAL checkpoint + clean reopen before
+    # declaring corruption.  A killed writer can leave the WAL/shm in a
+    # transient state that clears on checkpoint.  TRUNCATE needs an
+    # exclusive lock but returns BUSY immediately if contested (it does
+    # not spin on busy_timeout), so this is safe to try.
+    # -----------------------------------------------------------------
+    try:
+        probe = _sqlite_connect(resolved)
+        try:
+            probe.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.OperationalError:
+            pass  # BUSY — another writer is active; skip and quarantine
+        finally:
+            probe.close()
+        # Reopen and re-check.
+        probe = _sqlite_connect(resolved)
+        try:
+            row = probe.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            probe.close()
+        if row and (row[0] or "").lower() == "ok":
+            _log.warning(
+                "kanban DB %s recovered after wal_checkpoint(TRUNCATE); "
+                "skipping quarantine (was: %s).",
+                resolved, reason,
+            )
+            return
+    except Exception:
+        pass  # Any unexpected error during recovery attempt → fall through to quarantine
     backup = _backup_corrupt_db(resolved)
     raise KanbanDbCorruptError(resolved, backup, reason)
 
@@ -2303,6 +2340,37 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+# Default upper bound for a write transaction: 60 seconds.  If a writer holds
+# BEGIN IMMEDIATE longer than this it has wedged the board for everyone else.
+# The knob is env-tunable so long-lived operations (giant batch migrations,
+# human CLI bulk imports) can raise it without touching code.
+DEFAULT_WRITE_TXN_TIMEOUT_SECONDS = 60
+
+
+def _resolve_write_txn_timeout_seconds() -> float:
+    """Return the effective write-transaction duration cap in seconds.
+
+    Explicit positive values from ``HERMES_KANBAN_WRITE_TXN_TIMEOUT_SECONDS``
+    override the built-in default.  A non-positive value disables the cap
+    entirely (use with care — only for one-off bulk ops where the operator
+    accepts the risk of wedging other writers).
+    """
+    raw = os.environ.get("HERMES_KANBAN_WRITE_TXN_TIMEOUT_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = float(raw)
+        except ValueError:
+            return float(DEFAULT_WRITE_TXN_TIMEOUT_SECONDS)
+        if parsed > 0:
+            return parsed
+        return 0.0
+    return float(DEFAULT_WRITE_TXN_TIMEOUT_SECONDS)
+
+
+class _WriteTxnTimeoutError(sqlite3.OperationalError):
+    """Raised when a write_txn exceeds its duration cap."""
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
@@ -2311,14 +2379,42 @@ def write_txn(conn: sqlite3.Connection):
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
 
+    A **duration cap** aborts any transaction held longer than
+    ``_resolve_write_txn_timeout_seconds()`` (default 60 s, env-tunable via
+    ``HERMES_KANBAN_WRITE_TXN_TIMEOUT_SECONDS``).  The cap is implemented
+    with a SQLite progress handler so it fires even during a long-running
+    query or a wedged observer inside the transaction body.  On expiry the
+    handler raises ``_WriteTxnTimeoutError``, triggering rollback and
+    surfacing as a clear ``sqlite3.OperationalError`` subclass so callers
+    can distinguish timeout from corruption or lock contention.
+
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
     shadow the original exception with a spurious rollback error.
     """
+    timeout = _resolve_write_txn_timeout_seconds()
+    deadline: float | None = None
+    progress_interval = 100  # SQLite VM opcodes between handler calls
+
+    _progress_handler = None
+    _progress_handler = None  # type: ignore[reportAssignmentType]
+    if timeout > 0 and hasattr(conn, "set_progress_handler"):
+        deadline = time.monotonic() + timeout
+
+        def _progress_handler() -> int:  # type: ignore[misc]
+            # Return non-zero to raise sqlite3.OperationalError("interrupted")
+            if time.monotonic() >= deadline:
+                return 1
+            return 0
+
+        conn.set_progress_handler(_progress_handler, progress_interval)
+
     _execute_boundary_with_retry(conn, "BEGIN IMMEDIATE")
     try:
         yield conn
     except Exception:
+        if timeout > 0 and _progress_handler is not None:
+            conn.set_progress_handler(None, 0)
         try:
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError:
@@ -2328,6 +2424,8 @@ def write_txn(conn: sqlite3.Connection):
             pass
         raise
     else:
+        if timeout > 0 and _progress_handler is not None:
+            conn.set_progress_handler(None, 0)
         try:
             _execute_boundary_with_retry(conn, "COMMIT")
         except Exception:

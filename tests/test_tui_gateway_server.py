@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import types
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +36,40 @@ def _neuter_agent_prewarm_timer(request, monkeypatch):
         return
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     yield
+
+
+def test_project_tree_inputs_query_complete_session_membership_once(monkeypatch):
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        def list_sessions_rich(self, **kwargs):
+            self.calls.append(kwargs)
+            rows = [
+                {"id": "new-1", "cwd": "/new", "message_count": 1},
+                {"id": "new-2", "cwd": "/new", "message_count": 1},
+                {"id": "old-project", "cwd": "/project", "message_count": 1},
+            ]
+            limit = kwargs["limit"]
+            return rows if limit < 0 else rows[:limit]
+
+    from hermes_cli import projects_db
+
+    db = FakeDB()
+    monkeypatch.setattr(server.git_probe, "warm_roots", lambda _roots: None)
+    monkeypatch.setattr(projects_db, "connect_closing", lambda: nullcontext(object()))
+    monkeypatch.setattr(projects_db, "list_projects", lambda _conn: [])
+    monkeypatch.setattr(projects_db, "get_active_id", lambda _conn: None)
+
+    sessions, _projects, _discovered, _active_id = server._project_tree_inputs(
+        db, session_limit=2, include_discovered=False
+    )
+
+    assert [session["id"] for session in sessions] == ["new-1", "new-2", "old-project"]
+    assert len(db.calls) == 1
+    assert db.calls[0]["limit"] == -1
+    assert db.calls[0]["offset"] == 0
+    assert all(call["compact_rows"] is True for call in db.calls)
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):

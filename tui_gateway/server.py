@@ -11630,14 +11630,20 @@ def _project_tree_inputs(
     which already has sessions — avoiding the distinct-cwd scan + git probes on
     that per-turn path. One projects.db connection serves both reads.
     """
+    # Project ownership is computed below from cwd/repo metadata, so truncating
+    # the global recents query first makes an old project's sessions disappear
+    # while the project itself remains visible. Read the complete compact set in
+    # one SQLite statement: unlike offset paging this is one consistent snapshot
+    # even while new messages reorder sessions by effective activity.
     rows = db.list_sessions_rich(
-        limit=session_limit,
+        limit=-1,
         offset=0,
         order_by_last_active=True,
         min_message_count=1,
         include_children=False,
         exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False,
+        compact_rows=True,
     )
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver reads it instead of

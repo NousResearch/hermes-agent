@@ -18,6 +18,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
+- POST /v1/runs/{run_id}/steer      — inject guidance into a running agent
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
@@ -1659,6 +1660,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
+                "run_steer": True,
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
@@ -1686,6 +1688,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+                "run_steer": {"method": "POST", "path": "/v1/runs/{run_id}/steer"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
@@ -2106,6 +2109,12 @@ class APIServerAdapter(BasePlatformAdapter):
         queue: "asyncio.Queue[Optional[tuple[str, Dict[str, Any]]]]" = asyncio.Queue()
         message_id = f"msg_{uuid.uuid4().hex}"
         run_id = f"run_{uuid.uuid4().hex}"
+        self._set_run_status(
+            run_id,
+            "queued",
+            session_id=session_id,
+            model=body.get("model", self._model_name),
+        )
         seq = 0
 
         def _event_payload(name: str, payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
@@ -2145,6 +2154,7 @@ class APIServerAdapter(BasePlatformAdapter):
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {"user_message": {"role": "user", "content": user_message}}))
+                self._set_run_status(run_id, "running", last_event="run.started")
                 await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
                 history = self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
@@ -2154,6 +2164,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
+                    active_run_id=run_id,
                     gateway_session_key=gateway_session_key,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2174,14 +2185,33 @@ class APIServerAdapter(BasePlatformAdapter):
                     "messages": turn_messages,
                     "usage": usage,
                 }))
+                self._set_run_status(
+                    run_id,
+                    "completed",
+                    session_id=effective_session_id,
+                    usage=usage,
+                    last_event="run.completed",
+                )
+            except asyncio.CancelledError:
+                self._set_run_status(run_id, "cancelled", last_event="run.cancelled")
+                raise
             except Exception as exc:
                 logger.exception("[api_server] session chat stream failed")
+                self._set_run_status(
+                    run_id,
+                    "failed",
+                    error=_redact_api_error_text(exc),
+                    last_event="run.failed",
+                )
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
+                self._active_run_agents.pop(run_id, None)
+                self._active_run_tasks.pop(run_id, None)
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
         task = asyncio.create_task(_run_and_signal())
+        self._active_run_tasks[run_id] = task
         try:
             self._background_tasks.add(task)
         except TypeError:
@@ -2214,12 +2244,60 @@ class APIServerAdapter(BasePlatformAdapter):
                 data = json.dumps(payload, ensure_ascii=False)
                 await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
                 last_write = time.monotonic()
-        except (asyncio.CancelledError, ConnectionResetError):
-            task.cancel()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            await self._drain_session_stream_task_on_disconnect(
+                run_id,
+                task,
+                interrupt_message="SSE client disconnected",
+                shield_wait=False,
+            )
+            logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
+        except asyncio.CancelledError:
+            await self._drain_session_stream_task_on_disconnect(
+                run_id,
+                task,
+                interrupt_message="SSE task cancelled",
+                shield_wait=True,
+            )
+            logger.info("Session SSE task cancelled; drained live run %s", run_id)
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    async def _drain_session_stream_task_on_disconnect(
+        self,
+        run_id: str,
+        task: "asyncio.Task",
+        *,
+        interrupt_message: str,
+        shield_wait: bool,
+    ) -> None:
+        """Preserve live run control refs until the executor-backed turn actually exits."""
+        agent = self._active_run_agents.get(run_id)
+        if agent is not None:
+            try:
+                agent.interrupt(interrupt_message)
+            except Exception:
+                pass
+            if not task.done():
+                try:
+                    if shield_wait:
+                        await asyncio.shield(task)
+                    else:
+                        await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+            return
+
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     @_admit_api_agent_request
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -4204,6 +4282,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
     ) -> tuple:
@@ -4221,6 +4300,10 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        If *active_run_id* is supplied, the same live agent is registered in
+        ``_active_run_agents`` while the turn is running so API clients can
+        call run-scoped control endpoints such as ``/v1/runs/{run_id}/steer``.
         """
         loop = asyncio.get_running_loop()
 
@@ -4245,6 +4328,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
+                if active_run_id:
+                    self._active_run_agents[active_run_id] = agent
                 effective_task_id = session_id or str(uuid.uuid4())
                 result = agent.run_conversation(
                     user_message=user_message,
@@ -4264,6 +4349,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
+                if active_run_id:
+                    self._active_run_agents.pop(active_run_id, None)
                 clear_session_vars(tokens)
 
         self._activate_admitted_request()
@@ -4839,6 +4926,93 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
+    async def _handle_steer_run(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/steer — inject guidance into a running agent."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
+        if status.get("status") != "running":
+            return web.json_response(
+                _openai_error(
+                    f"Run is not currently accepting steer input: {run_id}",
+                    code="run_not_accepting_steer",
+                ),
+                status=409,
+            )
+        agent = self._active_run_agents.get(run_id)
+        if agent is None:
+            return web.json_response(
+                _openai_error(
+                    f"Run is not currently accepting steer input: {run_id}",
+                    code="run_not_accepting_steer",
+                ),
+                status=409,
+            )
+
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        raw_text = body.get("input") or body.get("message") or body.get("text") or ""
+        steer_text = _normalize_chat_content(raw_text).strip()
+        if not steer_text:
+            return web.json_response(
+                _openai_error("Missing non-empty steer text; expected 'input', 'message', or 'text'.", code="invalid_steer_input"),
+                status=400,
+            )
+
+        if not hasattr(agent, "steer"):
+            return web.json_response(
+                _openai_error(
+                    f"Run agent does not support steering: {run_id}",
+                    code="run_not_steerable",
+                ),
+                status=409,
+            )
+
+        try:
+            accepted = bool(agent.steer(steer_text))
+        except Exception as exc:
+            logger.exception("[api_server] steer failed for run %s", run_id)
+            return web.json_response(_openai_error(_redact_api_error_text(exc), code="steer_failed"), status=500)
+
+        if not accepted:
+            return web.json_response(
+                _openai_error(f"Run did not accept steer text: {run_id}", code="steer_not_accepted"),
+                status=409,
+            )
+
+        self._set_run_status(
+            run_id,
+            status.get("status", "running") if isinstance(status, dict) else "running",
+            last_event="run.steered",
+        )
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            try:
+                q.put_nowait({
+                    "event": "run.steered",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "accepted": True,
+                })
+            except Exception:
+                pass
+
+        return web.json_response({
+            "object": "hermes.run.steer",
+            "run_id": run_id,
+            "accepted": True,
+        })
+
     async def _handle_stop_run(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs/{run_id}/stop — interrupt a running agent."""
         auth_err = self._check_auth(request)
@@ -5013,6 +5187,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
+            self._app.router.add_post("/v1/runs/{run_id}/steer", self._handle_steer_run)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering

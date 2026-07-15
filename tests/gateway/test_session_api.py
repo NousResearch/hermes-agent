@@ -1,6 +1,8 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+import threading
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -64,6 +66,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["run_steer"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
@@ -72,6 +75,10 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["run_steer"] == {
+        "method": "POST",
+        "path": "/v1/runs/{run_id}/steer",
     }
 
 
@@ -121,6 +128,45 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_session_key": "request-key",
         "child_session_id": "request-session",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypatch):
+    observed = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, session_id: str):
+            self.session_id = session_id
+
+        def steer(self, text: str) -> bool:
+            observed["steer_text"] = text
+            return True
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            observed["registered"] = adapter._active_run_agents.get("run_steer_test") is self
+            observed["task_id"] = task_id
+            return {"final_response": "ok"}
+
+    def fake_create_agent(**kwargs):
+        return FakeAgent(kwargs["session_id"])
+
+    monkeypatch.setattr(adapter, "_create_agent", fake_create_agent)
+
+    result, usage = await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="request-session",
+        active_run_id="run_steer_test",
+    )
+
+    assert result["session_id"] == "request-session"
+    assert usage == {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    assert observed == {"registered": True, "task_id": "request-session"}
+    assert "run_steer_test" not in adapter._active_run_agents
 
 
 @pytest.mark.asyncio
@@ -315,8 +361,10 @@ async def test_session_chat_stream_accepts_multimodal_message(adapter, session_d
 async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
     session_id = session_db.create_session("stream-session", "api_server")
     session_db.set_session_title(session_id, "Stream")
+    captured_kwargs = {}
 
     async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
         kwargs["stream_delta_callback"]("Hello")
         kwargs["stream_delta_callback"](" world")
         kwargs["tool_progress_callback"]("reasoning.available", tool_name="_thinking", preview="thinking")
@@ -338,6 +386,98 @@ async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_sha
     assert "event: assistant.completed" in body
     assert "event: run.completed" in body
     assert "event: done" in body
+    assert captured_kwargs["active_run_id"].startswith("run_")
+    assert captured_kwargs["session_id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
+    adapter, session_db
+):
+    """Disconnects must interrupt the live run without dropping its control refs early."""
+    session_id = session_db.create_session("disconnect-stream-session", "api_server")
+    run_started = threading.Event()
+    interrupt_called = threading.Event()
+    allow_finish = threading.Event()
+    write_calls = {"count": 0}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, stream_delta_callback):
+            self._stream_delta_callback = stream_delta_callback
+            self.session_id = session_id
+
+        def interrupt(self, _message=None):
+            interrupt_called.set()
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            del user_message, conversation_history, task_id
+            run_started.set()
+            self._stream_delta_callback("hello")
+            allow_finish.wait(timeout=5)
+            return {"final_response": "done", "session_id": session_id}
+
+    class DisconnectingStreamResponse:
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            write_calls["count"] += 1
+            if write_calls["count"] >= 3:
+                raise ConnectionResetError("simulated client disconnect")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    def _create_agent(**kwargs):
+        return FakeAgent(kwargs["stream_delta_callback"])
+
+    with patch.object(
+        adapter,
+        "_get_existing_session_or_404",
+        return_value=({"id": session_id}, None),
+    ), patch.object(
+        adapter,
+        "_read_json_body",
+        return_value=({"message": "stream please"}, None),
+    ), patch.object(
+        adapter,
+        "_create_agent",
+        side_effect=_create_agent,
+    ), patch(
+        "gateway.platforms.api_server.web.StreamResponse",
+        return_value=DisconnectingStreamResponse(),
+    ):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+
+        for _ in range(60):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert run_started.is_set()
+        run_id = next(iter(adapter._run_statuses))
+
+        for _ in range(40):
+            if interrupt_called.is_set():
+                break
+            await asyncio.sleep(0.05)
+
+        assert interrupt_called.is_set()
+        assert run_id in adapter._active_run_agents
+        assert run_id in adapter._active_run_tasks
+        assert not handler_task.done()
+
+        allow_finish.set()
+        await handler_task
+
+    assert run_id not in adapter._active_run_agents
+    assert run_id not in adapter._active_run_tasks
 
 
 @pytest.mark.asyncio

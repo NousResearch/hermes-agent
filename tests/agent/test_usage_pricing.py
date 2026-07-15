@@ -322,3 +322,99 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+
+def test_custom_endpoint_missing_cache_pricing_falls_back_to_models_dev(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "provider-model": {
+                "pricing": {
+                    "prompt": "1.0",
+                    "completion": "2.0",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "example-provider": {
+                "api": "https://example.test/v1",
+                "models": {
+                    "provider-model": {
+                        "id": "provider-model",
+                        "name": "Provider Model",
+                        "cost": {
+                            "input": 1.0,
+                            "output": 2.0,
+                            "cache_read": 0.25,
+                        },
+                    }
+                },
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "provider-model",
+        CanonicalUsage(
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=2_000_000,
+        ),
+        provider="custom",
+        base_url="https://example.test/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert result.source == "provider_models_api"
+    assert result.pricing_version == "openai-compatible-models-api"
+    assert round(float(result.amount_usd), 6) == 2.5
+
+
+def test_custom_endpoint_stays_unknown_when_models_dev_lacks_cache_read(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda base_url, api_key=None: {
+            "provider-model": {
+                "pricing": {
+                    "prompt": "1.0",
+                    "completion": "2.0",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {
+            "example-provider": {
+                "api": "https://example.test/v1",
+                "models": {
+                    "provider-model": {
+                        "id": "provider-model",
+                        "name": "Provider Model",
+                        "cost": {
+                            "input": 1.0,
+                            "output": 2.0,
+                        },
+                    }
+                },
+            }
+        },
+    )
+
+    result = estimate_usage_cost(
+        "provider-model",
+        CanonicalUsage(
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            cache_read_tokens=2_000_000,
+        ),
+        provider="custom",
+        base_url="https://example.test/v1",
+    )
+
+    assert result.status == "unknown"
+    assert result.amount_usd is None

@@ -15,8 +15,8 @@ tags:
   - flow-13
   - web-factory
 status: active
-version: "1.0"
-updated: 2026-07-14
+version: "1.1"
+updated: 2026-07-15
 schema: memory-schema-v1.2
 companion: use-migrate-web-flow13 (เนื้อ Flow เต็ม — บังคับอ่านคู่)
 spec_source: "Hermes Agent .project/mw-spec-draft.md v1.2 (เจ้าของอนุมัติ 2026-07-14) · ตารางแม่ 55 รายการ"
@@ -61,6 +61,7 @@ P0-8 Elasticsearch ติดตั้ง+index ครบระดับโปร
 P0-9 Image Source Registry (.work/image-sources.yaml): Freepik(ค้น stock)/Recraft(เวกเตอร์)/Topaz(รีทัช)/Magnific(ขยาย-เติม) + เพิ่ม source = เพิ่มแถว config · ก่อนใช้ทุกครั้ง smoke call จริง 1 งานเล็ก — auth ผ่านเฉย ๆ ไม่นับ
 P0-10 ผูกชุดแจกความรู้ (คลัง layout 42 module / effects / QAQC) + จดเลขรุ่นใน profile
 P0-11 เช็ค Module แจ้งไฟล์เสียใน engine — ยังไม่มี = ใบงาน factory backlog + เมนูที่มีไฟล์แนบยังปิดเกตไม่ได้จนกว่าจะมี
+P0-12 ที่มาระบบดีไซน์ (owner สั่ง 2026-07-15): Design System ของโปรเจกต์ต้องสร้างด้วย `Use Create Design System` (มาตรฐานรุ่นปัจจุบัน) หรือถ้ามีของเดิมอยู่แล้วต้องตรวจย้อน (audit) ด้วย checklist ของ shortcut ตัวนั้นให้ผ่านก่อน · จดหลักฐานลง profile.yaml 3 ช่อง: ds_version / ds_standard_รุ่น / ds_origin (สร้างใหม่หรือตรวจย้อน + วันที่ + ผู้อนุมัติ) · ไม่มีหลักฐาน = `BLOCKED_DS_ORIGIN` ห้ามเข้าลูปเมนู
 
 [โหมดกำหนดรูปขั้น — ไม่มีการ "ข้ามขั้น" ทุกโหมดเดินครบ 13 สถานี]
 - MIGRATE: M1 = capture เว็บเก่า (ตามเนื้อ Flow เต็ม)
@@ -145,6 +146,7 @@ VPS = อ่านจาก mirror rsync (มีแล้ว) · notebook = git 
 
 ## Changelog
 
+- v1.1 (2026-07-15): เพิ่ม `P0-12` ด่านที่มาระบบดีไซน์ — DS ต้องสร้าง/ตรวจย้อนด้วย `Use Create Design System` + จดเวอร์ชันใน profile.yaml ก่อนเข้าลูปเมนู (owner สั่งหลังพบ DS กปถ. เกิดนอกพิธี · DEC-173 ใน newwebengine2026)
 - v1.0 (2026-07-14): ฉบับแรกตาม SPEC v1.2 (เจ้าของอนุมัติ) — ตารางแม่ 55 รายการ + จุดเคาะ 13 จุด · เนื้อ Flow เต็มอยู่ไฟล์คู่กัน `use-migrate-web-flow13.md` (sha256 ตรง baseline)
 
 ## Graph Links

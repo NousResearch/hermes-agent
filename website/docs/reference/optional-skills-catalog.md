@@ -220,7 +220,17 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| [**12-principles-of-animation**](/docs/user-guide/skills/optional/web-development/web-development-12-principles-of-animation) | Audit animation code against Disney's 12 principles adapted for web. Use when reviewing motion, implementing animations, or checking animation quality. Outputs file:line findings. |
+| [**emil-design-eng**](/docs/user-guide/skills/optional/web-development/web-development-emil-design-eng) | This skill encodes Emil Kowalski's philosophy on UI polish, component design, animation decisions, and the invisible details that make software feel great. |
+| [**fixing-accessibility**](/docs/user-guide/skills/optional/web-development/web-development-fixing-accessibility) | Audit and fix HTML accessibility issues including ARIA labels, keyboard navigation, focus management, color contrast, and form errors. Use when adding interactive controls, forms, dialogs, or reviewing WCAG compliance. |
+| [**make-interfaces-feel-better**](/docs/user-guide/skills/optional/web-development/web-development-make-interfaces-feel-better) | Design engineering principles for making interfaces feel polished. Use when building UI components, reviewing frontend code, implementing animations, hover states, shadows, borders, typography, micro-interactions, enter/exit animations, and overall visual refinement. |
 | [**page-agent**](/docs/user-guide/skills/optional/web-development/web-development-page-agent) | Embed alibaba/page-agent into your own web application — a pure-JavaScript in-page GUI agent that ships as a single &lt;script> tag or npm package and lets end-users of your site drive the UI with natural language ("click login, fill userna... |
+| [**playwright-cli**](/docs/user-guide/skills/optional/web-development/web-development-playwright-cli) | Automate browser interactions, test web pages and work with Playwright tests. |
+| [**pnpm**](/docs/user-guide/skills/optional/web-development/web-development-pnpm) | Node.js package manager with strict dependency resolution. Use when running pnpm-specific commands, configuring workspaces via pnpm-workspace.yaml, or managing dependencies with catalogs, patches, overrides, and config dependencies. |
+| [**react-doctor**](/docs/user-guide/skills/optional/web-development/web-development-react-doctor) | Use when finishing a feature, fixing a bug, before committing React code, or when the user asks to scan, triage, or clean up React diagnostics. Covers lint, accessibility, bundle size, and architecture checks. |
+| [**shadcn**](/docs/user-guide/skills/optional/web-development/web-development-shadcn) | Manages shadcn components and projects — adding, searching, fixing, debugging, styling, and composing UI, including chat interfaces. |
+| [**vercel-react-best-practices**](/docs/user-guide/skills/optional/web-development/web-development-vercel-react-best-practices) | React and Next.js performance optimization guidelines from Vercel Engineering. Use when writing, reviewing, or refactoring React/Next.js code for performance. |
+| [**vitest**](/docs/user-guide/skills/optional/web-development/web-development-vitest) | Vitest fast unit testing framework powered by Vite with a Jest-compatible API. Use when writing tests, mocking, configuring coverage, or working with fixtures. |
 
 ---
 

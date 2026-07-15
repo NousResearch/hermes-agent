@@ -1,0 +1,77 @@
+{
+  "skill_name": "shadcn",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm building a Next.js app with shadcn/ui (base-nova preset, lucide icons). Create a settings form component with fields for: full name, email address, and notification preferences (email, SMS, push notifications as toggle options). Add validation states for required fields.",
+      "expected_output": "A React component using FieldGroup, Field, ToggleGroup, data-invalid/aria-invalid validation, gap-* spacing, and semantic colors.",
+      "files": [],
+      "expectations": [
+        "Uses FieldGroup and Field components for form layout instead of raw div with space-y",
+        "Uses Switch for independent on/off notification toggles (not looping Button with manual active state)",
+        "Uses data-invalid on Field and aria-invalid on the input control for validation states",
+        "Uses gap-* (e.g. gap-4, gap-6) instead of space-y-* or space-x-* for spacing",
+        "Uses semantic color tokens (e.g. bg-background, text-muted-foreground, text-destructive) instead of raw colors like bg-red-500",
+        "No manual dark: color overrides"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Create a dialog component for editing a user profile. It should have the user's avatar at the top, input fields for name and bio, and Save/Cancel buttons with appropriate icons. Using shadcn/ui with radix-nova preset and tabler icons.",
+      "expected_output": "A React component with DialogTitle, Avatar+AvatarFallback, data-icon on icon buttons, no icon sizing classes, tabler icon imports.",
+      "files": [],
+      "expectations": [
+        "Includes DialogTitle for accessibility (visible or with sr-only class)",
+        "Avatar component includes AvatarFallback",
+        "Icons on buttons use the data-icon attribute (data-icon=\"inline-start\" or data-icon=\"inline-end\")",
+        "No sizing classes on icons inside components (no size-4, w-4, h-4, etc.)",
+        "Uses tabler icons (@tabler/icons-react) instead of lucide-react",
+        "Uses asChild for custom triggers (radix preset)"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Create a dashboard component that shows 4 stat cards in a grid. Each card has a title, large number, percentage change badge, and a loading skeleton state. Using shadcn/ui with base-nova preset and lucide icons.",
+      "expected_output": "A React component with full Card composition, Skeleton for loading, Badge for changes, semantic colors, gap-* spacing.",
+      "files": [],
+      "expectations": [
+        "Uses full Card composition with CardHeader, CardTitle, CardContent (not dumping everything into CardContent)",
+        "Uses Skeleton component for loading placeholders instead of custom animate-pulse divs",
+        "Uses Badge component for percentage change instead of custom styled spans",
+        "Uses semantic color tokens instead of raw color values like bg-green-500 or text-red-600",
+        "Uses gap-* instead of space-y-* or space-x-* for spacing",
+        "Uses size-* when width and height are equal instead of separate w-* h-*"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "I'm building a Next.js app with shadcn/ui (base-nova preset, lucide icons). Build a chat conversation view: a scrollable thread of messages from two different people, each with an avatar, sender name, timestamp, and message bubble. A couple of messages include an image attachment and a PDF file attachment, and there's a 'Today' divider separating the days.",
+      "expected_output": "A React component composing MessageScroller, Message, Bubble, Attachment, and Marker from the registry instead of hand-rolled bubble/divider/attachment markup.",
+      "files": [],
+      "expectations": [
+        "Uses MessageScroller (MessageScrollerProvider, MessageScrollerViewport, MessageScrollerContent, MessageScrollerItem) for the scrollable thread instead of a raw overflow-y-auto div or ScrollArea",
+        "Wraps each row in MessageScrollerItem inside MessageScrollerContent",
+        "Uses Message with MessageAvatar/MessageContent/MessageHeader for row layout instead of custom flex divs",
+        "Uses Bubble + BubbleContent for the message surface instead of a styled div with bg-muted/bg-primary",
+        "Uses Attachment (AttachmentMedia, AttachmentContent, AttachmentTitle, AttachmentDescription) for the file and image attachments instead of Item or a custom card",
+        "Uses Marker (variant=\"separator\") for the 'Today' divider instead of Separator plus a centered label",
+        "Uses semantic color tokens and gap-* spacing; no raw colors like bg-emerald-500 and no space-y-*",
+        "Includes \"use client\" when the component uses state or event handlers (isRSC)"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "Using shadcn/ui (base-nova preset, lucide icons), build a streaming AI chat UI. The assistant's reply streams in while it generates, the view auto-scrolls to follow the latest content but stops following if the user scrolls up to read earlier messages, a 'jump to latest' button appears when the user has scrolled away from the bottom, and a subtle 'thinking…' shimmer shows while the model is generating.",
+      "expected_output": "A React component that delegates scroll/anchor behavior to MessageScroller and uses MessageScrollerButton for jump-to-latest and the shimmer utility for the thinking indicator — no hand-rolled scroll logic or custom shimmer keyframes.",
+      "files": [],
+      "expectations": [
+        "Uses MessageScroller with MessageScrollerProvider (autoScroll) and scrollAnchor on message items for the stick-to-bottom/follow behavior instead of a custom useStickToBottom hook or ResizeObserver/scrollTop wiring",
+        "Uses MessageScrollerButton for the jump-to-latest control instead of a hand-built conditional button driven by manual scroll-position state",
+        "Uses the shimmer utility class for the 'thinking…' indicator instead of a custom @keyframes or bg-clip-text gradient animation",
+        "Wraps each message row in MessageScrollerItem inside MessageScrollerContent",
+        "Uses Message + Bubble + BubbleContent for the conversation rows instead of hand-rolled bubble divs",
+        "Uses semantic color tokens and gap-* spacing; includes \"use client\" (isRSC)"
+      ]
+    }
+  ]
+}

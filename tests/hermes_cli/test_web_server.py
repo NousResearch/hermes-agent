@@ -5767,15 +5767,56 @@ class TestGatewayBusyReadout:
         monkeypatch.setattr(ws, "read_runtime_status", lambda: {
             "gateway_state": "running",
             "platforms": {},
-            "active_agents": 2,
+            "active_agents": 4,
+            "active_work_counts": {
+                "messaging": 2,
+                "cron": 1,
+                "api_server": 1,
+            },
+            "active_agent_details": [
+                {
+                    "session_key": "agent:main:feishu:dm:c1:u1",
+                    "platform": "feishu",
+                    "seconds_since_activity": 367.5,
+                    "last_activity_desc": "api_call",
+                }
+            ],
             # A deliberately stale timestamp: busy must NOT depend on it.
             "updated_at": "2020-01-01T00:00:00+00:00",
         })
 
         data = self.client.get("/api/status").json()
-        assert data["active_agents"] == 2
+        assert data["active_agents"] == 4
+        assert "active_agent_details" not in data
+        assert "active_work_counts" not in data
         assert data["gateway_busy"] is True
         assert data["gateway_drainable"] is True
+
+        private = self.client.get("/api/status/active-work")
+        assert private.status_code == 200
+        assert private.json()["active_work_counts"] == {
+            "messaging": 2,
+            "cron": 1,
+            "api_server": 1,
+        }
+        assert private.json()["active_agent_details"] == [
+            {
+                "session_key": "agent:main:feishu:dm:c1:u1",
+                "platform": "feishu",
+                "seconds_since_activity": 367.5,
+                "last_activity_desc": "api_call",
+            }
+        ]
+
+    def test_active_work_details_require_auth(self):
+        from starlette.testclient import TestClient
+
+        from hermes_cli.web_server import app
+
+        client = TestClient(app)
+        response = client.get("/api/status/active-work")
+
+        assert response.status_code == 401
 
     def test_idle_running_is_drainable_but_not_busy(self, monkeypatch):
         """A running gateway with zero in-flight turns is drainable, not busy."""

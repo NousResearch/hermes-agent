@@ -3480,7 +3480,12 @@ def specify_triage_task(
     return True
 
 
-def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def archive_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+) -> bool:
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -3494,7 +3499,8 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, outcome="reclaimed", status="reclaimed",
             summary="task archived with run still active",
         )
-        _append_event(conn, task_id, "archived", None, run_id=run_id)
+        payload = {"reason": reason} if reason else None
+        _append_event(conn, task_id, "archived", payload, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
     recompute_ready(conn)
     # Reap the workspace on archive too (never-completed tasks kept it forever).

@@ -2886,6 +2886,12 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Optional per-key text overrides for Hermes-authored gateway messages.
+        # Keys omit the leading ``gateway.`` catalog prefix; values may reuse
+        # the placeholders from the corresponding locale entry. An empty map
+        # preserves locale -> English -> dotted-key fallback behavior.
+        "system_messages": {},
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

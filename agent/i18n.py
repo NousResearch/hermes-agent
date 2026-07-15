@@ -245,15 +245,25 @@ def _config_language_cached() -> str | None:
 def agent_display_name() -> str:
     """Configured agent name for ``{name}`` substitution; ``"Hermes"`` fallback.
 
-    Sourced from ``ui.theme.branding.agent_name`` (the only user-set agent name
-    in config; unused elsewhere in the gateway, so reusing it is safe).
+    Sourced from the skin selected by ``display.skin``, matching the CLI/TUI
+    branding path. Loading is cached with the other config-derived i18n state.
     """
-    branding = (
-        ((_load_config_dict().get("ui") or {}).get("theme") or {}).get("branding") or {}
-    )
-    name = branding.get("agent_name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
+    config = _load_config_dict()
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        display = {}
+    skin_name = display.get("skin", "default")
+    if not isinstance(skin_name, str) or not skin_name.strip():
+        skin_name = "default"
+
+    try:
+        from hermes_cli.skin_engine import load_skin
+
+        name = load_skin(skin_name.strip()).get_branding("agent_name", "Hermes")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except Exception as exc:
+        logger.debug("i18n could not resolve display skin branding: %s", exc)
     return "Hermes"
 
 
@@ -314,6 +324,25 @@ class _SafeFormatter(string.Formatter):
         except (IndexError, KeyError):
             return _MissingField("{" + str(key) + "}")
 
+    def get_field(self, field_name: str, args: Any, kwargs: Any) -> tuple[Any, Any]:
+        """Preserve an unresolved compound field as its complete raw token.
+
+        ``string.Formatter.get_field`` performs ``.attr`` / ``[item]``
+        traversal after :meth:`get_value`. A missing root is therefore not
+        enough on its own: traversing the ``_MissingField`` sentinel would
+        otherwise raise ``AttributeError`` or ``TypeError``. Known roots whose
+        requested attribute/item is absent degrade the same way.
+        """
+        root = field_name.split(".", 1)[0].split("[", 1)[0]
+        lookup_key: Any = int(root) if root.isdecimal() else root
+        root_value = self.get_value(lookup_key, args, kwargs)
+        if isinstance(root_value, _MissingField):
+            return _MissingField("{" + field_name + "}"), lookup_key
+        try:
+            return super().get_field(field_name, args, kwargs)
+        except (AttributeError, KeyError, IndexError, TypeError):
+            return _MissingField("{" + field_name + "}"), lookup_key
+
     def format_field(self, value: Any, format_spec: str) -> str:
         # If get_value returned a sentinel for a missing placeholder, reconstruct
         # the raw token -- with or without a format spec.
@@ -337,7 +366,7 @@ def _safe_format(template: str, **kwargs: Any) -> str:
     """Format ``template`` with ``kwargs``; unknown ``{tokens}`` stay literal."""
     try:
         return _SAFE_FORMATTER.vformat(template, (), kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
         logger.warning("i18n safe-format failed for template %r: %s", template, exc)
         return template
 

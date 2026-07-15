@@ -9,7 +9,7 @@ Fix: ``_exc_str()`` falls back to ``repr(exc)`` when ``str(exc)`` is empty.
 
 
 
-from tools.mcp_tool import _exc_str, _sanitize_error
+from tools.mcp_tool import _exc_str, _is_session_expired_error, _sanitize_error
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +55,18 @@ def test_exc_str_handles_closedresource_like_exception():
     result = _exc_str(exc)
     assert "ClosedResourceError" in result
     assert result != ""
+
+
+def test_closedresource_error_triggers_transport_recovery():
+    """Empty-message anyio transport failures must enter reconnect handling."""
+    from anyio import ClosedResourceError
+
+    assert _is_session_expired_error(ClosedResourceError()) is True
+
+
+def test_broken_pipe_triggers_transport_recovery():
+    """Pipe closure must enter the same transport recovery path."""
+    assert _is_session_expired_error(BrokenPipeError()) is True
 
 
 # ---------------------------------------------------------------------------

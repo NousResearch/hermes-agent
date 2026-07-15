@@ -55,6 +55,19 @@ logger = logging.getLogger("gateway.run")
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
 
+def _clean_str(value: Any) -> str:
+    """Strip and return a non-empty string value, or empty string."""
+    return value.strip() if isinstance(value, str) and value.strip() else ""
+
+
+def _int_value(value: Any) -> int:
+    """Safely coerce to int."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
 
@@ -674,6 +687,180 @@ class GatewaySlashCommandsMixin:
         text = str(session_key or "")
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
         return f"sha256:{digest}"
+
+    async def _handle_context_command(self, event: MessageEvent) -> str:
+        """Handle /context — the dedicated context-window view.
+
+        /status shows a one-line ``used / total`` summary; this command is the
+        deep view: a usage gauge, auto-compression threshold and headroom,
+        compression count and last savings, and cumulative throughput — the last
+        clearly labelled as throughput, NOT context size.
+
+        Resolves from the running agent (mid-turn), then the cached agent
+        (between turns), then the SessionStore/SessionDB metadata for a gauge
+        even when no agent is resident. Falls back to a transcript estimate only
+        as a last resort.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        session_entry = await self.async_session_store.get_or_create_session(source)
+
+        # Try running agent first (mid-turn), then cached agent (between turns).
+        agent = self._running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            cache_lock = getattr(self, "_agent_cache_lock", None)
+            cache = getattr(self, "_agent_cache", None)
+            if cache_lock is not None and cache is not None:
+                try:
+                    with cache_lock:
+                        cached = cache.get(session_key)
+                    if cached:
+                        agent = cached[0]
+                except Exception:
+                    agent = None
+        has_agent = bool(agent) and agent is not _AGENT_PENDING_SENTINEL
+
+        ctx = getattr(agent, "context_compressor", None) if has_agent else None
+
+        # Resolve current-context size + window with cascading fallbacks.
+        #   used  : compressor.last_prompt_tokens → SessionStore.last_prompt_tokens
+        #   model : agent.model → SessionDB row model
+        #   window: compressor.context_length → get_model_context_length(model)
+        used = 0
+        context_length = 0
+        if ctx is not None:
+            used = getattr(ctx, "last_prompt_tokens", 0) or 0
+            context_length = getattr(ctx, "context_length", 0) or 0
+
+        model_name = _clean_str(getattr(agent, "model", "")) if has_agent else ""
+
+        if not used:
+            used = _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+
+        if not model_name and self._session_db:
+            try:
+                row = await self._session_db.get_session(session_entry.session_id) or {}
+                if isinstance(row, dict):
+                    model_name = _clean_str(row.get("model", ""))
+            except Exception:
+                model_name = ""
+
+        if not context_length and model_name:
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                context_length = _int_value(
+                    await asyncio.to_thread(get_model_context_length, model_name)
+                )
+            except Exception:
+                context_length = 0
+
+        # Gauge path: real current-context figure
+        if used > 0 and context_length > 0:
+            pct = min(100.0, used / context_length * 100)
+            headroom = max(0, context_length - used)
+            BAR_WIDTH = 24
+            filled = int(round(pct / 100 * BAR_WIDTH))
+            bar = "█" * max(0, filled) + "░" * max(0, BAR_WIDTH - filled)
+
+            lines = [
+                t("gateway.context.header"),
+                "",
+                t("gateway.context.model", model=model_name or "?"),
+                t("gateway.context.window", total=f"{context_length:,}"),
+                t(
+                    "gateway.context.in_use",
+                    used=f"{used:,}",
+                    total=f"{context_length:,}",
+                    pct=f"{pct:.0f}",
+                ),
+                t("gateway.context.bar", bar=bar),
+                t("gateway.context.headroom", headroom=f"{headroom:,}"),
+            ]
+
+            # Full view — compression / throughput need the live agent.
+            if ctx is not None:
+                threshold = getattr(ctx, "threshold_tokens", 0) or 0
+                threshold_pct = (getattr(ctx, "threshold_percent", 0) or 0) * 100
+                lines.append("")
+                if threshold > 0:
+                    if used >= threshold:
+                        lines.append(
+                            t(
+                                "gateway.context.over_threshold",
+                                threshold=f"{threshold:,}",
+                                threshold_pct=f"{threshold_pct:.0f}",
+                            )
+                        )
+                    else:
+                        lines.append(
+                            t(
+                                "gateway.context.threshold",
+                                threshold=f"{threshold:,}",
+                                threshold_pct=f"{threshold_pct:.0f}",
+                                to_go=f"{threshold - used:,}",
+                            )
+                        )
+                compressions = getattr(ctx, "compression_count", 0) or 0
+                lines.append(t("gateway.context.compressions", count=compressions))
+                if compressions:
+                    savings = getattr(ctx, "_last_compression_savings_pct", None)
+                    if savings is not None:
+                        lines.append(
+                            t("gateway.context.last_savings", savings=f"{savings:.0f}")
+                        )
+
+                api_calls = getattr(agent, "session_api_calls", 0) or 0
+                input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+                output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+                reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
+                total_tokens = getattr(agent, "session_total_tokens", 0) or 0
+                lines.append("")
+                lines.append(
+                    t("gateway.context.totals_header", calls=api_calls)
+                )
+                lines.append(
+                    t(
+                        "gateway.context.totals_line",
+                        input=f"{input_tokens:,}",
+                        output=f"{output_tokens:,}",
+                        reasoning=f"{reasoning_tokens:,}",
+                    )
+                )
+                lines.append(t("gateway.context.total_billed", total=f"{total_tokens:,}"))
+                lines.append(t("gateway.context.throughput_note"))
+            else:
+                lines.append("")
+                lines.append(t("gateway.context.detail_after_first"))
+
+            return "\n".join(lines)
+
+        # Last resort: rough estimate from transcript
+        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        if history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+
+            msgs = [
+                m
+                for m in history
+                if m.get("role") in {"user", "assistant"} and m.get("content")
+            ]
+            approx = estimate_messages_tokens_rough(msgs)
+            return "\n".join(
+                [
+                    t("gateway.context.header"),
+                    "",
+                    t(
+                        "gateway.context.estimated",
+                        count=f"{approx:,}",
+                        messages=len(msgs),
+                    ),
+                    t("gateway.context.detail_after_first"),
+                ]
+            )
+        return t("gateway.context.no_data")
 
     def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:
         """Best-effort origin lookup for gateway session IDs."""

@@ -9220,6 +9220,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
+            if event.get_command() in {"context", "ctx"}:
+                return await self._handle_context_command(event)
+
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import (
                 ACTIVE_SESSION_BYPASS_COMMANDS as _DEDICATED_HANDLERS,
@@ -9742,6 +9745,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "context":
+            return await self._handle_context_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
